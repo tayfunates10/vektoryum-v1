@@ -11,20 +11,45 @@ hazırlar.
 
 ## Mimari
 
-İstek akışı (`/api/vectorize`):
+Çekirdek akış (`app/pipeline.py` → `run_pipeline`; hem API hem ölçüm CLI'si
+aynı kodu çağırır):
 
 1. **Analyzer** (`app/analyzer.py`) — görsel tipi, renk/kenar/gradyan analizi,
    `detected_type` ve `recommended_mode`.
 2. **Preprocess** (`app/preprocess.py`) — profil bazlı ön işleme + palet kontrolü.
+   `logo_color`'da palet bütçesi adaptiftir (renk zenginliğine göre 16-40).
 3. **Aday üretimi** (`app/vector_engines.py`) — VTracer / OpenCV contour /
-   opsiyonel Potrace / opsiyonel AutoTrace ile çoklu aday.
+   gradyan-farkındalıklı motor (`app/gradient_vectorize.py`) / opsiyonel
+   Potrace / opsiyonel AutoTrace ile çoklu aday.
 4. **Geometri temizleme** (`app/geometry_cleanup.py`) — düz çizgi/köşe temizliği,
    eksen yaslama, doğrusal nokta birleştirme.
-5. **Skorlama** (`app/scoring.py`) — yapısal + geometrik skorlar (+ CairoSVG varsa
-   raster benzerlik).
-6. **Seçim** (`app/main.py`) — profil bazlı en iyi aday + `selection_reason`.
-7. **Export** (`app/exporters.py`) — SVG/PDF/EPS/DXF.
-8. **Kalite raporu** (`app/quality.py`) — `production_ready` / `needs_review`.
+5. **Algısal skorlama** (`app/scoring.py` + `app/fidelity.py`) — adayı render
+   edip (resvg → PyMuPDF → CairoSVG → svglib) orijinalle karşılaştırır:
+   **SSIM + CIELAB ΔE + kenar-F1** birleşik **fidelity skoru**. Render hiçbir
+   backend'le yapılamazsa yapısal/geometrik skorlara güvenle düşülür.
+6. **Seçim** (`app/pipeline.py`) — renkli modlarda gerçek sadakate yaslanır;
+   sadakat marjı içinde belirgin daha az path'li adayı tercih eder
+   (`editability_preference`). `selection_reason` raporlanır.
+7. **Refinement (kapalı döngü)** (`app/pipeline.py` → `refine_best`) — en iyi
+   adayın komşuluğunda parametre + renk-sayısı varyantları üretip yeniden ölçer;
+   yalnızca daha sadık varyantı benimser.
+8. **Export** (`app/exporters.py`) — SVG/PDF/EPS/DXF.
+9. **Kalite raporu** (`app/quality.py`) — `production_ready` / `needs_review`.
+   Ölçülen sadakat düşükse (foto/sürekli-tonlu girdi) `needs_review` + dürüst uyarı.
+
+### Ölçüm harness'i (`regression/fidelity_report.py`)
+
+Motordaki her değişikliğin kaliteye etkisi sayısal ölçülür:
+
+```powershell
+.\.venv\Scripts\python.exe regression\fidelity_report.py            # manifest vakaları
+.\.venv\Scripts\python.exe regression\fidelity_report.py <klasör>   # bir klasördeki tüm görseller
+.\.venv\Scripts\python.exe regression\fidelity_report.py <görsel> --no-refine --progress
+```
+
+Her aday için `fidelity / ssim / ΔE / edge_f1 / path / renk` ve seçilen adayın
+nedeni dökülür. `regression/samples/` (gitignore'da) gerçek görsellerle toplu
+ölçüm içindir.
 
 ## Kurulum
 
@@ -42,10 +67,26 @@ API dokümanı: `http://127.0.0.1:8000/docs`
 ## API
 
 - `POST /api/vectorize` — form-data: `file` (görsel), `trace_mode` (varsayılan `auto`).
-  JSON döner: `analysis`, `mode_used`, `candidate_report`, `quality_report`,
-  `outputs`, `output_errors`, `download_links`.
+  JSON döner: `analysis`, `mode_used`, `mode_warning`, `candidate_report`,
+  `quality_report`, `refine_info`, `outputs`, `output_errors`, `download_links`.
 - `GET /api/download/{job_id}/{file_type}` — `file_type` ∈ `svg | pdf | eps | dxf`.
 - `GET /` — sağlık kontrolü.
+
+### Yanıt alanları (frontend için)
+
+- `candidate_report.best_candidate` / `selection_reason` — seçilen aday ve neden
+  (`highest_fidelity`, `editability_preference`, `refined`, `highest_total_score`…).
+- `candidate_report.candidates[].fidelity_score` — adayın algısal sadakati (0-100;
+  render edilemezse `null`). `details` içinde `ssim`, `mean_delta_e`, `edge_f1`.
+- `refine_info` — refinement uygulandı mı, `base_fidelity` → `refined_fidelity`,
+  denenen varyantlar.
+- `quality_report.status` — `production_ready` | `needs_review` | `failed`.
+  `quality_report.warnings` — kullanıcıya gösterilecek uyarılar (ör. düşük sadakat:
+  "görsel fotografik görünüyor, çıktı yaklaşık").
+  `quality_report.metrics.fidelity_score` — nihai çıktının ölçülen sadakati.
+
+> **Sadakat skorunu UI'da göster:** brand guide'daki "Genel Kalite %92" göstergesi
+> doğrudan `quality_report.metrics.fidelity_score` ile beslenebilir.
 
 ## Modlar
 
@@ -68,6 +109,18 @@ API dokümanı: `http://127.0.0.1:8000/docs`
   `best_candidate` ∈ {`geo_standard`, `geo_clean`, `geo_contour`, `geo_mixed`}.
 - ARCAATES tarzı taş/güneş/dağ içeren çok renkli AI logo: `trace_mode=auto` →
   `mode_used=logo_color`.
+
+## Render ve Algısal Sadakat
+
+Aday SVG'leri raster'a çevirip orijinalle karşılaştırmak (skorlamanın çekirdeği)
+için bir render backend'i gerekir. Sırayla denenir:
+
+- **resvg** (`resvg-py`) — **birincil**. Referans-kalite; gradyan/pattern/clip
+  dahil tam destek. Gradyan-farkındalıklı adayların doğru puanlanması için şart.
+- **PyMuPDF** — fallback; DLL'siz çalışır ama SVG gradyanlarını render etmez.
+- **CairoSVG / svglib+reportlab** — ek fallback'ler (cairo DLL gerektirebilir).
+
+Hiçbiri yoksa skorlama yapısal/geometrik metriklere güvenle düşer; sistem çökmez.
 
 ## Opsiyonel Araçlar ve Dayanıklılık
 
@@ -113,9 +166,12 @@ cd C:\Users\TAYFUN\Desktop\Projeler\tabela-vector-saas\engine
 7. `_path_efficiency_score(22, 4, "geometric_logo")` 100 döndürüyor mu
 8. `cleanup_svg_geometry` mevcut mu
 9. `vectorize_geometric_contours_to_svg` mevcut mu
-10. CairoSVG eksikliği sistemi çökertmiyor mu
+10. Render backend yoksa sadakat skoru güvenle `None` dönüyor mu (çökme yok)
 11. Potrace yoksa fallback çalışıyor mu
 12. AutoTrace yoksa fallback/warning çalışıyor mu
+
+Ek olarak `test_real_fixtures.py` (gerçek fixture regresyonu, 12 kabul kriteri)
+ve `regression/fidelity_report.py` (algısal sadakat ölçümü) bulunur.
 
 ## Marka Kılavuzu
 
@@ -124,7 +180,11 @@ arayüz dili) için bkz. [`docs/BRAND_GUIDE.md`](docs/BRAND_GUIDE.md).
 
 ## Bilinen Sınırlamalar
 
-- `photo_poster` çıktısı posterize bir yaklaşımdır; tam fotoğraf sadakati hedeflenmez.
-- Raster benzerlik skoru yalnızca CairoSVG render edilebildiğinde kullanılır;
-  aksi halde yapısal + geometrik skorlar esas alınır.
+- Fotoğraf / sürekli-tonlu görseller vektörleştirmenin doğal tavanındadır
+  (gerçek görsel survey'inde ~57-77 sadakat). Bunlar `needs_review` + uyarı ile
+  işaretlenir; in-domain logolar tipik olarak 85-98 alır.
+- Algısal sadakat skoru bir render backend'i (resvg/PyMuPDF/CairoSVG/svglib)
+  gerektirir; hiçbiri yoksa yapısal + geometrik skorlara düşülür.
+- Gradyan-farkındalıklı aday yalnızca gradyan-baskın renkli logolarda kazanır;
+  çok-renkli karmaşık logolarda VTracer adayları seçilir.
 - `centerline` modu AutoTrace yoksa basit bir skeleton fallback kullanır (placeholder kalite).
