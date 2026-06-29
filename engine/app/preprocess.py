@@ -106,24 +106,38 @@ def _reduce_to_dominant(rgb: np.ndarray, k: int) -> np.ndarray:
 
 
 def _remove_speckles(rgb: np.ndarray, min_area: int = 6) -> np.ndarray:
-    """Renk bölgelerindeki çok küçük izole lekeleri komşuya gömerek temizler."""
+    """Renk bölgelerindeki çok küçük izole lekeleri komşuya gömerek temizler.
+
+    PERFORMANS: her küçük bileşen, tüm görsel yerine kendi bounding-box (ROI)
+    üzerinde işlenir. Eski sürüm her bileşen için tam görselde dilate/maske
+    yapıyordu (1500² × binlerce bileşen) ve pipeline süresinin ~%75'ini yiyordu.
+    ROI ile maliyet bileşen boyutuyla orantılı olur.
+    """
     out = rgb.copy()
+    h, w = out.shape[:2]
     colors = np.unique(out.reshape(-1, 3), axis=0)
     if len(colors) > 24:
         return out  # çok renkli görselde atla
+    kernel = np.ones((3, 3), np.uint8)
     for color in colors:
         mask = cv2.inRange(out, color, color)
         num, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
         for i in range(1, num):
-            if stats[i, cv2.CC_STAT_AREA] < min_area:
-                labels_mask = (labels == i).astype(np.uint8) * 255
-                dil = cv2.dilate(labels_mask, np.ones((3, 3), np.uint8))
-                ring = cv2.subtract(dil, labels_mask)
-                ys, xs = np.where(ring > 0)
-                if len(xs) > 0:
-                    repl = out[ys, xs].reshape(-1, 3)
-                    fill = np.median(repl, axis=0).astype(np.uint8)
-                    out[labels == i] = fill
+            if stats[i, cv2.CC_STAT_AREA] >= min_area:
+                continue
+            x, y = stats[i, cv2.CC_STAT_LEFT], stats[i, cv2.CC_STAT_TOP]
+            cw, ch = stats[i, cv2.CC_STAT_WIDTH], stats[i, cv2.CC_STAT_HEIGHT]
+            # bileşeni +1px pad'li yerel pencerede işle
+            x0, y0 = max(0, x - 1), max(0, y - 1)
+            x1, y1 = min(w, x + cw + 1), min(h, y + ch + 1)
+            comp = labels[y0:y1, x0:x1] == i
+            dil = cv2.dilate(comp.astype(np.uint8), kernel) > 0
+            ring = dil & ~comp
+            if not ring.any():
+                continue
+            sub = out[y0:y1, x0:x1]
+            fill = np.median(sub[ring].reshape(-1, 3), axis=0).astype(np.uint8)
+            sub[comp] = fill
     return out
 
 
@@ -308,11 +322,14 @@ def preprocess_for_mode(
     image = Image.open(image_path).convert("RGBA")
 
     # PERFORMANS: çok büyük girdileri trace öncesi küçült (vektör çıktı sonsuz
-    # ölçeklenir; 4K+ görselde k-means/VTracer aşırı yavaşlar). Uzun kenar <= 1500.
+    # ölçeklenir; sadakat karşılaştırması zaten 512px). Renkli modlar k-means +
+    # despeckle nedeniyle pahalı -> daha agresif sınır; sade modlar keskin kenar
+    # için biraz daha yüksek kalsın.
+    cap = 1100 if mode in ("logo_color", "photo_poster") else 1400
     max_side = max(image.size)
     report_resize = None
-    if max_side > 1500:
-        scale = 1500 / max_side
+    if max_side > cap:
+        scale = cap / max_side
         new_size = (max(1, round(image.size[0] * scale)), max(1, round(image.size[1] * scale)))
         image = image.resize(new_size, Image.LANCZOS)
         report_resize = {"from": [max_side, max_side], "to": list(image.size)}
