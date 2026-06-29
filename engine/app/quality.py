@@ -11,6 +11,10 @@ from typing import Any
 
 _FLAT_MODES = {"geometric_logo", "minimal_ai", "flat_logo", "single_color", "lineart", "centerline"}
 
+# Bu algısal sadakatin altında çıktı "yaklaşık" sayılır (foto/sürekli-tonlu girdi).
+# Gerçek logolar tipik olarak 85+ alır; survey'de zor girdiler 57-76 aldı.
+_LOW_FIDELITY_THRESHOLD = 78.0
+
 
 def basic_svg_quality_check(
     score_details: dict[str, Any],
@@ -61,6 +65,19 @@ def basic_svg_quality_check(
     if flat_mode and unique_colors > 8:
         warnings.append("More colors than expected for a flat logo; palette cleanup recommended.")
 
+    # Algısal sadakat düşükse: görsel büyük olasılıkla sürekli-tonlu/fotografik.
+    # Gerçek logolar 85-98 sadakat alır; bu eşik yalnızca vektörleştirmenin doğal
+    # tavanındaki zor girdileri (foto/karmaşık illüstrasyon) işaretler — renkli
+    # logoları etkilemez. Foto↔logo'yu önden sınıflandırmaktan (kırılgan) daha
+    # güvenilir bir sinyal: ölçülen gerçek sadakat.
+    low_fidelity = fidelity_score is not None and fidelity_score < _LOW_FIDELITY_THRESHOLD
+    if low_fidelity:
+        warnings.append(
+            "Low perceptual fidelity; the image looks photographic or continuous-tone. "
+            "The vector output is an approximation — a cleaner logo or higher-quality "
+            "source image will give a better result."
+        )
+
     geo = geometry_report or {}
     geometry_block = {
         "straight_edge_score": round(float(geo.get("straight_edge_score", 0.0)) * 100, 2),
@@ -73,6 +90,9 @@ def basic_svg_quality_check(
     serious = has_bitmap or path_count == 0
     if serious:
         status = "failed" if path_count == 0 else "needs_review"
+    elif low_fidelity:
+        # ölçülen sadakat düşükse "üretime hazır" diyemeyiz (dürüst beklenti)
+        status = "needs_review"
     elif not warnings and total_score >= 80.0:
         status = "production_ready"
     elif total_score >= 70.0 and len(warnings) <= 1:
@@ -88,6 +108,7 @@ def basic_svg_quality_check(
             "node_count": node_count,
             "unique_color_count": unique_colors,
             "has_bitmap": has_bitmap,
+            "fidelity_score": fidelity_score,
         },
         "geometry_report": geometry_block,
     }
