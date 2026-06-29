@@ -138,6 +138,7 @@ async def vectorize_image(
         mode=mode_used,
         geometry_report=best_geo,
         total_score=best["total_score"],
+        fidelity_score=best.get("fidelity_score"),
     )
 
     download_links = {fmt: f"/api/download/{job_id}/{fmt}" for fmt in ("svg", "pdf", "eps", "dxf")}
@@ -171,6 +172,7 @@ async def vectorize_image(
                     "axis_alignment_score": c.get("axis_alignment_score"),
                     "geometry_score": c.get("geometry_score"),
                     "rendered_ok": c.get("rendered_ok"),
+                    "fidelity_score": c.get("fidelity_score"),
                     "details": c.get("score_details"),
                 }
                 # başarısız adaylar da raporlanır
@@ -178,6 +180,7 @@ async def vectorize_image(
             ],
         },
         "quality_report": quality_report,
+        "refine_info": pipe.get("refine_info"),
         "outputs": {fmt: Path(p).name for fmt, p in outputs.items()},
         "output_errors": output_errors,
         "download_links": download_links,
@@ -187,14 +190,20 @@ async def vectorize_image(
 
 
 def _merge_for_report(scored: list[dict[str, Any]], results: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Skorlanan adaylar + başarısız adayları tek listede birleştirir."""
+    """Skorlanan adaylar + başarısız adayları tek listede birleştirir.
+
+    Refinement'ta üretilen adaylar ``results`` içinde olmayabilir; onları da
+    sona ekleriz ki rapor (ve seçilen kazanan) eksik kalmasın.
+    """
     scored_by_name = {c["name"]: c for c in scored}
     merged = []
+    seen: set[str] = set()
     for r in results:
-        if r["name"] in scored_by_name:
-            merged.append(scored_by_name[r["name"]])
-        else:
-            merged.append(r)
+        seen.add(r["name"])
+        merged.append(scored_by_name.get(r["name"], r))
+    for c in scored:
+        if c["name"] not in seen:
+            merged.append(c)
     return merged
 
 

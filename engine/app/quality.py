@@ -17,8 +17,14 @@ def basic_svg_quality_check(
     mode: str,
     geometry_report: dict[str, float] | None = None,
     total_score: float = 0.0,
+    fidelity_score: float | None = None,
 ) -> dict[str, Any]:
-    """En iyi adayın yapısal istatistiklerine göre kalite raporu üretir."""
+    """En iyi adayın yapısal istatistiklerine göre kalite raporu üretir.
+
+    ``fidelity_score`` (algısal sadakat) verilirse, yapısal sezgiler ona göre
+    yumuşatılır: ör. düşük path sayısı, sadakat yüksekse "detay kaybı" sayılmaz
+    (az path = daha düzenlenebilir, bir kusur değil).
+    """
     path_count = int(score_details.get("path_count", 0))
     unique_colors = int(score_details.get("unique_colors", 0))
     has_bitmap = bool(score_details.get("has_bitmap", False))
@@ -36,8 +42,11 @@ def basic_svg_quality_check(
     # Sade logolarda az path uyarısı verme kuralı
     low_path_exempt = flat_mode and unique_colors <= 6 and path_count >= 10
 
+    # yüksek sadakat varsa düşük path bir kusur değildir (sadık + düzenlenebilir)
+    fidelity_ok = fidelity_score is not None and fidelity_score >= 85.0
+
     if mode == "logo_color":
-        if 0 < path_count < 250:
+        if 0 < path_count < 250 and not fidelity_ok:
             warnings.append("Low path count for a color logo; some detail may be lost.")
         if unique_colors > 24:
             warnings.append("High color count; consider reducing palette for production.")

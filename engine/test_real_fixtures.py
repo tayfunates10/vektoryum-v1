@@ -100,7 +100,9 @@ def _evaluate(label: str, data: dict, expected_mode: str) -> list[tuple[str, boo
         # bilgilendirici (hedef aralık) — başarısızlık saymaz, sadece raporlanır
         pc = det.get("path_count")
         uc = det.get("unique_colors")
-        print(f"   [bilgi] {label} path_count={pc} (hedef ~800-1600), unique_colors={uc} (hedef ~16-24)")
+        fid = (next((c for c in cr["candidates"] if c["name"] == cr["best_candidate"]), {}) or {}).get("fidelity_score")
+        print(f"   [bilgi] {label} path_count={pc}, unique_colors={uc}, fidelity={fid} "
+              f"(seçim sadakat-öncelikli; az path = daha düzenlenebilir)")
 
     return checks
 

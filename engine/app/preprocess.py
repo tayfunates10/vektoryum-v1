@@ -249,11 +249,11 @@ def preprocess_centerline(arr: np.ndarray, report: dict) -> np.ndarray:
     return binary
 
 
-def preprocess_photo_poster(arr: np.ndarray, report: dict) -> np.ndarray:
+def preprocess_photo_poster(arr: np.ndarray, report: dict, n_colors: int = 16) -> np.ndarray:
     rgb = _rgba_to_rgb_on_white(arr)
-    quant = _kmeans_quantize_lab(rgb, k=16, edge_preserve=True)
-    report["steps"].append("lab_kmeans_16")
-    report["palette"] = _palette_list(quant, limit=16)
+    quant = _kmeans_quantize_lab(rgb, k=n_colors, edge_preserve=True)
+    report["steps"].append(f"lab_kmeans_{n_colors}")
+    report["palette"] = _palette_list(quant, limit=n_colors)
     report["note"] = "Fotoğraf modu: çıktı posterize bir yaklaşımdır, tam sadakat garanti edilmez."
     return quant
 
@@ -289,8 +289,17 @@ def preprocess_for_mode(
     mode: str,
     output_dir: Path,
     analysis: dict[str, Any] | None = None,
+    color_override: int | None = None,
+    output_suffix: str = "",
 ) -> tuple[Path, dict[str, Any]]:
-    """Görseli seçilen moda göre ön işler ve PNG olarak kaydeder."""
+    """Görseli seçilen moda göre ön işler ve PNG olarak kaydeder.
+
+    ``color_override`` verilirse renkli modlarda (logo_color/photo_poster)
+    otomatik renk sayısı yerine bu değer kullanılır — refinement döngüsü ΔE'yi
+    düşürmek için daha yüksek k ile yeniden ön işleme yapabilsin diye.
+    ``output_suffix`` çıktı dosya adına eklenir (refinement varyantları orijinali
+    ezmesin diye).
+    """
     image = Image.open(image_path).convert("RGBA")
 
     # PERFORMANS: çok büyük girdileri trace öncesi küçült (vektör çıktı sonsuz
@@ -310,13 +319,18 @@ def preprocess_for_mode(
         report["resized"] = report_resize
     func = _DISPATCH.get(mode, preprocess_minimal_ai)
     if mode == "logo_color":
-        n_colors = _auto_color_count(analysis)
+        n_colors = int(color_override) if color_override else _auto_color_count(analysis)
+        n_colors = max(8, min(48, n_colors))
         report["auto_color_count"] = n_colors
         processed = preprocess_logo_color(arr, report, n_colors=n_colors)
+    elif mode == "photo_poster" and color_override:
+        k = max(8, min(48, int(color_override)))
+        report["auto_color_count"] = k
+        processed = preprocess_photo_poster(arr, report, n_colors=k)
     else:
         processed = func(arr, report)
 
-    output_path = output_dir / f"preprocessed_{mode}.png"
+    output_path = output_dir / f"preprocessed_{mode}{output_suffix}.png"
     if processed.ndim == 2:
         Image.fromarray(processed, mode="L").save(output_path)
     else:
