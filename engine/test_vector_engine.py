@@ -134,17 +134,18 @@ def main() -> int:
     except Exception as e:  # noqa: BLE001
         check("9. vectorize_geometric_contours_to_svg mevcut", False, repr(e))
 
-    # 10. CairoSVG import hatası sistemi çökertmiyor
+    # 10. Algısal sadakat: render yoksa (CairoSVG eksik) sistem çökmez -> None döner
     try:
-        from app.scoring import _try_render_similarity
+        from app.fidelity import score_svg_fidelity
         svg = tmp / "tiny.svg"
         svg.write_text('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">'
                        '<rect width="10" height="10" fill="#000"/></svg>', encoding="utf-8")
-        sim = _try_render_similarity(svg, src_png)
-        check("10. CairoSVG eksikliği sistemi çökertmiyor", sim is None or isinstance(sim, float),
-              f"similarity={sim} (None = cairo yok, beklenen)")
+        fid = score_svg_fidelity(svg, src_png)
+        ok = fid is None or (isinstance(fid, dict) and "fidelity_score" in fid)
+        check("10. Sadakat: render yoksa çökmez (None döner)", ok,
+              f"fidelity={'dict' if isinstance(fid, dict) else fid} (None = cairo yok, beklenen)")
     except Exception as e:  # noqa: BLE001
-        check("10. CairoSVG eksikliği sistemi çökertmiyor", False, repr(e))
+        check("10. Sadakat: render yoksa çökmez (None döner)", False, repr(e))
 
     # 11. Potrace yoksa fallback
     try:

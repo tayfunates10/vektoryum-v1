@@ -18,8 +18,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
-import numpy as np
-
+from app.fidelity import score_svg_fidelity
 from app.geometry_cleanup import compute_geometry_report_for_svg, extract_points_from_path_data
 
 logger = logging.getLogger(__name__)
@@ -146,32 +145,6 @@ def _detail_score(node_count: int, path_count: int, analysis: dict[str, Any], mo
     return round(max(45.0, 50.0 + node_count / 8.0), 2)
 
 
-def _try_render_similarity(svg_path: Path, original_path: Path) -> float | None:
-    """CairoSVG varsa render edip orijinalle benzerlik (0-1) döndürür; yoksa None.
-
-    Cairo DLL eksikse (Windows) sessizce None döner.
-    """
-    try:
-        import cairosvg  # noqa: PLC0415
-        from PIL import Image
-        import io
-
-        png_bytes = cairosvg.svg2png(url=str(svg_path), output_width=256, output_height=256)
-        rendered = Image.open(io.BytesIO(png_bytes)).convert("L")
-        original = Image.open(original_path).convert("RGBA")
-        bg = Image.new("RGBA", original.size, (255, 255, 255, 255))
-        bg.alpha_composite(original)
-        original = bg.convert("L").resize((256, 256))
-
-        a = np.asarray(rendered, dtype=np.float32)
-        b = np.asarray(original, dtype=np.float32)
-        mse = float(np.mean((a - b) ** 2))
-        return max(0.0, 1.0 - mse / (255.0 ** 2) * 4.0)
-    except Exception as e:  # noqa: BLE001
-        logger.debug("Raster benzerlik atlandı: %s", e)
-        return None
-
-
 # ---------------------------------------------------------------------------
 # Ana skorlama
 # ---------------------------------------------------------------------------
@@ -219,13 +192,15 @@ def score_vector_candidate(
     path_score = _path_efficiency_score(stats["path_count"], stats["unique_colors"], mode)
     detail_score = _detail_score(stats["node_count"], stats["path_count"], analysis_report, mode)
 
-    # edge_score: render edilebilirse benzerlikten, değilse yapısal tahmin
+    # edge_score: render edilebilirse ALGISAL sadakat (SSIM + LAB ΔE + kenar-F1);
+    # render mümkün değilse yapısal tahmine düşülür (CairoSVG yoksa çökme yok).
     rendered_ok = False
-    similarity = _try_render_similarity(Path(svg_path), Path(original_path))
-    if similarity is not None:
+    fidelity = score_svg_fidelity(Path(svg_path), Path(original_path))
+    if fidelity is not None:
         rendered_ok = True
-        edge_score = round(similarity * 100.0, 2)
+        edge_score = float(fidelity["fidelity_score"])
     else:
+        fidelity = {}
         # yapısal tahmin: geometri + detay dengesinden türet
         if mode in _GEOMETRIC_MODES:
             edge_score = round(0.5 * straight_edge_score + 0.5 * detail_score, 2)
@@ -274,11 +249,16 @@ def score_vector_candidate(
         "axis_alignment_score": round(axis_alignment_score, 2),
         "geometry_score": round(geometry_score, 2),
         "rendered_ok": rendered_ok,
+        "fidelity_score": float(fidelity.get("fidelity_score", edge_score)) if rendered_ok else None,
+        "fidelity": fidelity or None,
         "score_details": {
             "path_count": stats["path_count"],
             "node_count": stats["node_count"],
             "unique_colors": stats["unique_colors"],
             "has_bitmap": stats["has_bitmap"],
             "warnings": warnings,
+            "ssim": fidelity.get("ssim"),
+            "mean_delta_e": fidelity.get("mean_delta_e"),
+            "edge_f1": fidelity.get("edge_f1"),
         },
     }

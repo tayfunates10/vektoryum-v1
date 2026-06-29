@@ -10,6 +10,12 @@ vtracer
 ezdxf
 svgpathtools
 
+# --- Render (algısal sadakat skorlaması için) ---
+# PyMuPDF: SVG->raster render. Kendi motorunu barındırır, Windows'ta harici DLL
+# gerektirmez; algısal sadakat (app/fidelity.py) bu sayede her platformda çalışır.
+# Kurulu değilse skorlama yapısal tahmine güvenle düşer (çökme yok).
+pymupdf
+
 # --- Opsiyonel render / export ---
 # CairoSVG: PDF/EPS/PNG render için. Windows'ta cairo DLL yoksa import edilir
 # ama çağrı anında devre dışı kalır; sistem çökmez.
