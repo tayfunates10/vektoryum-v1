@@ -117,6 +117,11 @@ cd C:\Users\TAYFUN\Desktop\Projeler\tabela-vector-saas\engine
 11. Potrace yoksa fallback çalışıyor mu
 12. AutoTrace yoksa fallback/warning çalışıyor mu
 
+## Marka Kılavuzu
+
+Vektoryum'un marka kimliği (renk paleti, tipografi, logo kuralları, ton ve
+arayüz dili) için bkz. [`docs/BRAND_GUIDE.md`](docs/BRAND_GUIDE.md).
+
 ## Bilinen Sınırlamalar
 
 - `photo_poster` çıktısı posterize bir yaklaşımdır; tam fotoğraf sadakati hedeflenmez.
