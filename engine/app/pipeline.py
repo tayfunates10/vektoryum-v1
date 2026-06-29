@@ -66,6 +66,42 @@ def compute_mode_warning(trace_mode: str, mode_used: str, analysis: dict[str, An
 # ---------------------------------------------------------------------------
 # Aday seçim mantığı
 # ---------------------------------------------------------------------------
+# Düzenlenebilirlik-duyarlı seçim eşikleri: sadakat bu kadar puan içindeyken
+# (marj), path sayısı bu oranın altına inen aday "çok daha düzenlenebilir" sayılıp
+# tercih edilir (az path = düzenlenebilir + gradyanda sonsuz pürüzsüz çıktı).
+_EDIT_MARGIN = 2.5
+_EDIT_LEAN_RATIO = 0.5
+
+
+def _path_count(c: dict[str, Any]) -> int:
+    return int((c.get("score_details") or {}).get("path_count", 0))
+
+
+def _apply_editability_preference(
+    scored: list[dict[str, Any]], current_best: dict[str, Any]
+) -> tuple[dict[str, Any], str]:
+    """Sadakat marjı içinde belirgin şekilde daha az path'li adayı tercih eder.
+
+    En yüksek sadakatli adayı bulur; sadakati ondan en çok ``_EDIT_MARGIN`` düşük
+    olan adaylar arasında en az path'liyi seçer — ancak yalnızca path sayısı
+    en iyinin ``_EDIT_LEAN_RATIO`` katından azsa (gerçek düzenlenebilirlik kazancı).
+    Aksi halde en yüksek sadakatli aday kalır.
+    """
+    rendered = [c for c in scored if c.get("rendered_ok") and c.get("fidelity_score") is not None]
+    if not rendered:
+        return current_best, "highest_total_score"
+
+    top = max(rendered, key=_fidelity_rank_key)
+    top_fid = float(top["fidelity_score"])
+    top_paths = max(1, _path_count(top))
+
+    eligible = [c for c in rendered if float(c["fidelity_score"]) >= top_fid - _EDIT_MARGIN]
+    leanest = min(eligible, key=_path_count)
+    if leanest is not top and _path_count(leanest) <= _EDIT_LEAN_RATIO * top_paths:
+        return leanest, "editability_preference"
+    return top, "highest_fidelity"
+
+
 def _fidelity_rank_key(c: dict[str, Any]) -> tuple[float, int, float]:
     """Fidelity-öncelikli sıralama anahtarı (hem seçim hem refinement kullanır).
 
@@ -400,7 +436,7 @@ def run_pipeline(
     selection_reason = "no_candidate"
     refine_info: dict[str, Any] = {"applied": False}
     if scored:
-        # 6. + 7. Seçim
+        # 6. + 7. Seçim (fidelity-led; refinement'ı tohumlar)
         best, raw_best, selection_reason = select_best(scored, mode_used)
         # 8. Refinement (kapalı döngü): en iyi adayı hata-güdümlü iyileştir
         if refine:
@@ -409,6 +445,12 @@ def run_pipeline(
             )
             if refine_info.get("applied"):
                 selection_reason = "refined"
+        # 9. Düzenlenebilirlik-duyarlı son seçim (renkli modlar): sadakat marjı
+        # içinde çok daha az path'li/gradyanlı adayı tercih et.
+        if mode_used in FIDELITY_LED_MODES:
+            edit_best, edit_reason = _apply_editability_preference(scored, best)
+            if edit_best is not best:
+                best, selection_reason = edit_best, edit_reason
 
     return {
         "analysis": analysis,
