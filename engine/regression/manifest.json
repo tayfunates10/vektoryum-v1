@@ -66,6 +66,28 @@
         "max_rmse": 28.0,
         "max_changed_pixel_ratio": 0.06
       }
+    },
+    {
+      "id": "gradient_logo",
+      "description": "Sentetik gradyan logo: gradyan-farkindalikli adayin (SVG <linearGradient>) duzenlenebilirlik-duyarli secimle kazandigini guvenceye alir (Faz 2 regresyon koruyucusu).",
+      "input": "fixtures/gradient_logo.png",
+      "trace_mode": "auto",
+      "quality": "detailed",
+      "expected": {
+        "mode_used": "logo_color",
+        "recommended_mode": "logo_color",
+        "likely_geometric_logo": false,
+        "candidate_min": 5,
+        "successful_candidate_min": 5,
+        "best_candidate_in": ["logo_gradient"],
+        "status_in": ["production_ready", "needs_review"],
+        "max_warning_count": 3,
+        "dxf_error_allowed": false,
+        "quality": {
+          "min_fidelity_score": 90,
+          "max_path_count": 4
+        }
+      }
     }
   ]
 }
