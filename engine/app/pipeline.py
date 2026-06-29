@@ -417,7 +417,7 @@ def run_pipeline(
     ):
         candidates = {
             **candidates,
-            "logo_gradient": {"engine": "gradient", "params": {"epsilon": 1.0}, "cleanup": None},
+            "logo_gradient": {"engine": "gradient", "params": {"epsilon": 0.3}, "cleanup": None},
         }
     results = [
         produce_candidate(name, spec, preprocessed_path, mode_used, job_dir, original_path=original_path)

@@ -52,16 +52,16 @@ def _load_rgb(image_path: Path) -> np.ndarray:
 
 
 def _edge_based_segments(rgb: np.ndarray) -> np.ndarray:
-    """Kenar-bazlı bölge segmentasyonu (watershed).
+    """Kenar-bazlı bölge segmentasyonu (connected components).
 
-    Renk kümeleme YERİNE gerçek kenarlarla bölgeler oluşturur. Böylece düz bir
-    gradyan (içinde güçlü kenar yoktur) TEK bölge olarak kalır — bantlara
-    bölünmez — ve bölge sınırları görseldeki gerçek kenarlara hizalanır (pürüzsüz,
-    keskin). Bu, gradyan adayının sınır kalitesini VTracer seviyesine çıkarır.
+    Renk kümeleme YERİNE gerçek kenarlarla bölgeler oluşturur: kenarlar görseli
+    kapalı eğrilerle alanlara böler, kenar-olmayan bağlı bileşenler = bölgeler.
+    Böylece düz bir gradyan (içinde güçlü kenar yoktur) TEK bölge olarak kalır —
+    bantlara/yarılara bölünmez — ve sınırlar gerçek kenarlara hizalanır.
 
-    Döner: her piksel için tamsayı etiket haritası (arka plan dahil).
+    Döner: her piksel için tamsayı etiket haritası (0 dahil değil; kenar
+    pikselleri en yakın bölgeye yaslanır).
     """
-    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
     # hafif düzleştirme: anti-alias gürültüsünü bastır, gerçek kenarları koru
     smooth = cv2.bilateralFilter(rgb, d=5, sigmaColor=30, sigmaSpace=30)
     gray_s = cv2.cvtColor(smooth, cv2.COLOR_RGB2GRAY)
@@ -69,41 +69,38 @@ def _edge_based_segments(rgb: np.ndarray) -> np.ndarray:
     edges = cv2.Canny(gray_s, 40, 120)
     edges = cv2.dilate(edges, np.ones((3, 3), np.uint8), iterations=1)
 
-    # kenar-olmayan iç bölgeler -> watershed markörleri
+    # kenar-olmayan alanın bağlı bileşenleri = bölgeler (kenar pikselleri = etiket 0)
     non_edge = (edges == 0).astype(np.uint8)
-    sure = cv2.erode(non_edge, np.ones((3, 3), np.uint8), iterations=1)
-    num, markers = cv2.connectedComponents(sure)
-    markers = markers + 1            # arka plan 0 olmasın
-    markers[edges > 0] = 0           # bilinmeyen (kenar) bölgeler
+    _num, labels = cv2.connectedComponents(non_edge, connectivity=4)
+    labels = labels.astype(np.int32)
 
-    markers = cv2.watershed(rgb, markers)  # 0/kenarlar -1 olur, etiketler büyür
+    # kenar bandını (etiket 0) komşu bölgelere yasla (iteratif dilate)
+    for _ in range(8):
+        zero = labels == 0
+        if not zero.any():
+            break
+        dil = cv2.dilate(labels.astype(np.float32), np.ones((3, 3), np.uint8))
+        labels = np.where(zero, dil.astype(np.int32), labels)
 
-    # watershed sınır pikselleri (-1): en yakın etikete yasla (1px dilate)
-    boundary = markers == -1
-    if boundary.any():
-        filled = markers.copy()
-        filled[boundary] = 0
-        # birkaç dilate iterasyonu ile etiketleri sınıra doğru büyüt
-        for _ in range(3):
-            zero = filled == 0
-            if not zero.any():
-                break
-            dil = cv2.dilate(filled.astype(np.int32).astype(np.float32), np.ones((3, 3), np.uint8))
-            filled = np.where(zero, dil.astype(np.int32), filled)
-        markers = filled
-
-    return markers.astype(np.int32)
+    return labels
 
 
-def _mask_to_path(mask: np.ndarray, epsilon: float = 1.2, min_area: float = 12.0) -> str:
-    """İkili maskeden delikleri koruyan (evenodd) polygon path 'd' üretir."""
-    contours, _ = cv2.findContours(mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+def _mask_to_path(mask: np.ndarray, epsilon: float = 0.3, min_area: float = 12.0) -> str:
+    """İkili maskeden delikleri koruyan (evenodd) polygon path 'd' üretir.
+
+    Maske önce hafifçe Gaussian ile yumuşatılır: connected-components sınırındaki
+    1px merdivenlenme giderilir, polygon gerçek (anti-alias) kenara daha iyi oturur
+    (edge_f1 belirgin artar). Düşük ``epsilon`` ile yuvarlak köşeler korunur.
+    """
+    smoothed = cv2.GaussianBlur(mask, (5, 5), 0)
+    smoothed = ((smoothed > 127).astype(np.uint8)) * 255
+    contours, _ = cv2.findContours(smoothed, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
     parts: list[str] = []
     for contour in contours:
         if cv2.contourArea(contour) < min_area:
             continue
         peri = cv2.arcLength(contour, True)
-        eps = max(0.5, epsilon * peri / 100.0)
+        eps = max(0.3, epsilon * peri / 100.0)
         poly = cv2.approxPolyDP(contour, eps, True)
         if len(poly) < 3:
             continue
@@ -186,7 +183,7 @@ def vectorize_with_gradients(
     rgb = _load_rgb(Path(input_path))
     height, width = rgb.shape[:2]
     total_px = height * width
-    epsilon = float(params.get("epsilon", 1.0))
+    epsilon = float(params.get("epsilon", 0.3))
     min_area = float(params.get("min_area", max(12.0, total_px * 0.0004)))
 
     labels = _edge_based_segments(rgb)
