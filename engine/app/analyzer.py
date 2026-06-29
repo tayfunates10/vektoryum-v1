@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import colorsys
 from pathlib import Path
 from typing import Any
 
@@ -376,6 +377,25 @@ def _dominant_color_family_stats(dominant_colors: list[dict[str, Any]]) -> dict[
     }
 
 
+def _distinct_vivid_hue_count(dominant_colors: list[dict[str, Any]]) -> int:
+    """Baskın renkler içinde KAÇ FARKLI canlı ton olduğunu sayar.
+
+    Doygun pikselin ALAN oranına bakan testler, küçük ama canlı çok-renkli bir
+    logoyu büyük beyaz zemin yüzünden 'minimal' sanabiliyor (renkler ~%1). Ton
+    SAYISI alandan bağımsızdır: 5 farklı canlı ton = renk logosu, alanı küçük olsa
+    bile. Tonlar 30°'lik kovalara ayrılır; yakın tonlar tek sayılır.
+    """
+    buckets: set[int] = set()
+    for item in dominant_colors:
+        r, g, b = item["rgb"]
+        mx, mn = max(r, g, b), min(r, g, b)
+        if mx - mn < 55 or mx < 55:
+            continue  # canlı değil (gri/siyah/beyaz)
+        hue = colorsys.rgb_to_hsv(r / 255.0, g / 255.0, b / 255.0)[0] * 360.0
+        buckets.add(int(hue) // 30)
+    return len(buckets)
+
+
 def classify_logo_geometry(
     estimated_color_count: int,
     has_gradient: bool,
@@ -443,6 +463,10 @@ def analyze_image_from_mem(image: Image.Image) -> dict[str, Any]:
     estimated_color_count = color_data["estimated_color_count"]
     saturation_stats = _dominant_saturation_stats(color_data["dominant_colors"])
     color_family_stats = _dominant_color_family_stats(color_data["dominant_colors"])
+    # Küçük ama canlı çok-renkli logolar (büyük beyaz zemin) doygunluk-oranı
+    # testlerini geçemiyor; ton SAYISI alandan bağımsız ayırt eder.
+    vivid_hue_count = _distinct_vivid_hue_count(color_data["dominant_colors"])
+    vivid_multicolor = vivid_hue_count >= 3
 
     quality_score = score_image_quality(
         width=width,
@@ -557,6 +581,7 @@ def analyze_image_from_mem(image: Image.Image) -> dict[str, Any]:
     likely_color_logo = (
         estimated_color_count > 8
         or has_gradient
+        or vivid_multicolor
         or saturation_stats["saturated_ratio"] > 0.38
         or color_family_stats["non_red_saturated_ratio"] > 0.045
         or (
@@ -570,7 +595,8 @@ def analyze_image_from_mem(image: Image.Image) -> dict[str, Any]:
         likely_color_logo
         and not bwr_low_color_signature
         and (
-            saturation_stats["saturated_ratio"] >= 0.18
+            vivid_multicolor
+            or saturation_stats["saturated_ratio"] >= 0.18
             or estimated_color_count >= 10
         )
     )
