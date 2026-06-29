@@ -204,10 +204,13 @@ def produce_candidate(
     mode: str,
     job_dir: Path,
     original_path: Path | None = None,
+    palette_cap: int | None = None,
 ) -> dict[str, Any]:
     """Tek bir adayı üretir: trace → cleanup → palet konsolidasyonu → regularize.
 
     ``original_path`` gradyan motoruna iletilir (ham pikseller gerekir).
+    ``palette_cap`` verilirse sabit PALETTE_CAP yerine kullanılır (logo_color'da
+    preprocess renk bütçesine bağlanan adaptif cap için).
     """
     svg_path = job_dir / f"{name}.svg"
     engine = spec["engine"]
@@ -218,7 +221,7 @@ def produce_candidate(
             cleanup_report = cleanup_svg_geometry(svg_path, mode=mode, aggressiveness=spec["cleanup"])
         # palet konsolidasyonu: kenar ara-ton renklerini en baskın renklere indir.
         # Gradyan adayında ATLA — gradyan stop'larını/url() fill'lerini bozar.
-        cap = PALETTE_CAP.get(mode)
+        cap = palette_cap if palette_cap is not None else PALETTE_CAP.get(mode)
         if cap and engine != "gradient":
             canonical = CANONICAL_BWR if mode in FLAT_PALETTE_MODES else None
             consolidate_svg_palette(svg_path, max_colors=cap, canonical=canonical)
@@ -419,8 +422,12 @@ def run_pipeline(
             **candidates,
             "logo_gradient": {"engine": "gradient", "params": {"epsilon": 0.3}, "cleanup": None},
         }
+    # logo_color'da palet cap'i preprocess renk bütçesine bağlanır (sabit 22 yerine):
+    # üretilen renkler kırpılmaz, renk-zengini logolarda ΔE düşer.
+    lc_cap = preprocess_report.get("auto_color_count") if mode_used == "logo_color" else None
     results = [
-        produce_candidate(name, spec, preprocessed_path, mode_used, job_dir, original_path=original_path)
+        produce_candidate(name, spec, preprocessed_path, mode_used, job_dir,
+                          original_path=original_path, palette_cap=lc_cap)
         for name, spec in candidates.items()
     ]
 

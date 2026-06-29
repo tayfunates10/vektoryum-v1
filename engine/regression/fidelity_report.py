@@ -69,7 +69,7 @@ def _discover_inputs(args_paths: list[str]) -> list[tuple[str, Path, str]]:
     return inputs
 
 
-def _evaluate(image_path: Path, trace_mode: str) -> dict:
+def _evaluate(image_path: Path, trace_mode: str, refine: bool = True) -> dict:
     """Tek görseli pipeline'dan geçirir ve sadakat özeti döndürür."""
     with Image.open(image_path) as im:
         image = im.convert("RGBA")
@@ -78,7 +78,7 @@ def _evaluate(image_path: Path, trace_mode: str) -> dict:
         job_dir = Path(tmp)
         original_path = job_dir / f"original{image_path.suffix or '.png'}"
         original_path.write_bytes(image_path.read_bytes())
-        pipe = run_pipeline(image, original_path, trace_mode, job_dir)
+        pipe = run_pipeline(image, original_path, trace_mode, job_dir, refine=refine)
 
         candidates = []
         for c in pipe["scored"]:
@@ -118,6 +118,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Algısal sadakat ölçüm raporu")
     parser.add_argument("paths", nargs="*", help="Görsel yolları (boşsa manifest/fixtures kullanılır)")
     parser.add_argument("--json", action="store_true", help="Makine-okur JSON çıktısı")
+    parser.add_argument("--no-refine", action="store_true",
+                        help="Refinement döngüsünü kapat (çok daha hızlı toplu survey)")
+    parser.add_argument("--progress", action="store_true",
+                        help="Her görsel işlenirken stderr'e ilerleme yaz")
     args = parser.parse_args()
 
     # Türkçe Windows konsolu (cp1254) ΔE gibi karakterleri kodlayamaz -> UTF-8'e zorla
@@ -133,8 +137,15 @@ def main() -> int:
 
     report = {}
     selected_fidelities = []
-    for case_id, img_path, trace_mode in inputs:
-        result = _evaluate(img_path, trace_mode)
+    import time
+    for i, (case_id, img_path, trace_mode) in enumerate(inputs, 1):
+        if args.progress:
+            print(f"[{i}/{len(inputs)}] {case_id} ...", end="", file=sys.stderr, flush=True)
+        t0 = time.time()
+        result = _evaluate(img_path, trace_mode, refine=not args.no_refine)
+        if args.progress:
+            print(f" {result['mode_used']} -> {result['best_candidate']} "
+                  f"fid={result['best_fidelity']} ({time.time()-t0:.1f}s)", file=sys.stderr, flush=True)
         report[case_id] = result
         if result["best_fidelity"] is not None:
             selected_fidelities.append(result["best_fidelity"])

@@ -277,11 +277,16 @@ _DISPATCH = {
 
 
 def _auto_color_count(analysis: dict[str, Any] | None) -> int:
-    """Analizdeki renk zenginliğine göre logo_color için k seçer (14-28)."""
+    """Analizdeki renk zenginliğine göre logo_color için k seçer (16-40).
+
+    Gerçek görsel survey'i, sabit ~22 renk cap'inin renk-zengini logolarda ΔE'yi
+    11-14'e fırlattığını gösterdi (renk açlığı). Tavan yükseltildi; cap bu değere
+    bağlanır (bkz. pipeline) ki üretilen renkler kırpılıp boşa gitmesin.
+    """
     if not analysis:
-        return 20
+        return 22
     est = int(analysis.get("estimated_color_count", 14))
-    return int(max(14, min(28, est + 6)))
+    return int(max(16, min(40, est + 10)))
 
 
 def preprocess_for_mode(
