@@ -33,15 +33,27 @@ from app.pipeline import run_pipeline  # noqa: E402
 
 _HERE = Path(__file__).resolve().parent
 _MANIFEST = _HERE / "manifest.json"
+_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 
 
 def _discover_inputs(args_paths: list[str]) -> list[tuple[str, Path, str]]:
-    """(id, görsel_yolu, trace_mode) üçlüleri döndürür."""
+    """(id, görsel_yolu, trace_mode) üçlüleri döndürür.
+
+    Argümanlar dosya veya KLASÖR olabilir; klasör verilirse içindeki tüm görseller
+    taranır (gerçek görsel topluluğuyla toplu ölçüm için).
+    """
     if args_paths:
         out = []
         for p in args_paths:
             path = Path(p)
-            out.append((path.stem, path, "auto"))
+            if path.is_dir():
+                for img in sorted(path.iterdir()):
+                    if img.suffix.lower() in _IMAGE_EXTS:
+                        out.append((img.stem, img, "auto"))
+            elif path.exists():
+                out.append((path.stem, path, "auto"))
+            else:
+                print(f"uyarı: bulunamadı: {path}", file=sys.stderr)
         return out
 
     inputs: list[tuple[str, Path, str]] = []
