@@ -1,0 +1,19 @@
+# --- Çekirdek (zorunlu) ---
+fastapi
+uvicorn[standard]
+python-multipart
+pillow
+opencv-python-headless
+numpy
+scipy
+vtracer
+ezdxf
+svgpathtools
+
+# --- Opsiyonel render / export ---
+# CairoSVG: PDF/EPS/PNG render için. Windows'ta cairo DLL yoksa import edilir
+# ama çağrı anında devre dışı kalır; sistem çökmez.
+cairosvg
+# svglib + reportlab: CairoSVG ve Inkscape yoksa saf-Python PDF/EPS fallback'i.
+svglib
+reportlab

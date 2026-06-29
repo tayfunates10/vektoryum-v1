@@ -1,0 +1,71 @@
+{
+  "cases": [
+    {
+      "id": "class_reklam",
+      "description": "Real Class Reklam / CR monogram logo regression fixture.",
+      "input": "fixtures/class_reklam.png",
+      "trace_mode": "auto",
+      "quality": "detailed",
+      "expected": {
+        "mode_used": "geometric_logo",
+        "detected_type": "geometric_logo",
+        "recommended_mode": "geometric_logo",
+        "likely_geometric_logo": true,
+        "candidate_min": 4,
+        "successful_candidate_min": 4,
+        "best_candidate_in": ["geo_standard", "geo_clean", "geo_contour", "geo_mixed"],
+        "status_in": ["production_ready"],
+        "max_warning_count": 0,
+        "dxf_error_allowed": false,
+        "quality": {
+          "min_path_count": 10,
+          "max_path_count": 320,
+          "max_unique_color_count": 8,
+          "min_geometry_score": 68
+        }
+      },
+      "visual": {
+        "baseline": "baselines/class_reklam.png",
+        "max_mae": 7.5,
+        "max_rmse": 22.0,
+        "max_changed_pixel_ratio": 0.045
+      }
+    },
+    {
+      "id": "arcaates",
+      "description": "Real ARCAATES style multi-color AI logo regression fixture.",
+      "input": "fixtures/arcaates.png",
+      "trace_mode": "auto",
+      "quality": "detailed",
+      "expected": {
+        "mode_used": "logo_color",
+        "recommended_mode": "logo_color",
+        "likely_geometric_logo": false,
+        "candidate_min": 5,
+        "successful_candidate_min": 3,
+        "best_candidate_in": [
+          "logo_standard",
+          "logo_detail_rich",
+          "logo_color_preserve",
+          "logo_smooth",
+          "logo_clean"
+        ],
+        "status_in": ["production_ready", "needs_review"],
+        "max_warning_count": 3,
+        "dxf_error_allowed": false,
+        "quality": {
+          "min_path_count": 600,
+          "max_path_count": 2200,
+          "min_unique_color_count": 12,
+          "max_unique_color_count": 30
+        }
+      },
+      "visual": {
+        "baseline": "baselines/arcaates.png",
+        "max_mae": 9.0,
+        "max_rmse": 28.0,
+        "max_changed_pixel_ratio": 0.06
+      }
+    }
+  ]
+}
