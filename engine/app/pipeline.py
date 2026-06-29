@@ -167,17 +167,23 @@ def produce_candidate(
     preprocessed_path: Path,
     mode: str,
     job_dir: Path,
+    original_path: Path | None = None,
 ) -> dict[str, Any]:
-    """Tek bir adayı üretir: trace → cleanup → palet konsolidasyonu → regularize."""
+    """Tek bir adayı üretir: trace → cleanup → palet konsolidasyonu → regularize.
+
+    ``original_path`` gradyan motoruna iletilir (ham pikseller gerekir).
+    """
     svg_path = job_dir / f"{name}.svg"
+    engine = spec["engine"]
     try:
-        run_candidate(spec["engine"], preprocessed_path, svg_path, spec)
+        run_candidate(engine, preprocessed_path, svg_path, spec, original_path=original_path)
         cleanup_report: dict[str, Any] = {}
         if spec.get("cleanup"):
             cleanup_report = cleanup_svg_geometry(svg_path, mode=mode, aggressiveness=spec["cleanup"])
-        # palet konsolidasyonu: kenar ara-ton renklerini en baskın renklere indir
+        # palet konsolidasyonu: kenar ara-ton renklerini en baskın renklere indir.
+        # Gradyan adayında ATLA — gradyan stop'larını/url() fill'lerini bozar.
         cap = PALETTE_CAP.get(mode)
-        if cap:
+        if cap and engine != "gradient":
             canonical = CANONICAL_BWR if mode in FLAT_PALETTE_MODES else None
             consolidate_svg_palette(svg_path, max_colors=cap, canonical=canonical)
         # geometrik idealleştirme: düz çizgi + tam dairesel yay oturtma
@@ -297,7 +303,8 @@ def refine_best(
     # 1) VTracer parametre varyantları (mevcut ön işlenmiş görsel)
     for vname, vparams in _refine_variants(spec):
         vspec = {"engine": "vtracer", "vtracer_params": vparams, "cleanup": spec.get("cleanup")}
-        _consider(score_candidate(produce_candidate(vname, vspec, preprocessed_path, mode, job_dir),
+        _consider(score_candidate(produce_candidate(vname, vspec, preprocessed_path, mode, job_dir,
+                                                     original_path=original_path),
                                   original_path, analysis, mode))
 
     # 2) Renk-sayısı bump'ı (ΔE odaklı): daha yüksek k ile yeniden ön işle + trace
@@ -316,7 +323,8 @@ def refine_best(
         vspec = {"engine": spec["engine"],
                  "vtracer_params": dict(spec.get("vtracer_params") or {}),
                  "cleanup": spec.get("cleanup")}
-        _consider(score_candidate(produce_candidate(vname, vspec, pp_path, mode, job_dir),
+        _consider(score_candidate(produce_candidate(vname, vspec, pp_path, mode, job_dir,
+                                                     original_path=original_path),
                                   original_path, analysis, mode))
 
     # Benimseme: seçimle AYNI sıralama anahtarı (fidelity → az path → total).
@@ -362,8 +370,21 @@ def run_pipeline(
 
     # 3. + 4. Aday üretimi + geometri temizleme
     candidates = build_vector_candidates(mode_used)
+    # Gradyan-farkındalıklı aday yalnızca gradyan olasılığı olan renkli logolarda
+    # eklenir (çok-renkli düz logolarda boşuna çalışmasın). Gradyanlar çoğu kez az
+    # sayıda baskın renge çöküp 'color logo' olarak okunur; bu yüzden has_gradient
+    # YA DA (color logo + az renk) tetikler. Ham görselde çalışır, <linearGradient>
+    # üretir; fidelity yargılar, uygun değilse elenir.
+    if mode_used == "logo_color" and (
+        analysis.get("has_gradient")
+        or (analysis.get("likely_color_logo") and int(analysis.get("estimated_color_count", 99)) <= 8)
+    ):
+        candidates = {
+            **candidates,
+            "logo_gradient": {"engine": "gradient", "params": {"epsilon": 1.0}, "cleanup": None},
+        }
     results = [
-        produce_candidate(name, spec, preprocessed_path, mode_used, job_dir)
+        produce_candidate(name, spec, preprocessed_path, mode_used, job_dir, original_path=original_path)
         for name, spec in candidates.items()
     ]
 

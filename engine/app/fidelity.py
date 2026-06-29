@@ -65,6 +65,23 @@ def load_reference_rgb(original_path: Path, max_side: int = _COMPARE_MAX_SIDE) -
     return rgb, (w, h)
 
 
+def _render_resvg_py(svg_path: Path, width: int, height: int) -> np.ndarray | None:
+    """resvg (Rust) Python binding. Referans kalite SVG render motoru — gradyan,
+    pattern, clip dahil tam destek. Gradyan adaylarının doğru puanlanması için
+    BİRİNCİL backend budur (PyMuPDF gradyanları siyah render ediyor).
+    """
+    try:
+        import resvg_py  # noqa: PLC0415
+
+        data = bytes(resvg_py.svg_to_bytes(
+            svg_path=str(svg_path), width=int(width), height=int(height),
+        ))
+        return _rgb_on_white(Image.open(io.BytesIO(data)))
+    except Exception as e:  # noqa: BLE001
+        logger.debug("resvg_py render atlandı (%s): %s", svg_path.name, e)
+        return None
+
+
 def _render_pymupdf(svg_path: Path, width: int, height: int) -> np.ndarray | None:
     """PyMuPDF (MuPDF) backend. Kendi içinde render motoru barındırır; Windows'ta
     harici DLL gerektirmez. Hedef platformda birincil çalışan rasterizer budur.
@@ -159,9 +176,10 @@ def _render_resvg(svg_path: Path, width: int, height: int) -> np.ndarray | None:
                 pass
 
 
-# Render backend sırası: en sağlam/taşınabilir olandan opsiyonel fallback'lere.
-# PyMuPDF Windows'ta DLL'siz çalışır; CairoSVG/resvg varsa onlar da denenir.
-_RENDER_BACKENDS = (_render_pymupdf, _render_cairosvg, _render_svglib, _render_resvg)
+# Render backend sırası: en doğru (gradyan dahil) olandan sağlam fallback'lere.
+# resvg gradyanı doğru render eder; PyMuPDF DLL'siz ama gradyanları siyah çizer
+# (gradyan adaylarında yalnız fallback olarak iş görür).
+_RENDER_BACKENDS = (_render_resvg_py, _render_pymupdf, _render_cairosvg, _render_svglib, _render_resvg)
 
 
 def render_svg_to_rgb(svg_path: Path, width: int, height: int) -> np.ndarray | None:

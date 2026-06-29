@@ -534,12 +534,20 @@ def run_candidate(
     input_path: Path,
     output_path: Path,
     candidate: dict[str, Any],
+    original_path: Path | None = None,
 ) -> None:
-    """Bir adayı motoruna göre çalıştırır. Hata fırlatabilir (main yakalar)."""
+    """Bir adayı motoruna göre çalıştırır. Hata fırlatabilir (main yakalar).
+
+    ``original_path``: gradyan motoru gibi posterize EDİLMEMİŞ pikselleri gereken
+    motorlar için ham görsel yolu. Verilmezse ``input_path`` kullanılır.
+    """
     if engine == "vtracer":
         vectorize_with_vtracer(input_path, output_path, candidate.get("vtracer_params", {}))
     elif engine == "opencv_contour":
         vectorize_geometric_contours_to_svg(input_path, output_path, **candidate.get("params", {}))
+    elif engine == "gradient":
+        from app.gradient_vectorize import vectorize_with_gradients
+        vectorize_with_gradients(original_path or input_path, output_path, candidate.get("params", {}))
     elif engine == "potrace":
         vectorize_with_potrace_cli(input_path, output_path, candidate.get("params", {}))
     elif engine == "autotrace":

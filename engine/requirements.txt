@@ -11,9 +11,13 @@ ezdxf
 svgpathtools
 
 # --- Render (algısal sadakat skorlaması için) ---
-# PyMuPDF: SVG->raster render. Kendi motorunu barındırır, Windows'ta harici DLL
-# gerektirmez; algısal sadakat (app/fidelity.py) bu sayede her platformda çalışır.
-# Kurulu değilse skorlama yapısal tahmine güvenle düşer (çökme yok).
+# resvg-py: referans kalite SVG render motoru (Rust). Gradyan/pattern/clip dahil
+# tam destek; gradyan-farkındalıklı adayların doğru puanlanması için birincil
+# rasterizer. Kendi içinde çalışır, harici DLL gerektirmez.
+resvg-py
+# PyMuPDF: fallback SVG->raster render. Kendi motorunu barındırır, DLL'siz; ancak
+# SVG gradyanlarını render etmez (siyah çizer), bu yüzden resvg birincildir.
+# İkisi de yoksa skorlama yapısal tahmine güvenle düşer (çökme yok).
 pymupdf
 
 # --- Opsiyonel render / export ---
