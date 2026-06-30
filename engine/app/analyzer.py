@@ -652,6 +652,10 @@ def analyze_image_from_mem(image: Image.Image) -> dict[str, Any]:
         and edge_density < 0.14
         and quality_score >= 55
         and not likely_color_logo
+        # minimal_ai b/w/red palet sertleştirmesi uygular; gerçek siyah VEYA beyaz
+        # imzası yoksa (ör. navy zemin + coral + ince beyaz yazı) bu yıkıcıdır
+        # (coral -> pure red, beyaz yazı -> kırmızı). Renk-koruyan logo_color'a bırak.
+        and (has_black or has_white)
     ):
         detected_type = "minimal_ai"
         recommended_mode = "minimal_ai"
