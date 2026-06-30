@@ -506,7 +506,11 @@ def analyze_image_from_mem(image: Image.Image) -> dict[str, Any]:
     # kaçırdığı tek-ton gradyan logoları (ör. Vektoryum mavi V) yakalar.
     foreground_color_count = _foreground_color_count(image)
     rich_foreground = foreground_color_count >= 90       # gradyan-zengin renkli logo
-    has_color_foreground = foreground_color_count >= 18   # herhangi bir gerçek renk
+    # 28: vintage/distressed siyah-beyaz badge'lerin hafif sıcak tonu (~19-23
+    # kromatik kova) 'renk' sayılmasın; gerçek renk aksanları (teal ~33, kahve ~38)
+    # üstte kalsın. Düşük eşik monokrom badge'leri lineart'tan dışlayıp minimal_ai'de
+    # soldururdu (bilateral ince çizgiyi griye buluyor).
+    has_color_foreground = foreground_color_count >= 28   # herhangi bir gerçek renk
 
     quality_score = score_image_quality(
         width=width,
