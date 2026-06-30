@@ -402,13 +402,16 @@ def _distinct_vivid_hue_count(dominant_colors: list[dict[str, Any]]) -> int:
 
 
 def _foreground_color_count(image: Image.Image) -> int:
-    """ÖN PLANDAKİ (zemin-dışı) farklı renk sayısı (16'lık kovalar).
+    """ÖN PLANDAKİ farklı KROMATİK (doygun, gri-olmayan) renk sayısı (16'lık kova).
 
     ``estimate_color_count`` tüm görseli sayar; büyük beyaz/şeffaf zeminli bir
     gradyan logoda her ton ratio eşiğinin altında kalıp ELENİR ve görsel '1 renk'
-    görünür (-> minimal_ai -> gradyan bantlaşır, eğriler poligonlaşır). Ön plana
-    bakınca gradyan çok sayıda ton gösterir; bu, gradyanı zemine bağımlı olmadan
-    yakalar. Düz logolar (b/w/red, sade text) az ton verir.
+    görünür. Ön plana bakınca gradyan çok sayıda ton gösterir; bu, gradyanı zemine
+    bağımlı olmadan yakalar.
+
+    ÖNEMLİ: yalnızca KROMATİK (max-min >= 35) pikseller sayılır. Gri tonlama
+    sayılırsa, anti-alias'lı bir B/W çizim çok 'renk' gösterip yanlışlıkla renk
+    logosu sanılır (gerçek bir regresyon kaynağıydı). B/W çizim -> 0 döner.
     """
     rgba = image.convert("RGBA")
     small = resize_for_analysis(rgba, 400)
@@ -418,10 +421,11 @@ def _foreground_color_count(image: Image.Image) -> int:
     alpha = arr[..., 3]
     rgb = arr[..., :3].astype(np.float32)
     a = (alpha / 255.0)[..., None]
-    comp = (rgb * a + 255.0 * (1.0 - a)).astype(np.uint8)
+    comp = (rgb * a + 255.0 * (1.0 - a)).astype(np.int32)
     dist = np.linalg.norm(comp.astype(np.float32) - 255.0, axis=2)
-    fg = (dist > 40) & (alpha > 40)
-    if int(np.count_nonzero(fg)) < 50:
+    saturation = comp.max(axis=2) - comp.min(axis=2)
+    fg = (dist > 40) & (alpha > 40) & (saturation >= 35)  # ön plan + kromatik
+    if int(np.count_nonzero(fg)) < 20:
         return 0
     quantized = comp[fg] // 16
     return int(len(np.unique(quantized, axis=0)))
@@ -501,7 +505,8 @@ def analyze_image_from_mem(image: Image.Image) -> dict[str, Any]:
     # Gradyan/tonal-zengin ön plan: büyük zemin yüzünden estimate_color_count'un
     # kaçırdığı tek-ton gradyan logoları (ör. Vektoryum mavi V) yakalar.
     foreground_color_count = _foreground_color_count(image)
-    rich_foreground = foreground_color_count >= 90
+    rich_foreground = foreground_color_count >= 90       # gradyan-zengin renkli logo
+    has_color_foreground = foreground_color_count >= 18   # herhangi bir gerçek renk
 
     quality_score = score_image_quality(
         width=width,
@@ -659,14 +664,14 @@ def analyze_image_from_mem(image: Image.Image) -> dict[str, Any]:
     )
 
     # single_color/lineart İKİLİ (siyah-beyaz) modlardır; gerçek renk taşıyan
-    # logoda (color_rich_logo) rengi tamamen yok ederler. Renkli logo bu modlara
-    # GİTMEZ -> logo_color'a düşer. Gerçek B/W çizim (color_rich_logo False)
-    # etkilenmez (ör. monoline geyik, kamera lineart'ta kalır).
-    if likely_single_color and not color_rich_logo:
+    # logoda rengi tamamen yok ederler. Ön planda KROMATİK renk varsa (teal ikon,
+    # kahve badge) bu modlara GİTMEZ -> logo_color (renk korunur). Gerçek B/W çizim
+    # (kromatik renk yok -> has_color_foreground False) lineart'ta KALIR.
+    if likely_single_color and not has_color_foreground:
         detected_type = "single_color"
         recommended_mode = "single_color"
 
-    elif likely_line_art and not color_rich_logo:
+    elif likely_line_art and not has_color_foreground:
         detected_type = "lineart"
         recommended_mode = "lineart"
 
