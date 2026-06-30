@@ -315,8 +315,12 @@ def _has_black_white_red_signature(dominant_colors: list[dict[str, Any]]) -> tup
 
     has_black = any(max(rgb) <= 45 for rgb in dominant_rgbs)
     has_white = any(min(rgb) >= 218 for rgb in dominant_rgbs)
+    # |g-b| <= 45: gerçek kırmızıda yeşil≈mavi (ikisi de düşük); turuncuda yeşil
+    # maviden belirgin yüksektir (ör. 245,90,34 -> g-b=56). Bu olmadan turuncu
+    # 'kırmızı' sanılıp logo b/w/red geometric'e gidiyor ve kanonik kırmızıya snap.
     has_red = any(
-        rgb[0] >= 165 and rgb[1] <= 105 and rgb[2] <= 105 and rgb[0] > rgb[1] * 1.35
+        rgb[0] >= 165 and rgb[1] <= 105 and rgb[2] <= 105
+        and rgb[0] > rgb[1] * 1.35 and abs(rgb[1] - rgb[2]) <= 45
         for rgb in dominant_rgbs
     )
 
@@ -364,6 +368,7 @@ def _dominant_color_family_stats(dominant_colors: list[dict[str, Any]]) -> dict[
             and rgb[2] <= 115
             and rgb[0] > rgb[1] * 1.28
             and rgb[0] > rgb[2] * 1.28
+            and abs(rgb[1] - rgb[2]) <= 45  # turuncu (g≫b) kırmızı sayılmaz
         )
 
         if is_red_like:
