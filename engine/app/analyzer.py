@@ -653,11 +653,15 @@ def analyze_image_from_mem(image: Image.Image) -> dict[str, Any]:
         )
     )
 
-    if likely_single_color:
+    # single_color/lineart İKİLİ (siyah-beyaz) modlardır; gerçek renk taşıyan
+    # logoda (color_rich_logo) rengi tamamen yok ederler. Renkli logo bu modlara
+    # GİTMEZ -> logo_color'a düşer. Gerçek B/W çizim (color_rich_logo False)
+    # etkilenmez (ör. monoline geyik, kamera lineart'ta kalır).
+    if likely_single_color and not color_rich_logo:
         detected_type = "single_color"
         recommended_mode = "single_color"
 
-    elif likely_line_art:
+    elif likely_line_art and not color_rich_logo:
         detected_type = "lineart"
         recommended_mode = "lineart"
 
