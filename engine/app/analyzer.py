@@ -396,6 +396,32 @@ def _distinct_vivid_hue_count(dominant_colors: list[dict[str, Any]]) -> int:
     return len(buckets)
 
 
+def _foreground_color_count(image: Image.Image) -> int:
+    """ÖN PLANDAKİ (zemin-dışı) farklı renk sayısı (16'lık kovalar).
+
+    ``estimate_color_count`` tüm görseli sayar; büyük beyaz/şeffaf zeminli bir
+    gradyan logoda her ton ratio eşiğinin altında kalıp ELENİR ve görsel '1 renk'
+    görünür (-> minimal_ai -> gradyan bantlaşır, eğriler poligonlaşır). Ön plana
+    bakınca gradyan çok sayıda ton gösterir; bu, gradyanı zemine bağımlı olmadan
+    yakalar. Düz logolar (b/w/red, sade text) az ton verir.
+    """
+    rgba = image.convert("RGBA")
+    small = resize_for_analysis(rgba, 400)
+    arr = np.asarray(small)
+    if arr.ndim != 3 or arr.shape[2] != 4:
+        return 0
+    alpha = arr[..., 3]
+    rgb = arr[..., :3].astype(np.float32)
+    a = (alpha / 255.0)[..., None]
+    comp = (rgb * a + 255.0 * (1.0 - a)).astype(np.uint8)
+    dist = np.linalg.norm(comp.astype(np.float32) - 255.0, axis=2)
+    fg = (dist > 40) & (alpha > 40)
+    if int(np.count_nonzero(fg)) < 50:
+        return 0
+    quantized = comp[fg] // 16
+    return int(len(np.unique(quantized, axis=0)))
+
+
 def classify_logo_geometry(
     estimated_color_count: int,
     has_gradient: bool,
@@ -467,6 +493,10 @@ def analyze_image_from_mem(image: Image.Image) -> dict[str, Any]:
     # testlerini geçemiyor; ton SAYISI alandan bağımsız ayırt eder.
     vivid_hue_count = _distinct_vivid_hue_count(color_data["dominant_colors"])
     vivid_multicolor = vivid_hue_count >= 3
+    # Gradyan/tonal-zengin ön plan: büyük zemin yüzünden estimate_color_count'un
+    # kaçırdığı tek-ton gradyan logoları (ör. Vektoryum mavi V) yakalar.
+    foreground_color_count = _foreground_color_count(image)
+    rich_foreground = foreground_color_count >= 90
 
     quality_score = score_image_quality(
         width=width,
@@ -582,6 +612,7 @@ def analyze_image_from_mem(image: Image.Image) -> dict[str, Any]:
         estimated_color_count > 8
         or has_gradient
         or vivid_multicolor
+        or rich_foreground
         or saturation_stats["saturated_ratio"] > 0.38
         or color_family_stats["non_red_saturated_ratio"] > 0.045
         or (
@@ -596,6 +627,7 @@ def analyze_image_from_mem(image: Image.Image) -> dict[str, Any]:
         and not bwr_low_color_signature
         and (
             vivid_multicolor
+            or rich_foreground
             or saturation_stats["saturated_ratio"] >= 0.18
             or estimated_color_count >= 10
         )

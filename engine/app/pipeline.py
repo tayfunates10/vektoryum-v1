@@ -71,10 +71,17 @@ def compute_mode_warning(trace_mode: str, mode_used: str, analysis: dict[str, An
 # tercih edilir (az path = düzenlenebilir + gradyanda sonsuz pürüzsüz çıktı).
 _EDIT_MARGIN = 2.5
 _EDIT_LEAN_RATIO = 0.5
+# Düzenlenebilirlik için path azaltırken kenar bütünlüğünden bu kadardan fazla
+# ödün verilmez. Az-path ama kenarı bozuk (ince çizgi parçalanmış) aday seçilmez.
+_EDIT_EDGE_TOL = 0.03
 
 
 def _path_count(c: dict[str, Any]) -> int:
     return int((c.get("score_details") or {}).get("path_count", 0))
+
+
+def _edge_f1(c: dict[str, Any]) -> float:
+    return float((c.get("score_details") or {}).get("edge_f1") or 0.0)
 
 
 def _apply_editability_preference(
@@ -83,9 +90,10 @@ def _apply_editability_preference(
     """Sadakat marjı içinde belirgin şekilde daha az path'li adayı tercih eder.
 
     En yüksek sadakatli adayı bulur; sadakati ondan en çok ``_EDIT_MARGIN`` düşük
-    olan adaylar arasında en az path'liyi seçer — ancak yalnızca path sayısı
-    en iyinin ``_EDIT_LEAN_RATIO`` katından azsa (gerçek düzenlenebilirlik kazancı).
-    Aksi halde en yüksek sadakatli aday kalır.
+    OLAN ve kenar bütünlüğü (edge_f1) belirgin düşük OLMAYAN adaylar arasında en az
+    path'liyi seçer — ancak yalnızca path sayısı en iyinin ``_EDIT_LEAN_RATIO``
+    katından azsa. Kenar koruması: az-path uğruna ince çizgileri parçalayan
+    (edge_f1 düşük) adaya geçilmez. Aksi halde en yüksek sadakatli aday kalır.
     """
     rendered = [c for c in scored if c.get("rendered_ok") and c.get("fidelity_score") is not None]
     if not rendered:
@@ -94,8 +102,13 @@ def _apply_editability_preference(
     top = max(rendered, key=_fidelity_rank_key)
     top_fid = float(top["fidelity_score"])
     top_paths = max(1, _path_count(top))
+    top_edge = _edge_f1(top)
 
-    eligible = [c for c in rendered if float(c["fidelity_score"]) >= top_fid - _EDIT_MARGIN]
+    eligible = [
+        c for c in rendered
+        if float(c["fidelity_score"]) >= top_fid - _EDIT_MARGIN
+        and _edge_f1(c) >= top_edge - _EDIT_EDGE_TOL
+    ]
     leanest = min(eligible, key=_path_count)
     if leanest is not top and _path_count(leanest) <= _EDIT_LEAN_RATIO * top_paths:
         return leanest, "editability_preference"
