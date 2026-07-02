@@ -13,7 +13,7 @@
         "likely_geometric_logo": true,
         "candidate_min": 4,
         "successful_candidate_min": 4,
-        "best_candidate_in": ["geo_standard", "geo_clean", "geo_contour", "geo_mixed"],
+        "best_candidate_in": ["geo_standard", "geo_clean", "geo_contour", "geo_mixed", "geo_detail"],
         "status_in": ["production_ready"],
         "max_warning_count": 0,
         "dxf_error_allowed": false,
@@ -21,7 +21,8 @@
           "min_path_count": 10,
           "max_path_count": 320,
           "max_unique_color_count": 8,
-          "min_geometry_score": 68
+          "min_geometry_score": 68,
+          "min_ink_recall": 0.99
         }
       },
       "visual": {
@@ -48,16 +49,18 @@
           "logo_detail_rich",
           "logo_color_preserve",
           "logo_smooth",
-          "logo_clean"
+          "logo_clean",
+          "refine_*"
         ],
         "status_in": ["production_ready", "needs_review"],
         "max_warning_count": 3,
         "dxf_error_allowed": false,
         "quality": {
-          "min_path_count": 600,
+          "min_path_count": 250,
           "max_path_count": 2200,
           "min_unique_color_count": 12,
-          "max_unique_color_count": 30
+          "max_unique_color_count": 30,
+          "min_ink_recall": 0.99
         }
       },
       "visual": {

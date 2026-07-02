@@ -175,8 +175,12 @@ cd C:\Users\TAYFUN\Desktop\Projeler\tabela-vector-saas\engine
 11. Potrace yoksa fallback çalışıyor mu
 12. AutoTrace yoksa fallback/warning çalışıyor mu
 
-Ek olarak `test_real_fixtures.py` (gerçek fixture regresyonu, 12 kabul kriteri)
-ve `regression/fidelity_report.py` (algısal sadakat ölçümü) bulunur.
+Ek olarak `test_real_fixtures.py` (gerçek fixture regresyonu, 12 kabul kriteri),
+`test_synthetic_vector_quality.py` (6 sentetik uçtan-uca vaka: geometrik /
+tek-renk kesim / lineart / çok renkli / gradyan / foto),
+`test_visual_regression.py` (manifest + baseline PNG karşılaştırmalı görsel
+regresyon; `--update-baseline` ile baseline yenilenir) ve
+`regression/fidelity_report.py` (algısal sadakat ölçümü) bulunur.
 
 ### Artefakt regresyonu (`test_artifact_quality.py`)
 

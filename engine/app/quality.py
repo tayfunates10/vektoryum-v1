@@ -60,6 +60,13 @@ def basic_svg_quality_check(
 
     # yüksek sadakat varsa düşük path bir kusur değildir (sadık + düzenlenebilir)
     fidelity_ok = fidelity_score is not None and fidelity_score >= 85.0
+    # yapı bütünlüğü ölçüldü ve konturlar tam karşılanıyorsa şekil eksik DEĞİLDİR;
+    # "az path = eksik olabilir" sezgisi ölçüme karşı gelemez (tek-renk kesim /
+    # stencil meşru olarak 1-2 path üretir)
+    structure_ok = (
+        structure_report is not None
+        and float(structure_report.get("ink_recall", 0.0)) >= _STRUCTURE_RECALL_WARN
+    )
 
     if mode == "logo_color":
         if 0 < path_count < 250 and not fidelity_ok:
@@ -67,7 +74,7 @@ def basic_svg_quality_check(
         if unique_colors > 42:
             warnings.append("High color count; consider reducing palette for production.")
     elif not low_path_exempt:
-        if 0 < path_count < 4:
+        if 0 < path_count < 4 and not fidelity_ok and not structure_ok:
             warnings.append("Very low path count; the shape may be incomplete.")
 
     if path_count > 3000:

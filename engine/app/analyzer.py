@@ -333,6 +333,30 @@ def calculate_structure_likelihood(image: Image.Image) -> dict[str, float]:
     }
 
 
+def calculate_thin_ink_ratio(image: Image.Image) -> float:
+    """Mürekkep piksellerinin ne kadarı İNCE konturlarda (yarı-genişlik <= 1.5px)?
+
+    Kontur çizimlerini (lineart: hemen tüm mürekkep ince çizgi) dolgu
+    silüetlerinden (single_color: kalın bloklar) ayırır. AA filmleri elendikçe
+    renk sayısı tek başına bu ayrımı yapamaz hale geldi; incelik doğrudan ölçülür.
+    """
+    rgb = np.array(resize_for_analysis(_rgba_to_rgb_on_white(image), 500))
+    h, w = rgb.shape[:2]
+    pw, ph = max(8, w // 12), max(8, h // 12)
+    corners = np.concatenate([
+        rgb[:ph, :pw].reshape(-1, 3), rgb[:ph, -pw:].reshape(-1, 3),
+        rgb[-ph:, :pw].reshape(-1, 3), rgb[-ph:, -pw:].reshape(-1, 3),
+    ]).astype(np.float32)
+    bg = np.median(corners, axis=0)
+    dist = np.linalg.norm(rgb.astype(np.float32) - bg[None, None, :], axis=2)
+    ink = (dist > 40).astype(np.uint8)
+    n_ink = int(ink.sum())
+    if n_ink < 30:
+        return 0.0
+    dt = cv2.distanceTransform(ink, cv2.DIST_L2, 3)
+    return round(float(((dt > 0) & (dt <= 1.5)).sum()) / float(n_ink), 4)
+
+
 def detect_transparency(image: Image.Image) -> bool:
     if image.mode != "RGBA":
         return False
@@ -727,6 +751,11 @@ def analyze_image_from_mem(image: Image.Image) -> dict[str, Any]:
         )
     )
 
+    # incelik ayrımı: mürekkebin çoğu ince konturdaysa bu bir ÇİZİMDİR (lineart),
+    # dolgu silüeti (single_color) değil. AA filmleri sayımdan düştüğünden renk
+    # sayısı tek başına ikisini ayıramaz; incelik doğrudan ölçülür.
+    thin_ink_ratio = calculate_thin_ink_ratio(image)
+
     likely_single_color = (
         flat_color_count <= 3
         and not has_gradient
@@ -734,6 +763,7 @@ def analyze_image_from_mem(image: Image.Image) -> dict[str, Any]:
         and has_white
         and not has_red
         and edge_density < 0.08
+        and thin_ink_ratio <= 0.55
     )
 
     likely_text_logo = (
@@ -859,6 +889,7 @@ def analyze_image_from_mem(image: Image.Image) -> dict[str, Any]:
         "estimated_color_count": estimated_color_count,
         "flat_color_count": flat_color_count,
         "vivid_foreground_ratio": vivid_foreground_ratio,
+        "thin_ink_ratio": thin_ink_ratio,
         "dominant_colors": color_data["dominant_colors"],
         "background": bg_data,
         "blur_score": blur_score,
