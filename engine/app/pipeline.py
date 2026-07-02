@@ -80,6 +80,11 @@ _EDIT_LEAN_RATIO = 0.5
 # Düzenlenebilirlik için path azaltırken kenar bütünlüğünden bu kadardan fazla
 # ödün verilmez. Az-path ama kenarı bozuk (ince çizgi parçalanmış) aday seçilmez.
 _EDIT_EDGE_TOL = 0.03
+# Az-path tercihi kalite eşiğinin (quality._LOW_FIDELITY_THRESHOLD) altına
+# İNEMEZ: en sadık aday eşiğin üstündeyken marj içindeki daha düşük aday eşiğin
+# altına düşüyorsa seçilirse çıktı gereksiz yere needs_review'a döner
+# (gerçek bir seçim hatasıydı).
+_EDIT_QUALITY_FLOOR = 78.0
 
 
 def _path_count(c: dict[str, Any]) -> int:
@@ -110,9 +115,12 @@ def _apply_editability_preference(
     top_paths = max(1, _path_count(top))
     top_edge = _edge_f1(top)
 
+    fid_floor = top_fid - _EDIT_MARGIN
+    if top_fid >= _EDIT_QUALITY_FLOOR:
+        fid_floor = max(fid_floor, _EDIT_QUALITY_FLOOR)
     eligible = [
         c for c in rendered
-        if float(c["fidelity_score"]) >= top_fid - _EDIT_MARGIN
+        if float(c["fidelity_score"]) >= fid_floor
         and _edge_f1(c) >= top_edge - _EDIT_EDGE_TOL
     ]
     leanest = min(eligible, key=_path_count)
@@ -505,8 +513,17 @@ def run_pipeline(
             "logo_gradient": {"engine": "gradient", "params": {"epsilon": 0.3}, "cleanup": None},
         }
     # logo_color'da palet cap'i preprocess renk bütçesine bağlanır (sabit 22 yerine):
-    # üretilen renkler kırpılmaz, renk-zengini logolarda ΔE düşer.
-    lc_cap = preprocess_report.get("auto_color_count") if mode_used == "logo_color" else None
+    # üretilen renkler kırpılmaz, renk-zengini logolarda ΔE düşer. Hata-güdümlü
+    # eklenen aksan kümeleri k'yı aşabildiğinden GERÇEK renk sayısı esas alınır
+    # (aksi halde konsolidasyon kırmızı/turuncu aksanları geri kırpar).
+    lc_cap = None
+    if mode_used == "logo_color":
+        lc_cap = max(
+            int(preprocess_report.get("auto_color_count") or 0),
+            int(preprocess_report.get("actual_color_count") or 0),
+        ) or None
+        if lc_cap:
+            lc_cap = min(40, lc_cap)  # üretim paleti üst sınırı (quality eşiği 42)
     results = [
         produce_candidate(name, spec, preprocessed_path, mode_used, job_dir,
                           original_path=original_path, palette_cap=lc_cap)

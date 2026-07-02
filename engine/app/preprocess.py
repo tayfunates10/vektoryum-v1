@@ -367,8 +367,13 @@ def _absorb_aa_films(
     return out
 
 
-def _remove_speckles(rgb: np.ndarray, min_area: int = 6) -> np.ndarray:
+def _remove_speckles(rgb: np.ndarray, min_area: int = 6, protect_chromatic: bool = False) -> np.ndarray:
     """Renk bölgelerindeki çok küçük izole lekeleri komşuya gömerek temizler.
+
+    ``protect_chromatic``: CANLI (doygunluk >= 60) renklerin benekleri korunur.
+    Ateş közleri/kıvılcımlar gibi küçük ama kasıtlı parlak noktalar tasarımın
+    parçasıdır; gürültü benekleri ise tipik olarak nötr/gri tonlardadır
+    (közlerin silinip sadakati düşürmesi gerçek bir hataydı).
 
     PERFORMANS: her küçük bileşen, tüm görsel yerine kendi bounding-box (ROI)
     üzerinde işlenir. Eski sürüm her bileşen için tam görselde dilate/maske
@@ -378,10 +383,12 @@ def _remove_speckles(rgb: np.ndarray, min_area: int = 6) -> np.ndarray:
     out = rgb.copy()
     h, w = out.shape[:2]
     colors = np.unique(out.reshape(-1, 3), axis=0)
-    if len(colors) > 24:
-        return out  # çok renkli görselde atla
+    if len(colors) > 48:
+        return out  # çok renkli görselde atla (48: hata-güdümlü ek kümeler dahil)
     kernel = np.ones((3, 3), np.uint8)
     for color in colors:
+        if protect_chromatic and int(color.max()) - int(color.min()) >= 60:
+            continue
         mask = cv2.inRange(out, color, color)
         num, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
         for i in range(1, num):
@@ -446,11 +453,42 @@ def preprocess_minimal_ai(arr: np.ndarray, report: dict) -> np.ndarray:
     return reduced
 
 
-def _kmeans_quantize_lab(rgb: np.ndarray, k: int, edge_preserve: bool = True) -> np.ndarray:
+def _assign_to_centers(samples: np.ndarray, centers: np.ndarray) -> np.ndarray:
+    """Tüm örnekleri en yakın merkeze atar (parça parça, bellek dostu)."""
+    labels = np.empty(len(samples), dtype=np.int32)
+    chunk = 200000
+    for s in range(0, len(samples), chunk):
+        block = samples[s:s + chunk]
+        d2 = ((block[:, None, :] - centers[None, :, :]) ** 2).sum(axis=2)
+        labels[s:s + chunk] = np.argmin(d2, axis=1)
+    return labels
+
+
+def _kmeans_quantize_lab(
+    rgb: np.ndarray,
+    k: int,
+    edge_preserve: bool = True,
+    refine_high_error: bool = True,
+    noise_merge_tol: float = 11.0,
+) -> np.ndarray:
     """LAB renk uzayında k-means ile algısal kuantizasyon.
 
     RGB'de değil LAB'de kümelendiği için renkler insan algısına göre ayrılır;
     çıktı az sayıda DÜZ ve temiz renk bölgesidir (Vectorizer.AI benzeri).
+
+    İki ek adım çıktı NETLİĞİNİ korur:
+
+    * **Hata-güdümlü ek merkezler** (``refine_high_error``): k-means nüfus
+      yanlıdır; alanı küçük ama FARKLI tondaki öğeler (turuncu portakal, kırmızı
+      domates, yeşil biber) kümesiz kalıp komşu tona boyanır — gerçek bir renk
+      hatasıydı. Atama sonrası hâlâ yüksek hatalı (ΔE>18) kalan piksellerden
+      yeni merkezler açılır (en fazla +8) ve herkes yeniden atanır.
+    * **Hedefli gürültü birleştirme** (``noise_merge_tol``): İKİSİ de nötr
+      (düşük kroma) olan ve en az biri leke deseninde (çok parçalı) dağılan iki
+      yakın merkez birleştirilir — koyu panel/zemin vinyetinin JPEG gürültüsüyle
+      benekli lekeye bölünmesini engeller. Kasıtlı gradyan bantları (ateş,
+      duman, krom) birleştirilmez; genel bir merkez birleştirme SSIM'i düşürdüğü
+      için YOKTUR (gerçek bir gerilemeydi).
     """
     img = rgb
     if edge_preserve:
@@ -461,23 +499,111 @@ def _kmeans_quantize_lab(rgb: np.ndarray, k: int, edge_preserve: bool = True) ->
     unique_n = len(np.unique(samples.astype(np.uint8), axis=0))
     K = max(2, min(int(k), unique_n))
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 20, 1.0)
+    rng = np.random.default_rng(0)
 
     # HIZ: merkezleri alt-örneklemde bul, sonra TÜM pikselleri en yakın merkeze ata
     if len(samples) > 60000:
-        rng = np.random.default_rng(0)
         idx = rng.choice(len(samples), 60000, replace=False)
         fit = samples[idx]
     else:
         fit = samples
     _compactness, _labels, centers = cv2.kmeans(fit, K, None, criteria, 3, cv2.KMEANS_PP_CENTERS)
     centers = np.clip(centers, 0, 255).astype(np.float32)
+    labels_full = _assign_to_centers(samples, centers)
 
-    labels_full = np.empty(len(samples), dtype=np.int32)
-    chunk = 200000
-    for s in range(0, len(samples), chunk):
-        block = samples[s:s + chunk]
-        d2 = ((block[:, None, :] - centers[None, :, :]) ** 2).sum(axis=2)
-        labels_full[s:s + chunk] = np.argmin(d2, axis=1)
+    if refine_high_error:
+        max_extra = 8
+        for _round in range(2):
+            if len(centers) - K >= max_extra:
+                break
+            err = np.linalg.norm(samples - centers[labels_full], axis=1)
+            hi = err > 18.0
+            hi_ratio = float(hi.mean())
+            if hi_ratio < 0.002:
+                break
+            hi_samples = samples[hi]
+            if len(hi_samples) > 40000:
+                hi_samples = hi_samples[rng.choice(len(hi_samples), 40000, replace=False)]
+            k2 = int(min(4, max_extra - (len(centers) - K),
+                         len(np.unique(hi_samples.astype(np.uint8), axis=0))))
+            if k2 < 1:
+                break
+            try:
+                _c2, _l2, new_centers = cv2.kmeans(
+                    np.ascontiguousarray(hi_samples), k2, None, criteria, 3, cv2.KMEANS_PP_CENTERS
+                )
+            except cv2.error:
+                break
+            centers = np.vstack([centers, np.clip(new_centers, 0, 255).astype(np.float32)])
+            labels_full = _assign_to_centers(samples, centers)
+
+    if noise_merge_tol > 0 and len(centers) > 2:
+        counts = np.bincount(labels_full, minlength=len(centers)).astype(np.float64)
+        remap = np.arange(len(centers))
+        merged = centers.astype(np.float64).copy()
+        label_img = labels_full.reshape(lab.shape[:2])
+        # etiket bölgesi altındaki yerel L-gradyanı: gürültü lekesi görsel olarak
+        # DÜZ (vinyetli panel) alanda yaşar -> gradyan küçük; duman/doku gibi
+        # kasıtlı gri detaylar yapılıdır -> gradyan büyük ve KORUNUR.
+        L_ch = lab[:, :, 0].astype(np.float32)
+        gx = cv2.Sobel(L_ch, cv2.CV_32F, 1, 0, ksize=3)
+        gy = cv2.Sobel(L_ch, cv2.CV_32F, 0, 1, ksize=3)
+        gmag = np.sqrt(gx * gx + gy * gy)
+        frag_cache: dict[int, bool] = {}
+        grad_cache: dict[int, float] = {}
+
+        def _is_fragmented(idx: int) -> bool:
+            """Etiketin bölgesi çok sayıda küçük parçaya mı dağılmış (leke deseni)?"""
+            if idx in frag_cache:
+                return frag_cache[idx]
+            mask = (label_img == idx).astype(np.uint8)
+            n, _, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+            areas = stats[1:, cv2.CC_STAT_AREA]
+            frag = (n - 1) >= 8 and float(np.median(areas)) <= 500.0 if n > 1 else False
+            frag_cache[idx] = frag
+            return frag
+
+        def _mean_grad(idx: int) -> float:
+            if idx in grad_cache:
+                return grad_cache[idx]
+            m = label_img == idx
+            g = float(gmag[m].mean()) if m.any() else 0.0
+            grad_cache[idx] = g
+            return g
+
+        def _noise_pair(i: int, j: int) -> bool:
+            # yalnız İKİSİ de nötr (düşük kroma) VE düz alanda yaşayan (düşük
+            # yerel gradyan) VE en az biri leke deseninde dağılan çiftler
+            # birleştirilir. OpenCV LAB'de a=b=128 nötrdür. Duman gibi yapılı
+            # gri detayların gradyanı yüksektir; onlara dokunulmaz (dumanın
+            # zemine gömülmesi gerçek bir gerilemeydi).
+            a, b = merged[i], merged[j]
+            if float(np.linalg.norm(a - b)) > noise_merge_tol:
+                return False
+            ca = float(np.hypot(a[1] - 128.0, a[2] - 128.0))
+            cb = float(np.hypot(b[1] - 128.0, b[2] - 128.0))
+            if ca > 12.0 or cb > 12.0:
+                return False
+            if _mean_grad(i) > 35.0 or _mean_grad(j) > 35.0:
+                return False
+            return _is_fragmented(i) or _is_fragmented(j)
+
+        for i in range(len(centers)):
+            if remap[i] != i:
+                continue
+            for j in range(i + 1, len(centers)):
+                if remap[j] != j:
+                    continue
+                if _noise_pair(i, j):
+                    total = counts[i] + counts[j]
+                    if total > 0:
+                        merged[i] = (merged[i] * counts[i] + merged[j] * counts[j]) / total
+                    counts[i] = total
+                    remap[j] = i
+        if (remap != np.arange(len(centers))).any():
+            centers = np.clip(merged, 0, 255).astype(np.float32)
+            labels_full = remap[labels_full]
+
     quant_lab = centers.astype(np.uint8)[labels_full].reshape(lab.shape)
     out = cv2.cvtColor(quant_lab, cv2.COLOR_LAB2RGB)
     return out
@@ -485,12 +611,21 @@ def _kmeans_quantize_lab(rgb: np.ndarray, k: int, edge_preserve: bool = True) ->
 
 def preprocess_logo_color(arr: np.ndarray, report: dict, n_colors: int = 20) -> np.ndarray:
     rgb = _rgba_to_rgb_on_white(arr)
-    # LAB k-means: algısal, temiz, düz renk bölgeleri
+    # LAB k-means: algısal, temiz, düz renk bölgeleri (+ hata-güdümlü aksan
+    # kümeleri + nötr leke birleştirme, bkz. _kmeans_quantize_lab)
     quant = _kmeans_quantize_lab(rgb, k=n_colors, edge_preserve=True)
     report["steps"].append(f"lab_kmeans_{n_colors}")
-    # çok küçük renk lekelerini komşuya gömerek bölge sınırlarını temizle
-    cleaned = _remove_speckles(quant, min_area=8) if len(np.unique(quant.reshape(-1, 3), axis=0)) <= 28 else quant
+    # çok küçük NÖTR lekeleri komşuya gömerek bölge sınırlarını temizle;
+    # canlı renk benekleri (köz/kıvılcım) tasarımın parçasıdır, korunur.
+    # Çok renkli/dokulu görsellerde (>28 renk: grunge fırça dokusu, illüstrasyon)
+    # nötr benekler de tasarımdır -> tümüyle atlanır.
+    n_quant = int(len(np.unique(quant.reshape(-1, 3), axis=0)))
+    cleaned = _remove_speckles(quant, min_area=8, protect_chromatic=True) if n_quant <= 28 else quant
     report["steps"].append("despeckle")
+    # SVG palet konsolidasyonu tavanı: hata-güdümlü eklenen aksan kümeleri
+    # (domates kırmızısı, portakal turuncusu) istenen k'yı aşabilir; tavan
+    # gerçek renk sayısına bağlanır ki konsolidasyon aksanları geri kırpmasın.
+    report["actual_color_count"] = int(len(np.unique(cleaned.reshape(-1, 3), axis=0)))
     report["palette"] = _palette_list(cleaned, limit=24)
     return cleaned
 
