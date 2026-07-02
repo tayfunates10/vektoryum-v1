@@ -147,6 +147,14 @@ mümkünse üretilir, değilse `output_errors` içinde raporlanır ve API çökm
   `success:false`, `error:"potrace not found"` ile raporlanır.
 - **AutoTrace** — varsa centerline/lineart adaylarında kullanılır; yoksa aday
   raporlanır ve centerline için skeleton fallback devreye girer.
+- **HED derin kenar modeli** (`app/dl_segmentation.py`) — opsiyonel derin
+  öğrenme segmentasyon katmanı (Holistically-Nested Edge Detection, açık
+  kaynak caffemodel, `cv2.dnn` ile CPU'da; ek pip bağımlılığı yok).
+  `python models/fetch_hed.py` ile indirilir. Varsa kuantizasyonun düz-bölge /
+  yapılı-bölge kararları anlamsal kenar haritasıyla harmanlanır (Sobel +
+  derin kenar): gürültülü zeminlerde leke temizliği belirginleşir, gerçek
+  detaylar korunur. Yoksa tüm kararlar salt Sobel'le, önceki davranışla
+  birebir aynı alınır.
 
 Ortam değişkenleri (opsiyonel):
 
@@ -154,6 +162,8 @@ Ortam değişkenleri (opsiyonel):
 $env:INKSCAPE_PATH = "C:\Program Files\Inkscape\bin\inkscape.exe"
 $env:POTRACE_PATH  = "C:\Tools\potrace\potrace.exe"
 $env:AUTOTRACE_PATH = "C:\Tools\autotrace\autotrace.exe"
+$env:HED_PROTO_PATH = "C:\Models\deploy.prototxt"            # opsiyonel
+$env:HED_MODEL_PATH = "C:\Models\hed_pretrained_bsds.caffemodel"
 ```
 
 ## Testler

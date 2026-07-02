@@ -26,3 +26,6 @@ engine/regression/samples/*
 # OS / editor
 .DS_Store
 Thumbs.db
+
+# Derin öğrenme model ağırlıkları (models/fetch_hed.py ile indirilir)
+engine/models/*.caffemodel

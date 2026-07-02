@@ -187,6 +187,38 @@ def main() -> int:
     except Exception as e:  # noqa: BLE001
         check("12. AutoTrace yoksa fallback/warning", False, repr(e))
 
+    # 13. HED derin kenar modeli OPSİYONEL: model yokken compute_edge_map
+    # güvenle None döner (çökme yok); varken geçerli 0..1 haritası üretir
+    try:
+        import importlib
+        import os
+        import app.dl_segmentation as dl
+
+        arr = np.asarray(make_geometric_logo())
+        with_model = dl.compute_edge_map(arr)
+        ok_with = with_model is None or (
+            isinstance(with_model, np.ndarray)
+            and with_model.shape == arr.shape[:2]
+            and 0.0 <= float(with_model.min()) and float(with_model.max()) <= 1.0
+        )
+
+        old_proto = os.environ.get("HED_PROTO_PATH")
+        os.environ["HED_PROTO_PATH"] = str(tmp / "yok.prototxt")
+        importlib.reload(dl)
+        without_model = dl.compute_edge_map(arr)
+        if old_proto is None:
+            os.environ.pop("HED_PROTO_PATH", None)
+        else:
+            os.environ["HED_PROTO_PATH"] = old_proto
+        importlib.reload(dl)
+
+        check("13. HED opsiyonel: yokken None, varken geçerli harita",
+              ok_with and without_model is None,
+              f"varken={'harita' if isinstance(with_model, np.ndarray) else with_model}, "
+              f"yokken={without_model}")
+    except Exception as e:  # noqa: BLE001
+        check("13. HED opsiyonel: yokken None, varken geçerli harita", False, repr(e))
+
     return _summary()
 
 

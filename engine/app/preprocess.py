@@ -504,9 +504,23 @@ def _kmeans_quantize_lab(
         img = cv2.bilateralFilter(rgb, d=9, sigmaColor=45, sigmaSpace=45)
     lab = cv2.cvtColor(img, cv2.COLOR_RGB2LAB)
 
+    # DERİN KENAR HARİTASI (opsiyonel, HED): anlamsal nesne/yazı sınırlarında
+    # güçlü, JPEG gürültüsü ve doku pürüzünde sessiz. Varsa Sobel ile HARMANLANIR
+    # (aşağıdaki _energy); yoksa None kalır ve tüm kararlar salt Sobel'le, önceki
+    # davranışla birebir aynı alınır (çökme yok, zorunlu bağımlılık yok).
+    from app.dl_segmentation import compute_edge_map
+    dl_edge = compute_edge_map(img)
+
+    def _energy(gmag_arr: np.ndarray) -> np.ndarray:
+        """Kenar enerjisi: <=1 düz bölge, >1 yapılı bölge (Sobel + derin kenar)."""
+        e = gmag_arr / 35.0
+        if dl_edge is not None:
+            e = 0.5 * e + 0.5 * (dl_edge.reshape(gmag_arr.shape) / 0.12)
+        return e
+
     # DÜZ-NÖTR bölgelerde gürültüyü KAYNAĞINDA düzleştir: vinyetli koyu panel
     # zeminindeki JPEG gürültüsü, kümeleme sınırlarını benekli lekeye çevirir.
-    # Düz bölgede (düşük kroma + düşük yerel L-gradyanı) kaybolacak detay yoktur;
+    # Düz bölgede (düşük kroma + düşük kenar enerjisi) kaybolacak detay yoktur;
     # kenar/yazıdan >= 7px içeri erozyonla çekildiği için keskin öğeler etkilenmez.
     L0 = lab[:, :, 0].astype(np.float32)
     g0x = cv2.Sobel(L0, cv2.CV_32F, 1, 0, ksize=3)
@@ -514,7 +528,7 @@ def _kmeans_quantize_lab(
     gmag0 = np.sqrt(g0x * g0x + g0y * g0y)
     chroma0 = np.hypot(lab[:, :, 1].astype(np.float32) - 128.0,
                        lab[:, :, 2].astype(np.float32) - 128.0)
-    flat_zone0 = ((chroma0 <= 12.0) & (gmag0 <= 35.0)).astype(np.uint8)
+    flat_zone0 = ((chroma0 <= 12.0) & (_energy(gmag0) <= 1.0)).astype(np.uint8)
     safe_zone = cv2.erode(flat_zone0, np.ones((13, 13), np.uint8)) > 0
     if float(safe_zone.mean()) > 0.03:
         blurred = cv2.GaussianBlur(lab, (15, 15), 0)
@@ -537,13 +551,15 @@ def _kmeans_quantize_lab(
     centers = np.clip(centers, 0, 255).astype(np.float32)
     labels_full = _assign_to_centers(samples, centers)
 
-    # yerel L-gradyanı (hem augmentasyon hem gürültü birleştirme kapısı):
-    # düz alan = vinyet/gürültü bölgesi; yapılı alan = kasıtlı detay
+    # yerel kenar enerjisi (hem augmentasyon hem gürültü birleştirme kapısı):
+    # düz alan = vinyet/gürültü bölgesi; yapılı alan = kasıtlı detay.
+    # Sobel + (varsa) derin kenar haritası harmanı (_energy): <=1 düz, >1 yapılı.
     L_ch = lab[:, :, 0].astype(np.float32)
     gx = cv2.Sobel(L_ch, cv2.CV_32F, 1, 0, ksize=3)
     gy = cv2.Sobel(L_ch, cv2.CV_32F, 0, 1, ksize=3)
     gmag = np.sqrt(gx * gx + gy * gy)
-    gmag_flat = gmag.reshape(-1)
+    energy = _energy(gmag)
+    energy_flat = energy.reshape(-1)
     chroma_flat = np.hypot(samples[:, 1] - 128.0, samples[:, 2] - 128.0)
 
     if refine_high_error:
@@ -554,7 +570,7 @@ def _kmeans_quantize_lab(
         # BÜYÜK ve BÜTÜNSEL (>= 400px bağlı bileşen) yüksek-hata bölgeleri ise
         # k-means'in kaçırdığı GERÇEK öğelerdir (tabela çerçevesi gibi) ve her
         # zaman küme açabilir — kapı yalnız kırıntıları eler.
-        flat_neutral = (chroma_flat <= 12.0) & (gmag_flat <= 35.0)
+        flat_neutral = (chroma_flat <= 12.0) & (energy_flat <= 1.0)
         img_h, img_w = lab.shape[:2]
         for _round in range(3):
             if len(centers) - K >= max_extra:
@@ -610,19 +626,19 @@ def _kmeans_quantize_lab(
             frag_cache[idx] = frag
             return frag
 
-        def _mean_grad(idx: int) -> float:
+        def _mean_energy(idx: int) -> float:
             if idx in grad_cache:
                 return grad_cache[idx]
             m = label_img == idx
-            g = float(gmag[m].mean()) if m.any() else 0.0
+            g = float(energy[m].mean()) if m.any() else 0.0
             grad_cache[idx] = g
             return g
 
         def _noise_pair(i: int, j: int) -> bool:
             # yalnız İKİSİ de nötr (düşük kroma) VE düz alanda yaşayan (düşük
-            # yerel gradyan) VE en az biri leke deseninde dağılan çiftler
+            # kenar enerjisi) VE en az biri leke deseninde dağılan çiftler
             # birleştirilir. OpenCV LAB'de a=b=128 nötrdür. Duman gibi yapılı
-            # gri detayların gradyanı yüksektir; onlara dokunulmaz (dumanın
+            # gri detayların enerjisi yüksektir; onlara dokunulmaz (dumanın
             # zemine gömülmesi gerçek bir gerilemeydi).
             a, b = merged[i], merged[j]
             if float(np.linalg.norm(a - b)) > noise_merge_tol:
@@ -631,7 +647,7 @@ def _kmeans_quantize_lab(
             cb = float(np.hypot(b[1] - 128.0, b[2] - 128.0))
             if ca > 12.0 or cb > 12.0:
                 return False
-            if _mean_grad(i) > 35.0 or _mean_grad(j) > 35.0:
+            if _mean_energy(i) > 1.0 or _mean_energy(j) > 1.0:
                 return False
             return _is_fragmented(i) or _is_fragmented(j)
 
