@@ -213,12 +213,24 @@ def seam_ratio(original: np.ndarray, rendered: np.ndarray,
 
 
 def halo_ratio(rendered: np.ndarray, palette: list[tuple[int, int, int]], tol: float = 40.0) -> float:
-    """Beklenen palete uzak kalan piksellerin oranı (renk kirliliği/halo bandı)."""
+    """Beklenen palete uzak kalan İÇ BÖLGE piksellerinin oranı (renk kirliliği).
+
+    Sınır anti-aliasing'i her render'da (orijinal rasterde bile) palet dışı
+    piksel üretir ve kusur değildir; ölçüm kenar komşuluğu (5x5 dilate Canny)
+    DIŞINDA yapılır. Böylece yalnız gerçek iç renk bantları/halo lekeleri
+    sayılır; daha detaylı (daha uzun sınırlı) çıktılar cezalandırılmaz.
+    """
     flat = rendered.reshape(-1, 3).astype(np.float32)
     pal = np.array(palette, dtype=np.float32)
     d2 = ((flat[:, None, :] - pal[None, :, :]) ** 2).sum(axis=2)
-    mind = np.sqrt(d2.min(axis=1))
-    return round(float((mind > tol).mean()), 5)
+    mind = np.sqrt(d2.min(axis=1)).reshape(rendered.shape[:2])
+    off = mind > tol
+    gray = cv2.cvtColor(rendered, cv2.COLOR_RGB2GRAY)
+    near_edge = cv2.dilate(
+        (cv2.Canny(gray, 60, 150) > 0).astype(np.uint8), np.ones((5, 5), np.uint8)
+    ) > 0
+    interior_off = off & ~near_edge
+    return round(float(interior_off.mean()), 5)
 
 
 # ---------------------------------------------------------------------------

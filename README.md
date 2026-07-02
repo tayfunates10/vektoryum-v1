@@ -17,7 +17,11 @@ aynı kodu çağırır):
 1. **Analyzer** (`app/analyzer.py`) — görsel tipi, renk/kenar/gradyan analizi,
    `detected_type` ve `recommended_mode`.
 2. **Preprocess** (`app/preprocess.py`) — profil bazlı ön işleme + palet kontrolü.
-   `logo_color`'da palet bütçesi adaptiftir (renk zenginliğine göre 16-40).
+   `logo_color`'da palet bütçesi içerik-ölçeklidir (renk/ton zenginliğine göre
+   16-64; hata-güdümlü ek kümeler + hedefli gürültü birleştirme). Küçük
+   girdiler (<700px) 2x LANCZOS süperörneklenir: anti-alias gradyanı bölge
+   sınırlarını alt-piksel hassasiyetle konumlandırır (küçük logolarda +2..+8
+   sadakat puanı ölçüldü).
 3. **Aday üretimi** (`app/vector_engines.py`) — VTracer / OpenCV contour /
    gradyan-farkındalıklı motor (`app/gradient_vectorize.py`) / opsiyonel
    Potrace / opsiyonel AutoTrace ile çoklu aday.

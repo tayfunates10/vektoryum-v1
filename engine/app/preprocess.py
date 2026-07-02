@@ -167,6 +167,7 @@ def _reduce_to_dominant(
     protect_chromatic: bool = True,
     protect_min_ratio: float = 0.0004,
     max_protected: int = 3,
+    erode_iters: int = 1,
 ) -> np.ndarray:
     """Her pikseli en sık görülen k renkten en yakınına atar (sert palet).
 
@@ -216,7 +217,7 @@ def _reduce_to_dominant(
             n_mask = int(np.count_nonzero(mask))
             if n_mask == 0:
                 continue
-            survival = float(np.count_nonzero(cv2.erode(mask, kernel))) / float(n_mask)
+            survival = float(np.count_nonzero(cv2.erode(mask, kernel, iterations=erode_iters))) / float(n_mask)
             if survival > 0.25:
                 continue  # kalın bölge; kotaya giremediyse gerçekten önemsiz
             ring = (cv2.dilate(mask, kernel) > 0) & (mask == 0)
@@ -292,6 +293,7 @@ def _absorb_aa_films(
     colinear_tol: float = 26.0,
     max_survival: float = 0.25,
     anchor_factor: float = 0.5,
+    erode_iters: int = 1,
 ) -> np.ndarray:
     """Quantize sonrası anti-alias FİLM renklerini komşu baskın renge gömer.
 
@@ -339,7 +341,9 @@ def _absorb_aa_films(
         total = int(np.count_nonzero(mask))
         if total == 0:
             continue
-        survival = float(np.count_nonzero(cv2.erode(mask, kernel))) / float(total)
+        # süperörneklemede AA filmleri 2px genişler; erozyon ölçekle uyumlu
+        # olmazsa film 'kalın bölge' sanılıp palete sızar (halo artışı ölçüldü)
+        survival = float(np.count_nonzero(cv2.erode(mask, kernel, iterations=erode_iters))) / float(total)
         if survival > max_survival:
             continue  # kalın bölge -> gerçek renk, koru
         # komşuluk koruması: halka, zemin DIŞI çapa renklerden iz taşımalı
@@ -415,6 +419,9 @@ def _remove_speckles(rgb: np.ndarray, min_area: int = 6, protect_chromatic: bool
 # ---------------------------------------------------------------------------
 def preprocess_geometric_logo(arr: np.ndarray, report: dict) -> np.ndarray:
     rgb = _rgba_to_rgb_on_white(arr)
+    # süperörneklenmiş girdide AA filmleri ölçekle genişler; incelik testleri
+    # erozyonu aynı ölçekle yapmalı
+    scale = 2 if report.get("supersampled") else 1
     # ince çizgileri birbirine karıştırmamak için çok hafif kenar-koruyan filtre
     filtered = cv2.bilateralFilter(rgb, d=3, sigmaColor=18, sigmaSpace=18)
     report["steps"].append("bilateral_very_light")
@@ -422,7 +429,7 @@ def preprocess_geometric_logo(arr: np.ndarray, report: dict) -> np.ndarray:
     report["steps"].append("quantize_fg_aware_8")
     # AA film tonlarını (kenar grileri/pembe saçak) gerçek renklerden önce göm;
     # yoksa reduce kotasını işgal edip ince renkli çizgileri dışarı itebilirler
-    quant = _absorb_aa_films(quant)
+    quant = _absorb_aa_films(quant, erode_iters=scale)
     report["steps"].append("absorb_aa_films")
     hard = _harden_palette(quant, tol=46)
     report["steps"].append("palette_harden_bwr")
@@ -431,7 +438,7 @@ def preprocess_geometric_logo(arr: np.ndarray, report: dict) -> np.ndarray:
     report["steps"].append("despeckle")
     # SON adım: sert palet -> en baskın 4 renk (+ korunan canlı aksanlar);
     # ara/median tonları garanti elenir
-    reduced = _reduce_to_dominant(cleaned, k=4)
+    reduced = _reduce_to_dominant(cleaned, k=4, erode_iters=scale)
     report["steps"].append("reduce_to_dominant_4")
     report["palette"] = _palette_list(reduced)
     return reduced
@@ -439,15 +446,16 @@ def preprocess_geometric_logo(arr: np.ndarray, report: dict) -> np.ndarray:
 
 def preprocess_minimal_ai(arr: np.ndarray, report: dict) -> np.ndarray:
     rgb = _rgba_to_rgb_on_white(arr)
+    scale = 2 if report.get("supersampled") else 1
     filtered = cv2.bilateralFilter(rgb, d=5, sigmaColor=35, sigmaSpace=35)
     report["steps"].append("bilateral_light")
     quant = _quantize_flat_fg_aware(filtered, colors=6)
     report["steps"].append("quantize_fg_aware_6")
-    quant = _absorb_aa_films(quant)
+    quant = _absorb_aa_films(quant, erode_iters=scale)
     report["steps"].append("absorb_aa_films")
     hard = _harden_palette(quant, tol=38)
     report["steps"].append("palette_harden_bwr")
-    reduced = _reduce_to_dominant(hard, k=5)
+    reduced = _reduce_to_dominant(hard, k=5, erode_iters=scale)
     report["steps"].append("reduce_to_dominant_5")
     report["palette"] = _palette_list(reduced)
     return reduced
@@ -798,6 +806,19 @@ def preprocess_for_mode(
     """
     image = Image.open(image_path).convert("RGBA")
 
+    # ALT-PİKSEL SINIR YAKLAŞIMI (süperörnekleme): küçük girdilerde bölge
+    # sınırları piksel ızgarasına oturur ve eğriler tırtıklı izlenir. Girdi
+    # 2x LANCZOS ile büyütülürse anti-alias gradyanı sınırı büyütülmüş ızgarada
+    # ara konuma yerleştirir; kuantizasyon + izleme bu ince ızgarada çalışır ve
+    # eğriler orijinal ızgaraya göre yarım-piksel hassasiyet kazanır. Büyük
+    # girdiler zaten yeterli örneklem taşır; maliyet nedeniyle uygulanmaz.
+    max_side = max(image.size)
+    report_supersample = None
+    if max_side < 700:
+        new_size = (image.size[0] * 2, image.size[1] * 2)
+        image = image.resize(new_size, Image.LANCZOS)
+        report_supersample = {"from": max_side, "scale": 2}
+
     # PERFORMANS: çok büyük girdileri trace öncesi küçült (vektör çıktı sonsuz
     # ölçeklenir; sadakat karşılaştırması zaten 512px). Renkli modlar k-means +
     # despeckle nedeniyle pahalı -> daha agresif sınır; sade modlar keskin kenar
@@ -814,6 +835,9 @@ def preprocess_for_mode(
     arr = np.array(image)
 
     report: dict[str, Any] = {"mode": mode, "steps": []}
+    if report_supersample:
+        report["supersampled"] = report_supersample
+        report["steps"].append("supersample_2x")
     if report_resize:
         report["resized"] = report_resize
     func = _DISPATCH.get(mode, preprocess_minimal_ai)
