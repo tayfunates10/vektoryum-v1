@@ -314,7 +314,11 @@ def produce_candidate(
         cap = palette_cap if palette_cap is not None else PALETTE_CAP.get(mode)
         if cap and engine != "gradient":
             canonical = CANONICAL_BWR if mode in FLAT_PALETTE_MODES else None
-            consolidate_svg_palette(svg_path, max_colors=cap, canonical=canonical)
+            # geniş paletli (foto-zengin) çıktıda ince ton merdivenleri 8-15
+            # RGB adımlıdır; varsayılan merge_tol=12 bunları birbirine
+            # yapıştırıp detayı düzleştirir -> daha sıkı tolerans
+            merge_tol = 6.0 if (mode == "logo_color" and cap >= 40) else 12.0
+            consolidate_svg_palette(svg_path, max_colors=cap, canonical=canonical, merge_tol=merge_tol)
         # geometrik idealleştirme: düz çizgi + tam dairesel yay oturtma
         if mode in REGULARIZE_MODES:
             try:
@@ -439,7 +443,7 @@ def refine_best(
     # 2) Renk-sayısı bump'ı (ΔE odaklı): daha yüksek k ile yeniden ön işle + trace
     cur_k = int(analysis.get("estimated_color_count", 14))
     for bump in (8, 16):
-        k = min(48, max(16, cur_k + bump))
+        k = min(64, max(16, cur_k + bump))
         try:
             pp_path, _ = preprocess_for_mode(
                 original_path, mode, job_dir, analysis=analysis,
@@ -523,7 +527,7 @@ def run_pipeline(
             int(preprocess_report.get("actual_color_count") or 0),
         ) or None
         if lc_cap:
-            lc_cap = min(48, lc_cap)  # üretim paleti üst sınırı (quality eşiği 48)
+            lc_cap = min(64, lc_cap)  # üretim paleti üst sınırı (quality eşiği 64)
     results = [
         produce_candidate(name, spec, preprocessed_path, mode_used, job_dir,
                           original_path=original_path, palette_cap=lc_cap)
@@ -552,8 +556,11 @@ def run_pipeline(
             if refine_info.get("applied"):
                 selection_reason = "refined"
         # 9. Düzenlenebilirlik-duyarlı son seçim (renkli modlar): sadakat marjı
-        # içinde çok daha az path'li/gradyanlı adayı tercih et.
-        if mode_used in FIDELITY_LED_MODES:
+        # içinde çok daha az path'li/gradyanlı adayı tercih et. FOTO-ZENGİN
+        # görsellerde (est >= 22: çok tonlu fotoğrafik içerik) uygulanmaz —
+        # orada detay ürünün kendisidir; az-path uğruna sadakatten ödün vermek
+        # çıktıyı gözle görülür düzleştirir.
+        if mode_used in FIDELITY_LED_MODES and int(analysis.get("estimated_color_count", 0)) < 22:
             edit_best, edit_reason = _apply_editability_preference(scored, best)
             if edit_best is not best:
                 best, selection_reason = edit_best, edit_reason

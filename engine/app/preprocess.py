@@ -760,21 +760,24 @@ _DISPATCH = {
 
 
 def _auto_color_count(analysis: dict[str, Any] | None) -> int:
-    """Analizdeki renk zenginliğine göre logo_color için k seçer (16-44).
+    """Analizdeki renk zenginliğine göre logo_color için k seçer (16-64).
 
     Gerçek görsel survey'i, sabit ~22 renk cap'inin renk-zengini logolarda ΔE'yi
     11-14'e fırlattığını gösterdi (renk açlığı). Tavan yükseltildi; cap bu değere
     bağlanır (bkz. pipeline) ki üretilen renkler kırpılıp boşa gitmesin.
 
-    Ton-zengini illüstrasyonlarda (est >= 18: ateş/gölge/parlaklık bantları çok)
-    koyu tonların turuncu-orta tonlara çekilip derinliğin kaybolmaması için ek
-    bütçe verilir (k+8; SSIM'i ölçülür biçimde yükseltir).
+    Kademeli ek bütçe (referans vektörleştiricilerin içerik-ölçekli renk
+    sayısıyla uyumlu; ör. foto-zengin amblemde ~77 renk):
+    * est >= 18 (ton-zengini illüstrasyon): +8 — koyu tonlar turuncu-orta
+      tonlara çekilip derinlik kaybolmasın (SSIM ölçülür biçimde yükselir).
+    * est >= 22 (foto-zengin görsel): +16 daha — sebze/meyve gibi çok tonlu
+      fotoğrafik bölgelerde ton merdiveni zenginleşir (ΔE 5.1 -> 4.6 ölçüldü).
     """
     if not analysis:
         return 22
     est = int(analysis.get("estimated_color_count", 14))
-    k = est + 10 + (8 if est >= 18 else 0)
-    return int(max(16, min(44, k)))
+    k = est + 10 + (8 if est >= 18 else 0) + (16 if est >= 22 else 0)
+    return int(max(16, min(64, k)))
 
 
 def preprocess_for_mode(
@@ -816,11 +819,11 @@ def preprocess_for_mode(
     func = _DISPATCH.get(mode, preprocess_minimal_ai)
     if mode == "logo_color":
         n_colors = int(color_override) if color_override else _auto_color_count(analysis)
-        n_colors = max(8, min(48, n_colors))
+        n_colors = max(8, min(64, n_colors))
         report["auto_color_count"] = n_colors
         processed = preprocess_logo_color(arr, report, n_colors=n_colors)
     elif mode == "photo_poster" and color_override:
-        k = max(8, min(48, int(color_override)))
+        k = max(8, min(64, int(color_override)))
         report["auto_color_count"] = k
         processed = preprocess_photo_poster(arr, report, n_colors=k)
     else:

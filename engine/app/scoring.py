@@ -117,13 +117,13 @@ def _color_fidelity_score(unique_colors: int, analysis: dict[str, Any], mode: st
         return round(max(50.0, 100.0 - (unique_colors - 3) * 12.0), 2)
 
     if mode == "logo_color":
-        # 12-48 renk ideal (adaptif cap renk/ton-zengini logolarda ΔE'yi düşürür);
-        # çok az = detay kaybı, çok fazla = gürültü
-        if 12 <= unique_colors <= 48:
+        # 12-64 renk ideal (adaptif cap renk/ton/foto-zengini logolarda ΔE'yi
+        # düşürür); çok az = detay kaybı, çok fazla = gürültü
+        if 12 <= unique_colors <= 64:
             return 100.0
         if unique_colors < 12:
             return round(max(50.0, 100.0 - (12 - unique_colors) * 5.0), 2)
-        return round(max(45.0, 100.0 - (unique_colors - 48) * 4.0), 2)
+        return round(max(45.0, 100.0 - (unique_colors - 64) * 4.0), 2)
 
     return 80.0
 

@@ -71,7 +71,7 @@ def basic_svg_quality_check(
     if mode == "logo_color":
         if 0 < path_count < 250 and not fidelity_ok:
             warnings.append("Low path count for a color logo; some detail may be lost.")
-        if unique_colors > 48:
+        if unique_colors > 64:
             warnings.append("High color count; consider reducing palette for production.")
     elif not low_path_exempt:
         if 0 < path_count < 4 and not fidelity_ok and not structure_ok:
