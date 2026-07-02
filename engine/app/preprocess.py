@@ -495,6 +495,24 @@ def _kmeans_quantize_lab(
         # kenar-koruyan güçlü düzleştirme -> düz renk bölgeleri (gürültü/gradyan azalır)
         img = cv2.bilateralFilter(rgb, d=9, sigmaColor=45, sigmaSpace=45)
     lab = cv2.cvtColor(img, cv2.COLOR_RGB2LAB)
+
+    # DÜZ-NÖTR bölgelerde gürültüyü KAYNAĞINDA düzleştir: vinyetli koyu panel
+    # zeminindeki JPEG gürültüsü, kümeleme sınırlarını benekli lekeye çevirir.
+    # Düz bölgede (düşük kroma + düşük yerel L-gradyanı) kaybolacak detay yoktur;
+    # kenar/yazıdan >= 7px içeri erozyonla çekildiği için keskin öğeler etkilenmez.
+    L0 = lab[:, :, 0].astype(np.float32)
+    g0x = cv2.Sobel(L0, cv2.CV_32F, 1, 0, ksize=3)
+    g0y = cv2.Sobel(L0, cv2.CV_32F, 0, 1, ksize=3)
+    gmag0 = np.sqrt(g0x * g0x + g0y * g0y)
+    chroma0 = np.hypot(lab[:, :, 1].astype(np.float32) - 128.0,
+                       lab[:, :, 2].astype(np.float32) - 128.0)
+    flat_zone0 = ((chroma0 <= 12.0) & (gmag0 <= 35.0)).astype(np.uint8)
+    safe_zone = cv2.erode(flat_zone0, np.ones((13, 13), np.uint8)) > 0
+    if float(safe_zone.mean()) > 0.03:
+        blurred = cv2.GaussianBlur(lab, (15, 15), 0)
+        lab = lab.copy()
+        lab[safe_zone] = blurred[safe_zone]
+
     samples = lab.reshape(-1, 3).astype(np.float32)
     unique_n = len(np.unique(samples.astype(np.uint8), axis=0))
     K = max(2, min(int(k), unique_n))
@@ -511,15 +529,39 @@ def _kmeans_quantize_lab(
     centers = np.clip(centers, 0, 255).astype(np.float32)
     labels_full = _assign_to_centers(samples, centers)
 
+    # yerel L-gradyanı (hem augmentasyon hem gürültü birleştirme kapısı):
+    # düz alan = vinyet/gürültü bölgesi; yapılı alan = kasıtlı detay
+    L_ch = lab[:, :, 0].astype(np.float32)
+    gx = cv2.Sobel(L_ch, cv2.CV_32F, 1, 0, ksize=3)
+    gy = cv2.Sobel(L_ch, cv2.CV_32F, 0, 1, ksize=3)
+    gmag = np.sqrt(gx * gx + gy * gy)
+    gmag_flat = gmag.reshape(-1)
+    chroma_flat = np.hypot(samples[:, 1] - 128.0, samples[:, 2] - 128.0)
+
     if refine_high_error:
-        max_extra = 8
-        for _round in range(2):
+        max_extra = 10
+        # DÜZ-NÖTR alandaki DAĞINIK yüksek-hata pikselleri yeni merkez açamaz:
+        # koyu panel vinyetinin gürültüsü ek gri merkezlerle yeniden bölünüp
+        # leke üretiyordu (augmentasyon ile gürültü birleştirme çatışması).
+        # BÜYÜK ve BÜTÜNSEL (>= 400px bağlı bileşen) yüksek-hata bölgeleri ise
+        # k-means'in kaçırdığı GERÇEK öğelerdir (tabela çerçevesi gibi) ve her
+        # zaman küme açabilir — kapı yalnız kırıntıları eler.
+        flat_neutral = (chroma_flat <= 12.0) & (gmag_flat <= 35.0)
+        img_h, img_w = lab.shape[:2]
+        for _round in range(3):
             if len(centers) - K >= max_extra:
                 break
             err = np.linalg.norm(samples - centers[labels_full], axis=1)
             hi = err > 18.0
+            hi_img = hi.reshape(img_h, img_w).astype(np.uint8)
+            n_comp, comp_lbl, comp_stats, _ = cv2.connectedComponentsWithStats(hi_img, connectivity=8)
+            big = np.zeros(n_comp, dtype=bool)
+            if n_comp > 1:
+                big[1:] = comp_stats[1:, cv2.CC_STAT_AREA] >= 400
+            hi_big = big[comp_lbl].reshape(-1)
+            hi = hi & (hi_big | ~flat_neutral)
             hi_ratio = float(hi.mean())
-            if hi_ratio < 0.002:
+            if hi_ratio < 0.001:
                 break
             hi_samples = samples[hi]
             if len(hi_samples) > 40000:
@@ -542,13 +584,10 @@ def _kmeans_quantize_lab(
         remap = np.arange(len(centers))
         merged = centers.astype(np.float64).copy()
         label_img = labels_full.reshape(lab.shape[:2])
-        # etiket bölgesi altındaki yerel L-gradyanı: gürültü lekesi görsel olarak
-        # DÜZ (vinyetli panel) alanda yaşar -> gradyan küçük; duman/doku gibi
-        # kasıtlı gri detaylar yapılıdır -> gradyan büyük ve KORUNUR.
-        L_ch = lab[:, :, 0].astype(np.float32)
-        gx = cv2.Sobel(L_ch, cv2.CV_32F, 1, 0, ksize=3)
-        gy = cv2.Sobel(L_ch, cv2.CV_32F, 0, 1, ksize=3)
-        gmag = np.sqrt(gx * gx + gy * gy)
+        # etiket bölgesi altındaki yerel L-gradyanı (yukarıda hesaplandı):
+        # gürültü lekesi görsel olarak DÜZ (vinyetli panel) alanda yaşar ->
+        # gradyan küçük; duman/doku gibi kasıtlı gri detaylar yapılıdır ->
+        # gradyan büyük ve KORUNUR.
         frag_cache: dict[int, bool] = {}
         grad_cache: dict[int, float] = {}
 
@@ -588,6 +627,9 @@ def _kmeans_quantize_lab(
                 return False
             return _is_fragmented(i) or _is_fragmented(j)
 
+        # TEK geçiş: yinelemeli/zincirli birleştirme merkezleri kaydıra kaydıra
+        # gerçek öğeleri (çerçeve tonu gibi) zemine gömüyordu — gerçek bir
+        # gerilemeydi. Tek geçişte yalnız doğrudan komşu ton çiftleri birleşir.
         for i in range(len(centers)):
             if remap[i] != i:
                 continue
@@ -601,8 +643,23 @@ def _kmeans_quantize_lab(
                     counts[i] = total
                     remap[j] = i
         if (remap != np.arange(len(centers))).any():
+            # remap'i köke indir (i sonradan h'ye katılmışsa j -> i -> h)
+            for idx in range(len(remap)):
+                root = idx
+                while remap[root] != root:
+                    root = remap[root]
+                remap[idx] = root
             centers = np.clip(merged, 0, 255).astype(np.float32)
             labels_full = remap[labels_full]
+
+    # Merkezleri üye MEDYANIYLA yeniden hesapla: k-means ortalaması, bölgenin
+    # parlak/doygun çekirdeğini gölgeli kenar pikselleriyle SOLUKLAŞTIRIR
+    # (parlak kırmızı dilimin kiremit rengine dönmesi gerçek bir canlılık
+    # kaybıydı). Medyan, bölgenin baskın gerçek rengini temsil eder.
+    for idx in np.unique(labels_full):
+        members = samples[labels_full == idx]
+        if len(members):
+            centers[idx] = np.clip(np.median(members, axis=0), 0, 255)
 
     quant_lab = centers.astype(np.uint8)[labels_full].reshape(lab.shape)
     out = cv2.cvtColor(quant_lab, cv2.COLOR_LAB2RGB)
@@ -703,16 +760,21 @@ _DISPATCH = {
 
 
 def _auto_color_count(analysis: dict[str, Any] | None) -> int:
-    """Analizdeki renk zenginliğine göre logo_color için k seçer (16-40).
+    """Analizdeki renk zenginliğine göre logo_color için k seçer (16-44).
 
     Gerçek görsel survey'i, sabit ~22 renk cap'inin renk-zengini logolarda ΔE'yi
     11-14'e fırlattığını gösterdi (renk açlığı). Tavan yükseltildi; cap bu değere
     bağlanır (bkz. pipeline) ki üretilen renkler kırpılıp boşa gitmesin.
+
+    Ton-zengini illüstrasyonlarda (est >= 18: ateş/gölge/parlaklık bantları çok)
+    koyu tonların turuncu-orta tonlara çekilip derinliğin kaybolmaması için ek
+    bütçe verilir (k+8; SSIM'i ölçülür biçimde yükseltir).
     """
     if not analysis:
         return 22
     est = int(analysis.get("estimated_color_count", 14))
-    return int(max(16, min(40, est + 10)))
+    k = est + 10 + (8 if est >= 18 else 0)
+    return int(max(16, min(44, k)))
 
 
 def preprocess_for_mode(

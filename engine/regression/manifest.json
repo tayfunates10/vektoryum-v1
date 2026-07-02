@@ -56,10 +56,10 @@
         "max_warning_count": 3,
         "dxf_error_allowed": false,
         "quality": {
-          "min_path_count": 250,
+          "min_path_count": 150,
           "max_path_count": 2200,
           "min_unique_color_count": 12,
-          "max_unique_color_count": 30,
+          "max_unique_color_count": 40,
           "min_ink_recall": 0.99
         }
       },

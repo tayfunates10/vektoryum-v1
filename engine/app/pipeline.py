@@ -523,7 +523,7 @@ def run_pipeline(
             int(preprocess_report.get("actual_color_count") or 0),
         ) or None
         if lc_cap:
-            lc_cap = min(40, lc_cap)  # üretim paleti üst sınırı (quality eşiği 42)
+            lc_cap = min(48, lc_cap)  # üretim paleti üst sınırı (quality eşiği 48)
     results = [
         produce_candidate(name, spec, preprocessed_path, mode_used, job_dir,
                           original_path=original_path, palette_cap=lc_cap)
