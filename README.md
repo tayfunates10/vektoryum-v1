@@ -34,8 +34,13 @@ aynı kodu çağırır):
    adayın komşuluğunda parametre + renk-sayısı varyantları üretip yeniden ölçer;
    yalnızca daha sadık varyantı benimser.
 8. **Export** (`app/exporters.py`) — SVG/PDF/EPS/DXF.
-9. **Kalite raporu** (`app/quality.py`) — `production_ready` / `needs_review`.
-   Ölçülen sadakat düşükse (foto/sürekli-tonlu girdi) `needs_review` + dürüst uyarı.
+9. **Yapı bütünlüğü denetimi** (`app/fidelity.py` → `score_structure_integrity`) —
+   nihai çıktı render edilip orijinalle karşılaştırılır: kopan/eksik çizgi
+   (`ink_recall`), hayalet çizik (`ink_precision`) ve şekil parçalanması
+   (`component_delta`) ölçülür. Kırık yapı tespit edilirse çıktı asla
+   `production_ready` işaretlenmez.
+10. **Kalite raporu** (`app/quality.py`) — `production_ready` / `needs_review`.
+    Ölçülen sadakat düşükse (foto/sürekli-tonlu girdi) `needs_review` + dürüst uyarı.
 
 ### Ölçüm harness'i (`regression/fidelity_report.py`)
 
@@ -172,6 +177,22 @@ cd C:\Users\TAYFUN\Desktop\Projeler\tabela-vector-saas\engine
 
 Ek olarak `test_real_fixtures.py` (gerçek fixture regresyonu, 12 kabul kriteri)
 ve `regression/fidelity_report.py` (algısal sadakat ölçümü) bulunur.
+
+### Artefakt regresyonu (`test_artifact_quality.py`)
+
+Kırık çizgi / hairline çizik / kenarlık kopması / renk hatası artefaktlarını
+hedefleyen sentetik stres vakalarını (`regression/artifact_probe.py`) uçtan uca
+çalıştırır ve şu kabul kriterlerini kilitler: `ink_recall >= 0.995` (hiçbir
+çizgi kopmaz), `ink_precision >= 0.975` (hayalet çizik yok),
+`component_delta == 0` (şekil parçalanmaz), `seam_ratio <= 0.002` (bitişik
+renkler arasında zemin sızmaz), `halo_ratio <= 0.02` (palet dışı renk bandı
+yok) + vaka bazlı sadakat tabanları. Kalite kapısının kırık çıktıyı asla
+`production_ready` işaretlemediği de doğrulanır.
+
+```powershell
+.\.venv\Scripts\python.exe test_artifact_quality.py
+.\.venv\Scripts\python.exe regression\artifact_probe.py   # yalnız ölçüm/teşhis
+```
 
 ## Marka Kılavuzu
 

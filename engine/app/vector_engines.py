@@ -386,6 +386,12 @@ def vectorize_geometric_contours_to_svg(
                 continue
             peri = cv2.arcLength(contour, True)
             eps = max(0.5, epsilon * peri / 100.0)
+            # İNCE UZUN şekillerde (çizgi/kenarlık) çevre uzunluğu büyük ama
+            # kalınlık küçüktür; çevreye oranlı epsilon şekli çökertir (poligon
+            # < 3 nokta -> path tamamen kaybolur). Epsilon şerit kalınlığının
+            # üstüne çıkamaz.
+            thickness = 2.0 * area / max(peri, 1.0)
+            eps = max(0.5, min(eps, 0.6 * max(thickness, 1.0)))
             poly = cv2.approxPolyDP(contour, eps, True)
             if len(poly) < 3:
                 continue

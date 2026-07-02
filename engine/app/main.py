@@ -132,13 +132,14 @@ async def vectorize_image(
         candidate_id=f"{mode_used}:{best['name']}",
     )
 
-    # 9. Kalite raporu
+    # 9. Kalite raporu (yapı bütünlüğü dahil: kırık/eksik çizgi denetimi)
     quality_report = basic_svg_quality_check(
         score_details=best.get("score_details", {}),
         mode=mode_used,
         geometry_report=best_geo,
         total_score=best["total_score"],
         fidelity_score=best.get("fidelity_score"),
+        structure_report=pipe.get("structure_report"),
     )
 
     download_links = {fmt: f"/api/download/{job_id}/{fmt}" for fmt in ("svg", "pdf", "eps", "dxf")}

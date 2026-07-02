@@ -63,8 +63,71 @@ def _quantize_flat(rgb: np.ndarray, colors: int, dither: bool = False) -> np.nda
     return np.array(q.convert("RGB"))
 
 
+def _quantize_flat_fg_aware(rgb: np.ndarray, colors: int) -> np.ndarray:
+    """Zemin-farkındalıklı düz palet kuantizasyonu.
+
+    MEDIANCUT nüfus tabanlıdır: büyük tek renk zeminli logolarda kutuların çoğu
+    zemin tonlarına gider ve İNCE ÇİZGİLER tek çamur renge çöküp kesiklenir
+    (siyah+kırmızı+mavi çizgilerin tek renkte birleşmesi gerçek bir hataydı).
+    Burada zemin (köşe medyanı) ayrılır ve kümeler YALNIZCA ön plan piksellerine
+    harcanır (LAB k-means). Zemin düz değilse eski global yola düşülür.
+    """
+    h, w = rgb.shape[:2]
+    pw, ph = max(8, w // 12), max(8, h // 12)
+    corners = np.concatenate([
+        rgb[:ph, :pw].reshape(-1, 3), rgb[:ph, -pw:].reshape(-1, 3),
+        rgb[-ph:, :pw].reshape(-1, 3), rgb[-ph:, -pw:].reshape(-1, 3),
+    ]).astype(np.float32)
+    bg = np.median(corners, axis=0)
+    uniform = float((np.linalg.norm(corners - bg, axis=1) < 18).mean())
+    if uniform < 0.85:
+        return _quantize_flat(rgb, colors)
+
+    flat = rgb.reshape(-1, 3).astype(np.float32)
+    dist = np.linalg.norm(flat - bg, axis=1)
+    fg_idx = dist > 40
+    fg_ratio = float(fg_idx.mean())
+    n_fg = int(fg_idx.sum())
+    if n_fg < 50 or fg_ratio > 0.6:
+        return _quantize_flat(rgb, colors)
+
+    lab = cv2.cvtColor(rgb, cv2.COLOR_RGB2LAB).reshape(-1, 3).astype(np.float32)
+    fg_lab = lab[fg_idx]
+    unique_n = len(np.unique((fg_lab // 8).astype(np.int32), axis=0))
+    K = max(2, min(colors - 1, unique_n))
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 20, 1.0)
+    if len(fg_lab) > 60000:
+        rng = np.random.default_rng(0)
+        fit = fg_lab[rng.choice(len(fg_lab), 60000, replace=False)]
+    else:
+        fit = fg_lab
+    _c, _l, centers = cv2.kmeans(fit, K, None, criteria, 3, cv2.KMEANS_PP_CENTERS)
+    centers = np.clip(centers, 0, 255).astype(np.float32)
+
+    labels = np.empty(len(fg_lab), dtype=np.int32)
+    chunk = 200000
+    for s in range(0, len(fg_lab), chunk):
+        block = fg_lab[s:s + chunk]
+        d2 = ((block[:, None, :] - centers[None, :, :]) ** 2).sum(axis=2)
+        labels[s:s + chunk] = np.argmin(d2, axis=1)
+    centers_rgb = cv2.cvtColor(
+        centers.astype(np.uint8).reshape(1, -1, 3), cv2.COLOR_LAB2RGB
+    ).reshape(-1, 3)
+
+    out = np.empty_like(flat, dtype=np.uint8)
+    out[~fg_idx] = np.clip(np.round(bg), 0, 255).astype(np.uint8)
+    out[fg_idx] = centers_rgb[labels]
+    return out.reshape(rgb.shape)
+
+
 def _harden_palette(rgb: np.ndarray, tol: int = 42) -> np.ndarray:
-    """Kanonik siyah/beyaz/kırmızıya yakın renkleri tam değere yaslar."""
+    """Kanonik siyah/beyaza ve BASKIN kırmızıya yakın renkleri tam değere yaslar.
+
+    Kırmızı yaslama hedefi görüntünün kendi baskın kırmızısıdır: anti-alias
+    pembeleri temizlenir ama koyu/marka kırmızısı (ör. 214,40,40) zorla saf
+    (255,0,0)'a çevrilip RENK BOZULMAZ. Baskın kırmızı zaten saf kırmızıya çok
+    yakınsa kanonik değere yaslanır (eski davranış korunur).
+    """
     out = rgb.copy()
     flat = out.reshape(-1, 3).astype(np.int32)
 
@@ -72,7 +135,7 @@ def _harden_palette(rgb: np.ndarray, tol: int = 42) -> np.ndarray:
         diff = flat - np.array(target, dtype=np.int32)
         return np.sqrt((diff * diff).sum(axis=1)) <= t
 
-    # beyaz (geniş tolerans), siyah, kırmızı
+    # beyaz (geniş tolerans), siyah
     flat[_near(_CANON["white"], tol + 18)] = _CANON["white"]
     flat[_near(_CANON["black"], tol)] = _CANON["black"]
     # kırmızı: doygun VE açık (anti-alias pembe) kırmızılar. Mutlak g/b sınırı
@@ -80,21 +143,95 @@ def _harden_palette(rgb: np.ndarray, tol: int = 42) -> np.ndarray:
     # nedeniyle pembeleşmiş) kaybolmadan kırmızıya yaslanır.
     r, g, b = flat[:, 0], flat[:, 1], flat[:, 2]
     red_like = (r >= 130) & (r > g + 45) & (r > b + 45) & (np.abs(g.astype(np.int32) - b.astype(np.int32)) <= 60)
-    flat[red_like] = _CANON["red"]
+    if np.any(red_like):
+        reds = flat[red_like]
+        sat = reds.max(axis=1) - reds.min(axis=1)
+        # hedefi çizgi ÇEKİRDEĞİ belirlesin, anti-alias saçağı değil: en doygun
+        # kırmızıların (>= 0.6 * maks doygunluk) en kalabalık 16'lık kovası
+        core = reds[sat >= 0.6 * int(sat.max())] if int(sat.max()) > 0 else reds
+        buckets = core // 16
+        uniq, counts = np.unique(buckets, axis=0, return_counts=True)
+        modal = uniq[np.argmax(counts)]
+        members = core[(buckets == modal).all(axis=1)]
+        target = members.mean(axis=0) if len(members) else core.mean(axis=0)
+        canon_red = np.array(_CANON["red"], dtype=np.float64)
+        if float(np.linalg.norm(target - canon_red)) <= tol + 22:
+            target = canon_red
+        flat[red_like] = np.round(target).astype(np.int32)
     return flat.reshape(out.shape).astype(np.uint8)
 
 
-def _reduce_to_dominant(rgb: np.ndarray, k: int) -> np.ndarray:
+def _reduce_to_dominant(
+    rgb: np.ndarray,
+    k: int,
+    protect_chromatic: bool = True,
+    protect_min_ratio: float = 0.0004,
+    max_protected: int = 3,
+) -> np.ndarray:
     """Her pikseli en sık görülen k renkten en yakınına atar (sert palet).
 
-    Çıktıda yalnızca k (veya daha az) düz renk kalır; ara/anti-alias tonları
-    yok olur. Sert kenarlar oluştuğundan VTracer renkleri yeniden çoğaltamaz.
+    Çıktıda yalnızca k (artı korunan renkler) düz renk kalır; ara/anti-alias
+    tonları yok olur. Sert kenarlar oluştuğundan VTracer renkleri yeniden
+    çoğaltamaz.
+
+    İki koruma, alanı küçük diye GERÇEK tasarım öğelerinin silinmesini önler:
+
+    * CANLI renkler (doygunluk >= 60, ör. ince kırmızı/mavi çizgi) k kotasına
+      giremese de palete eklenir.
+    * BAĞIMSIZ İNCE KONTURLAR: yalnızca ince şerit olarak yaşayan (1px erozyonda
+      kaybolan) ve çevresi ZEMİNLE çevrili nötr renkler (ör. beyaz zeminde 1px
+      gri çizgi). Bunlar en yakın baskın renge gömülürse çizgi ZEMİNE düşüp
+      tamamen silinebilir; korunarak palete eklenir.
+
+    Toplam korunan renk sayısı ``max_protected`` ile sınırlıdır.
     """
     flat = rgb.reshape(-1, 3)
     colors, counts = np.unique(flat, axis=0, return_counts=True)
     if len(colors) <= k:
         return rgb
-    dominant = colors[np.argsort(counts)[::-1][:k]].astype(np.int32)
+    order = np.argsort(counts)[::-1]
+    colors = colors[order]
+    counts = counts[order]
+    total = float(flat.shape[0])
+    dominant_list = [colors[i].astype(np.int32) for i in range(min(k, len(colors)))]
+    bg = dominant_list[0]
+
+    if protect_chromatic and len(colors) > k:
+        kernel = np.ones((3, 3), np.uint8)
+        added = 0
+        for i in range(k, len(colors)):
+            if added >= max_protected:
+                break
+            if counts[i] / total < protect_min_ratio or counts[i] < 60:
+                continue
+            c = colors[i].astype(np.int32)
+            sat = int(c.max()) - int(c.min())
+            if sat >= 60:
+                dominant_list.append(c)
+                added += 1
+                continue
+            # nötr aday: bağımsız ince kontur mu? (ince + zeminle çevrili)
+            exact = colors[i].astype(rgb.dtype)
+            mask = cv2.inRange(rgb, exact, exact)
+            n_mask = int(np.count_nonzero(mask))
+            if n_mask == 0:
+                continue
+            survival = float(np.count_nonzero(cv2.erode(mask, kernel))) / float(n_mask)
+            if survival > 0.25:
+                continue  # kalın bölge; kotaya giremediyse gerçekten önemsiz
+            ring = (cv2.dilate(mask, kernel) > 0) & (mask == 0)
+            n_ring = int(np.count_nonzero(ring))
+            if n_ring == 0:
+                continue
+            bg_exact = np.array(bg, dtype=rgb.dtype)
+            bg_frac = float(np.count_nonzero(
+                ring & np.all(rgb == bg_exact[None, None, :], axis=2)
+            )) / float(n_ring)
+            if bg_frac >= 0.7:
+                dominant_list.append(c)
+                added += 1
+
+    dominant = np.array(dominant_list, dtype=np.int32)
     # her piksel için en yakın dominant renk (parça parça, bellek dostu)
     out = np.empty_like(flat)
     chunk = 200000
@@ -103,6 +240,131 @@ def _reduce_to_dominant(rgb: np.ndarray, k: int) -> np.ndarray:
         d = ((block[:, None, :] - dominant[None, :, :]) ** 2).sum(axis=2)
         out[start:start + chunk] = dominant[np.argmin(d, axis=1)]
     return out.reshape(rgb.shape)
+
+
+def _mixture_anchors(
+    c: np.ndarray,
+    anchors: list[np.ndarray],
+    tol: float,
+) -> list[int] | None:
+    """c rengi, verilen çapa renklerin İKİLİ ya da ÜÇLÜ karışımı mı?
+
+    Önce çiftler denenir (doğru parçası üzerinde), sonra üçlüler (üçgen içinde).
+    Kırmızı-siyah sınırındaki koyu bordo gibi ÜÇ rengin (kırmızı+siyah+beyaz)
+    karışımı olan anti-alias tonları çift testinden kaçar; üçgen testi yakalar.
+    Karışımsa çapa indekslerinin listesi, değilse None döner.
+    """
+    n = len(anchors)
+    for j in range(n):
+        for m in range(j + 1, n):
+            a, b = anchors[j], anchors[m]
+            ab = b - a
+            denom = float(np.dot(ab, ab))
+            if denom < 1e-9:
+                continue
+            t = float(np.dot(c - a, ab) / denom)
+            if not (0.04 <= t <= 0.96):
+                continue
+            if float(np.linalg.norm(c - (a + t * ab))) <= tol:
+                return [j, m]
+    for j in range(n):
+        for m in range(j + 1, n):
+            for p in range(m + 1, n):
+                a, b, d = anchors[j], anchors[m], anchors[p]
+                u, v, w_ = b - a, d - a, c - a
+                uu, uv, vv = float(np.dot(u, u)), float(np.dot(u, v)), float(np.dot(v, v))
+                wu, wv = float(np.dot(w_, u)), float(np.dot(w_, v))
+                det = uu * vv - uv * uv
+                if det < 1e-9:
+                    continue
+                s = (vv * wu - uv * wv) / det
+                t = (uu * wv - uv * wu) / det
+                if s < -0.02 or t < -0.02 or s + t > 1.02:
+                    continue
+                proj = a + s * u + t * v
+                if float(np.linalg.norm(c - proj)) <= tol:
+                    return [j, m, p]
+    return None
+
+
+def _absorb_aa_films(
+    rgb: np.ndarray,
+    colinear_tol: float = 26.0,
+    max_survival: float = 0.25,
+    anchor_factor: float = 0.5,
+) -> np.ndarray:
+    """Quantize sonrası anti-alias FİLM renklerini komşu baskın renge gömer.
+
+    Film: karşılaştırılabilir baskınlıktaki çapa renklerin KARIŞIMI olan
+    (ikili: doğru üzerinde, üçlü: üçgen içinde) ve görüntüde yalnızca ince şerit
+    olarak yaşayan (1px erozyonda kaybolan) renk — siyah kenar çevresindeki gri
+    şerit, kırmızı çizgi çevresindeki pembe saçak, kırmızı-siyah sınırındaki
+    koyu bordo. Bu tonlar elenmezse ``_reduce_to_dominant`` k kotasını işgal
+    edip GERÇEK renkleri (ince mavi çizgi gibi) dışarı itebilir ve çıktı SVG'de
+    kenarlar boyunca kirli ara-ton bandı kalır.
+
+    İki koruma gerçek tasarım öğelerini tutar:
+    * Kalın bölgeler erozyonda hayatta kalır -> gerçek (gri dahil) renk alanları
+      film sayılmaz.
+    * KOMŞULUK KORUMASI: gerçek bir film, karıştığı MÜREKKEP renklerinin
+      sınırında yaşar. Çevresi yalnızca zeminle çevrili ince bir renk bağımsız
+      bir ÇİZGİDİR (ör. beyaz zeminde tek başına gri/bordo çizgi); gömülürse
+      çizgi tamamen SİLİNECEĞİNDEN korunur.
+    """
+    flat = rgb.reshape(-1, 3)
+    colors, counts = np.unique(flat, axis=0, return_counts=True)
+    if not (3 <= len(colors) <= 16):
+        return rgb
+    order = np.argsort(counts)[::-1]
+    colors = colors[order].astype(np.int32)
+    counts = counts[order]
+    bg_exact = colors[0].astype(rgb.dtype)  # en kalabalık renk = zemin
+    out = rgb
+    kernel = np.ones((3, 3), np.uint8)
+    absorbed: set[int] = set()
+
+    for i in range(len(colors) - 1, -1, -1):  # en seyrek renkten başla
+        c = colors[i].astype(np.float64)
+        candidates = [
+            j for j in range(len(colors))
+            if j != i and j not in absorbed and counts[j] >= counts[i] * anchor_factor
+        ]
+        anchor_rgbs = [colors[j].astype(np.float64) for j in candidates]
+        mix = _mixture_anchors(c, anchor_rgbs, colinear_tol)
+        if mix is None:
+            continue
+        anchor_idx = [candidates[j] for j in mix]
+        exact = colors[i].astype(rgb.dtype)
+        mask = cv2.inRange(out, exact, exact)
+        total = int(np.count_nonzero(mask))
+        if total == 0:
+            continue
+        survival = float(np.count_nonzero(cv2.erode(mask, kernel))) / float(total)
+        if survival > max_survival:
+            continue  # kalın bölge -> gerçek renk, koru
+        # komşuluk koruması: halka, zemin DIŞI çapa renklerden iz taşımalı
+        ring = (cv2.dilate(mask, kernel) > 0) & (mask == 0)
+        n_ring = int(np.count_nonzero(ring))
+        ink_anchors = [
+            colors[j] for j in anchor_idx
+            if not np.array_equal(colors[j].astype(rgb.dtype), bg_exact)
+        ]
+        if n_ring > 0 and ink_anchors:
+            ink_hits = np.zeros(ring.shape, dtype=bool)
+            for a in ink_anchors:
+                a_exact = a.astype(rgb.dtype)
+                ink_hits |= np.all(out == a_exact[None, None, :], axis=2)
+            frac = float(np.count_nonzero(ring & ink_hits)) / float(n_ring)
+            if frac < 0.08:
+                continue  # bağımsız ince çizgi -> koru
+        # en yakın çapaya göm
+        dists = [float(np.linalg.norm(c - colors[j].astype(np.float64))) for j in anchor_idx]
+        target = colors[anchor_idx[int(np.argmin(dists))]].astype(rgb.dtype)
+        if out is rgb:
+            out = rgb.copy()
+        out[mask > 0] = target
+        absorbed.add(i)
+    return out
 
 
 def _remove_speckles(rgb: np.ndarray, min_area: int = 6) -> np.ndarray:
@@ -149,14 +411,19 @@ def preprocess_geometric_logo(arr: np.ndarray, report: dict) -> np.ndarray:
     # ince çizgileri birbirine karıştırmamak için çok hafif kenar-koruyan filtre
     filtered = cv2.bilateralFilter(rgb, d=3, sigmaColor=18, sigmaSpace=18)
     report["steps"].append("bilateral_very_light")
-    quant = _quantize_flat(filtered, colors=8)
-    report["steps"].append("quantize_8")
+    quant = _quantize_flat_fg_aware(filtered, colors=8)
+    report["steps"].append("quantize_fg_aware_8")
+    # AA film tonlarını (kenar grileri/pembe saçak) gerçek renklerden önce göm;
+    # yoksa reduce kotasını işgal edip ince renkli çizgileri dışarı itebilirler
+    quant = _absorb_aa_films(quant)
+    report["steps"].append("absorb_aa_films")
     hard = _harden_palette(quant, tol=46)
     report["steps"].append("palette_harden_bwr")
     # küçük lekeleri temizle (ince çizgileri korumak için küçük eşik)
     cleaned = _remove_speckles(hard, min_area=3)
     report["steps"].append("despeckle")
-    # SON adım: sert palet -> en baskın 4 renk; ara/median tonları garanti elenir
+    # SON adım: sert palet -> en baskın 4 renk (+ korunan canlı aksanlar);
+    # ara/median tonları garanti elenir
     reduced = _reduce_to_dominant(cleaned, k=4)
     report["steps"].append("reduce_to_dominant_4")
     report["palette"] = _palette_list(reduced)
@@ -167,8 +434,10 @@ def preprocess_minimal_ai(arr: np.ndarray, report: dict) -> np.ndarray:
     rgb = _rgba_to_rgb_on_white(arr)
     filtered = cv2.bilateralFilter(rgb, d=5, sigmaColor=35, sigmaSpace=35)
     report["steps"].append("bilateral_light")
-    quant = _quantize_flat(filtered, colors=6)
-    report["steps"].append("quantize_6")
+    quant = _quantize_flat_fg_aware(filtered, colors=6)
+    report["steps"].append("quantize_fg_aware_6")
+    quant = _absorb_aa_films(quant)
+    report["steps"].append("absorb_aa_films")
     hard = _harden_palette(quant, tol=38)
     report["steps"].append("palette_harden_bwr")
     reduced = _reduce_to_dominant(hard, k=5)
@@ -232,7 +501,15 @@ def preprocess_lineart(arr: np.ndarray, report: dict) -> np.ndarray:
     # Otsu; ince çizgileri korumak için morfoloji yok
     _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     report["steps"].append("otsu_threshold")
-    return binary
+    # çok küçük izole benekleri temizle: ince çizgili görsellerde VTracer speckle
+    # filtresi kapatıldığından (çizgi silinmesin) gürültü kontrolü burada yapılır
+    inv = 255 - binary
+    num, labels, stats, _ = cv2.connectedComponentsWithStats(inv, connectivity=8)
+    for i in range(1, num):
+        if stats[i, cv2.CC_STAT_AREA] < 4:
+            inv[labels == i] = 0
+    report["steps"].append("despeckle")
+    return 255 - inv
 
 
 def preprocess_single_color(arr: np.ndarray, report: dict) -> np.ndarray:

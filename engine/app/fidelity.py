@@ -315,6 +315,70 @@ def compute_fidelity(original_rgb: np.ndarray, rendered_rgb: np.ndarray) -> dict
     }
 
 
+def score_structure_integrity(
+    svg_path: Path,
+    original_path: Path,
+    bg_rgb: tuple[int, int, int] | None = None,
+    max_side: int = 1024,
+) -> dict[str, Any] | None:
+    """Vektör çıktının YAPI bütünlüğünü ölçer: kopan/kaybolan çizgi var mı?
+
+    Orijinal rasterdeki mürekkep (zeminden ayrışan) piksellerin render'da
+    karşılanma oranı (``ink_recall``) düşükse çizgiler KIRIK/eksik demektir;
+    ``ink_precision`` düşükse çıktıda hayalet çizik/leke vardır. Bağlı bileşen
+    farkı (``component_delta``) pozitifse şekiller parçalanmış, çok negatifse
+    ayrık şekiller birbirine yapışmıştır. Ölçüm 1px toleranslıdır (dilate).
+
+    Render backend'i yoksa ``None`` döner (çökme yok). Zemin rengi verilmezse
+    orijinalin köşe medyanı kullanılır.
+    """
+    try:
+        reference, (w, h) = load_reference_rgb(Path(original_path), max_side=max_side)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("Yapı ölçümü: referans yüklenemedi: %s", e)
+        return None
+
+    rendered = render_svg_to_rgb(Path(svg_path), w, h)
+    if rendered is None:
+        return None
+
+    try:
+        if bg_rgb is None:
+            pw, ph = max(4, w // 12), max(4, h // 12)
+            corners = np.concatenate([
+                reference[:ph, :pw].reshape(-1, 3), reference[:ph, -pw:].reshape(-1, 3),
+                reference[-ph:, :pw].reshape(-1, 3), reference[-ph:, -pw:].reshape(-1, 3),
+            ]).astype(np.float32)
+            bg = np.median(corners, axis=0)
+        else:
+            bg = np.array(bg_rgb, dtype=np.float32)
+
+        def _ink(rgb: np.ndarray) -> np.ndarray:
+            dist = np.linalg.norm(rgb.astype(np.float32) - bg[None, None, :], axis=2)
+            return (dist > 60.0).astype(np.uint8)
+
+        mo = _ink(reference)
+        mr = _ink(rendered)
+        n_o_ink = int(mo.sum())
+        if n_o_ink < 30:
+            return None  # ölçülecek anlamlı mürekkep yok
+        k = np.ones((3, 3), np.uint8)
+        recall = float((mo & (cv2.dilate(mr, k) > 0)).sum()) / float(n_o_ink)
+        precision = float((mr & (cv2.dilate(mo, k) > 0)).sum()) / max(1.0, float(mr.sum()))
+        n_o, _ = cv2.connectedComponents(mo, connectivity=8)
+        n_r, _ = cv2.connectedComponents(mr, connectivity=8)
+        return {
+            "ink_recall": round(recall, 4),
+            "ink_precision": round(precision, 4),
+            "components_original": int(n_o - 1),
+            "components_rendered": int(n_r - 1),
+            "component_delta": int(n_r - n_o),
+        }
+    except Exception as e:  # noqa: BLE001
+        logger.debug("Yapı ölçümü hesaplanamadı (%s): %s", Path(svg_path).name, e)
+        return None
+
+
 def score_svg_fidelity(
     svg_path: Path,
     original_path: Path,

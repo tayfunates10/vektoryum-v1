@@ -11,12 +11,16 @@ Export (SVG/PDF/EPS/DXF) ve HTTP'ye özgü her şey ``app.main``'de kalır.
 from __future__ import annotations
 
 import logging
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+import cv2
+import numpy as np
 from PIL import Image
 
 from app.analyzer import analyze_image_from_mem
+from app.fidelity import score_structure_integrity
 from app.geometry_cleanup import cleanup_svg_geometry, consolidate_svg_palette
 from app.preprocess import preprocess_for_mode
 from app.scoring import score_vector_candidate
@@ -25,11 +29,13 @@ from app.vector_engines import build_vector_candidates, get_autotrace_path, run_
 
 logger = logging.getLogger(__name__)
 
-# Mod bazlı son palet üst sınırı (VTracer'ın kenar ara-tonlarını temizlemek için)
+# Mod bazlı son palet üst sınırı (VTracer'ın kenar ara-tonlarını temizlemek için).
+# geometric/minimal: taban palet + korunan canlı aksanlar (bkz. _reduce_to_dominant
+# protect_chromatic) kırpılmasın diye taban k + 2 pay bırakılır.
 PALETTE_CAP = {
-    "geometric_logo": 5,
-    "minimal_ai": 6,
-    "flat_logo": 6,
+    "geometric_logo": 6,
+    "minimal_ai": 7,
+    "flat_logo": 7,
     "single_color": 2,
     "lineart": 2,
     "centerline": 2,
@@ -198,6 +204,21 @@ def select_best(scored: list[dict[str, Any]], mode: str) -> tuple[dict, dict, st
         ):
             chosen, reason = clean, "corner_cleanliness_preference"
 
+    # SADAKAT GÜVENLİĞİ: yapısal tercih sıralaması, ölçülen algısal sadakati
+    # belirgin (>1.5 puan) daha yüksek bir adayı gölgede bırakmasın. Geometri
+    # temizliği anlamlı ölçüde düşük olmayan en sadık aday varsa ona geçilir
+    # (temiz çizgi önceliği korunur, ama gözle görülür bozulma pahasına değil).
+    rendered = [c for c in viable if c.get("rendered_ok") and c.get("fidelity_score") is not None]
+    if rendered and chosen.get("rendered_ok") and chosen.get("fidelity_score") is not None:
+        top_fid = max(rendered, key=lambda c: float(c["fidelity_score"]))
+        if (
+            top_fid is not chosen
+            and float(top_fid["fidelity_score"]) > float(chosen["fidelity_score"]) + 1.5
+            and g(top_fid, "geometry_score") >= g(chosen, "geometry_score") - 5.0
+            and g(top_fid, "corner_cleanliness_score") >= g(chosen, "corner_cleanliness_score") - 5.0
+        ):
+            chosen, reason = top_fid, "fidelity_guard"
+
     return chosen, raw_best, reason
 
 
@@ -205,6 +226,53 @@ def select_best(scored: list[dict[str, Any]], mode: str) -> tuple[dict, dict, st
 # modlar. Geometrik/sade modlarda "temiz çizgi" önceliklidir, ham sadakat
 # uğruna geometriyi bozmayız; o yüzden onlar refinement dışıdır.
 FIDELITY_LED_MODES = {"logo_color", "photo_poster"}
+
+
+# ---------------------------------------------------------------------------
+# İnce kontur koruması
+# ---------------------------------------------------------------------------
+@lru_cache(maxsize=128)
+def _has_thin_strokes(preprocessed_path_str: str) -> bool:
+    """Ön işlenmiş görselde ince (<=~3px) kontur oranı belirgin mi?
+
+    VTracer'ın ``filter_speckle`` filtresi yalnız gürültü beneklerini değil,
+    genişliği eşiğin altındaki ÇİZGİLERİ de tümüyle siler (2px kırmızı çizginin
+    çıktıdan kaybolması gerçek bir hataydı). Mürekkep piksellerinin anlamlı bir
+    bölümü ince konturdaysa (distance-transform yarı-genişliği <= 1.5px), speckle
+    filtresi güvenle kapatılır; gürültüyü zaten ön işleme despeckle'ı temizler.
+    """
+    try:
+        img = cv2.imread(preprocessed_path_str, cv2.IMREAD_COLOR)
+        if img is None:
+            return False
+        h, w = img.shape[:2]
+        # zemin: köşe medyanı
+        pw, ph = max(8, w // 12), max(8, h // 12)
+        corners = np.concatenate([
+            img[:ph, :pw].reshape(-1, 3), img[:ph, -pw:].reshape(-1, 3),
+            img[-ph:, :pw].reshape(-1, 3), img[-ph:, -pw:].reshape(-1, 3),
+        ]).astype(np.float32)
+        bg = np.median(corners, axis=0)
+        dist = np.linalg.norm(img.astype(np.float32) - bg[None, None, :], axis=2)
+        ink = (dist > 40).astype(np.uint8)
+        n_ink = int(ink.sum())
+        if n_ink < 50:
+            return False
+        dt = cv2.distanceTransform(ink, cv2.DIST_L2, 3)
+        thin_ratio = float(((dt > 0) & (dt <= 1.5)).sum()) / float(n_ink)
+        return thin_ratio >= 0.20
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _adapt_spec_for_thin_strokes(spec: dict[str, Any], preprocessed_path: Path) -> dict[str, Any]:
+    """İnce konturlu görselde VTracer speckle filtresini kapatır (çizgi silinmesin)."""
+    params = spec.get("vtracer_params") or {}
+    if spec.get("engine") != "vtracer" or int(params.get("filter_speckle", 0) or 0) <= 0:
+        return spec
+    if not _has_thin_strokes(str(preprocessed_path)):
+        return spec
+    return {**spec, "vtracer_params": {**params, "filter_speckle": 0}}
 
 
 # ---------------------------------------------------------------------------
@@ -228,6 +296,7 @@ def produce_candidate(
     svg_path = job_dir / f"{name}.svg"
     engine = spec["engine"]
     try:
+        spec = _adapt_spec_for_thin_strokes(spec, preprocessed_path)
         run_candidate(engine, preprocessed_path, svg_path, spec, original_path=original_path)
         cleanup_report: dict[str, Any] = {}
         if spec.get("cleanup"):
@@ -472,6 +541,18 @@ def run_pipeline(
             if edit_best is not best:
                 best, selection_reason = edit_best, edit_reason
 
+    # 10. Yapı bütünlüğü denetimi (kırık/eksik çizgi, hayalet çizik): nihai
+    # çıktıda orijinaldeki her kontur karşılanıyor mu? Foto benzeri sürekli-tonlu
+    # girdilerde ve düz olmayan zeminlerde mürekkep eşiği güvenilir olmadığından
+    # atlanır. Render backend'i yoksa None kalır (çökme yok).
+    structure_report = None
+    if (
+        best is not None
+        and mode_used != "photo_poster"
+        and (analysis.get("background") or {}).get("is_uniform_background")
+    ):
+        structure_report = score_structure_integrity(best["svg_path"], original_path)
+
     return {
         "analysis": analysis,
         "mode_used": mode_used,
@@ -483,4 +564,5 @@ def run_pipeline(
         "raw_best": raw_best,
         "selection_reason": selection_reason,
         "refine_info": refine_info,
+        "structure_report": structure_report,
     }

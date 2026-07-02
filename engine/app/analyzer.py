@@ -53,6 +53,94 @@ def _merge_near_colors(colors: list[dict[str, Any]], distance_threshold: int = 2
     return sorted(merged, key=lambda item: item["ratio"], reverse=True)
 
 
+def _point_segment_distance(
+    p: np.ndarray, a: np.ndarray, b: np.ndarray
+) -> tuple[float, float]:
+    """p noktasının [a, b] doğru parçasına dik uzaklığı ve izdüşüm oranı t.
+
+    t=0 -> a ucunda, t=1 -> b ucunda. RGB uzayında anti-alias karışım testi
+    için kullanılır (karışım rengi iki gerçek rengin arasında durur).
+    """
+    ab = b - a
+    denom = float(np.dot(ab, ab))
+    if denom < 1e-9:
+        return float(np.linalg.norm(p - a)), 0.0
+    t = float(np.dot(p - a, ab) / denom)
+    t_clamped = min(1.0, max(0.0, t))
+    closest = a + t_clamped * ab
+    return float(np.linalg.norm(p - closest)), t
+
+
+def _aa_film_indexes(
+    small_rgb: np.ndarray,
+    colors: list[dict[str, Any]],
+    colinear_tol: float = 26.0,
+    max_survival: float = 0.25,
+    anchor_factor: float = 0.5,
+) -> set[int]:
+    """Anti-alias KARIŞIM filmi olan baskın renk indekslerini bulur.
+
+    Bir renk üç koşulu birden sağlıyorsa anti-alias kalıntısıdır, gerçek bir
+    tasarım rengi değildir:
+
+    1. Karşılaştırılabilir baskınlıkta iki rengin RGB doğrusu ÜZERİNDE durur
+       (karışım rengi).
+    2. Görüntüde yalnızca ince bir şerit/film olarak yaşar (1px erozyonda
+       kaybolur). Kalın gri bölgeler hayatta kaldığı için gerçek gri tasarım
+       renkleri film sayılmaz.
+    3. Uç renklerin İKİSİNE de komşudur (film iki bölge ARASINDA yaşar).
+       Beyaz zeminde tek başına duran ince gri çizgi uzak uca (siyaha) komşu
+       olmadığından film sayılmaz; gerçek bir çizgidir.
+
+    Bu tonlar elenmezse renk sayısı şişer ve sade logolar yanlışlıkla 'çok
+    renkli' görünür (ince kenarlıklı görselin logo_color'a kaçması gerçek bir
+    hataydı).
+    """
+    n = len(colors)
+    if n < 3:
+        return set()
+    films: set[int] = set()
+    arr = small_rgb.astype(np.float32)
+    rgbs = [np.array(c["rgb"], dtype=np.float32) for c in colors]
+    ratios = [float(c["ratio"]) for c in colors]
+    kernel = np.ones((3, 3), np.uint8)
+
+    # küçükten büyüğe: filmler önce elenir, film olmayanlar çapa (anchor) kalır
+    for i in sorted(range(n), key=lambda idx: ratios[idx]):
+        far_rgb: np.ndarray | None = None
+        for j in range(n):
+            if far_rgb is not None:
+                break
+            if j == i or j in films or ratios[j] < ratios[i] * anchor_factor:
+                continue
+            for k in range(n):
+                if k <= j or k == i or k in films or ratios[k] < ratios[i] * anchor_factor:
+                    continue
+                dist, t = _point_segment_distance(rgbs[i], rgbs[j], rgbs[k])
+                if dist <= colinear_tol and 0.04 <= t <= 0.96:
+                    far_rgb = rgbs[k] if t < 0.5 else rgbs[j]
+                    break
+        if far_rgb is None:
+            continue
+        mask = (np.linalg.norm(arr - rgbs[i], axis=2) <= 30.0).astype(np.uint8)
+        total = int(mask.sum())
+        if total == 0:
+            films.add(i)
+            continue
+        survival = float(cv2.erode(mask, kernel).sum()) / float(total)
+        if survival > max_survival:
+            continue
+        ring = (cv2.dilate(mask, kernel) > 0) & (mask == 0)
+        n_ring = int(np.count_nonzero(ring))
+        if n_ring > 0:
+            far_mask = np.linalg.norm(arr - far_rgb, axis=2) <= 30.0
+            far_frac = float(np.count_nonzero(ring & far_mask)) / float(n_ring)
+            if far_frac < 0.08:
+                continue
+        films.add(i)
+    return films
+
+
 def estimate_color_count(image: Image.Image, max_colors: int = 48) -> dict[str, Any]:
     rgb = _rgba_to_rgb_on_white(image)
     small = resize_for_analysis(rgb, 500)
@@ -97,9 +185,18 @@ def estimate_color_count(image: Image.Image, max_colors: int = 48) -> dict[str, 
         if item["ratio"] >= 0.004
     ]
 
+    # Anti-alias karışım filmleri (iki gerçek renk arasındaki ince kenar
+    # tonları) sayımı şişirmesin: ince kenarlıklı sade logolar 'çok renkli'
+    # görünüp yanlış moda gitmesin diye film-arındırılmış sayım da üretilir.
+    # Ham sayım (photo eşikleri için) korunur.
+    film_idx = _aa_film_indexes(np.asarray(small), dominant_colors)
+    flat_dominant = [c for i, c in enumerate(dominant_colors) if i not in film_idx]
+
     return {
         "estimated_color_count": len(dominant_colors),
+        "flat_color_count": len(flat_dominant),
         "dominant_colors": dominant_colors[:12],
+        "flat_dominant_colors": flat_dominant[:12],
     }
 
 
@@ -401,34 +498,47 @@ def _distinct_vivid_hue_count(dominant_colors: list[dict[str, Any]]) -> int:
     return len(buckets)
 
 
-def _foreground_color_count(image: Image.Image) -> int:
-    """ÖN PLANDAKİ farklı KROMATİK (doygun, gri-olmayan) renk sayısı (16'lık kova).
+def _foreground_stats(image: Image.Image) -> dict[str, Any]:
+    """ÖN PLAN renk istatistikleri: kromatik renk sayısı + canlı renk oranı.
 
-    ``estimate_color_count`` tüm görseli sayar; büyük beyaz/şeffaf zeminli bir
-    gradyan logoda her ton ratio eşiğinin altında kalıp ELENİR ve görsel '1 renk'
-    görünür. Ön plana bakınca gradyan çok sayıda ton gösterir; bu, gradyanı zemine
-    bağımlı olmadan yakalar.
+    ``chromatic_color_count``: ön plandaki farklı KROMATİK (doygun, gri-olmayan)
+    renk sayısı (16'lık kova). ``estimate_color_count`` tüm görseli sayar; büyük
+    beyaz/şeffaf zeminli bir gradyan logoda her ton ratio eşiğinin altında kalıp
+    ELENİR ve görsel '1 renk' görünür. Ön plana bakınca gradyan çok sayıda ton
+    gösterir; bu, gradyanı zemine bağımlı olmadan yakalar.
 
     ÖNEMLİ: yalnızca KROMATİK (max-min >= 35) pikseller sayılır. Gri tonlama
     sayılırsa, anti-alias'lı bir B/W çizim çok 'renk' gösterip yanlışlıkla renk
     logosu sanılır (gerçek bir regresyon kaynağıydı). B/W çizim -> 0 döner.
+
+    ``vivid_ratio``: ön plan piksellerinin ne kadarı GÜÇLÜ kromatik (sat >= 60).
+    İnce kırmızı/mavi çizgiler gibi alanı küçük ama canlı renkler, baskın-renk
+    listesine giremeden anti-alias'ta kaybolabiliyor; ikili (siyah-beyaz) modlara
+    yönlendirmeden önce bu oran kontrol edilir ki RENK YOK EDİLMESİN. Vintage
+    kağıt tonu gibi hafif sıcaklıklar (sat < 60) oranı tetiklemez.
     """
     rgba = image.convert("RGBA")
     small = resize_for_analysis(rgba, 400)
     arr = np.asarray(small)
     if arr.ndim != 3 or arr.shape[2] != 4:
-        return 0
+        return {"chromatic_color_count": 0, "vivid_ratio": 0.0}
     alpha = arr[..., 3]
     rgb = arr[..., :3].astype(np.float32)
     a = (alpha / 255.0)[..., None]
     comp = (rgb * a + 255.0 * (1.0 - a)).astype(np.int32)
     dist = np.linalg.norm(comp.astype(np.float32) - 255.0, axis=2)
     saturation = comp.max(axis=2) - comp.min(axis=2)
-    fg = (dist > 40) & (alpha > 40) & (saturation >= 35)  # ön plan + kromatik
-    if int(np.count_nonzero(fg)) < 20:
-        return 0
-    quantized = comp[fg] // 16
-    return int(len(np.unique(quantized, axis=0)))
+    fg_all = (dist > 40) & (alpha > 40)
+    fg_chroma = fg_all & (saturation >= 35)
+    vivid = fg_all & (saturation >= 60)
+    vivid_ratio = float(np.count_nonzero(vivid)) / max(1, int(np.count_nonzero(fg_all)))
+    if int(np.count_nonzero(fg_chroma)) < 20:
+        return {"chromatic_color_count": 0, "vivid_ratio": round(vivid_ratio, 4)}
+    quantized = comp[fg_chroma] // 16
+    return {
+        "chromatic_color_count": int(len(np.unique(quantized, axis=0))),
+        "vivid_ratio": round(vivid_ratio, 4),
+    }
 
 
 def classify_logo_geometry(
@@ -496,21 +606,33 @@ def analyze_image_from_mem(image: Image.Image) -> dict[str, Any]:
     has_gradient = detect_gradient_like_surface(image)
 
     estimated_color_count = color_data["estimated_color_count"]
-    saturation_stats = _dominant_saturation_stats(color_data["dominant_colors"])
-    color_family_stats = _dominant_color_family_stats(color_data["dominant_colors"])
+    # Film-arındırılmış sayım: anti-alias kenar tonları düşülmüş GERÇEK düz renk
+    # sayısı. Az-renk eşikli kapılar (geometric/minimal/lineart/bwr) bunu kullanır;
+    # ince kenarlıklı sade logolar AA tonları yüzünden 'çok renkli' sanılmaz.
+    # Foto eşikleri (>28/>34) ham sayımda kalır (fotoğrafta tonlar gerçektir).
+    flat_color_count = int(color_data.get("flat_color_count", estimated_color_count))
+    flat_dominant_colors = color_data.get("flat_dominant_colors", color_data["dominant_colors"])
+    saturation_stats = _dominant_saturation_stats(flat_dominant_colors)
+    color_family_stats = _dominant_color_family_stats(flat_dominant_colors)
     # Küçük ama canlı çok-renkli logolar (büyük beyaz zemin) doygunluk-oranı
     # testlerini geçemiyor; ton SAYISI alandan bağımsız ayırt eder.
-    vivid_hue_count = _distinct_vivid_hue_count(color_data["dominant_colors"])
+    vivid_hue_count = _distinct_vivid_hue_count(flat_dominant_colors)
     vivid_multicolor = vivid_hue_count >= 3
     # Gradyan/tonal-zengin ön plan: büyük zemin yüzünden estimate_color_count'un
     # kaçırdığı tek-ton gradyan logoları (ör. Vektoryum mavi V) yakalar.
-    foreground_color_count = _foreground_color_count(image)
+    fg_stats = _foreground_stats(image)
+    foreground_color_count = fg_stats["chromatic_color_count"]
+    vivid_foreground_ratio = fg_stats["vivid_ratio"]
     rich_foreground = foreground_color_count >= 90       # gradyan-zengin renkli logo
     # 28: vintage/distressed siyah-beyaz badge'lerin hafif sıcak tonu (~19-23
     # kromatik kova) 'renk' sayılmasın; gerçek renk aksanları (teal ~33, kahve ~38)
     # üstte kalsın. Düşük eşik monokrom badge'leri lineart'tan dışlayıp minimal_ai'de
     # soldururdu (bilateral ince çizgiyi griye buluyor).
     has_color_foreground = foreground_color_count >= 28   # herhangi bir gerçek renk
+    # Alanı küçük ama CANLI renkler (ince kırmızı/mavi çizgi, küçük renkli aksan):
+    # ikili modlar bunları siyaha çevirip RENGİ YOK EDER. Ön planın >= %2'si güçlü
+    # kromatikse görsel ikili (lineart/single_color) modlara yönlendirilmez.
+    chromatic_accents = vivid_foreground_ratio >= 0.02
 
     quality_score = score_image_quality(
         width=width,
@@ -539,10 +661,10 @@ def analyze_image_from_mem(image: Image.Image) -> dict[str, Any]:
     if not bg_data["is_uniform_background"]:
         warnings.append("Background is not fully uniform. Background cleanup may be needed.")
 
-    has_black, has_white, has_red = _has_black_white_red_signature(color_data["dominant_colors"])
+    has_black, has_white, has_red = _has_black_white_red_signature(flat_dominant_colors)
 
     bwr_low_color_signature = (
-        estimated_color_count <= 8
+        flat_color_count <= 8
         and edge_density <= 0.105
         and has_black
         and has_white
@@ -554,7 +676,7 @@ def analyze_image_from_mem(image: Image.Image) -> dict[str, Any]:
         has_gradient = False
 
     geometry_flags = classify_logo_geometry(
-        estimated_color_count=estimated_color_count,
+        estimated_color_count=flat_color_count,
         has_gradient=has_gradient,
         edge_density=edge_density,
         blur_score=blur_score,
@@ -566,7 +688,7 @@ def analyze_image_from_mem(image: Image.Image) -> dict[str, Any]:
 
     if (
         not geometry_flags["likely_geometric_logo"]
-        and estimated_color_count <= 8
+        and flat_color_count <= 8
         and not has_gradient
         and edge_density <= 0.13
         and has_black
@@ -597,16 +719,16 @@ def analyze_image_from_mem(image: Image.Image) -> dict[str, Any]:
         and not has_alpha_foreground
         and edge_density >= 0.018
         and (
-            estimated_color_count <= 4
+            flat_color_count <= 4
             or (
-                estimated_color_count <= 16
+                flat_color_count <= 16
                 and mostly_neutral_art
             )
         )
     )
 
     likely_single_color = (
-        estimated_color_count <= 3
+        flat_color_count <= 3
         and not has_gradient
         and has_black
         and has_white
@@ -618,19 +740,19 @@ def analyze_image_from_mem(image: Image.Image) -> dict[str, Any]:
         geometry_flags["is_flat_logo"]
         and has_black
         and has_white
-        and estimated_color_count <= 12
+        and flat_color_count <= 12
         and edge_density <= 0.14
     )
 
     likely_color_logo = (
-        estimated_color_count > 8
+        flat_color_count > 8
         or has_gradient
         or vivid_multicolor
         or rich_foreground
         or saturation_stats["saturated_ratio"] > 0.38
         or color_family_stats["non_red_saturated_ratio"] > 0.045
         or (
-            estimated_color_count >= 7
+            flat_color_count >= 7
             and saturation_stats["saturated_ratio"] > 0.22
             and not bwr_low_color_signature
         )
@@ -643,7 +765,7 @@ def analyze_image_from_mem(image: Image.Image) -> dict[str, Any]:
             vivid_multicolor
             or rich_foreground
             or saturation_stats["saturated_ratio"] >= 0.18
-            or estimated_color_count >= 10
+            or flat_color_count >= 10
         )
     )
 
@@ -669,13 +791,14 @@ def analyze_image_from_mem(image: Image.Image) -> dict[str, Any]:
 
     # single_color/lineart İKİLİ (siyah-beyaz) modlardır; gerçek renk taşıyan
     # logoda rengi tamamen yok ederler. Ön planda KROMATİK renk varsa (teal ikon,
-    # kahve badge) bu modlara GİTMEZ -> logo_color (renk korunur). Gerçek B/W çizim
-    # (kromatik renk yok -> has_color_foreground False) lineart'ta KALIR.
-    if likely_single_color and not has_color_foreground:
+    # kahve badge) ya da canlı renk aksanları varsa (ince kırmızı/mavi çizgi ->
+    # chromatic_accents) bu modlara GİTMEZ; renk korunur. Gerçek B/W çizim
+    # (kromatik renk yok -> her iki bayrak False) lineart'ta KALIR.
+    if likely_single_color and not has_color_foreground and not chromatic_accents:
         detected_type = "single_color"
         recommended_mode = "single_color"
 
-    elif likely_line_art and not has_color_foreground:
+    elif likely_line_art and not has_color_foreground and not chromatic_accents:
         detected_type = "lineart"
         recommended_mode = "lineart"
 
@@ -697,7 +820,7 @@ def analyze_image_from_mem(image: Image.Image) -> dict[str, Any]:
         recommended_mode = "minimal_ai"
 
     elif (
-        estimated_color_count <= 12
+        flat_color_count <= 12
         and not has_gradient
         and edge_density < 0.14
         and quality_score >= 55
@@ -734,6 +857,8 @@ def analyze_image_from_mem(image: Image.Image) -> dict[str, Any]:
         "height": height,
         "has_transparency": has_transparency,
         "estimated_color_count": estimated_color_count,
+        "flat_color_count": flat_color_count,
+        "vivid_foreground_ratio": vivid_foreground_ratio,
         "dominant_colors": color_data["dominant_colors"],
         "background": bg_data,
         "blur_score": blur_score,

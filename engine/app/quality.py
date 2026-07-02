@@ -16,18 +16,30 @@ _FLAT_MODES = {"geometric_logo", "minimal_ai", "flat_logo", "single_color", "lin
 _LOW_FIDELITY_THRESHOLD = 78.0
 
 
+# Yapı bütünlüğü eşikleri: orijinaldeki konturların en az bu oranı render'da
+# karşılanmalı (1px tolerans). Altına düşmek = kırık/eksik çizgi demektir.
+_STRUCTURE_RECALL_WARN = 0.985
+_STRUCTURE_RECALL_SEVERE = 0.955
+_STRUCTURE_PRECISION_WARN = 0.96
+
+
 def basic_svg_quality_check(
     score_details: dict[str, Any],
     mode: str,
     geometry_report: dict[str, float] | None = None,
     total_score: float = 0.0,
     fidelity_score: float | None = None,
+    structure_report: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """En iyi adayın yapısal istatistiklerine göre kalite raporu üretir.
 
     ``fidelity_score`` (algısal sadakat) verilirse, yapısal sezgiler ona göre
     yumuşatılır: ör. düşük path sayısı, sadakat yüksekse "detay kaybı" sayılmaz
     (az path = daha düzenlenebilir, bir kusur değil).
+
+    ``structure_report`` (bkz. ``fidelity.score_structure_integrity``) verilirse
+    kırık/eksik çizgi ve hayalet çizik denetimi yapılır: kontur karşılama oranı
+    eşiğin altındaysa çıktı ASLA ``production_ready`` işaretlenmez.
     """
     path_count = int(score_details.get("path_count", 0))
     unique_colors = int(score_details.get("unique_colors", 0))
@@ -78,6 +90,30 @@ def basic_svg_quality_check(
             "source image will give a better result."
         )
 
+    # Yapı bütünlüğü: kırık/eksik çizgi ve hayalet çizik denetimi
+    structure_broken = False
+    structure_block = None
+    if structure_report:
+        recall = float(structure_report.get("ink_recall", 1.0))
+        precision = float(structure_report.get("ink_precision", 1.0))
+        comp_delta = int(structure_report.get("component_delta", 0))
+        comps_orig = int(structure_report.get("components_original", 0))
+        if recall < _STRUCTURE_RECALL_WARN:
+            warnings.append(
+                "Some strokes or shapes from the original are missing or broken "
+                "in the vector output."
+            )
+            if recall < _STRUCTURE_RECALL_SEVERE:
+                structure_broken = True
+        if precision < _STRUCTURE_PRECISION_WARN:
+            warnings.append("The vector output contains stray marks not present in the original.")
+            structure_broken = True
+        # parçalanma: bileşen sayısı belirgin arttıysa şekiller bölünmüş demektir
+        if comps_orig > 0 and comp_delta > max(2, int(0.5 * comps_orig)):
+            warnings.append("Shapes appear fragmented into more pieces than the original.")
+            structure_broken = True
+        structure_block = structure_report
+
     geo = geometry_report or {}
     geometry_block = {
         "straight_edge_score": round(float(geo.get("straight_edge_score", 0.0)) * 100, 2),
@@ -90,6 +126,9 @@ def basic_svg_quality_check(
     serious = has_bitmap or path_count == 0
     if serious:
         status = "failed" if path_count == 0 else "needs_review"
+    elif structure_broken:
+        # kırık çizgi / hayalet çizik varken çıktı üretime hazır sayılamaz
+        status = "needs_review"
     elif low_fidelity:
         # ölçülen sadakat düşükse "üretime hazır" diyemeyiz (dürüst beklenti)
         status = "needs_review"
@@ -111,4 +150,5 @@ def basic_svg_quality_check(
             "fidelity_score": fidelity_score,
         },
         "geometry_report": geometry_block,
+        "structure_report": structure_block,
     }
