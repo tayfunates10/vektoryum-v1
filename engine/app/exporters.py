@@ -308,6 +308,44 @@ def export_dxf(src: Path, dst: Path) -> Path:
 
 
 # ---------------------------------------------------------------------------
+# PNG export ("temizlenmiş" raster çıktı)
+# ---------------------------------------------------------------------------
+def export_png(src: Path, dst: Path, width: int | None = None, height: int | None = None) -> Path:
+    """SVG'yi 'temizlenmiş' PNG olarak render eder (resvg -> fallback zinciri).
+
+    Boyut verilmezse SVG'nin kendi boyutu kullanılır; en uzun kenar 4096 ile
+    sınırlanır. Render backend'i yoksa RuntimeError (output_errors'a düşer).
+    """
+    from app.fidelity import render_svg_to_rgb  # noqa: PLC0415 (döngüsel import önlemi)
+    from PIL import Image  # noqa: PLC0415
+
+    src = Path(src)
+    if not width or not height:
+        try:
+            root = ET.parse(str(src)).getroot()
+            vb = root.get("viewBox")
+            if vb:
+                parts = [float(x) for x in vb.replace(",", " ").split()]
+                width, height = int(parts[2]), int(parts[3])
+            else:
+                width = int(float("".join(ch for ch in (root.get("width") or "1024") if ch.isdigit() or ch == ".")))
+                height = int(float("".join(ch for ch in (root.get("height") or "1024") if ch.isdigit() or ch == ".")))
+        except Exception:  # noqa: BLE001
+            width, height = 1024, 1024
+    longest = max(width, height)
+    if longest > 4096:
+        scale = 4096.0 / longest
+        width, height = max(1, int(width * scale)), max(1, int(height * scale))
+
+    rgb = render_svg_to_rgb(src, int(width), int(height))
+    if rgb is None:
+        raise RuntimeError("PNG render edilemedi (render backend yok: resvg/pymupdf/cairosvg/svglib).")
+    Image.fromarray(rgb).save(str(dst))
+    logger.info("PNG üretildi: %s (%dx%d).", dst, width, height)
+    return Path(dst)
+
+
+# ---------------------------------------------------------------------------
 # Toplu export
 # ---------------------------------------------------------------------------
 def export_all(
@@ -315,7 +353,8 @@ def export_all(
     job_dir: Path,
     job_id: str,
     candidate_id: str | None = None,
-    formats: tuple[str, ...] = ("svg", "pdf", "eps", "dxf"),
+    formats: tuple[str, ...] = ("svg", "pdf", "eps", "dxf", "png"),
+    png_size: tuple[int, int] | None = None,
 ) -> tuple[dict[str, str], dict[str, str]]:
     """Tüm formatları üretir. ``(outputs, errors)`` döndürür.
 
@@ -344,11 +383,16 @@ def export_all(
     for fmt in formats:
         if fmt == "svg":
             continue
-        func = exporters.get(fmt)
-        if not func:
-            continue
         dst = job_dir / f"{job_id}.{fmt}"
         try:
+            if fmt == "png":
+                w, h = png_size if png_size else (None, None)
+                export_png(source_svg, dst, width=w, height=h)
+                outputs["png"] = str(dst)
+                continue
+            func = exporters.get(fmt)
+            if not func:
+                continue
             func(source_svg, dst)
             outputs[fmt] = str(dst)
         except Exception as e:  # noqa: BLE001

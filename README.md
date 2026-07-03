@@ -47,7 +47,7 @@ aynı kodu çağırır):
 7. **Refinement (kapalı döngü)** (`app/pipeline.py` → `refine_best`) — en iyi
    adayın komşuluğunda parametre + renk-sayısı varyantları üretip yeniden ölçer;
    yalnızca daha sadık varyantı benimser.
-8. **Export** (`app/exporters.py`) — SVG/PDF/EPS/DXF.
+8. **Export** (`app/exporters.py`) — SVG/PDF/EPS/DXF + "temizlenmiş" PNG.
 9. **Yapı bütünlüğü denetimi** (`app/fidelity.py` → `score_structure_integrity`) —
    nihai çıktı render edilip orijinalle karşılaştırılır: kopan/eksik çizgi
    (`ink_recall`), hayalet çizik (`ink_precision`) ve şekil parçalanması
@@ -88,7 +88,9 @@ API dokümanı: `http://127.0.0.1:8000/docs`
 - `POST /api/vectorize` — form-data: `file` (görsel), `trace_mode` (varsayılan `auto`).
   JSON döner: `analysis`, `mode_used`, `mode_warning`, `candidate_report`,
   `quality_report`, `refine_info`, `outputs`, `output_errors`, `download_links`.
-- `GET /api/download/{job_id}/{file_type}` — `file_type` ∈ `svg | pdf | eps | dxf`.
+- `GET /api/download/{job_id}/{file_type}` — `file_type` ∈ `svg | pdf | eps | dxf | png`.
+  `png` "temizlenmiş" raster çıktıdır: seçilen vektör, orijinal görsel
+  boyutunda (en uzun kenar <= 4096) render edilir.
 - `GET /` — sağlık kontrolü.
 
 ### Yanıt alanları (frontend için)

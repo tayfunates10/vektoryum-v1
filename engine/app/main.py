@@ -52,6 +52,7 @@ _MEDIA_TYPES = {
     "pdf": "application/pdf",
     "eps": "application/postscript",
     "dxf": "image/vnd.dxf",
+    "png": "image/png",
 }
 
 
@@ -123,13 +124,14 @@ async def vectorize_image(
     raw_best = pipe["raw_best"]
     selection_reason = pipe["selection_reason"]
 
-    # 8. Export
+    # 8. Export ("temizlenmiş" PNG dahil; boyut = orijinal görsel boyutu)
     best_geo = best.get("cleanup_report", {}).get("report", {})
     outputs, output_errors = export_all(
         best_svg=best["svg_path"],
         job_dir=job_dir,
         job_id=job_id,
         candidate_id=f"{mode_used}:{best['name']}",
+        png_size=(int(analysis.get("width", 0)) or None, int(analysis.get("height", 0)) or None),
     )
 
     # 9. Kalite raporu (yapı bütünlüğü dahil: kırık/eksik çizgi denetimi)
@@ -142,7 +144,7 @@ async def vectorize_image(
         structure_report=pipe.get("structure_report"),
     )
 
-    download_links = {fmt: f"/api/download/{job_id}/{fmt}" for fmt in ("svg", "pdf", "eps", "dxf")}
+    download_links = {fmt: f"/api/download/{job_id}/{fmt}" for fmt in ("svg", "pdf", "eps", "dxf", "png")}
 
     final_report = {
         "job_id": job_id,
