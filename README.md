@@ -31,6 +31,12 @@ aynı kodu çağırır):
    eklemlerindeki küçük açılı kinkler G1 sürekliliğe (tangent matching)
    çekilir; köşeler, düz çizgiler ve uç noktalar korunur (gerçek logoda
    eklemlerin ~%95'i hizalanır, sadakat değişimi piksel-altı).
+   **Bütünsel şekil oturtma** (`app/shape_fitting.py`): gerçekten daire /
+   elips / (döndürülmüş) dikdörtgen / yuvarlak köşeli dikdörtgen olan kapalı
+   alt yollar TAM parametrik şekle değiştirilir (çift yönlü sapma toleransı
+   sıkı, sarım yönü korunur, oturmayan organik şekle asla dokunulmaz).
+   Geometrik modlarda regularize'ın ilk adımıdır; renkli modlarda bağımsız
+   çalışır.
 5. **Algısal skorlama** (`app/scoring.py` + `app/fidelity.py`) — adayı render
    edip (resvg → PyMuPDF → CairoSVG → svglib) orijinalle karşılaştırır:
    **SSIM + CIELAB ΔE + kenar-F1** birleşik **fidelity skoru**. Render hiçbir

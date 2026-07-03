@@ -25,7 +25,7 @@ from app.fidelity import score_structure_integrity
 from app.geometry_cleanup import cleanup_svg_geometry, consolidate_svg_palette
 from app.preprocess import preprocess_for_mode
 from app.scoring import score_vector_candidate
-from app.shape_fitting import regularize_svg_geometry
+from app.shape_fitting import fit_whole_shapes_svg, regularize_svg_geometry
 from app.vector_engines import build_vector_candidates, get_autotrace_path, run_candidate
 
 logger = logging.getLogger(__name__)
@@ -321,11 +321,20 @@ def produce_candidate(
             merge_tol = 6.0 if (mode == "logo_color" and cap >= 40) else 12.0
             consolidate_svg_palette(svg_path, max_colors=cap, canonical=canonical, merge_tol=merge_tol)
         # geometrik idealleştirme: düz çizgi + tam dairesel yay oturtma
+        # (bütünsel şekil oturtma dahil — regularize önce tam şekli dener)
         if mode in REGULARIZE_MODES:
             try:
                 regularize_svg_geometry(svg_path)
             except Exception as reg_err:  # noqa: BLE001
                 logger.debug("regularize atlandı (%s): %s", name, reg_err)
+        elif engine == "vtracer":
+            # renkli modlarda yalnız BÜTÜNSEL şekil oturtma: organik path'lere
+            # dokunulmaz, gerçekten daire/elips/dikdörtgen olan alt yollar
+            # ideal parametrik şekle döner (çift yönlü sapma toleransı sıkı)
+            try:
+                fit_whole_shapes_svg(svg_path)
+            except Exception as ws_err:  # noqa: BLE001
+                logger.debug("whole-shape fitting atlandı (%s): %s", name, ws_err)
         # eğri pürüzsüzleştirme (tangent matching): spline eklemlerindeki küçük
         # açılı kinkler G1 sürekliliğe çekilir; köşeler ve düz çizgiler korunur.
         # Gradyan adayı atlanır (tek path, el-yapımı geometri).

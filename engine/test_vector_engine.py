@@ -270,6 +270,48 @@ def main() -> int:
     except Exception as e:  # noqa: BLE001
         check("15. Curve fairing: kink hizalanır, köşe/uçlar korunur", False, repr(e))
 
+    # 16. Bütünsel şekil oturtma: daire/elips/dikdörtgen/roundrect tanınır,
+    # L-poligon reddedilir (organik şekiller asla zorla değiştirilmez)
+    try:
+        import math
+        from app.shape_fitting import try_fit_whole_shape
+
+        rng = np.random.default_rng(3)
+        t = np.linspace(0, 2 * math.pi, 120, endpoint=False)
+        circle = np.c_[200 + 80 * np.cos(t), 150 + 80 * np.sin(t)] + rng.normal(0, 0.5, (120, 2))
+        ellipse_x, ellipse_y = 120 * np.cos(t), 60 * np.sin(t)
+        ca, sa = math.cos(math.radians(30)), math.sin(math.radians(30))
+        ellipse = np.c_[300 + ellipse_x * ca - ellipse_y * sa,
+                        200 + ellipse_x * sa + ellipse_y * ca] + rng.normal(0, 0.5, (120, 2))
+        sq = []
+        for (x0, y0), (x1, y1) in [((-100, -60), (100, -60)), ((100, -60), (100, 60)),
+                                   ((100, 60), (-100, 60)), ((-100, 60), (-100, -60))]:
+            for f in np.linspace(0, 1, 40, endpoint=False):
+                sq.append((250 + x0 + (x1 - x0) * f, 250 + y0 + (y1 - y0) * f))
+        rect = np.array(sq) + rng.normal(0, 0.4, (160, 2))
+        lpts = []
+        L = [(0, 0), (100, 0), (100, 40), (40, 40), (40, 100), (0, 100)]
+        for i in range(len(L)):
+            a, b = np.array(L[i], float), np.array(L[(i + 1) % len(L)], float)
+            for f in np.linspace(0, 1, 30, endpoint=False):
+                lpts.append(a + (b - a) * f)
+        lshape = np.array(lpts)
+
+        d_circle = try_fit_whole_shape(circle, True)
+        d_ellipse = try_fit_whole_shape(ellipse, True)
+        d_rect = try_fit_whole_shape(rect, True)
+        d_l = try_fit_whole_shape(lshape, True)
+        ok = (
+            d_circle is not None and "A" in d_circle
+            and d_ellipse is not None and "A" in d_ellipse
+            and d_rect is not None
+            and d_l is None
+        )
+        check("16. Bütünsel şekil oturtma: daire/elips/rect EVET, L-poligon HAYIR", ok,
+              f"daire={bool(d_circle)}, elips={bool(d_ellipse)}, rect={bool(d_rect)}, L={d_l is None}")
+    except Exception as e:  # noqa: BLE001
+        check("16. Bütünsel şekil oturtma: daire/elips/rect EVET, L-poligon HAYIR", False, repr(e))
+
     return _summary()
 
 
