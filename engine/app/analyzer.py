@@ -274,6 +274,37 @@ def calculate_edge_density(image: Image.Image) -> float:
     return round(float(density), 4)
 
 
+def calculate_semantic_edge_stats(image: Image.Image) -> dict[str, float] | None:
+    """Derin (HED) kenar haritasından anlamsal kenar istatistikleri.
+
+    * ``semantic_edge_density`` — güçlü anlamsal kenar (HED >= 0.25) piksel oranı.
+      Gerçek nesne/yazı sınırlarında yüksek; fotoğraf dokusu ve gürültüde düşük
+      (Canny'nin tam tersi: o dokuda patlar).
+    * ``edge_coherence`` — Canny kenarlarının anlamsal kenarlarla örtüşme oranı.
+      Temiz tasarımda yüksek, doku/gürültü baskın görselde düşük.
+
+    Korpus ölçümü (ayrım gücü): logolar semantik 0.23-0.30 / Canny <= 0.10;
+    gürültülü fotoğraf semantik 0.04 / Canny 0.28. HED modeli yoksa ``None``
+    döner ve çağıran taraf bu sinyalleri kullanmaz (davranış değişmez).
+    """
+    from app.dl_segmentation import compute_edge_map
+
+    rgb = np.array(resize_for_analysis(_rgba_to_rgb_on_white(image), 700))
+    edge = compute_edge_map(rgb)
+    if edge is None:
+        return None
+    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+    canny = cv2.Canny(gray, 70, 160) > 0
+    strong = edge >= 0.25
+    semantic_density = float(strong.mean())
+    strong_d = cv2.dilate(strong.astype(np.uint8), np.ones((5, 5), np.uint8)) > 0
+    coherence = float((canny & strong_d).sum()) / max(1, int(canny.sum()))
+    return {
+        "semantic_edge_density": round(semantic_density, 4),
+        "edge_coherence": round(coherence, 4),
+    }
+
+
 def calculate_structure_likelihood(image: Image.Image) -> dict[str, float]:
     rgb = np.array(resize_for_analysis(_rgba_to_rgb_on_white(image), 700))
     gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
@@ -819,6 +850,28 @@ def analyze_image_from_mem(image: Image.Image) -> dict[str, Any]:
         )
     )
 
+    # DERİN KENAR SİNYALİ (opsiyonel HED): "Canny/anlamsal-kenar oranı yüksek"
+    # = fotoğraf/doku imzası. Canny piksel gürültüsü ve dokuda patlar; HED yalnız
+    # gerçek nesne/yazı sınırlarında yanıt verir. Oran zemine/kadraja bağımsızdır
+    # ve renk sayısı/zemin-düzgünlüğü kriterlerini geçen (ör. düz beyaz zeminli
+    # stüdyo fotoğrafı) fotoğrafları da yakalar. Ölçülen marj geniş: logolarda
+    # oran <= 0.35, fotoğraflarda >= 2.0 (eşik 1.2 ~ 3.4x güvenlik payı).
+    # Model yoksa sinyal None -> kapalı, davranış değişmez.
+    semantic_stats = calculate_semantic_edge_stats(image)
+    semantic_photo_like = False
+    if semantic_stats is not None:
+        sem_density = float(semantic_stats["semantic_edge_density"])
+        noise_edge_ratio = edge_density / max(sem_density, 0.005)
+        semantic_photo_like = bool(
+            noise_edge_ratio >= 1.2
+            and edge_density >= 0.05
+            and sem_density < 0.12
+            and not has_alpha_foreground
+            and not geometry_flags["is_flat_logo"]
+        )
+    if semantic_photo_like and not likely_natural_photo:
+        likely_natural_photo = True
+
     # single_color/lineart İKİLİ (siyah-beyaz) modlardır; gerçek renk taşıyan
     # logoda rengi tamamen yok ederler. Ön planda KROMATİK renk varsa (teal ikon,
     # kahve badge) ya da canlı renk aksanları varsa (ince kırmızı/mavi çizgi ->
@@ -912,6 +965,9 @@ def analyze_image_from_mem(image: Image.Image) -> dict[str, Any]:
         "has_alpha_foreground": has_alpha_foreground,
         "straight_edge_likelihood": straight_edge_likelihood,
         "corner_likelihood": corner_likelihood,
+        "semantic_edge_density": (semantic_stats or {}).get("semantic_edge_density"),
+        "edge_coherence": (semantic_stats or {}).get("edge_coherence"),
+        "semantic_photo_like": semantic_photo_like,
     }
 
 

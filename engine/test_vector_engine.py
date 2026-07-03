@@ -219,6 +219,34 @@ def main() -> int:
     except Exception as e:  # noqa: BLE001
         check("13. HED opsiyonel: yokken None, varken geçerli harita", False, repr(e))
 
+    # 14. Anlamsal foto imzası: düz beyaz zeminli fotoğraf (zemin-düzgünlüğü
+    # kriterini geçtiği için eski tespitin kör noktası) photo_poster'a gitmeli.
+    # HED modeli yoksa sinyal kapalıdır; test bilgi notuyla geçer.
+    try:
+        from app.analyzer import analyze_image_from_mem
+        from app.dl_segmentation import is_available
+
+        if is_available():
+            h, w = 400, 500
+            rng = np.random.default_rng(42)
+            yy, xx = np.mgrid[0:h, 0:w]
+            base = np.zeros((h, w, 3), np.uint8)
+            base[..., 0] = (70 + 130 * xx / w)
+            base[..., 1] = (80 + 120 * yy / h)
+            base[..., 2] = (120 + 80 * np.sin((xx + yy) / 80))
+            photo = np.clip(base.astype(np.float32) + rng.normal(0, 28, base.shape), 0, 255).astype(np.uint8)
+            canvas = np.full((600, 800, 3), 255, np.uint8)
+            canvas[100:500, 150:650] = photo
+            rep = analyze_image_from_mem(Image.fromarray(canvas))
+            check("14. HED: beyaz zeminli foto -> photo_poster",
+                  rep["recommended_mode"] == "photo_poster" and rep["semantic_photo_like"],
+                  f"mode={rep['recommended_mode']}, semantic_photo_like={rep['semantic_photo_like']}")
+        else:
+            check("14. HED: beyaz zeminli foto -> photo_poster", True,
+                  "HED modeli yok; sinyal kapalı (models/fetch_hed.py ile etkinleşir)")
+    except Exception as e:  # noqa: BLE001
+        check("14. HED: beyaz zeminli foto -> photo_poster", False, repr(e))
+
     return _summary()
 
 
