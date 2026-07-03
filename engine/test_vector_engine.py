@@ -247,6 +247,29 @@ def main() -> int:
     except Exception as e:  # noqa: BLE001
         check("14. HED: beyaz zeminli foto -> photo_poster", False, repr(e))
 
+    # 15. Curve fairing: küçük açılı C-C eklemi G1'e hizalanır, uç noktalar
+    # sabit kalır; keskin köşe (>25 derece) korunur
+    try:
+        from app.curve_fairing import _parse_subpaths, _serialize_subpaths, count_curve_kinks, fair_subpath
+
+        d = "M0 0 C10 0 20 0 30 0 C40 3.5 50 7 60 10 Z"
+        sp = _parse_subpaths(d)[0]
+        k_before, _ = count_curve_kinks(d)
+        fair_subpath(sp)
+        d2 = _serialize_subpaths([sp])
+        k_after, _ = count_curve_kinks(d2)
+        ends_fixed = sp["segs"][0][-1] == (30.0, 0.0) and sp["segs"][1][-1] == (60.0, 10.0)
+
+        corner = "M0 0 C10 0 20 0 30 0 C30 10 30 20 30 30 Z"  # 90 derece: köşe
+        sp_c = _parse_subpaths(corner)[0]
+        corner_kept = fair_subpath(sp_c) == 0
+
+        check("15. Curve fairing: kink hizalanır, köşe/uçlar korunur",
+              k_before == 1 and k_after == 0 and ends_fixed and corner_kept,
+              f"kink {k_before}->{k_after}, uçlar_sabit={ends_fixed}, köşe_korundu={corner_kept}")
+    except Exception as e:  # noqa: BLE001
+        check("15. Curve fairing: kink hizalanır, köşe/uçlar korunur", False, repr(e))
+
     return _summary()
 
 

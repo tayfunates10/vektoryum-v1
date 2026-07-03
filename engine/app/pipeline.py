@@ -20,6 +20,7 @@ import numpy as np
 from PIL import Image
 
 from app.analyzer import analyze_image_from_mem
+from app.curve_fairing import fair_svg_curves
 from app.fidelity import score_structure_integrity
 from app.geometry_cleanup import cleanup_svg_geometry, consolidate_svg_palette
 from app.preprocess import preprocess_for_mode
@@ -325,6 +326,14 @@ def produce_candidate(
                 regularize_svg_geometry(svg_path)
             except Exception as reg_err:  # noqa: BLE001
                 logger.debug("regularize atlandı (%s): %s", name, reg_err)
+        # eğri pürüzsüzleştirme (tangent matching): spline eklemlerindeki küçük
+        # açılı kinkler G1 sürekliliğe çekilir; köşeler ve düz çizgiler korunur.
+        # Gradyan adayı atlanır (tek path, el-yapımı geometri).
+        if engine == "vtracer":
+            try:
+                fair_svg_curves(svg_path)
+            except Exception as fair_err:  # noqa: BLE001
+                logger.debug("curve fairing atlandı (%s): %s", name, fair_err)
         return {
             "name": name,
             "svg_path": svg_path,

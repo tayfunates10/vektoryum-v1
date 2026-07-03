@@ -26,7 +26,11 @@ aynı kodu çağırır):
    gradyan-farkındalıklı motor (`app/gradient_vectorize.py`) / opsiyonel
    Potrace / opsiyonel AutoTrace ile çoklu aday.
 4. **Geometri temizleme** (`app/geometry_cleanup.py`) — düz çizgi/köşe temizliği,
-   eksen yaslama, doğrusal nokta birleştirme.
+   eksen yaslama, doğrusal nokta birleştirme. Spline adaylarında ek olarak
+   **eğri pürüzsüzleştirme** (`app/curve_fairing.py`): ardışık Bezier
+   eklemlerindeki küçük açılı kinkler G1 sürekliliğe (tangent matching)
+   çekilir; köşeler, düz çizgiler ve uç noktalar korunur (gerçek logoda
+   eklemlerin ~%95'i hizalanır, sadakat değişimi piksel-altı).
 5. **Algısal skorlama** (`app/scoring.py` + `app/fidelity.py`) — adayı render
    edip (resvg → PyMuPDF → CairoSVG → svglib) orijinalle karşılaştırır:
    **SSIM + CIELAB ΔE + kenar-F1** birleşik **fidelity skoru**. Render hiçbir
