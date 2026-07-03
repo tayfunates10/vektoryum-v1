@@ -207,6 +207,7 @@ async def vectorize_image(
         },
         "quality_report": quality_report,
         "refine_info": pipe.get("refine_info"),
+        "refit_info": pipe.get("refit_info"),
         "shape_stacking": stacking_report,
         "outputs": {fmt: Path(p).name for fmt, p in outputs.items()},
         "output_errors": output_errors,

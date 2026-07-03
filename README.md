@@ -47,6 +47,21 @@ aynı kodu çağırır):
 7. **Refinement (kapalı döngü)** (`app/pipeline.py` → `refine_best`) — en iyi
    adayın komşuluğunda parametre + renk-sayısı varyantları üretip yeniden ölçer;
    yalnızca daha sadık varyantı benimser.
+7.5 **Renk refit — kapalı-form renk optimizasyonu** (`app/color_refit.py`) —
+   izleme sonrası kalan kaybın ana bileşeni RENK'tir (tavan analizi: düz-renk
+   posterizasyon tavanı ~%97.9, kaybın büyük kısmı sabit dolgu tonunun orijinale
+   ΔE uzaklığından). Dolgular sabit renk olduğundan bu, DiffVG/LIVE'ın türevlenebilir
+   vektör optimizasyonundaki renk adımının **kapalı formda** çözülebildiği özel
+   haldir: her path'in gerçek görünür bölgesi ID-render (her path'e benzersiz kod
+   rengi → belge bir kez render → piksel başına en-üst path) ile bulunur ve dolgu,
+   o bölgedeki ORİJİNAL piksellerin medyanına oturtulur. **Palet-koruyucu**: aynı
+   kaynak rengi paylaşan tüm path'ler tek havuz-medyanına taşınır; çıktı paleti
+   kaynağı asla aşmaz (düzenlenebilirlik + renk-sayısı korunur). Büyük yumuşak-tonlu
+   bölgelerde (`gradients=True`) `c(x,y)=c0+gx·x+gy·y` en küçük kareler oturtmasıyla
+   `<linearGradient>` uzatılır (*Segmentation-guided Layer-wise Image Vectorization
+   with Gradient Fills*, arXiv 2408.15741, yaklaşımının bölge-bazlı hali). Sonuç
+   **yalnızca ölçülen fidelity artarsa** benimsenir; foto-yoğun çıktılarda (aynı
+   renk uzak bölgelere dağıldığından yerel ΔE artar) güvenle reddedilir.
 8. **Export** (`app/exporters.py`) — SVG/PDF/EPS/DXF + "temizlenmiş" PNG.
 9. **Yapı bütünlüğü denetimi** (`app/fidelity.py` → `score_structure_integrity`) —
    nihai çıktı render edilip orijinalle karşılaştırılır: kopan/eksik çizgi
@@ -91,8 +106,8 @@ API dokümanı: `http://127.0.0.1:8000/docs`
   çıkarılır, 0.25px binişle dikişsiz) — bileşenleri ayrı ayrı taşımak/düzenlemek
   kolaylaşır; eğriler poligona düzleştirildiğinden dosya büyür.
   JSON döner: `analysis`, `mode_used`, `mode_warning`, `candidate_report`,
-  `quality_report`, `refine_info`, `shape_stacking`, `outputs`, `output_errors`,
-  `download_links`.
+  `quality_report`, `refine_info`, `refit_info`, `shape_stacking`, `outputs`,
+  `output_errors`, `download_links`.
 - `GET /api/download/{job_id}/{file_type}` — `file_type` ∈ `svg | pdf | eps | dxf | png`.
   `png` "temizlenmiş" raster çıktıdır: seçilen vektör, orijinal görsel
   boyutunda (en uzun kenar <= 4096) render edilir.
@@ -106,6 +121,10 @@ API dokümanı: `http://127.0.0.1:8000/docs`
   render edilemezse `null`). `details` içinde `ssim`, `mean_delta_e`, `edge_f1`.
 - `refine_info` — refinement uygulandı mı, `base_fidelity` → `refined_fidelity`,
   denenen varyantlar.
+- `refit_info` — renk refit uygulandı mı, `base_fidelity` → `refit_fidelity`,
+  değişen dolgu sayısı (`fills_changed`), uzatılan gradyan sayısı (`gradients`),
+  ortalama/azami renk kayması (`mean_shift_de`/`max_shift_de`). Uygulanmadıysa
+  neden (`skipped: high_path_count` ya da ölçülen sadakat artmadı).
 - `quality_report.status` — `production_ready` | `needs_review` | `failed`.
   `quality_report.warnings` — kullanıcıya gösterilecek uyarılar (ör. düşük sadakat:
   "görsel fotografik görünüyor, çıktı yaklaşık").
@@ -191,7 +210,7 @@ cd C:\Users\TAYFUN\Desktop\Projeler\tabela-vector-saas\engine
 .\.venv\Scripts\python.exe test_vector_engine.py
 ```
 
-`test_vector_engine.py` 12 kontrol yapar:
+`test_vector_engine.py` 19 kontrol yapar:
 
 1. `app.main` import ediliyor mu
 2. `ALLOWED_MODES` içinde `geometric_logo` var mı
@@ -205,6 +224,13 @@ cd C:\Users\TAYFUN\Desktop\Projeler\tabela-vector-saas\engine
 10. Render backend yoksa sadakat skoru güvenle `None` dönüyor mu (çökme yok)
 11. Potrace yoksa fallback çalışıyor mu
 12. AutoTrace yoksa fallback/warning çalışıyor mu
+13. HED opsiyonel: model yokken `None`, varken geçerli kenar haritası
+14. HED: beyaz zeminli fotoğraf `photo_poster`'a yönlendiriliyor mu
+15. Curve fairing: spline eklem kinki hizalanır, köşe/uçlar korunur
+16. Bütünsel şekil oturtma: daire/elips/dikdörtgen/yıldız EVET, L-poligon HAYIR
+17. Cut-outs: görünüm korunur, transform çözülür
+18. Ayna-simetri: amblem simetrize, asimetrik tasarım (F) dokunulmaz
+19. Renk refit: düz-renk palet-koruyarak oturur, büyük bölgede gradyan uzanır
 
 Ek olarak `test_real_fixtures.py` (gerçek fixture regresyonu, 12 kabul kriteri),
 `test_synthetic_vector_quality.py` (6 sentetik uçtan-uca vaka: geometrik /

@@ -409,6 +409,74 @@ def main() -> int:
     except Exception as e:  # noqa: BLE001
         check("18. Ayna-simetri: amblem simetrize, F harfi dokunulmaz", False, repr(e))
 
+    # 19. Renk refit (kapalı-form renk optimizasyonu): (a) düz-renk dolgular
+    # orijinal görüntünün bölge medyanına oturur ve çıktı paleti kaynağı ASLA
+    # aşmaz (palet-koruma); (b) büyük yumuşak-gradyanlı bölge <linearGradient>
+    # ile uzatılır (Segmentation-guided gradient-fills tekniği). Sadakat artmalı.
+    try:
+        import tempfile as _tf
+        from app.color_refit import refit_svg_colors
+        from app.fidelity import compute_fidelity, load_reference_rgb, render_svg_to_rgb
+
+        jobd = Path(_tf.mkdtemp())
+        # (a) düz-renk kayması + palet-koruma: iki bölge, dolgu rengi orijinalden
+        # ~ΔE 6 sapmış; iki KÜÇÜK path aynı yanlış rengi paylaşıyor (bölünmemeli)
+        W19, H19 = 240, 160
+        base = np.full((H19, W19, 3), 255, np.uint8)
+        base[30:130, 20:110] = (200, 40, 40)      # gerçek kırmızı bölge
+        base[30:130, 130:220] = (40, 90, 200)     # gerçek mavi bölge
+        base[70:90, 115:125] = (200, 40, 40)      # küçük kırmızı benek (aynı renk)
+        o19 = jobd / "refit_orig.png"; Image.fromarray(base).save(o19)
+        wrong_r, wrong_b = "#c81e1e", "#1e50c8"   # ~doğru ama sapmış tonlar
+        s19 = jobd / "refit_in.svg"
+        s19.write_text(
+            f'<?xml version="1.0"?>\n<svg xmlns="http://www.w3.org/2000/svg" '
+            f'width="{W19}" height="{H19}" viewBox="0 0 {W19} {H19}">\n'
+            f'<path d="M0 0 L{W19} 0 L{W19} {H19} L0 {H19} Z" fill="#ffffff"/>\n'
+            f'<path d="M20 30 L110 30 L110 130 L20 130 Z" fill="{wrong_r}"/>\n'
+            f'<path d="M130 30 L220 30 L220 130 L130 130 Z" fill="{wrong_b}"/>\n'
+            f'<path d="M115 70 L125 70 L125 90 L115 90 Z" fill="{wrong_r}"/>\n</svg>\n')
+        ref19, (w19, h19) = load_reference_rgb(o19)
+        f_before = compute_fidelity(ref19, render_svg_to_rgb(s19, w19, h19))["fidelity_score"]
+        out19 = jobd / "refit_out.svg"
+        rep_a = refit_svg_colors(s19, o19, out19, gradients=False)
+        f_after = compute_fidelity(ref19, render_svg_to_rgb(out19, w19, h19))["fidelity_score"]
+        # kaynak 3 dolgu rengi (beyaz+kırmızı+mavi) -> çıktı da <=3 (bölünme yok)
+        import re as _re
+        out_cols = set(_re.findall(r'fill="(#[0-9a-fA-F]{6})"', out19.read_text()))
+        flat_ok = rep_a.get("changed", 0) >= 2 and f_after > f_before and len(out_cols) <= 3
+
+        # (b) gradyan uzanımı: düz-renk büyük dikdörtgen, altında doğrusal gradyan
+        Wg, Hg = 400, 240
+        gimg = np.full((Hg, Wg, 3), 255, np.uint8)
+        for x in range(40, 360):
+            t = (x - 40) / 320.0
+            gimg[40:200, x] = np.clip([30 + t * 200, 60 + t * 150, 180 + t * 60], 0, 255)
+        og = jobd / "grad_orig.png"; Image.fromarray(gimg).save(og)
+        sg = jobd / "grad_in.svg"
+        sg.write_text(
+            f'<?xml version="1.0"?>\n<svg xmlns="http://www.w3.org/2000/svg" '
+            f'width="{Wg}" height="{Hg}" viewBox="0 0 {Wg} {Hg}">\n'
+            f'<path d="M0 0 L{Wg} 0 L{Wg} {Hg} L0 {Hg} Z" fill="#ffffff"/>\n'
+            f'<path d="M40 40 L360 40 L360 200 L40 200 Z" fill="#7d96d2"/>\n</svg>\n')
+        refg, (wg, hg) = load_reference_rgb(og)
+        g_before = compute_fidelity(refg, render_svg_to_rgb(sg, wg, hg))["fidelity_score"]
+        outg = jobd / "grad_out.svg"
+        rep_b = refit_svg_colors(sg, og, outg, gradients=True)
+        g_after = compute_fidelity(refg, render_svg_to_rgb(outg, wg, hg))["fidelity_score"]
+        grad_ok = (
+            rep_b.get("gradients", 0) >= 1
+            and "linearGradient" in outg.read_text()
+            and g_after > g_before + 10
+        )
+
+        check("19. Renk refit: düz-renk palet-koruyarak oturur, gradyan uzanır",
+              flat_ok and grad_ok,
+              f"flat {f_before:.1f}->{f_after:.1f} renk={len(out_cols)}<=3={flat_ok}, "
+              f"gradyan {g_before:.1f}->{g_after:.1f} lg={rep_b.get('gradients')}={grad_ok}")
+    except Exception as e:  # noqa: BLE001
+        check("19. Renk refit: düz-renk palet-koruyarak oturur, gradyan uzanır", False, repr(e))
+
     return _summary()
 
 
