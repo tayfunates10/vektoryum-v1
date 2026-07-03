@@ -477,6 +477,51 @@ def main() -> int:
     except Exception as e:  # noqa: BLE001
         check("19. Renk refit: düz-renk palet-koruyarak oturur, gradyan uzanır", False, repr(e))
 
+    # 20. Sınır refit (alt-piksel kenar oturtma): tam-sayı ızgaraya yuvarlanmış
+    # şekiller, orijinalin AA rampasının kodladığı kesirli konumlara LSQ ile
+    # geri çekilir; sadakat ölçülür şekilde artar, path/palet değişmez.
+    try:
+        import tempfile as _tf20
+        from PIL import ImageDraw as _ImageDraw20
+        from app.boundary_refit import refit_svg_boundaries
+        from app.fidelity import compute_fidelity as _cf20
+        from app.fidelity import load_reference_rgb as _lr20
+        from app.fidelity import render_svg_to_rgb as _rr20
+
+        jb = Path(_tf20.mkdtemp())
+        S20, W20, H20 = 4, 320, 240
+        big20 = Image.new("RGB", (W20 * S20, H20 * S20), (255, 255, 255))
+        d20 = _ImageDraw20.Draw(big20)
+        d20.rectangle((40.6 * S20, 30.4 * S20, 170.3 * S20, 110.7 * S20), fill=(30, 90, 200))
+        d20.ellipse((190.5 * S20, 60.2 * S20, 290.8 * S20, 160.5 * S20), fill=(200, 40, 40))
+        o20 = jb / "o.png"
+        big20.resize((W20, H20), Image.LANCZOS).save(o20)
+        s20 = jb / "in.svg"
+        s20.write_text(
+            f'<?xml version="1.0"?>\n<svg xmlns="http://www.w3.org/2000/svg" '
+            f'width="{W20}" height="{H20}" viewBox="0 0 {W20} {H20}">\n'
+            f'<path d="M0 0 L{W20} 0 L{W20} {H20} L0 {H20} Z" fill="#ffffff"/>\n'
+            f'<path d="M41 30 L170 30 L170 111 L41 111 Z" fill="#1e5ac8"/>\n'
+            f'<path d="M240 60 C268 60 291 82 291 110 C291 138 268 160 240 160 '
+            f'C213 160 191 138 191 110 C191 82 213 60 240 60 Z" fill="#c82828"/>\n</svg>\n')
+        ref20, (w20, h20) = _lr20(o20)
+        f_b = _cf20(ref20, _rr20(s20, w20, h20))["fidelity_score"]
+        out20 = jb / "out.svg"
+        rep20 = refit_svg_boundaries(s20, o20, out20)
+        f_a = _cf20(ref20, _rr20(out20, w20, h20))["fidelity_score"]
+        # dikdörtgenin sol kenarı (Z'nin örtük kapanış kenarı) da oturmalı
+        import xml.etree.ElementTree as _ET20
+        left_x = None
+        for el20 in _ET20.parse(str(out20)).getroot().iter():
+            if el20.tag.endswith("path") and el20.get("fill") == "#1e5ac8":
+                left_x = float(el20.get("d").split()[0].lstrip("M"))
+        left_ok = left_x is not None and 40.3 <= left_x <= 40.9  # gerçek ~40.6
+        check("20. Sınır refit: çapalar alt-piksel kenara oturur, sadakat artar",
+              rep20.get("moved", 0) >= 6 and f_a > f_b + 0.5 and left_ok,
+              f"{f_b:.2f}->{f_a:.2f}, taşınan={rep20.get('moved')}, sol_kenar={left_x}")
+    except Exception as e:  # noqa: BLE001
+        check("20. Sınır refit: çapalar alt-piksel kenara oturur, sadakat artar", False, repr(e))
+
     return _summary()
 
 

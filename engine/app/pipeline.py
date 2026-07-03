@@ -609,6 +609,69 @@ def _refit_candidates_preselect(
     return best_info
 
 
+def _apply_boundary_refit(
+    best: dict[str, Any],
+    mode: str,
+    analysis: dict[str, Any],
+    original_path: Path,
+    job_dir: Path,
+    scored: list[dict[str, Any]],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Kazananın path sınırlarını orijinalin alt-piksel kenarlarına oturtur.
+
+    Renk refit ile aynı sözleşme: yeni SVG ayrı dosyaya yazılır, aynı
+    skorlayıcıyla puanlanır, YALNIZCA ölçülen fidelity artarsa benimsenir.
+    (bkz. app/boundary_refit.py — kenar-örneklemeli LSQ, DiffVG geometri
+    adımının tek Gauss-Newton iterasyonu.)
+    """
+    info: dict[str, Any] = {"applied": False}
+    if (
+        best is None
+        or not best.get("rendered_ok")
+        or best.get("fidelity_score") is None
+        or mode not in _COLOR_REFIT_MODES
+    ):
+        return best, info
+    if int((best.get("score_details") or {}).get("path_count", 0)) > 700:
+        return best, {"applied": False, "skipped": "high_path_count"}
+
+    from app.boundary_refit import refit_svg_boundaries  # noqa: PLC0415
+
+    src = Path(best["svg_path"])
+    dst = job_dir / f"{src.stem}_bnd.svg"
+    try:
+        rep = refit_svg_boundaries(src, original_path, dst)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("boundary refit atlandı: %s", e)
+        return best, info
+    if not rep.get("moved"):
+        return best, {"applied": False, **rep}
+
+    res = {
+        "name": f"{best['name']}_bnd",
+        "svg_path": dst,
+        "engine": best.get("engine"),
+        "cleanup_report": best.get("cleanup_report", {}),
+        "success": True,
+        "error": None,
+    }
+    sc = score_candidate(res, original_path, analysis, mode)
+    if sc is None or not sc.get("rendered_ok") or sc.get("fidelity_score") is None:
+        return best, {"applied": False, **rep}
+    base_fid = float(best["fidelity_score"])
+    new_fid = float(sc["fidelity_score"])
+    info = {
+        "applied": new_fid > base_fid,
+        "base_fidelity": round(base_fid, 2),
+        "bnd_fidelity": round(new_fid, 2),
+        "anchors_moved": rep.get("moved"),
+    }
+    if new_fid <= base_fid:
+        return best, info
+    scored.append(sc)
+    return sc, info
+
+
 # ---------------------------------------------------------------------------
 # Çekirdek pipeline
 # ---------------------------------------------------------------------------
@@ -731,6 +794,17 @@ def run_pipeline(
                 refit_info = {"applied": True, **rep, "candidate": sc["name"]}
                 if not selection_reason.endswith("+color_refit"):
                     selection_reason = f"{selection_reason}+color_refit"
+        # 9.6 Sınır refit'i (alt-piksel kenar oturtma): kazananın çapaları
+        # orijinaldeki AA rampasının kodladığı gerçek kenar konumlarına LSQ ile
+        # çekilir (ölçüm korumalı). Renk refit'ten kalan kaybın ana bileşeni
+        # yerel yarım-piksel sınır sapmasıdır (faz-korelasyon ölçümü global
+        # kaymayı ekarte etti).
+        best, bnd_info = _apply_boundary_refit(
+            best, mode_used, analysis, original_path, job_dir, scored
+        )
+        if bnd_info.get("applied"):
+            selection_reason = f"{selection_reason}+boundary_refit"
+        refit_info = {**refit_info, "boundary": bnd_info}
 
     # 10. Yapı bütünlüğü denetimi (kırık/eksik çizgi, hayalet çizik): nihai
     # çıktıda orijinaldeki her kontur karşılanıyor mu? Foto benzeri sürekli-tonlu

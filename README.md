@@ -62,6 +62,21 @@ aynı kodu çağırır):
    with Gradient Fills*, arXiv 2408.15741, yaklaşımının bölge-bazlı hali). Sonuç
    **yalnızca ölçülen fidelity artarsa** benimsenir; foto-yoğun çıktılarda (aynı
    renk uzak bölgelere dağıldığından yerel ΔE artar) güvenle reddedilir.
+7.6 **Sınır refit — alt-piksel kenar oturtma** (`app/boundary_refit.py`) —
+   renk refit'ten sonra kalan izleme kaybının ana bileşeni, sınırların gerçek
+   kenara göre YEREL yarım-piksel sapmasıdır (faz-korelasyon ölçümü global
+   kaymayı ekarte etti). Orijinaldeki anti-alias rampası gerçek kenarın
+   alt-piksel konumunu kodlar: her segment üzerinde çok noktada, yerel normal
+   boyunca örneklenen renk profilinin iki yaka arasındaki 0.5 geçişi ölçülür
+   (klasik alt-piksel kenar lokalizasyonu) ve çapa düzeltmeleri alt yol başına
+   regülarize EN KÜÇÜK KARELER ile çözülür — DiffVG tarzı türevlenebilir
+   geometri optimizasyonunun tek Gauss-Newton adımı, kapalı formda (torch'suz).
+   Çapa-başına doğrudan oturtma köşelerde yanılır; kenar-içi örnekler köşeyi iki
+   kenarın kesişimi olarak doğru konuma çeker. Kontrastsız (örtülen) sınırlar ve
+   çok-geçişli (paralel komşu kenar) profiller atlanır; translate-dışı transform
+   taşıyan path'lere dokunulmaz. Sonuç yalnızca ölçülen fidelity artarsa
+   benimsenir. Ölçüm: fixture ortalaması 94.21 → 95.87 (+1.66; gradient_logo
+   96.05 → 98.15, tavanın 0.17 altına).
 8. **Export** (`app/exporters.py`) — SVG/PDF/EPS/DXF + "temizlenmiş" PNG.
 9. **Yapı bütünlüğü denetimi** (`app/fidelity.py` → `score_structure_integrity`) —
    nihai çıktı render edilip orijinalle karşılaştırılır: kopan/eksik çizgi

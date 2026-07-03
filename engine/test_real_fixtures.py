@@ -90,8 +90,13 @@ def _evaluate(label: str, data: dict, expected_mode: str) -> list[tuple[str, boo
 
     if expected_mode == "geometric_logo":
         checks.append((f"{label}: likely_geometric_logo == True", an["likely_geometric_logo"] is True, f"={an['likely_geometric_logo']}"))
+        # _refit (renk) / _bnd (sınır) sonekleri kazananın orijinale yeniden
+        # oturtulmuş türevleridir; temel aday adına göre denetlenir
+        base_name = cr["best_candidate"]
+        while base_name.endswith(("_refit", "_bnd")):
+            base_name = base_name.rsplit("_", 1)[0]
         checks.append((f"{label}: best in geo_standard/clean/contour/mixed",
-                       cr["best_candidate"] in {"geo_standard", "geo_clean", "geo_contour", "geo_mixed"},
+                       base_name in {"geo_standard", "geo_clean", "geo_contour", "geo_mixed"},
                        f"={cr['best_candidate']} (reason={cr['selection_reason']})"))
         checks.append((f"{label}: quality production_ready/needs_review",
                        qr["status"] in {"production_ready", "needs_review"}, f"={qr['status']} warnings={qr['warnings']}"))

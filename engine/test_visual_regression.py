@@ -95,15 +95,22 @@ def _record_check(errors: list[str], condition: bool, message: str) -> None:
 def _name_matches(name: str | None, allowed: list[str]) -> bool:
     """Aday adı eşleşmesi; ``foo_*`` girdileri önek olarak değerlendirilir.
 
-    ``_refit`` soneki, kazananın dolgularının orijinale yeniden oturtulmuş
-    (renk-optimize) hali olup geometrisi temel adayla aynıdır; bu yüzden temel
-    ada göre eşleştirilir (``logo_clean_refit`` ~ ``logo_clean``).
+    ``_refit`` (renk) ve ``_bnd`` (sınır) sonekleri, kazananın orijinale
+    yeniden oturtulmuş halleridir; içerik/geometri temel adaydan türetildiği
+    için temel ada göre eşleştirilir (``logo_clean_refit_bnd`` ~ ``logo_clean``).
     """
     if name is None:
         return False
     candidates = [name]
-    if name.endswith("_refit"):
-        candidates.append(name[: -len("_refit")])
+    base = name
+    while True:
+        for suf in ("_refit", "_bnd"):
+            if base.endswith(suf):
+                base = base[: -len(suf)]
+                candidates.append(base)
+                break
+        else:
+            break
     for cand in candidates:
         for entry in allowed:
             if entry.endswith("*"):
