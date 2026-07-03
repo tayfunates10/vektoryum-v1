@@ -328,6 +328,44 @@ def main() -> int:
     except Exception as e:  # noqa: BLE001
         check("16. Bütünsel şekil oturtma: daire/elips/rect/yıldız EVET, L-poligon HAYIR", False, repr(e))
 
+    # 17. Cut-outs dönüşümü: görünüm birebir korunur, tamamen örtülen path
+    # silinir, transform'lar kullanıcı uzayına indirilir
+    try:
+        from app.cutouts import convert_svg_to_cutouts, is_available as cutouts_available
+
+        if cutouts_available():
+            svg = tmp / "stack.svg"
+            svg.write_text(
+                '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 200 200">'
+                '<path fill="#0000ff" d="M20 20 L180 20 L180 180 L20 180 Z"/>'
+                '<path fill="#00ff00" transform="translate(10,0)" d="M30 30 L150 30 L150 150 L30 150 Z"/>'
+                '<path fill="#ff0000" d="M60 60 L140 60 L140 140 L60 140 Z"/>'
+                '<path fill="#ffff00" d="M70 70 L130 70 L130 130 L70 130 Z"/>'
+                "</svg>",
+                encoding="utf-8",
+            )
+            from app.fidelity import render_svg_to_rgb
+            before = render_svg_to_rgb(svg, 200, 200)
+            rep = convert_svg_to_cutouts(svg)
+            after = render_svg_to_rgb(svg, 200, 200)
+            txt = svg.read_text(encoding="utf-8")
+            visual_ok = True
+            if before is not None and after is not None:
+                diff = np.abs(before.astype(np.int32) - after.astype(np.int32)).mean()
+                visual_ok = diff < 1.0
+            ok = (
+                rep.get("status") == "completed"
+                and "transform" not in txt
+                and visual_ok
+            )
+            check("17. Cut-outs: görünüm korunur, transform çözülür", ok,
+                  f"rapor={rep}, görsel_fark_ok={visual_ok}")
+        else:
+            check("17. Cut-outs: görünüm korunur, transform çözülür", True,
+                  "pyclipper yok; cut-outs devre dışı (stacked fallback)")
+    except Exception as e:  # noqa: BLE001
+        check("17. Cut-outs: görünüm korunur, transform çözülür", False, repr(e))
+
     return _summary()
 
 

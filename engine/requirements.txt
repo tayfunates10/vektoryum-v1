@@ -9,6 +9,9 @@ scipy
 vtracer
 ezdxf
 svgpathtools
+# pyclipper: shape_stacking=cutouts dönüşümü için boolean poligon işlemleri.
+# Yoksa cut-outs devre dışı kalır, stacked çıktı aynen çalışır (çökme yok).
+pyclipper
 
 # --- Render (algısal sadakat skorlaması için) ---
 # resvg-py: referans kalite SVG render motoru (Rust). Gradyan/pattern/clip dahil

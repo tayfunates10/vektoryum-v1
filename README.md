@@ -85,9 +85,14 @@ API dokümanı: `http://127.0.0.1:8000/docs`
 
 ## API
 
-- `POST /api/vectorize` — form-data: `file` (görsel), `trace_mode` (varsayılan `auto`).
+- `POST /api/vectorize` — form-data: `file` (görsel), `trace_mode` (varsayılan
+  `auto`), `shape_stacking` ∈ `stacked | cutouts` (varsayılan `stacked`).
+  `cutouts`: her path yalnız GÖRÜNEN bölgesini içerir (üstteki şekiller
+  çıkarılır, 0.25px binişle dikişsiz) — bileşenleri ayrı ayrı taşımak/düzenlemek
+  kolaylaşır; eğriler poligona düzleştirildiğinden dosya büyür.
   JSON döner: `analysis`, `mode_used`, `mode_warning`, `candidate_report`,
-  `quality_report`, `refine_info`, `outputs`, `output_errors`, `download_links`.
+  `quality_report`, `refine_info`, `shape_stacking`, `outputs`, `output_errors`,
+  `download_links`.
 - `GET /api/download/{job_id}/{file_type}` — `file_type` ∈ `svg | pdf | eps | dxf | png`.
   `png` "temizlenmiş" raster çıktıdır: seçilen vektör, orijinal görsel
   boyutunda (en uzun kenar <= 4096) render edilir.

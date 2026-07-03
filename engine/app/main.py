@@ -67,9 +67,14 @@ def _job_dir(job_id: str) -> Path:
 async def vectorize_image(
     file: UploadFile = File(...),
     trace_mode: str = Form("auto"),
+    shape_stacking: str = Form("stacked"),
 ):
+    if not isinstance(shape_stacking, str):
+        shape_stacking = "stacked"  # doğrudan (test) çağrıda Form varsayılanı nesne gelir
     if trace_mode not in ALLOWED_MODES:
         raise HTTPException(status_code=400, detail=f"Geçersiz trace_mode. İzin verilenler: {ALLOWED_MODES}")
+    if shape_stacking not in ("stacked", "cutouts"):
+        raise HTTPException(status_code=400, detail="Geçersiz shape_stacking. İzin verilenler: ['stacked', 'cutouts']")
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Desteklenmeyen dosya türü.")
 
@@ -124,10 +129,28 @@ async def vectorize_image(
     raw_best = pipe["raw_best"]
     selection_reason = pipe["selection_reason"]
 
+    # 7.5 Shape stacking dönüşümü (istenirse): stacked -> cut-outs. Kopya
+    # üzerinde çalışılır; başarısız olursa stacked çıktı aynen kullanılır.
+    export_source = Path(best["svg_path"])
+    stacking_report = {"mode": "stacked"}
+    if shape_stacking == "cutouts":
+        from shutil import copyfile
+
+        from app.cutouts import convert_svg_to_cutouts
+
+        cut_svg = job_dir / f"{best['name']}_cutouts.svg"
+        copyfile(export_source, cut_svg)
+        result = convert_svg_to_cutouts(cut_svg)
+        stacking_report = {"mode": "cutouts", **result}
+        if result.get("status") in ("completed", "no_change"):
+            export_source = cut_svg
+        else:
+            stacking_report["fallback"] = "stacked"
+
     # 8. Export ("temizlenmiş" PNG dahil; boyut = orijinal görsel boyutu)
     best_geo = best.get("cleanup_report", {}).get("report", {})
     outputs, output_errors = export_all(
-        best_svg=best["svg_path"],
+        best_svg=export_source,
         job_dir=job_dir,
         job_id=job_id,
         candidate_id=f"{mode_used}:{best['name']}",
@@ -184,6 +207,7 @@ async def vectorize_image(
         },
         "quality_report": quality_report,
         "refine_info": pipe.get("refine_info"),
+        "shape_stacking": stacking_report,
         "outputs": {fmt: Path(p).name for fmt, p in outputs.items()},
         "output_errors": output_errors,
         "download_links": download_links,
