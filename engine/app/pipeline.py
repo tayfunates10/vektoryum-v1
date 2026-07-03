@@ -502,77 +502,111 @@ def refine_best(
 _COLOR_REFIT_MODES = {"logo_color", "photo_poster", "geometric_logo"}
 
 
-def _apply_color_refit(
-    best: dict[str, Any],
+# Ön-seçim refit'inde en çok kaç adaya bakılacağı (fidelity sırasına göre).
+# Refit ID-render başına bir render maliyeti taşır; yalnız seçime aday
+# olabilecek en yüksek sadakatli birkaç adayı optimize etmek yeterlidir.
+_REFIT_TOP_N = 4
+
+
+def _refit_one(
+    cand: dict[str, Any],
     mode: str,
     analysis: dict[str, Any],
     original_path: Path,
     job_dir: Path,
-    scored: list[dict[str, Any]],
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Kazanan adayın dolgu renklerini orijinale yeniden oturtur (ölçüm korumalı).
+) -> dict[str, Any] | None:
+    """Tek adayın dolgularını orijinale yeniden oturtup skorlar (ölçüm korumalı).
 
-    Yeni SVG ayrı dosyaya yazılır, aynı skorlayıcıyla puanlanır ve YALNIZCA
-    ölçülen fidelity artarsa benimsenir; aksi halde eski kazanan aynen kalır.
-    Gradyan uzanımı yalnız fidelity-led modlarda denenir (geometrik modda düz
-    dolgu idealdir).
+    Refit yeni bir SVG'ye yazılır ve aynı skorlayıcıyla puanlanır. YALNIZCA
+    ölçülen fidelity ARTARSA yeni skorlanmış aday döner; aksi halde ``None``
+    (aday kötüleşmez). Gradyan uzanımı yalnız fidelity-led modlarda denenir.
+    Uygun olmayan aday (gradyan motoru, foto-yoğun, zaten refit) için ``None``.
     """
-    info: dict[str, Any] = {"applied": False}
     if (
-        best is None
-        or not best.get("rendered_ok")
-        or best.get("fidelity_score") is None
-        or best.get("engine") == "gradient"  # url() dolguları zaten optimize
+        not cand.get("rendered_ok")
+        or cand.get("fidelity_score") is None
+        or cand.get("engine") == "gradient"  # url() dolguları zaten optimize
+        or cand["name"].endswith("_refit")   # tekrar refit yok
         or mode not in _COLOR_REFIT_MODES
     ):
-        return best, info
-
+        return None
     # foto-yoğun çıktı geçidi: çok yüksek path sayılı sonuçlarda aynı kuantize
     # rengi uzak, ilgisiz bölgelere dağılır; global-renk havuzlama yerel ΔE'yi
-    # ARTIRIR (ölçüm sonucu refit reddedilir). Bu durumda pahalı ID-render'ı
-    # boşuna yapmamak için baştan atlanır — güvenlik geçidi yine de korur ama
-    # gereksiz maliyeti önleriz. Düz çok-renkli logolar (~yüzlerce path) geçer.
-    if int((best.get("score_details") or {}).get("path_count", 0)) > 700:
-        return best, {"applied": False, "skipped": "high_path_count"}
+    # ARTIRIR (refit reddedilir). Pahalı ID-render'ı baştan atlarız.
+    if int((cand.get("score_details") or {}).get("path_count", 0)) > 700:
+        return None
 
     from app.color_refit import refit_svg_colors  # noqa: PLC0415
 
-    src = Path(best["svg_path"])
+    src = Path(cand["svg_path"])
     dst = job_dir / f"{src.stem}_refit.svg"
     try:
         rep = refit_svg_colors(
             src, original_path, dst, gradients=(mode in FIDELITY_LED_MODES)
         )
     except Exception as e:  # noqa: BLE001
-        logger.debug("color refit atlandı: %s", e)
-        return best, info
+        logger.debug("color refit atlandı (%s): %s", cand["name"], e)
+        return None
     if not rep.get("changed"):
-        return best, {"applied": False, **rep}
+        return None
 
     res = {
-        "name": f"{best['name']}_refit",
+        "name": f"{cand['name']}_refit",
         "svg_path": dst,
-        "engine": best.get("engine"),
-        "cleanup_report": best.get("cleanup_report", {}),
+        "engine": cand.get("engine"),
+        "cleanup_report": cand.get("cleanup_report", {}),
         "success": True,
         "error": None,
     }
     sc = score_candidate(res, original_path, analysis, mode)
     if sc is None or not sc.get("rendered_ok") or sc.get("fidelity_score") is None:
-        return best, {"applied": False, **rep}
-    base_fid = float(best["fidelity_score"])
-    new_fid = float(sc["fidelity_score"])
-    info = {
-        "applied": new_fid > base_fid,
-        "base_fidelity": round(base_fid, 2),
-        "refit_fidelity": round(new_fid, 2),
+        return None
+    if float(sc["fidelity_score"]) <= float(cand["fidelity_score"]):
+        return None
+    sc["_refit_rep"] = {
+        "base_fidelity": round(float(cand["fidelity_score"]), 2),
+        "refit_fidelity": round(float(sc["fidelity_score"]), 2),
         **{k: v for k, v in rep.items() if k != "changed"},
         "fills_changed": rep.get("changed"),
     }
-    if new_fid <= base_fid:
-        return best, info
-    scored.append(sc)
-    return sc, info
+    return sc
+
+
+def _refit_candidates_preselect(
+    scored: list[dict[str, Any]],
+    mode: str,
+    analysis: dict[str, Any],
+    original_path: Path,
+    job_dir: Path,
+) -> dict[str, Any]:
+    """Seçimden ÖNCE en yüksek sadakatli ``_REFIT_TOP_N`` adayı renk-refit eder.
+
+    Refit edilmiş varyantlar (yalnız iyileşenler) ``scored``'a eklenir; böylece
+    hem sadakat-öncelikli seçim hem düzenlenebilirlik tercihi RENK-OPTİMİZE
+    edilmiş adaylar arasından seçer. Saf iyileştirme: hiçbir aday kötüleşmez
+    (her refit yalnız kendi tabanını geçtiğinde eklenir). Kazanan tek adaya
+    sonradan refit uygulamak yerine bu geçidi kullanırız — çünkü düzenlenebilirlik
+    tercihi bazen sadakat-en-iyisinden farklı, refit'ten fayda görecek bir adayı
+    seçer ve o adayın da refit'li hâli değerlendirilmelidir.
+    """
+    if mode not in _COLOR_REFIT_MODES:
+        return {"applied": False}
+    rendered = [
+        c for c in scored
+        if c.get("rendered_ok") and c.get("fidelity_score") is not None
+        and not c["name"].endswith("_refit")
+    ]
+    rendered.sort(key=lambda c: -float(c["fidelity_score"]))
+    best_info: dict[str, Any] = {"applied": False}
+    for cand in rendered[:_REFIT_TOP_N]:
+        sc = _refit_one(cand, mode, analysis, original_path, job_dir)
+        if sc is None:
+            continue
+        rep = sc.pop("_refit_rep", {})
+        scored.append(sc)
+        if not best_info.get("applied") or rep.get("refit_fidelity", 0) > best_info.get("refit_fidelity", 0):
+            best_info = {"applied": True, **rep, "candidate": sc["name"]}
+    return best_info
 
 
 # ---------------------------------------------------------------------------
@@ -657,6 +691,20 @@ def run_pipeline(
             )
             if refine_info.get("applied"):
                 selection_reason = "refined"
+        # 8.5 Renk refit (kapalı-form renk optimizasyonu) — SEÇİMDEN ÖNCE: en
+        # yüksek sadakatli birkaç adayın dolguları orijinal görüntünün bölge
+        # medyanlarına oturtulur (ölçüm korumalı; yalnız iyileşen eklenir).
+        # Böylece hem sadakat-öncelikli seçim hem düzenlenebilirlik tercihi
+        # RENK-OPTİMİZE adaylar arasından seçer. İzleme sonrası kaybın ana
+        # bileşeni renktir (tavan analizi: sabit dolgu ΔE sapması). Refine
+        # varyantları da havuzda olduğundan onlar da refit'e aday olur.
+        refit_info = _refit_candidates_preselect(
+            scored, mode_used, analysis, original_path, job_dir
+        )
+        if refit_info.get("applied"):
+            # refit sonrası sadakat-en-iyisi değişmiş olabilir; yeniden seç
+            best, raw_best, selection_reason = select_best(scored, mode_used)
+            selection_reason = f"{selection_reason}+color_refit"
         # 9. Düzenlenebilirlik-duyarlı son seçim (renkli modlar): sadakat marjı
         # içinde çok daha az path'li/gradyanlı adayı tercih et. FOTO-ZENGİN
         # görsellerde (est >= 22: çok tonlu fotoğrafik içerik) uygulanmaz —
@@ -665,16 +713,24 @@ def run_pipeline(
         if mode_used in FIDELITY_LED_MODES and int(analysis.get("estimated_color_count", 0)) < 22:
             edit_best, edit_reason = _apply_editability_preference(scored, best)
             if edit_best is not best:
-                best, selection_reason = edit_best, edit_reason
-        # 9.5 Renk refit (kapalı-form renk optimizasyonu): kazananın dolguları
-        # orijinal görüntünün bölge medyanlarına oturtulur; ölçülen sadakat
-        # artmazsa benimsenmez. İzleme sonrası kaybın ana bileşeni renktir —
-        # tavan analizi: kayıpların ~%60-85'i sabit dolgu renk sapmasından.
-        best, refit_info = _apply_color_refit(
-            best, mode_used, analysis, original_path, job_dir, scored
-        )
-        if refit_info.get("applied"):
-            selection_reason = f"{selection_reason}+color_refit"
+                best = edit_best
+                selection_reason = (
+                    f"{edit_reason}+color_refit" if best["name"].endswith("_refit") else edit_reason
+                )
+        # 9.5 Son-kazanan refit'i: düzenlenebilirlik tercihi genellikle sadakat-
+        # en-iyisinden (top-N ön-refit kapsamı) farklı, DAHA LEAN bir adayı seçer;
+        # onun refit'li hâli ön-geçitte üretilmemiş olabilir. Nihai kazanan henüz
+        # refit değilse burada refit edilir (ölçüm korumalı) ki lean seçim de
+        # renk-optimize olsun.
+        if best is not None and not best["name"].endswith("_refit"):
+            sc = _refit_one(best, mode_used, analysis, original_path, job_dir)
+            if sc is not None:
+                rep = sc.pop("_refit_rep", {})
+                scored.append(sc)
+                best = sc
+                refit_info = {"applied": True, **rep, "candidate": sc["name"]}
+                if not selection_reason.endswith("+color_refit"):
+                    selection_reason = f"{selection_reason}+color_refit"
 
     # 10. Yapı bütünlüğü denetimi (kırık/eksik çizgi, hayalet çizik): nihai
     # çıktıda orijinaldeki her kontur karşılanıyor mu? Foto benzeri sürekli-tonlu
