@@ -508,6 +508,67 @@ def _rounded_rect_d(
     return " ".join(parts) + " Z"
 
 
+def _star_d(
+    cx: float, cy: float, r_out: float, r_in: float, n: int, phase: float, ccw: bool
+) -> str:
+    """Parametrik n-köşeli yıldız poligonu (2n köşe, dış/iç dönüşümlü)."""
+    verts: list[tuple[float, float]] = []
+    for k in range(n):
+        a_out = phase + 2.0 * math.pi * k / n
+        a_in = phase + 2.0 * math.pi * (k + 0.5) / n
+        verts.append((cx + r_out * math.cos(a_out), cy + r_out * math.sin(a_out)))
+        verts.append((cx + r_in * math.cos(a_in), cy + r_in * math.sin(a_in)))
+    if not ccw:
+        verts.reverse()
+    parts = [f"M {_fmt(verts[0][0])} {_fmt(verts[0][1])}"]
+    parts += [f"L {_fmt(p[0])} {_fmt(p[1])}" for p in verts[1:]]
+    return " ".join(parts) + " Z"
+
+
+def _try_fit_star(pts: np.ndarray, tol: float, ccw: bool) -> str | None:
+    """Kapalı alt yolu parametrik yıldıza oturtmayı dener.
+
+    approxPolyDP köşeleri merkez uzaklığına göre DIŞ/İÇ gruplarına ayrılır;
+    grup sayıları eşit (3-12), yarıçaplar tutarlı (CV < %8), dış köşeler açısal
+    olarak düzgün aralıklı olmalıdır. Doğrulama diğer şekillerle aynı çift
+    yönlü sapma + sarım korumasıdır.
+    """
+    cx, cy = float(pts[:, 0].mean()), float(pts[:, 1].mean())
+    x0, y0, x1, y1 = _bbox(pts)
+    diag = math.hypot(x1 - x0, y1 - y0)
+    approx = cv2.approxPolyDP(
+        pts.astype(np.float32).reshape(-1, 1, 2), 0.015 * diag, True
+    ).reshape(-1, 2)
+    if not (6 <= len(approx) <= 26) or len(approx) % 2 != 0:
+        return None
+    dist = np.hypot(approx[:, 0] - cx, approx[:, 1] - cy)
+    ang = np.arctan2(approx[:, 1] - cy, approx[:, 0] - cx)
+    mid = (dist.min() + dist.max()) / 2.0
+    outer = dist > mid
+    n = int(outer.sum())
+    if n != int((~outer).sum()) or not (3 <= n <= 12):
+        return None
+    # dış/iç köşeler dönüşümlü sıralanmalı
+    if any(outer[i] == outer[(i + 1) % len(outer)] for i in range(len(outer))):
+        return None
+    r_out = float(dist[outer].mean())
+    r_in = float(dist[~outer].mean())
+    if r_in < 3 or r_out / max(r_in, 1e-6) < 1.15:
+        return None
+    if float(dist[outer].std()) > 0.08 * r_out or float(dist[~outer].std()) > 0.10 * r_in:
+        return None
+    # dış köşe açıları düzgün aralıklı mı? (2π/n ± 8°)
+    oa = np.sort(np.mod(ang[outer], 2.0 * math.pi))
+    gaps = np.diff(np.concatenate([oa, oa[:1] + 2.0 * math.pi]))
+    if float(np.abs(gaps - 2.0 * math.pi / n).max()) > math.radians(8.0):
+        return None
+    # faz: dış köşelerin dairesel ortalaması (mod 2π/n)
+    base = oa - oa[0]
+    k_idx = np.round(base / (2.0 * math.pi / n))
+    phase = float(np.mean(oa - k_idx * (2.0 * math.pi / n)))
+    return _validated(_star_d(cx, cy, r_out, r_in, n, phase, ccw), pts, tol, ccw)
+
+
 def _validated(d_cand: str, pts: np.ndarray, tol: float, want_ccw: bool) -> str | None:
     """Aday şekil d'sini çift yönlü sapma + sarım yönüyle doğrular."""
     samples = _sample_d(d_cand)
@@ -601,6 +662,14 @@ def try_fit_whole_shape(pts: np.ndarray, closed: bool) -> str | None:
         )
         if d:
             return d
+
+    # 5) yıldız (n köşe, dış/iç yarıçap, faz)
+    try:
+        d = _try_fit_star(pts, tol, ccw)
+    except Exception:  # noqa: BLE001
+        d = None
+    if d:
+        return d
     return None
 
 

@@ -297,20 +297,36 @@ def main() -> int:
                 lpts.append(a + (b - a) * f)
         lshape = np.array(lpts)
 
+        star_v = []
+        for k in range(5):
+            ao = 2 * math.pi * k / 5
+            ai = 2 * math.pi * (k + 0.5) / 5
+            star_v.append((300 + 150 * math.cos(ao), 300 + 150 * math.sin(ao)))
+            star_v.append((300 + 60 * math.cos(ai), 300 + 60 * math.sin(ai)))
+        spts = []
+        for i in range(len(star_v)):
+            a, b = np.array(star_v[i]), np.array(star_v[(i + 1) % len(star_v)])
+            for f in np.linspace(0, 1, 14, endpoint=False):
+                spts.append(a + (b - a) * f)
+        star = np.array(spts) + rng.normal(0, 0.5, (140, 2))
+
         d_circle = try_fit_whole_shape(circle, True)
         d_ellipse = try_fit_whole_shape(ellipse, True)
         d_rect = try_fit_whole_shape(rect, True)
+        d_star = try_fit_whole_shape(star, True)
         d_l = try_fit_whole_shape(lshape, True)
         ok = (
             d_circle is not None and "A" in d_circle
             and d_ellipse is not None and "A" in d_ellipse
             and d_rect is not None
+            and d_star is not None and "A" not in d_star
             and d_l is None
         )
-        check("16. Bütünsel şekil oturtma: daire/elips/rect EVET, L-poligon HAYIR", ok,
-              f"daire={bool(d_circle)}, elips={bool(d_ellipse)}, rect={bool(d_rect)}, L={d_l is None}")
+        check("16. Bütünsel şekil oturtma: daire/elips/rect/yıldız EVET, L-poligon HAYIR", ok,
+              f"daire={bool(d_circle)}, elips={bool(d_ellipse)}, rect={bool(d_rect)}, "
+              f"yıldız={bool(d_star)}, L={d_l is None}")
     except Exception as e:  # noqa: BLE001
-        check("16. Bütünsel şekil oturtma: daire/elips/rect EVET, L-poligon HAYIR", False, repr(e))
+        check("16. Bütünsel şekil oturtma: daire/elips/rect/yıldız EVET, L-poligon HAYIR", False, repr(e))
 
     return _summary()
 
