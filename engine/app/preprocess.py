@@ -765,6 +765,92 @@ def preprocess_photo_poster(arr: np.ndarray, report: dict, n_colors: int = 16) -
     return quant
 
 
+def _mirror_score(
+    rgb: np.ndarray, axis: int, shift_range: int = 8
+) -> tuple[int, float, float] | None:
+    """Verilen eksende (0=yatay ayna/dikey eksen için axis=1 kullanılır) en iyi
+    ayna hizasını arar. Döner: (kaydırma, ort_mutlak_fark, yüksek_fark_oranı).
+
+    axis=1: sol-sağ ayna (dikey eksen); axis=0: üst-alt ayna (yatay eksen).
+    Fark yalnız ÖN PLAN birleşimi üzerinde ölçülür (zemin farkı simetriyi
+    şişirmesin diye).
+    """
+    h, w = rgb.shape[:2]
+    flipped = rgb[:, ::-1] if axis == 1 else rgb[::-1, :]
+    size = w if axis == 1 else h
+    # ön plan maskesi (köşe medyan zemine göre)
+    pw, ph = max(8, w // 12), max(8, h // 12)
+    corners = np.concatenate([
+        rgb[:ph, :pw].reshape(-1, 3), rgb[:ph, -pw:].reshape(-1, 3),
+        rgb[-ph:, :pw].reshape(-1, 3), rgb[-ph:, -pw:].reshape(-1, 3),
+    ]).astype(np.float32)
+    bg = np.median(corners, axis=0)
+    fg = np.linalg.norm(rgb.astype(np.float32) - bg, axis=2) > 40
+    if int(fg.sum()) < 200:
+        return None
+
+    best: tuple[int, float, float] | None = None
+    for s in range(-shift_range, shift_range + 1):
+        lo, hi = max(0, s), size + min(0, s)
+        if hi - lo < size // 2:
+            continue
+        if axis == 1:
+            a = rgb[:, lo:hi].astype(np.int16)
+            b = flipped[:, lo - s:hi - s].astype(np.int16)
+            m = fg[:, lo:hi] | (fg[:, ::-1])[:, lo - s:hi - s]
+        else:
+            a = rgb[lo:hi].astype(np.int16)
+            b = flipped[lo - s:hi - s].astype(np.int16)
+            m = fg[lo:hi] | (fg[::-1])[lo - s:hi - s]
+        if int(m.sum()) < 200:
+            continue
+        diff = np.abs(a - b).max(axis=2)[m]
+        score = float(diff.mean())
+        hi_ratio = float((diff > 30).mean())
+        if best is None or score < best[1]:
+            best = (s, score, hi_ratio)
+    return best
+
+
+def _symmetrize_if_mirror(
+    arr: np.ndarray, report: dict, mean_tol: float = 5.0, hi_tol: float = 0.004
+) -> np.ndarray:
+    """Görsel neredeyse tam ayna-simetrikse ayna ORTALAMASIYLA simetrize eder.
+
+    İzleme gürültüsü simetrik amblemlerde iki yarıyı farklı çıkarır; ortalama
+    hem gürültüyü yarılar hem de kuantizasyon/izleme çıktısını piksel-piksel
+    simetrik yapar. Eşikler ÇOK sıkıdır (ort fark <= 5.0 — korpustaki en
+    simetrik GERÇEK asimetrik logo 31.9; >30 fark oranı <= %0.4): yazı içeren
+    ya da gerçekten asimetrik tasarımlar asla değişmez.
+    """
+    rgb = _rgba_to_rgb_on_white(arr)
+    out = arr
+    applied: dict[str, Any] = {}
+    for axis, name in ((1, "vertical_axis"), (0, "horizontal_axis")):
+        res = _mirror_score(_rgba_to_rgb_on_white(out), axis)
+        if res is None:
+            continue
+        s, score, hi_ratio = res
+        if score > mean_tol or hi_ratio > hi_tol:
+            continue
+        flipped = out[:, ::-1] if axis == 1 else out[::-1, :]
+        size = out.shape[1] if axis == 1 else out.shape[0]
+        lo, hi = max(0, s), size + min(0, s)
+        if out is arr:
+            out = arr.copy()
+        if axis == 1:
+            pair = out[:, lo:hi].astype(np.uint16) + flipped[:, lo - s:hi - s].astype(np.uint16)
+            out[:, lo:hi] = (pair // 2).astype(out.dtype)
+        else:
+            pair = out[lo:hi].astype(np.uint16) + flipped[lo - s:hi - s].astype(np.uint16)
+            out[lo:hi] = (pair // 2).astype(out.dtype)
+        applied[name] = {"shift": s, "mean_diff": round(score, 2), "high_ratio": round(hi_ratio, 5)}
+    if applied:
+        report["symmetrized"] = applied
+        report["steps"].append("mirror_symmetrize")
+    return out
+
+
 def _palette_list(rgb: np.ndarray, limit: int = 12) -> list[str]:
     colors, counts = np.unique(rgb.reshape(-1, 3), axis=0, return_counts=True)
     order = np.argsort(counts)[::-1][:limit]
@@ -856,6 +942,10 @@ def preprocess_for_mode(
         report["steps"].append("supersample_2x")
     if report_resize:
         report["resized"] = report_resize
+
+    # ayna-simetri: neredeyse tam simetrik amblemler simetrize edilir
+    # (çok sıkı eşikler; yazı/asimetrik tasarım asla değişmez)
+    arr = _symmetrize_if_mirror(arr, report)
     func = _DISPATCH.get(mode, preprocess_minimal_ai)
     if mode == "logo_color":
         n_colors = int(color_override) if color_override else _auto_color_count(analysis)

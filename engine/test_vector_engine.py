@@ -366,6 +366,49 @@ def main() -> int:
     except Exception as e:  # noqa: BLE001
         check("17. Cut-outs: görünüm korunur, transform çözülür", False, repr(e))
 
+    # 18. Ayna-simetri: gürültülü simetrik amblem simetrize edilir (çıktı tam
+    # simetrik), asimetrik tasarım (F harfi) asla değişmez
+    try:
+        from PIL import ImageDraw
+        from app.preprocess import _symmetrize_if_mirror
+
+        rng18 = np.random.default_rng(9)
+        img = Image.new("RGBA", (600, 600), (255, 255, 255, 255))
+        dr = ImageDraw.Draw(img)
+        dr.ellipse((150, 100, 450, 400), fill=(20, 60, 130, 255))
+        dr.polygon([(300, 380), (180, 460), (300, 560), (420, 460)], fill=(180, 30, 30, 255))
+        dr.ellipse((250, 200, 350, 300), fill=(255, 255, 255, 255))
+        arr = np.array(img)
+        arr[..., :3] = np.clip(
+            arr[..., :3].astype(float) + rng18.normal(0, 1.5, arr[..., :3].shape), 0, 255
+        ).astype(np.uint8)
+        rep = {"steps": []}
+        out = _symmetrize_if_mirror(arr, rep)
+        applied = "symmetrized" in rep
+        sym_ok = False
+        if applied:
+            s = rep["symmetrized"].get("vertical_axis", {}).get("shift", 0)
+            w = out.shape[1]
+            lo, hi = max(0, s), w + min(0, s)
+            a = out[:, lo:hi, :3].astype(int)
+            b = (out[:, ::-1])[:, lo - s:hi - s, :3].astype(int)
+            sym_ok = float(np.abs(a - b).mean()) < 0.51  # tamsayı ortalama yuvarlaması payı
+
+        img_f = Image.new("RGBA", (400, 400), (255, 255, 255, 255))
+        dr2 = ImageDraw.Draw(img_f)
+        dr2.rectangle((120, 80, 160, 320), fill=(0, 0, 0, 255))
+        dr2.rectangle((120, 80, 300, 120), fill=(0, 0, 0, 255))
+        dr2.rectangle((120, 180, 260, 215), fill=(0, 0, 0, 255))
+        rep_f = {"steps": []}
+        _symmetrize_if_mirror(np.array(img_f), rep_f)
+        f_untouched = "symmetrized" not in rep_f
+
+        check("18. Ayna-simetri: amblem simetrize, F harfi dokunulmaz",
+              applied and sym_ok and f_untouched,
+              f"uygulandı={applied}, simetrik={sym_ok}, F_korundu={f_untouched}")
+    except Exception as e:  # noqa: BLE001
+        check("18. Ayna-simetri: amblem simetrize, F harfi dokunulmaz", False, repr(e))
+
     return _summary()
 
 
