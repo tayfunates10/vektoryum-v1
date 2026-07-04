@@ -882,12 +882,21 @@ def _auto_color_count(analysis: dict[str, Any] | None) -> int:
       tonlara çekilip derinlik kaybolmasın (SSIM ölçülür biçimde yükselir).
     * est >= 22 (foto-zengin görsel): +16 daha — sebze/meyve gibi çok tonlu
       fotoğrafik bölgelerde ton merdiveni zenginleşir (ΔE 5.1 -> 4.6 ölçüldü).
+    * est >= 18 foto-derinlik bonusu: +24 ve tavan 96 — bantlaşma kaynağında
+      incelir (tavan ölçümü: aslan 91.55 -> 92.43, mangal 88.49 -> 89.45;
+      k-means süresi artmıyor). Bu tonlar artık çıktıya TAŞINIR: foto-yoğun
+      izleme çıktısında konsolidasyon atlanır ve per-path refit korur —
+      eskiden 64 üstü budanıyordu, artık budama yok.
     """
     if not analysis:
         return 22
     est = int(analysis.get("estimated_color_count", 14))
     k = est + 10 + (8 if est >= 18 else 0) + (16 if est >= 22 else 0)
-    return int(max(16, min(64, k)))
+    cap = 64
+    if est >= 18:
+        k += 24
+        cap = 96
+    return int(max(16, min(cap, k)))
 
 
 def preprocess_for_mode(
@@ -949,11 +958,11 @@ def preprocess_for_mode(
     func = _DISPATCH.get(mode, preprocess_minimal_ai)
     if mode == "logo_color":
         n_colors = int(color_override) if color_override else _auto_color_count(analysis)
-        n_colors = max(8, min(64, n_colors))
+        n_colors = max(8, min(96, n_colors))
         report["auto_color_count"] = n_colors
         processed = preprocess_logo_color(arr, report, n_colors=n_colors)
     elif mode == "photo_poster" and color_override:
-        k = max(8, min(64, int(color_override)))
+        k = max(8, min(96, int(color_override)))
         report["auto_color_count"] = k
         processed = preprocess_photo_poster(arr, report, n_colors=k)
     else:
