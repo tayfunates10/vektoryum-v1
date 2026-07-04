@@ -652,7 +652,11 @@ def _apply_boundary_refit(
         or mode not in _COLOR_REFIT_MODES
     ):
         return best, info
-    if int((best.get("score_details") or {}).get("path_count", 0)) > 700:
+    # Geçit 2000: temiz kenarlı illüstrasyonlar orta path sayısında gelir ve
+    # sınır oturtmasından kazanır (~10-20s, ölçüm korumalı). Dokulu foto
+    # çıktıları (5000+ path) dışarıda — orada profil varsayımı bozuluyor ve
+    # ölçülen sonuç negatifti (mangal 82.1 -> 80.5).
+    if int((best.get("score_details") or {}).get("path_count", 0)) > 2000:
         return best, {"applied": False, "skipped": "high_path_count"}
 
     from app.boundary_refit import refit_svg_boundaries  # noqa: PLC0415
