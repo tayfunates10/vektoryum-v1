@@ -1,3 +1,19 @@
+"""Gerçek görsel + baseline tabanlı görsel regresyon koşucusu.
+
+``regression/manifest.json`` içindeki vakaları ÇEKİRDEK pipeline
+(``app.pipeline.run_pipeline`` — API ile birebir aynı yol) üzerinden çalıştırır,
+beklentileri doğrular ve seçilen SVG'yi render edip baseline PNG ile karşılaştırır.
+
+Kullanım::
+
+    .venv/bin/python test_visual_regression.py
+    .venv/bin/python test_visual_regression.py --case class_reklam
+    .venv/bin/python test_visual_regression.py --update-baseline   # baseline'ları yenile
+
+Manifest beklentilerinde ``best_candidate_in`` girdileri ``*`` ile bitebilir
+(ör. ``refine_*``): refinement varyantları ada değil öneke göre eşleşir.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -11,16 +27,14 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
-from app.analyzer import analyze_image
-from app.main import (
-    basic_svg_quality_check,
-    convert_svg_to_dxf,
-    multi_candidate_vectorize,
-    render_svg_to_png_for_compare,
-)
-
-
 ENGINE_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(ENGINE_DIR))
+
+from app.exporters import export_dxf  # noqa: E402
+from app.fidelity import render_svg_to_rgb  # noqa: E402
+from app.pipeline import run_pipeline  # noqa: E402
+from app.quality import basic_svg_quality_check  # noqa: E402
+
 REGRESSION_DIR = ENGINE_DIR / "regression"
 DEFAULT_MANIFEST = REGRESSION_DIR / "manifest.json"
 
@@ -37,42 +51,15 @@ def _write_json(path: Path, data: dict[str, Any]) -> None:
 def _resolve_regression_path(value: str | None) -> Path | None:
     if not value:
         return None
-
     path = Path(value)
-
     if path.is_absolute():
         return path
-
     return REGRESSION_DIR / path
-
-
-def _select_mode_and_quality(trace_mode: str, quality: str, analysis: dict[str, Any]) -> tuple[str, str, str | None]:
-    selected_mode = trace_mode
-    selected_quality = quality
-    mode_warning = None
-
-    if trace_mode == "auto":
-        selected_mode = analysis["recommended_mode"]
-
-        if selected_mode in {"geometric_logo", "minimal_ai", "logo_color", "photo_poster"}:
-            selected_quality = "detailed"
-
-    if (
-        trace_mode == "auto"
-        and selected_mode == "minimal_ai"
-        and int(analysis.get("estimated_color_count", 0)) > 12
-    ):
-        selected_mode = "logo_color"
-        selected_quality = "detailed"
-        mode_warning = "auto minimal_ai overridden to logo_color because color count is high"
-
-    return selected_mode, selected_quality, mode_warning
 
 
 def _render_size(width: int, height: int, max_side: int = 1100) -> tuple[int, int]:
     if max(width, height) <= max_side:
         return max(1, width), max(1, height)
-
     scale = max_side / max(width, height)
     return max(1, int(width * scale)), max(1, int(height * scale))
 
@@ -103,6 +90,35 @@ def _image_diff(actual_path: Path, baseline_path: Path) -> dict[str, float]:
 def _record_check(errors: list[str], condition: bool, message: str) -> None:
     if not condition:
         errors.append(message)
+
+
+def _name_matches(name: str | None, allowed: list[str]) -> bool:
+    """Aday adı eşleşmesi; ``foo_*`` girdileri önek olarak değerlendirilir.
+
+    ``_refit`` (renk) ve ``_bnd`` (sınır) sonekleri, kazananın orijinale
+    yeniden oturtulmuş halleridir; içerik/geometri temel adaydan türetildiği
+    için temel ada göre eşleştirilir (``logo_clean_refit_bnd`` ~ ``logo_clean``).
+    """
+    if name is None:
+        return False
+    candidates = [name]
+    base = name
+    while True:
+        for suf in ("_refit", "_bnd"):
+            if base.endswith(suf):
+                base = base[: -len(suf)]
+                candidates.append(base)
+                break
+        else:
+            break
+    for cand in candidates:
+        for entry in allowed:
+            if entry.endswith("*"):
+                if cand.startswith(entry[:-1]):
+                    return True
+            elif cand == entry:
+                return True
+    return False
 
 
 def _validate_expected(
@@ -162,11 +178,11 @@ def _validate_expected(
         )
 
     if "best_candidate_in" in expected:
-        allowed_best = set(expected["best_candidate_in"])
+        allowed_best = list(expected["best_candidate_in"])
         best_candidate = candidate_report.get("best_candidate")
         _record_check(
             errors,
-            best_candidate in allowed_best,
+            _name_matches(best_candidate, allowed_best),
             f"best_candidate expected one of {sorted(allowed_best)}, got {best_candidate}",
         )
 
@@ -195,8 +211,10 @@ def _validate_expected(
         )
 
     quality_expected = expected.get("quality", {})
-    path_count = int(quality_report.get("path_count", 0))
-    unique_color_count = int(quality_report.get("unique_color_count", 0))
+    metrics = quality_report.get("metrics", {})
+    path_count = int(metrics.get("path_count", 0))
+    unique_color_count = int(metrics.get("unique_color_count", 0))
+    fidelity_score = metrics.get("fidelity_score")
     geometry_report = quality_report.get("geometry_report") or {}
     geometry_score = float(geometry_report.get("geometry_score", 0.0))
 
@@ -214,6 +232,23 @@ def _validate_expected(
 
     if "min_geometry_score" in quality_expected:
         _record_check(errors, geometry_score >= float(quality_expected["min_geometry_score"]), f"geometry_score expected >= {quality_expected['min_geometry_score']}, got {geometry_score}")
+
+    if "min_fidelity_score" in quality_expected:
+        got = float(fidelity_score) if fidelity_score is not None else None
+        _record_check(
+            errors,
+            got is not None and got >= float(quality_expected["min_fidelity_score"]),
+            f"fidelity_score expected >= {quality_expected['min_fidelity_score']}, got {got}",
+        )
+
+    # yapı bütünlüğü: rapor üretildiyse kırık çizgi/parçalanma kabul edilmez
+    structure = quality_report.get("structure_report")
+    if structure and "min_ink_recall" in quality_expected:
+        _record_check(
+            errors,
+            float(structure.get("ink_recall", 0.0)) >= float(quality_expected["min_ink_recall"]),
+            f"ink_recall expected >= {quality_expected['min_ink_recall']}, got {structure.get('ink_recall')}",
+        )
 
     return errors
 
@@ -255,16 +290,28 @@ def _validate_visual(
     for key in ("max_mae", "max_rmse", "max_changed_pixel_ratio"):
         if key not in visual:
             continue
-
         metric_name = key.replace("max_", "")
         actual = float(diff[metric_name])
         limit = float(visual[key])
-
         if actual > limit:
             errors.append(f"{metric_name} expected <= {limit}, got {actual}")
 
     diff["baseline"] = str(baseline_path)
     return diff, errors, warnings
+
+
+def _merged_candidates(pipe: dict[str, Any]) -> list[dict[str, Any]]:
+    """Skorlanan + başarısız adayları tek listede döndürür (rapor için)."""
+    scored_by_name = {c["name"]: c for c in pipe["scored"]}
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for r in pipe["results"]:
+        seen.add(r["name"])
+        merged.append(scored_by_name.get(r["name"], r))
+    for c in pipe["scored"]:
+        if c["name"] not in seen:
+            merged.append(c)
+    return merged
 
 
 def run_case(
@@ -282,47 +329,63 @@ def run_case(
     case_dir = run_dir / case_id
     case_dir.mkdir(parents=True, exist_ok=True)
 
-    final_svg_path = case_dir / f"{case_id}.svg"
     dxf_path = case_dir / f"{case_id}.dxf"
     render_path = case_dir / f"{case_id}.png"
-    candidate_dir = case_dir / "candidates"
 
-    analysis = analyze_image(input_path)
-    mode_used, quality_used, mode_warning = _select_mode_and_quality(
-        trace_mode=str(case.get("trace_mode", "auto")),
-        quality=str(case.get("quality", "detailed")),
-        analysis=analysis,
+    with Image.open(input_path) as image:
+        pipe = run_pipeline(
+            image=image.convert("RGBA"),
+            original_path=input_path,
+            trace_mode=str(case.get("trace_mode", "auto")),
+            job_dir=case_dir,
+        )
+
+    analysis = pipe["analysis"]
+    mode_used = pipe["mode_used"]
+    best = pipe["best"]
+
+    if best is None:
+        return {
+            "id": case_id,
+            "success": False,
+            "errors": ["no candidate produced"],
+            "mode_used": mode_used,
+            "candidate_report": {"candidates": []},
+        }
+
+    candidate_report = {
+        "best_candidate": best["name"],
+        "selection_reason": pipe["selection_reason"],
+        "candidates": [
+            {"name": c.get("name"), "success": c.get("success", False), "error": c.get("error")}
+            for c in _merged_candidates(pipe)
+        ],
+    }
+
+    quality_report = basic_svg_quality_check(
+        score_details=best.get("score_details", {}),
+        mode=mode_used,
+        geometry_report=best.get("cleanup_report", {}).get("report", {}),
+        total_score=best["total_score"],
+        fidelity_score=best.get("fidelity_score"),
+        structure_report=pipe.get("structure_report"),
     )
 
-    candidate_report = multi_candidate_vectorize(
-        input_path=input_path,
-        final_svg_path=final_svg_path,
-        temp_dir=candidate_dir,
-        selected_trace_mode=mode_used,
-        selected_quality=quality_used,
-        analysis_report=analysis,
-    )
-
-    quality_report = basic_svg_quality_check(final_svg_path, mode_used)
     output_errors: dict[str, str] = {}
-
     try:
-        convert_svg_to_dxf(final_svg_path, dxf_path, mode_used)
-    except Exception as exc:
+        export_dxf(best["svg_path"], dxf_path)
+    except Exception as exc:  # noqa: BLE001
         output_errors["dxf"] = str(exc) or exc.__class__.__name__
 
     render_width, render_height = _render_size(
         int(analysis.get("width", 1024)),
         int(analysis.get("height", 1024)),
     )
-    rendered_ok = render_svg_to_png_for_compare(
-        svg_path=final_svg_path,
-        png_output_path=render_path,
-        width=render_width,
-        height=render_height,
-    )
-
-    if not rendered_ok and render_path.exists():
+    rendered = render_svg_to_rgb(best["svg_path"], render_width, render_height)
+    rendered_ok = rendered is not None
+    if rendered_ok:
+        Image.fromarray(rendered).save(render_path)
+    elif render_path.exists():
         render_path.unlink()
 
     errors = _validate_expected(
@@ -349,16 +412,18 @@ def run_case(
         "warnings": visual_warnings,
         "input": str(input_path),
         "mode_used": mode_used,
-        "quality_used": quality_used,
-        "mode_warning": mode_warning,
-        "analysis": analysis,
+        "selection_reason": pipe["selection_reason"],
+        "analysis": {k: analysis.get(k) for k in (
+            "detected_type", "recommended_mode", "estimated_color_count",
+            "flat_color_count", "likely_geometric_logo",
+        )},
         "quality_report": quality_report,
         "candidate_report": candidate_report,
         "output_errors": output_errors,
         "rendered_ok": rendered_ok,
         "visual_diff": visual_report,
         "artifacts": {
-            "svg": str(final_svg_path),
+            "svg": str(best["svg_path"]),
             "dxf": str(dxf_path) if dxf_path.exists() else None,
             "render": str(render_path) if render_path.exists() else None,
             "case_dir": str(case_dir),
@@ -380,7 +445,6 @@ def main() -> int:
     args = parser.parse_args()
 
     manifest_path = Path(args.manifest)
-
     if not manifest_path.is_absolute():
         manifest_path = ENGINE_DIR / manifest_path
 
@@ -393,10 +457,8 @@ def main() -> int:
 
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     run_dir = Path(args.out_dir) if args.out_dir else REGRESSION_DIR / "results" / timestamp
-
     if not run_dir.is_absolute():
         run_dir = ENGINE_DIR / run_dir
-
     run_dir.mkdir(parents=True, exist_ok=True)
 
     results = []
@@ -408,11 +470,9 @@ def main() -> int:
         if input_path is None or not input_path.exists():
             message = f"{case.get('id')}: missing fixture {input_path}"
             missing.append(message)
-
             if args.allow_missing:
                 print(f"SKIP {message}")
                 continue
-
             print(f"FAIL {message}")
             results.append({"id": case.get("id"), "success": False, "errors": [message]})
             continue
@@ -430,11 +490,10 @@ def main() -> int:
 
             for warning in result.get("warnings", []):
                 print(f"  WARN {warning}")
-
             for error in result.get("errors", []):
                 print(f"  ERROR {error}")
 
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             result = {
                 "id": case.get("id"),
                 "success": False,
@@ -461,7 +520,6 @@ def main() -> int:
     _write_json(run_dir / "summary.json", summary)
 
     print(f"Report: {run_dir / 'summary.json'}")
-
     return 0 if summary["success"] else 1
 
 

@@ -3,12 +3,27 @@ fastapi
 uvicorn[standard]
 python-multipart
 pillow
-opencv-python-headless
-numpy
+# 4.x ve 5.x doğrulandı (HoughLinesP şekil farkı kodda kaldırılıyor);
+# gelecekteki major sürprizine karşı üst sınır
+opencv-python-headless>=4.8,<6
+numpy<3
 scipy
 vtracer
 ezdxf
 svgpathtools
+# pyclipper: shape_stacking=cutouts dönüşümü için boolean poligon işlemleri.
+# Yoksa cut-outs devre dışı kalır, stacked çıktı aynen çalışır (çökme yok).
+pyclipper
+
+# --- Render (algısal sadakat skorlaması için) ---
+# resvg-py: referans kalite SVG render motoru (Rust). Gradyan/pattern/clip dahil
+# tam destek; gradyan-farkındalıklı adayların doğru puanlanması için birincil
+# rasterizer. Kendi içinde çalışır, harici DLL gerektirmez.
+resvg-py
+# PyMuPDF: fallback SVG->raster render. Kendi motorunu barındırır, DLL'siz; ancak
+# SVG gradyanlarını render etmez (siyah çizer), bu yüzden resvg birincildir.
+# İkisi de yoksa skorlama yapısal tahmine güvenle düşer (çökme yok).
+pymupdf
 
 # --- Opsiyonel render / export ---
 # CairoSVG: PDF/EPS/PNG render için. Windows'ta cairo DLL yoksa import edilir

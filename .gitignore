@@ -15,6 +15,10 @@ engine/tmp/
 engine/regression/results/
 engine/regression/output/
 
+# Gerçek görsel örnekleri (private; ölçüm için, commit edilmez)
+engine/regression/samples/*
+!engine/regression/samples/README.txt
+
 # Env & secrets
 .env
 *.env
@@ -22,3 +26,6 @@ engine/regression/output/
 # OS / editor
 .DS_Store
 Thumbs.db
+
+# Derin öğrenme model ağırlıkları (models/fetch_hed.py ile indirilir)
+engine/models/*.caffemodel

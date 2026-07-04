@@ -386,6 +386,12 @@ def vectorize_geometric_contours_to_svg(
                 continue
             peri = cv2.arcLength(contour, True)
             eps = max(0.5, epsilon * peri / 100.0)
+            # İNCE UZUN şekillerde (çizgi/kenarlık) çevre uzunluğu büyük ama
+            # kalınlık küçüktür; çevreye oranlı epsilon şekli çökertir (poligon
+            # < 3 nokta -> path tamamen kaybolur). Epsilon şerit kalınlığının
+            # üstüne çıkamaz.
+            thickness = 2.0 * area / max(peri, 1.0)
+            eps = max(0.5, min(eps, 0.6 * max(thickness, 1.0)))
             poly = cv2.approxPolyDP(contour, eps, True)
             if len(poly) < 3:
                 continue
@@ -534,12 +540,20 @@ def run_candidate(
     input_path: Path,
     output_path: Path,
     candidate: dict[str, Any],
+    original_path: Path | None = None,
 ) -> None:
-    """Bir adayı motoruna göre çalıştırır. Hata fırlatabilir (main yakalar)."""
+    """Bir adayı motoruna göre çalıştırır. Hata fırlatabilir (main yakalar).
+
+    ``original_path``: gradyan motoru gibi posterize EDİLMEMİŞ pikselleri gereken
+    motorlar için ham görsel yolu. Verilmezse ``input_path`` kullanılır.
+    """
     if engine == "vtracer":
         vectorize_with_vtracer(input_path, output_path, candidate.get("vtracer_params", {}))
     elif engine == "opencv_contour":
         vectorize_geometric_contours_to_svg(input_path, output_path, **candidate.get("params", {}))
+    elif engine == "gradient":
+        from app.gradient_vectorize import vectorize_with_gradients
+        vectorize_with_gradients(original_path or input_path, output_path, candidate.get("params", {}))
     elif engine == "potrace":
         vectorize_with_potrace_cli(input_path, output_path, candidate.get("params", {}))
     elif engine == "autotrace":

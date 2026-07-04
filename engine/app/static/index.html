@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vektoryum — Raster → Vektör</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --ink: #1c2430; --muted: #667085;
+    --line: #e4e7ec; --accent: #175cd3; --accent-ink: #ffffff;
+    --ok: #067647; --ok-bg: #ecfdf3; --warn: #b54708; --warn-bg: #fffaeb;
+    --err: #b42318; --err-bg: #fef3f2;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  .wrap { max-width: 1060px; margin: 0 auto; padding: 28px 20px 64px; }
+  header h1 { font-size: 26px; margin: 0 0 4px; letter-spacing: -0.02em; }
+  header p { margin: 0 0 24px; color: var(--muted); }
+  .card {
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: 12px; padding: 20px; margin-bottom: 20px;
+  }
+  /* --- yükleme --- */
+  #drop {
+    border: 2px dashed var(--line); border-radius: 10px; padding: 36px 20px;
+    text-align: center; color: var(--muted); cursor: pointer;
+    transition: border-color .15s, background .15s;
+  }
+  #drop.over { border-color: var(--accent); background: #f0f6ff; }
+  #drop strong { color: var(--ink); }
+  #drop img { max-height: 160px; max-width: 100%; border-radius: 6px; }
+  .controls { display: flex; flex-wrap: wrap; gap: 14px; align-items: end; margin-top: 16px; }
+  .field label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+  select {
+    padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px;
+    background: #fff; font: inherit; color: var(--ink);
+  }
+  button.primary {
+    padding: 10px 22px; border: 0; border-radius: 8px; font: inherit; font-weight: 600;
+    background: var(--accent); color: var(--accent-ink); cursor: pointer;
+  }
+  button.primary:disabled { opacity: .5; cursor: default; }
+  button.ghost {
+    padding: 8px 16px; border: 1px solid var(--line); border-radius: 8px;
+    background: #fff; font: inherit; color: var(--ink); cursor: pointer;
+  }
+  /* --- durum --- */
+  #status { display: none; align-items: center; gap: 12px; }
+  .spinner {
+    width: 22px; height: 22px; border: 3px solid var(--line);
+    border-top-color: var(--accent); border-radius: 50%;
+    animation: spin .8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  /* --- sonuç --- */
+  #result { display: none; }
+  .badge {
+    display: inline-block; padding: 3px 10px; border-radius: 999px;
+    font-size: 13px; font-weight: 600;
+  }
+  .badge.ok { background: var(--ok-bg); color: var(--ok); }
+  .badge.warn { background: var(--warn-bg); color: var(--warn); }
+  .meta { color: var(--muted); font-size: 13px; margin-left: 10px; }
+  .panes { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 16px 0; }
+  @media (max-width: 720px) { .panes { grid-template-columns: 1fr; } }
+  .pane {
+    border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background:
+    repeating-conic-gradient(#f1f3f5 0% 25%, #ffffff 0% 50%) 0 0 / 22px 22px;
+  }
+  .pane .label {
+    background: var(--card); border-bottom: 1px solid var(--line);
+    padding: 6px 12px; font-size: 13px; color: var(--muted);
+  }
+  .pane .img { display: flex; align-items: center; justify-content: center; min-height: 240px; padding: 10px; }
+  .pane img { max-width: 100%; max-height: 420px; display: block; }
+  ul.warnings { margin: 10px 0 0; padding-left: 20px; color: var(--warn); }
+  .downloads { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+  .downloads a {
+    padding: 9px 18px; border-radius: 8px; text-decoration: none; font-weight: 600;
+    border: 1px solid var(--line); color: var(--ink); background: #fff;
+  }
+  .downloads a.main { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .downloads a.dead { opacity: .4; pointer-events: none; }
+  #error { display: none; background: var(--err-bg); color: var(--err);
+    border: 1px solid #fecdca; border-radius: 10px; padding: 12px 16px; margin-bottom: 20px; }
+  footer { color: var(--muted); font-size: 13px; margin-top: 28px; }
+  code { background: #eef1f4; border-radius: 4px; padding: 1px 5px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Vektoryum</h1>
+    <p>Raster görseli (logo, amblem, tabela, illüstrasyon) SVG / PDF / EPS / DXF / PNG vektör çıktısına dönüştürür.</p>
+  </header>
+
+  <div id="error"></div>
+
+  <div class="card" id="uploadCard">
+    <div id="drop" tabindex="0">
+      <span id="dropHint"><strong>Görsel seçin</strong> ya da buraya sürükleyip bırakın<br>
+      <small>PNG, JPG, WEBP… — en iyi sonuç ≥ 700px</small></span>
+    </div>
+    <input type="file" id="file" accept="image/*" hidden>
+    <div class="controls">
+      <div class="field">
+        <label for="mode">Mod</label>
+        <select id="mode">
+          <option value="auto" selected>Otomatik (önerilen)</option>
+          <option value="logo_color">Renkli logo</option>
+          <option value="geometric_logo">Geometrik logo</option>
+          <option value="flat_logo">Düz logo (siyah/beyaz/kırmızı)</option>
+          <option value="minimal_ai">Minimal</option>
+          <option value="single_color">Tek renk</option>
+          <option value="lineart">Çizgi sanatı</option>
+          <option value="centerline">Merkez çizgi</option>
+          <option value="photo_poster">Foto poster</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="stacking">Şekil yapısı</label>
+        <select id="stacking">
+          <option value="stacked" selected>Katmanlı (küçük dosya)</option>
+          <option value="cutouts">Kesikli (parçaları ayrı taşınabilir)</option>
+        </select>
+      </div>
+      <button class="primary" id="go" disabled>Vektörleştir</button>
+    </div>
+  </div>
+
+  <div class="card" id="status">
+    <div class="spinner"></div>
+    <div>İşleniyor… <span id="elapsed">0</span> sn
+      <div class="meta">Çok adaylı izleme + kalite optimizasyonu çalışıyor; görsel boyutuna göre 30 sn – 3 dk sürebilir.</div>
+    </div>
+  </div>
+
+  <div class="card" id="result">
+    <div>
+      <span class="badge" id="qBadge"></span>
+      <span class="meta" id="qMeta"></span>
+    </div>
+    <ul class="warnings" id="qWarnings"></ul>
+    <div class="panes">
+      <div class="pane"><div class="label">Orijinal</div><div class="img"><img id="origImg" alt="Orijinal"></div></div>
+      <div class="pane"><div class="label">Vektör (SVG)</div><div class="img"><img id="vecImg" alt="Vektör"></div></div>
+    </div>
+    <div class="downloads" id="downloads"></div>
+    <div style="margin-top:16px"><button class="ghost" id="reset">Yeni görsel dönüştür</button></div>
+  </div>
+
+  <footer>API: <code>POST /api/vectorize</code> · <code>GET /api/download/{job}/{format}</code> · <code>GET /api/health</code></footer>
+</div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const drop = $("drop"), fileIn = $("file"), go = $("go");
+  let file = null, timer = null;
+
+  const show = (el, on) => { el.style.display = on ? (el.id === "status" ? "flex" : "block") : "none"; };
+  const showError = (msg) => { $("error").textContent = msg; show($("error"), true); };
+
+  function setFile(f) {
+    if (!f || !f.type.startsWith("image/")) { showError("Lütfen bir görsel dosyası seçin."); return; }
+    file = f;
+    show($("error"), false);
+    const url = URL.createObjectURL(f);
+    $("dropHint").innerHTML = "";
+    let img = drop.querySelector("img");
+    if (!img) { img = document.createElement("img"); drop.appendChild(img); }
+    img.src = url;
+    const cap = document.createElement("div");
+    cap.className = "meta"; cap.style.marginTop = "8px";
+    cap.textContent = f.name + " (" + Math.round(f.size / 1024) + " KB)";
+    const old = drop.querySelector(".meta"); if (old) old.remove();
+    drop.appendChild(cap);
+    go.disabled = false;
+  }
+
+  drop.addEventListener("click", () => fileIn.click());
+  drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") fileIn.click(); });
+  fileIn.addEventListener("change", () => setFile(fileIn.files[0]));
+  ["dragover", "dragenter"].forEach(ev => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("over"); }));
+  ["dragleave", "drop"].forEach(ev => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
+  drop.addEventListener("drop", (e) => setFile(e.dataTransfer.files[0]));
+
+  const FMT_LABELS = { svg: "SVG indir", pdf: "PDF", eps: "EPS", dxf: "DXF", png: "PNG" };
+
+  go.addEventListener("click", async () => {
+    if (!file) return;
+    show($("error"), false); show($("result"), false);
+    show($("status"), true); $("status").style.display = "flex";
+    go.disabled = true;
+    const t0 = Date.now();
+    timer = setInterval(() => { $("elapsed").textContent = Math.round((Date.now() - t0) / 1000); }, 500);
+
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("trace_mode", $("mode").value);
+    fd.append("shape_stacking", $("stacking").value);
+    let data;
+    try {
+      const resp = await fetch("/api/vectorize", { method: "POST", body: fd });
+      data = await resp.json();
+      if (!resp.ok) throw new Error(data.detail || data.error || ("HTTP " + resp.status));
+    } catch (err) {
+      clearInterval(timer); show($("status"), false); go.disabled = false;
+      showError("İşlem başarısız: " + err.message);
+      return;
+    }
+    clearInterval(timer); show($("status"), false); go.disabled = false;
+
+    // kalite rozeti
+    const q = data.quality_report || {};
+    const status = q.status || "bilinmiyor";
+    const badge = $("qBadge");
+    badge.textContent = status === "production_ready" ? "Üretime hazır" : (status === "needs_review" ? "Gözden geçirin" : status);
+    badge.className = "badge " + (status === "production_ready" ? "ok" : "warn");
+    const cr = data.candidate_report || {};
+    const cand = (cr.candidates || []).find(c => c.name === cr.best_candidate) || {};
+    const det = cand.details || {};
+    const bits = [];
+    if (cand.fidelity_score != null) bits.push("sadakat " + cand.fidelity_score);
+    if (det.path_count != null) bits.push(det.path_count + " path");
+    if (det.unique_colors) bits.push(det.unique_colors + " renk");  // 0 = gradyan dolgu, gösterme
+    bits.push("mod: " + (data.mode_used || "?"));
+    $("qMeta").textContent = bits.join(" · ");
+    const wl = $("qWarnings"); wl.innerHTML = "";
+    (q.warnings || []).forEach(w => { const li = document.createElement("li"); li.textContent = w; wl.appendChild(li); });
+
+    // önizlemeler
+    $("origImg").src = URL.createObjectURL(file);
+    $("vecImg").src = (data.download_links || {}).svg + "?t=" + Date.now();
+
+    // indirme butonları (başarısız formatlar soluk)
+    const dl = $("downloads"); dl.innerHTML = "";
+    const errs = data.output_errors || {};
+    Object.entries(data.download_links || {}).forEach(([fmt, href]) => {
+      const a = document.createElement("a");
+      a.href = href; a.textContent = FMT_LABELS[fmt] || fmt.toUpperCase();
+      a.setAttribute("download", "");
+      if (fmt === "svg") a.className = "main";
+      if (errs[fmt]) { a.className += " dead"; a.title = "Bu format üretilemedi: " + errs[fmt]; }
+      dl.appendChild(a);
+    });
+    show($("result"), true);
+    $("result").scrollIntoView({ behavior: "smooth" });
+  });
+
+  $("reset").addEventListener("click", () => {
+    file = null; fileIn.value = "";
+    $("dropHint") || (drop.innerHTML = '<span id="dropHint"></span>');
+    drop.innerHTML = '<span id="dropHint"><strong>Görsel seçin</strong> ya da buraya sürükleyip bırakın<br><small>PNG, JPG, WEBP… — en iyi sonuç ≥ 700px</small></span>';
+    go.disabled = true;
+    show($("result"), false); show($("error"), false);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  });
+})();
+</script>
+</body>
+</html>

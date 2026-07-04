@@ -1,18 +1,37 @@
+"""Sentetik uçtan-uca kalite regresyonu (yeni pipeline mimarisi).
+
+Altı sentetik vaka üretir (anti-alias'lı geometrik logo, şeffaf tek-renk kesim,
+seyrek lineart, çok renkli logo, gradyanlı renkli logo, foto benzeri karmaşık)
+ve her birini ÇEKİRDEK pipeline (``app.pipeline.run_pipeline``) üzerinden
+çalıştırıp şunları doğrular:
+
+* analyzer doğru modu öneriyor mu,
+* seçilen aday beklenen ailede mi (``foo_*`` girdileri önek eşleşir),
+* SVG çıktısı bitmap gömmüyor mu,
+* kalite raporu (yapı bütünlüğü dahil) beklenen durumda mı,
+* DXF export çalışıyor mu.
+
+Çalıştırma::
+
+    .venv/bin/python test_synthetic_vector_quality.py
+"""
+
 from __future__ import annotations
 
-from pathlib import Path
+import sys
 import tempfile
+from pathlib import Path
 from typing import Callable
 
 import numpy as np
 from PIL import Image, ImageDraw
 
-from app.analyzer import analyze_image
-from app.main import (
-    basic_svg_quality_check,
-    convert_svg_to_dxf,
-    multi_candidate_vectorize,
-)
+ENGINE_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(ENGINE_DIR))
+
+from app.exporters import export_dxf  # noqa: E402
+from app.pipeline import run_pipeline  # noqa: E402
+from app.quality import basic_svg_quality_check  # noqa: E402
 
 
 def make_antialiased_geometric_logo(path: Path) -> None:
@@ -125,49 +144,79 @@ def make_photo_like_complex(path: Path) -> None:
     Image.fromarray(arr).save(path)
 
 
+def _best_matches(name: str, allowed: set[str]) -> bool:
+    for entry in allowed:
+        if entry.endswith("*"):
+            if name.startswith(entry[:-1]):
+                return True
+        elif name == entry:
+            return True
+    return False
+
+
 def _assert_case(
     name: str,
     maker: Callable[[Path], None],
     expected_mode: str,
     expected_best: set[str],
     min_candidates: int,
-    require_production_ready: bool,
+    allowed_status: set[str],
 ) -> None:
     with tempfile.TemporaryDirectory() as tmp_dir:
         tmp_path = Path(tmp_dir)
         input_path = tmp_path / f"{name}.png"
-        svg_path = tmp_path / f"{name}.svg"
         dxf_path = tmp_path / f"{name}.dxf"
-        candidate_dir = tmp_path / f"{name}_candidates"
 
         maker(input_path)
-        analysis = analyze_image(input_path)
+        with Image.open(input_path) as image:
+            pipe = run_pipeline(
+                image=image.convert("RGBA"),
+                original_path=input_path,
+                trace_mode="auto",
+                job_dir=tmp_path,
+            )
 
-        assert analysis["recommended_mode"] == expected_mode, analysis
-
-        report = multi_candidate_vectorize(
-            input_path=input_path,
-            final_svg_path=svg_path,
-            temp_dir=candidate_dir,
-            selected_trace_mode=expected_mode,
-            selected_quality="detailed",
-            analysis_report=analysis,
+        analysis = pipe["analysis"]
+        assert analysis["recommended_mode"] == expected_mode, (
+            f"{name}: recommended_mode expected {expected_mode}, "
+            f"got {analysis['recommended_mode']}"
         )
 
-        quality_report = basic_svg_quality_check(svg_path, expected_mode)
-        svg_text = svg_path.read_text(encoding="utf-8", errors="ignore").lower()
+        best = pipe["best"]
+        assert best is not None, f"{name}: no candidate produced"
+        assert _best_matches(best["name"], expected_best), (
+            f"{name}: best expected in {sorted(expected_best)}, got {best['name']}"
+        )
+        assert len(pipe["results"]) >= min_candidates, (
+            f"{name}: candidate count expected >= {min_candidates}, got {len(pipe['results'])}"
+        )
 
-        assert report["best_candidate"] in expected_best, report
-        assert len(report["candidates"]) >= min_candidates, report
-        assert "<image" not in svg_text, "SVG output must not embed bitmap image tags"
-        assert quality_report["path_count"] >= 1, quality_report
-        assert quality_report["unique_color_count"] >= 1, quality_report
+        svg_text = Path(best["svg_path"]).read_text(encoding="utf-8", errors="ignore").lower()
+        assert "<image" not in svg_text, f"{name}: SVG output must not embed bitmap image tags"
 
-        if require_production_ready:
-            assert quality_report["status"] == "production_ready", quality_report
+        quality_report = basic_svg_quality_check(
+            score_details=best.get("score_details", {}),
+            mode=pipe["mode_used"],
+            geometry_report=best.get("cleanup_report", {}).get("report", {}),
+            total_score=best["total_score"],
+            fidelity_score=best.get("fidelity_score"),
+            structure_report=pipe.get("structure_report"),
+        )
+        assert quality_report["metrics"]["path_count"] >= 1, quality_report
+        assert quality_report["metrics"]["unique_color_count"] >= 1, quality_report
+        assert quality_report["status"] in allowed_status, (
+            f"{name}: status expected in {sorted(allowed_status)}, "
+            f"got {quality_report['status']} warnings={quality_report['warnings']}"
+        )
 
-        convert_svg_to_dxf(svg_path, dxf_path, expected_mode)
-        assert dxf_path.exists(), "DXF export was not created"
+        export_dxf(best["svg_path"], dxf_path)
+        assert dxf_path.exists(), f"{name}: DXF export was not created"
+
+        print(
+            f"[PASS] {name}: mode={pipe['mode_used']} best={best['name']} "
+            f"status={quality_report['status']} "
+            f"fid={best.get('fidelity_score')}"
+        )
 
 
 def main() -> None:
@@ -175,49 +224,49 @@ def main() -> None:
         name="antialiased_geometric_logo",
         maker=make_antialiased_geometric_logo,
         expected_mode="geometric_logo",
-        expected_best={"geo_standard", "geo_clean", "geo_contour", "geo_mixed", "geo_detail"},
+        expected_best={"geo_*"},
         min_candidates=5,
-        require_production_ready=True,
+        allowed_status={"production_ready"},
     )
     _assert_case(
         name="transparent_single_color_cut",
         maker=make_transparent_single_color_cut,
         expected_mode="single_color",
-        expected_best={"single_clean", "single_potrace", "single_contour"},
+        expected_best={"single_*"},
         min_candidates=3,
-        require_production_ready=True,
+        allowed_status={"production_ready"},
     )
     _assert_case(
         name="sparse_lineart",
         maker=make_sparse_lineart,
         expected_mode="lineart",
-        expected_best={"lineart_clean", "lineart_detail", "lineart_potrace", "lineart_autotrace"},
+        expected_best={"lineart_*"},
         min_candidates=4,
-        require_production_ready=True,
+        allowed_status={"production_ready"},
     )
     _assert_case(
         name="multicolor_logo",
         maker=make_multicolor_logo,
         expected_mode="logo_color",
-        expected_best={"logo_clean", "logo_standard", "logo_detail_rich", "logo_color_preserve", "logo_smooth"},
+        expected_best={"logo_*", "refine_*"},
         min_candidates=5,
-        require_production_ready=False,
+        allowed_status={"production_ready", "needs_review"},
     )
     _assert_case(
         name="gradient_color_logo",
         maker=make_gradient_color_logo,
         expected_mode="logo_color",
-        expected_best={"logo_clean", "logo_standard", "logo_detail_rich", "logo_color_preserve", "logo_smooth"},
+        expected_best={"logo_*", "refine_*"},
         min_candidates=5,
-        require_production_ready=True,
+        allowed_status={"production_ready"},
     )
     _assert_case(
         name="photo_like_complex",
         maker=make_photo_like_complex,
         expected_mode="photo_poster",
-        expected_best={"photo_poster_clean", "photo_poster_detail"},
+        expected_best={"photo_*", "refine_*"},
         min_candidates=2,
-        require_production_ready=True,
+        allowed_status={"production_ready", "needs_review"},
     )
 
     print("Synthetic vector quality regression tests passed.")

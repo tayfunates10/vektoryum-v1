@@ -23,6 +23,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
+import cv2
 import numpy as np
 
 try:
@@ -42,7 +43,24 @@ def _fmt(v: float) -> str:
 # ---------------------------------------------------------------------------
 # Geometri yardımcıları
 # ---------------------------------------------------------------------------
-def _flatten_subpaths(d: str, max_pts: int = 700) -> list[tuple[np.ndarray, bool, str]]:
+def _flatten_subpaths(
+    d: str, max_pts: int = 700, skip_unfittable: bool = False
+) -> list[tuple[np.ndarray, bool, str]]:
+    """d-string'in alt yollarını (örnek_noktalar, kapalı_mı, alt_d) üçlülerine açar.
+
+    HIZLI YOL: mutlak M/L/C/Z path'leri (vtracer/opencv çıktısı) yerel parser +
+    vektörize Bezier değerlendirmesiyle örneklenir — svgpathtools'un nokta-nokta
+    ``sub.point()`` çağrısı ve sayısal ``length()`` entegrasyonu binlerce path'te
+    profilde %47'lik darboğaktı (56s/aday-turu -> ~2s). Başka komut içeren d
+    svgpathtools'a düşer (davranış birebir).
+
+    ``skip_unfittable=True`` (yalnız bütünsel şekil oturtma): açık ya da küçük
+    (kontrol-poligonu köşegeni < 12) alt yollar yoğun örneklenmeden, oturtucunun
+    zaten reddedeceği minimal noktayla döner — alt_d korunur, geometri değişmez.
+    """
+    fast = _flatten_subpaths_mlcz(d, max_pts, skip_unfittable)
+    if fast is not None:
+        return fast
     path = parse_path(d)
     out: list[tuple[np.ndarray, bool, str]] = []
     for sub in path.continuous_subpaths():
@@ -76,6 +94,82 @@ def _flatten_subpaths(d: str, max_pts: int = 700) -> list[tuple[np.ndarray, bool
             arr = arr[:-1]  # son tekrar noktayı at (kapalı)
         if len(arr) < 4:
             continue
+        out.append((arr, closed, sub_d))
+    return out
+
+
+def _flatten_subpaths_mlcz(
+    d: str, max_pts: int, skip_unfittable: bool
+) -> list[tuple[np.ndarray, bool, str]] | None:
+    """M/L/C/Z hızlı düzleştirici; desteklenmeyen komutta None (fallback)."""
+    from app.curve_fairing import _parse_subpaths, _serialize_subpaths  # noqa: PLC0415
+
+    sps = _parse_subpaths(d)
+    if sps is None:
+        return None
+    out: list[tuple[np.ndarray, bool, str]] = []
+    for sp in sps:
+        sub_d = _serialize_subpaths([sp])
+        p0 = np.asarray(sp["start"], dtype=float)
+        # kontrol poligonu (eğriyi KAPSAR): uzunluk yaklaşımı + hızlı bbox
+        ctrl = [p0]
+        for seg in sp["segs"]:
+            if seg[0] == "L":
+                ctrl.append(np.asarray(seg[1], dtype=float))
+            else:
+                ctrl.extend(np.asarray(p, dtype=float) for p in seg[1:])
+        ctrl_arr = np.array(ctrl)
+        last = np.asarray(sp["segs"][-1][-1], dtype=float) if sp["segs"] else p0
+        closed = bool(sp["closed"]) or bool(np.hypot(*(p0 - last)) < 1.5)
+        if skip_unfittable:
+            span = ctrl_arr.max(axis=0) - ctrl_arr.min(axis=0)
+            if not closed or float(np.hypot(*span)) < 12.0 or len(sp["segs"]) < 2:
+                # oturtucu zaten reddeder: yoğun örnekleme yapma, alt_d'yi koru
+                out.append((ctrl_arr[:3], closed, sub_d))
+                continue
+        chords = np.hypot(*(np.diff(ctrl_arr, axis=0).T)) if len(ctrl_arr) > 1 else np.array([0.0])
+        total = float(chords.sum())
+        n_total = int(min(max_pts, max(12, total / 2.0)))
+        # segment başına örnek: kiriş payına orantılı (en az 1)
+        seg_pts: list[np.ndarray] = [p0[None, :]]
+        cur = p0
+        for seg in sp["segs"]:
+            if seg[0] == "L":
+                end = np.asarray(seg[1], dtype=float)
+                m = max(1, int(round(n_total * (np.hypot(*(end - cur)) / total))) if total > 0 else 1)
+                u = np.linspace(0.0, 1.0, m + 1)[1:, None]
+                seg_pts.append(cur[None, :] * (1 - u) + end[None, :] * u)
+                cur = end
+            else:
+                c1 = np.asarray(seg[1], dtype=float)
+                c2 = np.asarray(seg[2], dtype=float)
+                end = np.asarray(seg[3], dtype=float)
+                approx = (np.hypot(*(c1 - cur)) + np.hypot(*(c2 - c1)) + np.hypot(*(end - c2)))
+                m = max(2, int(round(n_total * (approx / total))) if total > 0 else 2)
+                u = np.linspace(0.0, 1.0, m + 1)[1:, None]
+                v = 1.0 - u
+                seg_pts.append(
+                    v * v * v * cur[None, :] + 3 * v * v * u * c1[None, :]
+                    + 3 * v * u * u * c2[None, :] + u * u * u * end[None, :]
+                )
+                cur = end
+        arr = np.concatenate(seg_pts, axis=0)
+        if len(arr) < 4:
+            continue
+        # ardışık çok yakın noktaları temizle (vektörize)
+        diffs = np.hypot(*(np.diff(arr, axis=0).T))
+        keep = np.concatenate([[True], diffs > 0.4])
+        arr = arr[keep]
+        if closed and len(arr) > 1 and np.hypot(*(arr[0] - arr[-1])) < 1e-9:
+            arr = arr[:-1]
+        if len(arr) < 4:
+            if skip_unfittable:
+                out.append((arr, closed, sub_d))
+            continue
+        if closed and np.hypot(*(arr[0] - arr[-1])) < 1.5 and len(arr) > 4:
+            # kapalı: son nokta start tekrarıysa at
+            if np.hypot(*(arr[0] - arr[-1])) < 0.4:
+                arr = arr[:-1]
         out.append((arr, closed, sub_d))
     return out
 
@@ -356,12 +450,452 @@ def _bbox(pts: np.ndarray) -> tuple[float, float, float, float]:
     return (float(pts[:, 0].min()), float(pts[:, 1].min()), float(pts[:, 0].max()), float(pts[:, 1].max()))
 
 
+# ---------------------------------------------------------------------------
+# BÜTÜNSEL şekil oturtma (whole shape fitting)
+# ---------------------------------------------------------------------------
+def _signed_area(pts: np.ndarray) -> float:
+    x = pts[:, 0]
+    y = pts[:, 1]
+    return float(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))) / 2.0
+
+
+def _sample_d(d: str, max_pts: int = 420) -> np.ndarray | None:
+    """Bir d-string'i yoğun nokta dizisine örnekler (doğrulama için).
+
+    HIZLI YOL: aday şekiller kendi ürettiğimiz M/L/C/A/Z d-string'leridir
+    (daire/elips yayları, roundrect, yıldız); yay-farkındalı yerel parser +
+    analitik değerlendirme svgpathtools'un nokta-nokta örneklemesinden ~50x
+    hızlıdır (profil: aday başına 1.6s -> ihmal edilebilir). Desteklenmeyen
+    komutta svgpathtools'a düşer.
+    """
+    fast = _sample_d_fast(d, max_pts)
+    if fast is not None:
+        return fast
+    if parse_path is None:
+        return None
+    try:
+        samples: list[tuple[float, float]] = []
+        for s in parse_path(d).continuous_subpaths():
+            try:
+                L = s.length()
+            except Exception:  # noqa: BLE001
+                L = 60.0
+            m = int(min(max_pts, max(32, (L or 32) / 1.5)))
+            for i in range(m + 1):
+                p = s.point(i / m)
+                samples.append((p.real, p.imag))
+        return np.array(samples, dtype=float) if len(samples) >= 8 else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _sample_d_fast(d: str, max_pts: int) -> np.ndarray | None:
+    """M/L/C/A/Z d-string'ini analitik örnekler; başka komutta None."""
+    from app.boundary_refit import _parse_subpaths_arc, _seg_point_tangent  # noqa: PLC0415
+
+    try:
+        sps = _parse_subpaths_arc(d)
+    except Exception:  # noqa: BLE001
+        return None
+    if sps is None:
+        return None
+    samples: list[np.ndarray] = []
+    for sp in sps:
+        segs = sp["segs"]
+        if not segs:
+            continue
+        m = max(4, min(max_pts, 420) // max(1, len(segs)))
+        cur = sp["start"]
+        for seg in segs:
+            for i in range(m):
+                pt, _ = _seg_point_tangent(cur, seg, i / m)
+                samples.append(np.asarray(pt, dtype=float))
+            cur = seg[-1] if seg[0] != "A" else seg[-1]
+        samples.append(np.asarray(segs[-1][-1], dtype=float))
+    if len(samples) < 8:
+        return None
+    return np.vstack(samples)
+
+
+def _max_dist_to_polyline(points: np.ndarray, poly: np.ndarray) -> float:
+    """Nokta kümesinin KAPALI polyline'a maksimum uzaklığı (nokta-doğru parçası).
+
+    Nokta-noktaya Hausdorff, örnekleme yoğunluğuna bağlı sahte sapma üretir
+    (aralık/2); doğru parçası mesafesi ayrıklaştırmadan bağımsızdır.
+    """
+    a = poly
+    b = np.roll(poly, -1, axis=0)
+    ab = b - a
+    ab_len2 = (ab * ab).sum(axis=1)
+    ab_len2 = np.where(ab_len2 < 1e-12, 1e-12, ab_len2)
+    # (N nokta, M segment) proje + kelepçele
+    ap = points[:, None, :] - a[None, :, :]
+    t = (ap * ab[None, :, :]).sum(axis=2) / ab_len2[None, :]
+    t = np.clip(t, 0.0, 1.0)
+    closest = a[None, :, :] + t[:, :, None] * ab[None, :, :]
+    d2 = ((points[:, None, :] - closest) ** 2).sum(axis=2)
+    return float(np.sqrt(d2.min(axis=1)).max())
+
+
+def _bidirectional_dev(orig: np.ndarray, shape: np.ndarray) -> float:
+    """Çift yönlü maksimum sapma: hem izin dışına taşma hem de şeklin
+    izlenmeyen bölgesi (ör. L-poligonun minAreaRect'e oturtulması) yakalanır."""
+    o = orig if len(orig) <= 220 else orig[np.linspace(0, len(orig) - 1, 220).astype(int)]
+    s = shape if len(shape) <= 420 else shape[np.linspace(0, len(shape) - 1, 420).astype(int)]
+    fwd = _max_dist_to_polyline(o, s)   # orijinal -> şekil
+    bwd = _max_dist_to_polyline(s, o)   # şekil -> orijinal
+    return max(fwd, bwd)
+
+
+def _rot(p: tuple[float, float], ang_rad: float, c: tuple[float, float]) -> tuple[float, float]:
+    ca, sa = math.cos(ang_rad), math.sin(ang_rad)
+    dx, dy = p[0], p[1]
+    return (c[0] + dx * ca - dy * sa, c[1] + dx * sa + dy * ca)
+
+
+def _circle_d(cx: float, cy: float, r: float, ccw: bool) -> str:
+    # SVG'de (y-aşağı) shoelace-pozitif sarım sweep=0'a denk gelir; ccw
+    # bayrağımız shoelace işaretinden türediği için eşleme: ccw -> sweep=1'in
+    # TERSİ deneysel olarak doğrulandı (test: sampled_ccw eşleşmesi)
+    sweep = 1 if ccw else 0
+    return (
+        f"M {_fmt(cx - r)} {_fmt(cy)} "
+        f"A {_fmt(r)} {_fmt(r)} 0 1 {sweep} {_fmt(cx + r)} {_fmt(cy)} "
+        f"A {_fmt(r)} {_fmt(r)} 0 1 {sweep} {_fmt(cx - r)} {_fmt(cy)} Z"
+    )
+
+
+def _ellipse_d(cx: float, cy: float, a: float, b: float, ang_deg: float, ccw: bool) -> str:
+    rad = math.radians(ang_deg)
+    p0 = _rot((a, 0.0), rad, (cx, cy))
+    p1 = _rot((-a, 0.0), rad, (cx, cy))
+    sweep = 1 if ccw else 0
+    rot = _fmt(ang_deg % 180.0)
+    return (
+        f"M {_fmt(p0[0])} {_fmt(p0[1])} "
+        f"A {_fmt(a)} {_fmt(b)} {rot} 1 {sweep} {_fmt(p1[0])} {_fmt(p1[1])} "
+        f"A {_fmt(a)} {_fmt(b)} {rot} 1 {sweep} {_fmt(p0[0])} {_fmt(p0[1])} Z"
+    )
+
+
+def _rounded_rect_d(
+    cx: float, cy: float, w: float, h: float, ang_deg: float, r: float, ccw: bool
+) -> str:
+    """Merkez/boyut/açı verilen (yuvarlak köşeli) dikdörtgen path'i üretir.
+
+    r <= 0.75 keskin dikdörtgen üretir. Köşe yayları daireseldir; rotasyon
+    yalnız uç noktaları döndürür (dairesel yay rotasyona dayanıklıdır).
+    """
+    hw, hh = w / 2.0, h / 2.0
+    r = max(0.0, min(r, hw - 0.01, hh - 0.01))
+    rad = math.radians(ang_deg)
+    c = (cx, cy)
+
+    if r <= 0.75:
+        # taban sıra shoelace-POZİTİF örneklenir (deneysel doğrulama);
+        # negatif sarım istendiğinde ters çevrilir
+        local = [(-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh)]
+        if not ccw:
+            local.reverse()
+        pts = [_rot(p, rad, c) for p in local]
+        parts = [f"M {_fmt(pts[0][0])} {_fmt(pts[0][1])}"]
+        parts += [f"L {_fmt(p[0])} {_fmt(p[1])}" for p in pts[1:]]
+        return " ".join(parts) + " Z"
+
+    # taban sıra (üst kenardan) shoelace-POZİTİF örneklenir ve köşe yayları
+    # sweep=1 ister (deneysel doğrulama: ters sweep yayları içe büker, dev~10px);
+    # negatif sarımda sıra ters + sweep=0. Sarımı nokta SIRASI belirler, sweep
+    # yalnız köşe yayının dışbükeyliğini.
+    local_seq: list[tuple[str, tuple[float, float]]] = [
+        ("M", (-hw + r, -hh)),
+        ("L", (hw - r, -hh)), ("A", (hw, -hh + r)),
+        ("L", (hw, hh - r)), ("A", (hw - r, hh)),
+        ("L", (-hw + r, hh)), ("A", (-hw, hh - r)),
+        ("L", (-hw, -hh + r)), ("A", (-hw + r, -hh)),
+    ]
+    if not ccw:
+        # sırayı ters çevir: komutlar uçlara göre yeniden kurulur
+        pts_only = [p for _, p in local_seq]
+        kinds = [k for k, _ in local_seq]
+        pts_only.reverse()
+        # ters yönde: M sonra sırayla; L/A tipleri aynadaki segmente göre
+        rev_seq: list[tuple[str, tuple[float, float]]] = [("M", pts_only[0])]
+        seg_kinds = kinds[1:]  # M sonrası segment tipleri
+        seg_kinds.reverse()
+        for kind, p in zip(seg_kinds, pts_only[1:]):
+            rev_seq.append((kind, p))
+        local_seq = rev_seq
+    sweep = 1 if ccw else 0
+
+    parts: list[str] = []
+    for kind, p in local_seq:
+        gp = _rot(p, rad, c)
+        if kind == "M":
+            parts.append(f"M {_fmt(gp[0])} {_fmt(gp[1])}")
+        elif kind == "L":
+            parts.append(f"L {_fmt(gp[0])} {_fmt(gp[1])}")
+        else:
+            parts.append(f"A {_fmt(r)} {_fmt(r)} 0 0 {sweep} {_fmt(gp[0])} {_fmt(gp[1])}")
+    return " ".join(parts) + " Z"
+
+
+def _star_d(
+    cx: float, cy: float, r_out: float, r_in: float, n: int, phase: float, ccw: bool
+) -> str:
+    """Parametrik n-köşeli yıldız poligonu (2n köşe, dış/iç dönüşümlü)."""
+    verts: list[tuple[float, float]] = []
+    for k in range(n):
+        a_out = phase + 2.0 * math.pi * k / n
+        a_in = phase + 2.0 * math.pi * (k + 0.5) / n
+        verts.append((cx + r_out * math.cos(a_out), cy + r_out * math.sin(a_out)))
+        verts.append((cx + r_in * math.cos(a_in), cy + r_in * math.sin(a_in)))
+    if not ccw:
+        verts.reverse()
+    parts = [f"M {_fmt(verts[0][0])} {_fmt(verts[0][1])}"]
+    parts += [f"L {_fmt(p[0])} {_fmt(p[1])}" for p in verts[1:]]
+    return " ".join(parts) + " Z"
+
+
+def _try_fit_star(pts: np.ndarray, tol: float, ccw: bool) -> str | None:
+    """Kapalı alt yolu parametrik yıldıza oturtmayı dener.
+
+    approxPolyDP köşeleri merkez uzaklığına göre DIŞ/İÇ gruplarına ayrılır;
+    grup sayıları eşit (3-12), yarıçaplar tutarlı (CV < %8), dış köşeler açısal
+    olarak düzgün aralıklı olmalıdır. Doğrulama diğer şekillerle aynı çift
+    yönlü sapma + sarım korumasıdır.
+    """
+    cx, cy = float(pts[:, 0].mean()), float(pts[:, 1].mean())
+    x0, y0, x1, y1 = _bbox(pts)
+    diag = math.hypot(x1 - x0, y1 - y0)
+    approx = cv2.approxPolyDP(
+        pts.astype(np.float32).reshape(-1, 1, 2), 0.015 * diag, True
+    ).reshape(-1, 2)
+    if not (6 <= len(approx) <= 26) or len(approx) % 2 != 0:
+        return None
+    dist = np.hypot(approx[:, 0] - cx, approx[:, 1] - cy)
+    ang = np.arctan2(approx[:, 1] - cy, approx[:, 0] - cx)
+    mid = (dist.min() + dist.max()) / 2.0
+    outer = dist > mid
+    n = int(outer.sum())
+    if n != int((~outer).sum()) or not (3 <= n <= 12):
+        return None
+    # dış/iç köşeler dönüşümlü sıralanmalı
+    if any(outer[i] == outer[(i + 1) % len(outer)] for i in range(len(outer))):
+        return None
+    r_out = float(dist[outer].mean())
+    r_in = float(dist[~outer].mean())
+    if r_in < 3 or r_out / max(r_in, 1e-6) < 1.15:
+        return None
+    if float(dist[outer].std()) > 0.08 * r_out or float(dist[~outer].std()) > 0.10 * r_in:
+        return None
+    # dış köşe açıları düzgün aralıklı mı? (2π/n ± 8°)
+    oa = np.sort(np.mod(ang[outer], 2.0 * math.pi))
+    gaps = np.diff(np.concatenate([oa, oa[:1] + 2.0 * math.pi]))
+    if float(np.abs(gaps - 2.0 * math.pi / n).max()) > math.radians(8.0):
+        return None
+    # faz: dış köşelerin dairesel ortalaması (mod 2π/n)
+    base = oa - oa[0]
+    k_idx = np.round(base / (2.0 * math.pi / n))
+    phase = float(np.mean(oa - k_idx * (2.0 * math.pi / n)))
+    return _validated(_star_d(cx, cy, r_out, r_in, n, phase, ccw), pts, tol, ccw)
+
+
+def _validated(d_cand: str, pts: np.ndarray, tol: float, want_ccw: bool) -> str | None:
+    """Aday şekil d'sini çift yönlü sapma + sarım yönüyle doğrular."""
+    samples = _sample_d(d_cand)
+    if samples is None:
+        return None
+    if _bidirectional_dev(pts, samples) > tol:
+        return None
+    # sarım yönü (fill-rule delikleri için kritik): uyuşmuyorsa reddet;
+    # çağıran ccw bayrağını zaten orijinalden türetir, bu son güvencedir
+    if (_signed_area(samples) > 0) != want_ccw:
+        return None
+    return d_cand
+
+
+def try_fit_whole_shape(pts: np.ndarray, closed: bool) -> str | None:
+    """Kapalı alt yolu TAM parametrik şekle oturtmayı dener.
+
+    Sıra: daire -> elips -> dikdörtgen -> yuvarlak köşeli dikdörtgen. Kabul
+    kriteri çift yönlü maksimum sapmadır (izin dışına taşma VE şeklin
+    izlenmeyen bölgesi); sarım yönü korunur. Oturtulamazsa ``None`` — çağıran
+    orijinal geometriyi sürdürür (asla bozulma yok).
+    """
+    if not closed or len(pts) < 12:
+        return None
+    x0, y0, x1, y1 = _bbox(pts)
+    diag = math.hypot(x1 - x0, y1 - y0)
+    if diag < 12:
+        return None
+    tol = max(1.5, 0.008 * diag)
+    signed = _signed_area(pts)
+    ccw = signed > 0
+    pf = pts.astype(np.float32)
+
+    # UCUZ AYIRT EDİCİLER (profil: organik alt yollar — yaprak/harf — tüm pahalı
+    # denemelerden geçip sonunda reddediliyordu; aday turu başına ~4s). İki O(N)
+    # ölçü çoğunu baştan eler, gerçek şekiller eşiklerin rahat üstünde kalır:
+    # dairesellik 4πA/P² (daire=1, kare~0.785, organik<0.6), dikdörtgen doluluğu
+    # A/minAreaRect (dikdörtgen~1, yıldız/organik düşük). Yıldız denemesi ucuz
+    # olduğundan geçitlenmez.
+    area = abs(signed)
+    closed_ring = np.vstack([pts, pts[:1]])
+    perimeter = float(np.hypot(*np.diff(closed_ring, axis=0).T).sum())
+    circ_ratio = 4.0 * math.pi * area / max(perimeter * perimeter, 1e-9)
+
+    # 1) daire
+    if circ_ratio >= 0.80:
+        circ = _fit_circle(pts)
+        if circ and circ[2] >= 4:
+            cx, cy, r = circ
+            if _circle_residual(pts, circ) <= tol:
+                d = _validated(_circle_d(cx, cy, r, ccw), pts, tol, ccw)
+                if d:
+                    return d
+
+    # 2) elips (basıklıkta dairesellik düşer; alt sınır geniş tutulur)
+    if circ_ratio >= 0.55 and len(pts) >= 5:
+        try:
+            (ecx, ecy), (d1, d2), ang = cv2.fitEllipse(pf)
+            a, b = max(d1, d2) / 2.0, min(d1, d2) / 2.0
+            ang_major = ang + (90.0 if d1 < d2 else 0.0)
+            if b >= 2.5 and a / max(b, 1e-6) <= 20.0:
+                d = _validated(_ellipse_d(ecx, ecy, a, b, ang_major, ccw), pts, tol, ccw)
+                if d:
+                    return d
+        except cv2.error:
+            pass
+
+    # 3) dikdörtgen (döndürülmüş) ve 4) yuvarlak köşeli dikdörtgen
+    try:
+        (rcx, rcy), (rw, rh), rang = cv2.minAreaRect(pf)
+    except cv2.error:
+        return None
+    if min(rw, rh) < 4:
+        return None
+    if area / max(rw * rh, 1e-9) < 0.82:
+        # minAreaRect'i dolduramıyor: dikdörtgen/roundrect olamaz; yıldıza geç
+        try:
+            return _try_fit_star(pts, tol, ccw)
+        except Exception:  # noqa: BLE001
+            return None
+    # yerel çerçevede sağlam kenar/yarıçap tahmini: kenarlar yüzdelikle
+    # (minAreaRect'in gürültü şişmesine dayanıklı), köşe yarıçapı KÖŞE-UZAKLIĞI
+    # yöntemiyle (ideal keskin köşenin yola en yakın mesafesi d -> r = d/(√2-1))
+    rad = math.radians(rang)
+    ca, sa = math.cos(rad), math.sin(rad)
+    dxv = pts[:, 0] - rcx
+    dyv = pts[:, 1] - rcy
+    qx = dxv * ca + dyv * sa
+    qy = -dxv * sa + dyv * ca
+    x_lo, x_hi = float(np.percentile(qx, 0.5)), float(np.percentile(qx, 99.5))
+    y_lo, y_hi = float(np.percentile(qy, 0.5)), float(np.percentile(qy, 99.5))
+    hw2, hh2 = (x_hi - x_lo) / 2.0, (y_hi - y_lo) / 2.0
+    lcx, lcy = (x_hi + x_lo) / 2.0, (y_hi + y_lo) / 2.0
+    if min(hw2, hh2) < 2:
+        return None
+    gcx = rcx + lcx * ca - lcy * sa
+    gcy = rcy + lcx * sa + lcy * ca
+    corner_d = []
+    for sx in (-1, 1):
+        for sy in (-1, 1):
+            d2c = np.hypot(qx - (lcx + sx * hw2), qy - (lcy + sy * hh2))
+            corner_d.append(float(d2c.min()))
+    r_est = float(np.median(corner_d)) / (math.sqrt(2.0) - 1.0)
+    r_est = max(0.0, min(r_est, min(hw2, hh2)))
+
+    r_candidates = [0.0] + ([round(r_est, 2)] if r_est >= 1.2 else [])
+    for r_try in r_candidates:
+        d = _validated(
+            _rounded_rect_d(gcx, gcy, 2 * hw2, 2 * hh2, rang, r_try, ccw), pts, tol, ccw
+        )
+        if d:
+            return d
+
+    # 5) yıldız (n köşe, dış/iç yarıçap, faz)
+    try:
+        d = _try_fit_star(pts, tol, ccw)
+    except Exception:  # noqa: BLE001
+        d = None
+    if d:
+        return d
+    return None
+
+
+
+
+def fit_whole_shapes_svg(svg_path: Path) -> dict[str, Any]:
+    """SVG'de yalnız BÜTÜNSEL şekil oturtma uygular (çizgi/yay dilimleme yok).
+
+    Renkli modlar için: organik path'lere dokunmaz; sadece gerçekten daire/
+    elips/dikdörtgen/yuvarlak-dikdörtgen olan alt yollar idealize edilir.
+    Alt yol bazlı fallback: oturtulamayan alt yol orijinal haliyle korunur.
+    """
+    if parse_path is None:
+        return {"status": "skipped", "error": "svgpathtools yok"}
+    svg_path = Path(svg_path)
+    try:
+        ET.register_namespace("", SVG_NS)
+        tree = ET.parse(str(svg_path))
+        root = tree.getroot()
+    except Exception as e:  # noqa: BLE001
+        return {"status": "failed", "error": str(e)}
+
+    shapes_fitted = 0
+    changed_any = False
+    for el in root.iter():
+        if el.tag.split("}")[-1] != "path":
+            continue
+        d = el.get("d")
+        if not d:
+            continue
+        try:
+            subs = _flatten_subpaths(d, skip_unfittable=True)
+        except Exception:  # noqa: BLE001
+            continue
+        if not subs:
+            continue
+        new_parts: list[str] = []
+        fitted_here = 0
+        for pts, closed, sub_d in subs:
+            fitted = None
+            try:
+                fitted = try_fit_whole_shape(pts, closed)
+            except Exception:  # noqa: BLE001
+                fitted = None
+            if fitted:
+                new_parts.append(fitted)
+                fitted_here += 1
+            elif sub_d:
+                new_parts.append(sub_d)
+        if fitted_here and new_parts:
+            el.set("d", " ".join(new_parts))
+            shapes_fitted += fitted_here
+            changed_any = True
+
+    if changed_any:
+        try:
+            tree.write(str(svg_path), encoding="utf-8", xml_declaration=True)
+        except Exception as e:  # noqa: BLE001
+            return {"status": "failed", "error": str(e)}
+    return {"status": "completed" if changed_any else "no_change", "shapes_fitted": shapes_fitted}
+
+
 def _fit_one_subpath(pts: np.ndarray, closed: bool) -> str | None:
     """Tek bir alt yolu line+arc primitiflerine oturtur. Güvenli değilse None."""
     x0, y0, x1, y1 = _bbox(pts)
     diag = math.hypot(x1 - x0, y1 - y0)
     if diag < 6:
         return None
+    # önce BÜTÜNSEL şekil (tam daire/elips/dikdörtgen/yuvarlak-dikdörtgen):
+    # parça parça yay/çizgiden her zaman daha temiz ve daha az düğüm
+    try:
+        whole = try_fit_whole_shape(pts, closed)
+    except Exception:  # noqa: BLE001
+        whole = None
+    if whole:
+        return whole
     # sıkı toleranslar: tek daireye oturmayan (eliptik) eğriler birden çok dairesel
     # yaya bölünüp gerçek şekli yakından takip eder (faset değil, çok-yay)
     line_tol = max(0.8, 0.004 * diag)

@@ -1,0 +1,16 @@
+# build bağlamını küçük tut: imaja yalnız app/ + models/ + requirements girer
+.venv/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# test/regresyon varlıkları imaja girmez
+regression/
+test_*.py
+output/
+tmp/
+
+# büyük model ağırlığı imaja COPY ile girmez (FETCH_HED=1 ile indirilir
+# ya da çalıştırırken volume bağlanır)
+models/*.caffemodel

@@ -1,0 +1,23 @@
+# Vektoryum — tek servis compose
+#
+#   docker compose up --build
+#   http://127.0.0.1:8000/        -> web arayüzü
+#   http://127.0.0.1:8000/docs    -> API dokümanı
+#
+# HED modeli imaja gömmek için: docker compose build --build-arg FETCH_HED=1
+
+services:
+  vektoryum:
+    build: ./engine
+    ports:
+      - "8000:8000"
+    environment:
+      # boş = otomatik (min(çekirdek, 4)); "1" paraleli kapatır
+      VEKTORYUM_WORKERS: ""
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8000/api/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped

@@ -179,6 +179,30 @@ def _svg_height(src: Path) -> float:
     return 0.0
 
 
+def _svg_unit_scale(src: Path) -> float:
+    """viewBox koordinatlarını width/height iç boyutuna taşıyan ölçek.
+
+    Ön işleme izleme rasterini ölçekleyebilir (süperörnekleme/küçültme);
+    pipeline width/height'ı kaynak boyuta çeker ama path koordinatları viewBox
+    uzayında kalır. DXF fiziksel birim taşıdığından koordinatlar bu ölçekle
+    kaynak piksel birimine indirgenir (500x300 girdinin 1000x600 birimlik DXF
+    vermesi gerçek bir hataydı — PR incelemesi).
+    """
+    try:
+        root = ET.parse(str(src)).getroot()
+        vb = root.get("viewBox")
+        w_attr = root.get("width")
+        if not vb or not w_attr:
+            return 1.0
+        parts = [float(x) for x in vb.replace(",", " ").split()]
+        w_px = float(str(w_attr).rstrip("px"))
+        if len(parts) == 4 and parts[2] > 0 and w_px > 0:
+            return w_px / parts[2]
+    except Exception:  # noqa: BLE001
+        pass
+    return 1.0
+
+
 def _is_finite_point(x: float, y: float) -> bool:
     return all(math.isfinite(v) for v in (x, y))
 
@@ -238,7 +262,8 @@ def export_dxf(src: Path, dst: Path) -> Path:
         raise RuntimeError(f"DXF için gerekli kütüphane eksik: {e}") from e
 
     src = Path(src)
-    height = _svg_height(src)
+    unit = _svg_unit_scale(src)          # viewBox -> kaynak piksel birimi
+    height = _svg_height(src) * unit
 
     try:
         paths, attributes, _svg_attr = svg2paths2(str(src))
@@ -279,9 +304,10 @@ def export_dxf(src: Path, dst: Path) -> Path:
                     pt = seg.point(t)
                 except Exception:  # noqa: BLE001
                     continue
-                # yerel koordinatı transform ile kullanıcı uzayına taşı
-                ux = xf[0] * pt.real + xf[2] * pt.imag + xf[4]
-                uy = xf[1] * pt.real + xf[3] * pt.imag + xf[5]
+                # yerel koordinatı transform ile kullanıcı uzayına taşı,
+                # sonra kaynak piksel birimine ölçekle
+                ux = (xf[0] * pt.real + xf[2] * pt.imag + xf[4]) * unit
+                uy = (xf[1] * pt.real + xf[3] * pt.imag + xf[5]) * unit
                 x = float(ux)
                 y = float(height - uy) if height > 0 else float(-uy)
                 if not _is_finite_point(x, y):
@@ -308,6 +334,44 @@ def export_dxf(src: Path, dst: Path) -> Path:
 
 
 # ---------------------------------------------------------------------------
+# PNG export ("temizlenmiş" raster çıktı)
+# ---------------------------------------------------------------------------
+def export_png(src: Path, dst: Path, width: int | None = None, height: int | None = None) -> Path:
+    """SVG'yi 'temizlenmiş' PNG olarak render eder (resvg -> fallback zinciri).
+
+    Boyut verilmezse SVG'nin kendi boyutu kullanılır; en uzun kenar 4096 ile
+    sınırlanır. Render backend'i yoksa RuntimeError (output_errors'a düşer).
+    """
+    from app.fidelity import render_svg_to_rgb  # noqa: PLC0415 (döngüsel import önlemi)
+    from PIL import Image  # noqa: PLC0415
+
+    src = Path(src)
+    if not width or not height:
+        try:
+            root = ET.parse(str(src)).getroot()
+            vb = root.get("viewBox")
+            if vb:
+                parts = [float(x) for x in vb.replace(",", " ").split()]
+                width, height = int(parts[2]), int(parts[3])
+            else:
+                width = int(float("".join(ch for ch in (root.get("width") or "1024") if ch.isdigit() or ch == ".")))
+                height = int(float("".join(ch for ch in (root.get("height") or "1024") if ch.isdigit() or ch == ".")))
+        except Exception:  # noqa: BLE001
+            width, height = 1024, 1024
+    longest = max(width, height)
+    if longest > 4096:
+        scale = 4096.0 / longest
+        width, height = max(1, int(width * scale)), max(1, int(height * scale))
+
+    rgb = render_svg_to_rgb(src, int(width), int(height))
+    if rgb is None:
+        raise RuntimeError("PNG render edilemedi (render backend yok: resvg/pymupdf/cairosvg/svglib).")
+    Image.fromarray(rgb).save(str(dst))
+    logger.info("PNG üretildi: %s (%dx%d).", dst, width, height)
+    return Path(dst)
+
+
+# ---------------------------------------------------------------------------
 # Toplu export
 # ---------------------------------------------------------------------------
 def export_all(
@@ -315,7 +379,8 @@ def export_all(
     job_dir: Path,
     job_id: str,
     candidate_id: str | None = None,
-    formats: tuple[str, ...] = ("svg", "pdf", "eps", "dxf"),
+    formats: tuple[str, ...] = ("svg", "pdf", "eps", "dxf", "png"),
+    png_size: tuple[int, int] | None = None,
 ) -> tuple[dict[str, str], dict[str, str]]:
     """Tüm formatları üretir. ``(outputs, errors)`` döndürür.
 
@@ -344,11 +409,16 @@ def export_all(
     for fmt in formats:
         if fmt == "svg":
             continue
-        func = exporters.get(fmt)
-        if not func:
-            continue
         dst = job_dir / f"{job_id}.{fmt}"
         try:
+            if fmt == "png":
+                w, h = png_size if png_size else (None, None)
+                export_png(source_svg, dst, width=w, height=h)
+                outputs["png"] = str(dst)
+                continue
+            func = exporters.get(fmt)
+            if not func:
+                continue
             func(source_svg, dst)
             outputs[fmt] = str(dst)
         except Exception as e:  # noqa: BLE001
