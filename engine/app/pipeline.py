@@ -312,14 +312,24 @@ def produce_candidate(
             cleanup_report = cleanup_svg_geometry(svg_path, mode=mode, aggressiveness=spec["cleanup"])
         # palet konsolidasyonu: kenar ara-ton renklerini en baskın renklere indir.
         # Gradyan adayında ATLA — gradyan stop'larını/url() fill'lerini bozar.
+        # FOTO-YOĞUN izleme çıktısında da ATLA (fidelity-led modlar, >700 path):
+        # izole ölçüm (aslan bölge ΔE): kaynak 8.6 -> vtracer 15.8 -> konsolidasyon
+        # 19.1 — ton merdivenini ezmek foto içerikte saf kayıptır; per-path renk
+        # refit'i zaten her bölgeyi orijinaline oturtur (ham+refit 85.7 vs
+        # konsolide+refit 84.8). Logo/marka çıktısında (az path) hijyen için kalır.
         cap = palette_cap if palette_cap is not None else PALETTE_CAP.get(mode)
         if cap and engine != "gradient":
-            canonical = CANONICAL_BWR if mode in FLAT_PALETTE_MODES else None
-            # geniş paletli (foto-zengin) çıktıda ince ton merdivenleri 8-15
-            # RGB adımlıdır; varsayılan merge_tol=12 bunları birbirine
-            # yapıştırıp detayı düzleştirir -> daha sıkı tolerans
-            merge_tol = 6.0 if (mode == "logo_color" and cap >= 40) else 12.0
-            consolidate_svg_palette(svg_path, max_colors=cap, canonical=canonical, merge_tol=merge_tol)
+            try:
+                n_traced_paths = svg_path.read_text(encoding="utf-8", errors="ignore").count("<path")
+            except OSError:
+                n_traced_paths = 0
+            if not (mode in FIDELITY_LED_MODES and n_traced_paths > 700):
+                canonical = CANONICAL_BWR if mode in FLAT_PALETTE_MODES else None
+                # geniş paletli (foto-zengin) çıktıda ince ton merdivenleri 8-15
+                # RGB adımlıdır; varsayılan merge_tol=12 bunları birbirine
+                # yapıştırıp detayı düzleştirir -> daha sıkı tolerans
+                merge_tol = 6.0 if (mode == "logo_color" and cap >= 40) else 12.0
+                consolidate_svg_palette(svg_path, max_colors=cap, canonical=canonical, merge_tol=merge_tol)
         # geometrik idealleştirme: düz çizgi + tam dairesel yay oturtma
         # (bütünsel şekil oturtma dahil — regularize önce tam şekli dener)
         if mode in REGULARIZE_MODES:
@@ -530,20 +540,30 @@ def _refit_one(
         or mode not in _COLOR_REFIT_MODES
     ):
         return None
-    # foto-yoğun çıktı geçidi: çok yüksek path sayılı sonuçlarda aynı kuantize
-    # rengi uzak, ilgisiz bölgelere dağılır; global-renk havuzlama yerel ΔE'yi
-    # ARTIRIR (refit reddedilir). Pahalı ID-render'ı baştan atlarız.
-    if int((cand.get("score_details") or {}).get("path_count", 0)) > 700:
-        return None
-
-    from app.color_refit import refit_svg_colors  # noqa: PLC0415
+    from app.color_refit import refit_svg_colors, refit_svg_colors_per_path  # noqa: PLC0415
 
     src = Path(cand["svg_path"])
     dst = job_dir / f"{src.stem}_refit.svg"
+    path_count = int((cand.get("score_details") or {}).get("path_count", 0))
+    # foto-yoğun ÇIKTI (>700 path — grup modunun ölçülür şekilde zarar ettiği
+    # rejim): palet tutarlılığı değil yerel ton doğruluğu esastır -> per-path
+    # bağımsız refit (aynı kuantize renk uzak bölgelere dağılıyor, global havuz
+    # yerel tonu bozuyor; izleme/konsolidasyonun yuttuğu tonlar per-path geri
+    # gelir). Logo/markada (<=700 path) grup modu kalır: kaynak palet asla
+    # bölünmez/şişmez. Sinyal analizör tahmini değil çıktının kendisidir
+    # (mangal: est=20 ama 5002 path — foto-yoğun).
+    photo_rich = path_count > 700
     try:
-        rep = refit_svg_colors(
-            src, original_path, dst, gradients=(mode in FIDELITY_LED_MODES)
-        )
+        if photo_rich:
+            if path_count > 6000:  # vektörize yol; yine de aşırı uçta atla
+                return None
+            rep = refit_svg_colors_per_path(src, original_path, dst)
+        else:
+            if path_count > 700:
+                return None
+            rep = refit_svg_colors(
+                src, original_path, dst, gradients=(mode in FIDELITY_LED_MODES)
+            )
     except Exception as e:  # noqa: BLE001
         logger.debug("color refit atlandı (%s): %s", cand["name"], e)
         return None

@@ -200,6 +200,170 @@ def _fit_linear_gradient(
     }
 
 
+def refit_svg_colors_per_path(
+    svg_path: Path,
+    original_path: Path,
+    out_path: Path,
+    max_side: int = 2048,
+    min_region_px: int = 12,
+) -> dict[str, Any]:
+    """FOTO-YOĞUN çıktı için per-path bağımsız renk refit'i (vektörize).
+
+    Palet-koruyan grup modu (refit_svg_colors) aynı kaynak rengi paylaşan TÜM
+    path'leri birlikte taşır — logolarda doğru (marka rengi bölünmez) ama
+    foto-yoğun içerikte YANLIŞ: aynı kuantize renk, görüntünün uzak ve farklı
+    tonlu bölgelerine dağılır; global havuz medyanı yerel tonu bozar (ölçüldü:
+    mangal −0.5). Foto-yoğunda detay ürünün kendisidir (editability de bu
+    rejimde kapalıdır): her path kendi görünür bölgesinin ORİJİNAL rengini alır
+    — izlemenin/konsolidasyonun yuttuğu tonlar (kahverengi→turuncu kayması,
+    kaybolan sebze renkleri) geri gelir.
+
+    Binlerce path'te hızlı olması için bölge istatistikleri tek geçişte
+    vektörize hesaplanır (bincount ortalaması; AA pikselleri komşuluk-uniform
+    iç-bölge maskesiyle dışlanır). Benimseme kararı çağırandadır.
+    """
+    from app.fidelity import load_reference_rgb, render_svg_to_rgb  # noqa: PLC0415
+
+    try:
+        ET.register_namespace("", SVG_NS)
+        tree = ET.parse(str(svg_path))
+    except Exception as e:  # noqa: BLE001
+        return {"changed": 0, "error": f"parse: {e}"}
+    paths = _iter_paths(tree.getroot())
+    if not paths:
+        return {"changed": 0, "error": "path yok"}
+    # foto-yoğun çıktıda binlerce KÜÇÜK bölge vardır; 512px'te çoğu ölçüm
+    # eşiğinin altında kalır (5002 path'ten 96'sı ölçülebildi — gerçek ölçüm).
+    # Yüksek çözünürlüklü ID-render bölge alanlarını büyütüp kapsamayı artırır
+    # (2048 + min 12 iç piksel: 1862 path ölçülür; süre ~1s, vektörize).
+    try:
+        ref, (w, h) = load_reference_rgb(Path(original_path), max_side=max_side)
+    except Exception as e:  # noqa: BLE001
+        return {"changed": 0, "error": f"referans: {e}"}
+
+    id_tree, _ = _build_id_svg(tree)
+    id_svg = Path(out_path).with_suffix(".idmap.svg")
+    try:
+        id_tree.write(str(id_svg), encoding="utf-8", xml_declaration=True)
+        id_rgb = render_svg_to_rgb(id_svg, w, h)
+    finally:
+        id_svg.unlink(missing_ok=True)
+    if id_rgb is None:
+        return {"changed": 0, "error": "render backend yok"}
+    id_map = _decode_id_map(id_rgb)
+
+    # iç-bölge maskesi: 4-komşusu aynı ID olan pikseller (AA karışımı dışarıda)
+    interior = np.ones_like(id_map, dtype=bool)
+    interior[1:, :] &= id_map[1:, :] == id_map[:-1, :]
+    interior[:-1, :] &= id_map[:-1, :] == id_map[1:, :]
+    interior[:, 1:] &= id_map[:, 1:] == id_map[:, :-1]
+    interior[:, :-1] &= id_map[:, :-1] == id_map[:, 1:]
+
+    ids = id_map[interior]
+    pix = ref[interior].astype(np.float64)
+    n_bins = len(paths) + 2
+    valid = (ids >= 1) & (ids < n_bins)
+    ids, pix = ids[valid], pix[valid]
+    counts = np.bincount(ids, minlength=n_bins)
+    means = np.zeros((n_bins, 3), np.float64)
+    for c in range(3):
+        s = np.bincount(ids, weights=pix[:, c], minlength=n_bins)
+        np.divide(s, counts, out=means[:, c], where=counts > 0)
+
+    changed = 0
+    shifts: list[float] = []
+    new_fill: dict[int, tuple[int, int, int]] = {}  # path idx -> sabit renk
+    for i, el in enumerate(paths):
+        code = i + 1
+        if code >= 0xFFFFFF:
+            code += 1
+        if code >= n_bins or counts[code] < min_region_px:
+            continue
+        old = _parse_fill(el.get("fill"))
+        if old is None or not _elem_opaque(el):
+            continue
+        new = tuple(int(round(v)) for v in np.clip(means[code], 0, 255))
+        new_fill[i] = new
+        de = _delta_e(old, new)
+        if de < _MIN_SHIFT_DE or de > _MAX_SHIFT_DE:
+            continue
+        el.set("fill", _hex(new))
+        changed += 1
+        shifts.append(de)
+
+    # GRADYAN UZANIMI (lekesizlik): parlak yansımalı/yumuşak tonlu BÜYÜK
+    # bölgelerde sabit renk, posterizasyon "lekeleri" bırakır (domates üzerinde
+    # krem adalar — gerçek kullanıcı şikâyeti). En büyük bölgelere doğrusal
+    # gradyan LSQ ile oturtulur; kazanç eşiği geçilmezse bölge sabit kalır.
+    grad_applied = 0
+    root = tree.getroot()
+    vb = root.get("viewBox")
+    try:
+        _, _, vbw, vbh = (float(x) for x in (vb or "").replace(",", " ").split())
+    except ValueError:
+        vbw, vbh = float(w), float(h)
+    sx, sy = vbw / float(w), vbh / float(h)
+    # transform kapsamındaki path'lere gradyan verilmez (userSpaceOnUse çift dönüşüm)
+    no_grad: set[int] = set()
+
+    def _mark_xf(el: ET.Element, inherited: bool) -> None:
+        has = inherited or (el.get("transform") is not None)
+        if has and el.tag.split("}")[-1] == "path":
+            no_grad.add(id(el))
+        for ch in list(el):
+            _mark_xf(ch, has)
+
+    _mark_xf(root, False)
+    defs_el: ET.Element | None = None
+    big_codes = np.nonzero(counts >= _GRAD_MIN_PX)[0]
+    big_codes = big_codes[np.argsort(-counts[big_codes])][:80]  # en büyük 80 bölge
+    for code in big_codes:
+        i = int(code) - 1
+        if i < 0 or i >= len(paths) or i not in new_fill:
+            continue
+        el = paths[i]
+        if id(el) in no_grad:
+            continue
+        mask = (id_map == code) & interior
+        ys, xs = np.nonzero(mask)
+        grad = _fit_linear_gradient(ys, xs, ref[ys, xs], new_fill[i])
+        if grad is None:
+            continue
+        if defs_el is None:
+            defs_el = root.find(f"{{{SVG_NS}}}defs")
+            if defs_el is None:
+                defs_el = ET.Element(f"{{{SVG_NS}}}defs")
+                root.insert(0, defs_el)
+        gid = f"refit_grad_{i}"
+        g_el = ET.SubElement(defs_el, f"{{{SVG_NS}}}linearGradient", {
+            "id": gid, "gradientUnits": "userSpaceOnUse",
+            "x1": f"{grad['x1'] * sx:.2f}", "y1": f"{grad['y1'] * sy:.2f}",
+            "x2": f"{grad['x2'] * sx:.2f}", "y2": f"{grad['y2'] * sy:.2f}",
+        })
+        ET.SubElement(g_el, f"{{{SVG_NS}}}stop",
+                      {"offset": "0", "stop-color": _hex(grad["c1"])})
+        ET.SubElement(g_el, f"{{{SVG_NS}}}stop",
+                      {"offset": "1", "stop-color": _hex(grad["c2"])})
+        el.set("fill", f"url(#{gid})")
+        grad_applied += 1
+        changed += 1
+
+    if changed == 0:
+        return {"changed": 0}
+    try:
+        tree.write(str(out_path), encoding="utf-8", xml_declaration=True)
+    except Exception as e:  # noqa: BLE001
+        return {"changed": 0, "error": f"yazma: {e}"}
+    return {
+        "changed": changed,
+        "mode": "per_path",
+        "gradients": grad_applied,
+        "paths_measured": int((counts[1:len(paths) + 1] >= min_region_px).sum()),
+        "mean_shift_de": round(float(np.mean(shifts)), 2) if shifts else 0.0,
+        "max_shift_de": round(float(np.max(shifts)), 2) if shifts else 0.0,
+    }
+
+
 def refit_svg_colors(
     svg_path: Path,
     original_path: Path,
@@ -212,6 +376,8 @@ def refit_svg_colors(
     Yalnız ``out_path`` yazılır; benimseme kararı (fidelity artışı ölçümü)
     çağırana aittir. Dönen rapor: değişen path sayısı, ortalama kayma vb.
     Başarısızlıkta {"changed": 0, "error": ...} döner (çökme yok).
+    PALET-KORUYAN grup modudur (logo/marka işleri); foto-yoğun içerik için
+    ``refit_svg_colors_per_path`` kullanılır.
     """
     from app.fidelity import load_reference_rgb, render_svg_to_rgb  # noqa: PLC0415
 

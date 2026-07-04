@@ -47,6 +47,11 @@ aynı kodu çağırır):
 7. **Refinement (kapalı döngü)** (`app/pipeline.py` → `refine_best`) — en iyi
    adayın komşuluğunda parametre + renk-sayısı varyantları üretip yeniden ölçer;
    yalnızca daha sadık varyantı benimser.
+7.4 **Foto-yoğun konsolidasyon istisnası** (`app/pipeline.py`) — palet
+   konsolidasyonu logo hijyeni içindir; foto-yoğun izleme çıktısında (>700
+   path, fidelity-led modlar) ton merdivenini ezmek saf kayıptır (izole ölçüm:
+   kaynak bölge ΔE 8.6 → vtracer 15.8 → konsolidasyon 19.1). Bu çıktılarda
+   konsolidasyon atlanır; renk doğruluğunu per-path refit üstlenir.
 7.5 **Renk refit — kapalı-form renk optimizasyonu** (`app/color_refit.py`) —
    izleme sonrası kalan kaybın ana bileşeni RENK'tir (tavan analizi: düz-renk
    posterizasyon tavanı ~%97.9, kaybın büyük kısmı sabit dolgu tonunun orijinale
@@ -60,8 +65,14 @@ aynı kodu çağırır):
    bölgelerde (`gradients=True`) `c(x,y)=c0+gx·x+gy·y` en küçük kareler oturtmasıyla
    `<linearGradient>` uzatılır (*Segmentation-guided Layer-wise Image Vectorization
    with Gradient Fills*, arXiv 2408.15741, yaklaşımının bölge-bazlı hali). Sonuç
-   **yalnızca ölçülen fidelity artarsa** benimsenir; foto-yoğun çıktılarda (aynı
-   renk uzak bölgelere dağıldığından yerel ΔE artar) güvenle reddedilir.
+   **yalnızca ölçülen fidelity artarsa** benimsenir. İKİ MOD: logo/marka
+   çıktısında (<=700 path) PALET-KORUYAN grup modu (aynı kaynak rengi paylaşan
+   path'ler birlikte taşınır, palet asla şişmez); foto-yoğun çıktıda (>700 path)
+   PER-PATH bağımsız mod — aynı kuantize renk uzak bölgelere dağıldığından grup
+   havuzu yerel tonu bozar (ölçüldü), her path kendi görünür bölgesinin orijinal
+   ortalamasını alır (2048px ID-render + bincount ile vektörize, ~1s; izlemenin
+   yuttuğu tonlar geri gelir: kahverengi→turuncu kayması, kaybolan sebze
+   renkleri düzeldi — mangal 82.1→83.3, aslan 83.3→85.5, carwash 86.8→89.1).
 7.6 **Sınır refit — alt-piksel kenar oturtma** (`app/boundary_refit.py`) —
    renk refit'ten sonra kalan izleme kaybının ana bileşeni, sınırların gerçek
    kenara göre YEREL yarım-piksel sapmasıdır (faz-korelasyon ölçümü global
