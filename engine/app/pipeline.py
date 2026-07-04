@@ -555,7 +555,7 @@ def _refit_one(
     photo_rich = path_count > 700
     try:
         if photo_rich:
-            if path_count > 6000:  # vektörize yol; yine de aşırı uçta atla
+            if path_count > 12000:  # vektörize yol (~1-2s @11k path); aşırı uçta atla
                 return None
             rep = refit_svg_colors_per_path(src, original_path, dst)
         else:

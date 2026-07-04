@@ -931,10 +931,11 @@ def preprocess_for_mode(
         report_supersample = {"from": max_side, "scale": 2}
 
     # PERFORMANS: çok büyük girdileri trace öncesi küçült (vektör çıktı sonsuz
-    # ölçeklenir; sadakat karşılaştırması zaten 512px). Renkli modlar k-means +
-    # despeckle nedeniyle pahalı -> daha agresif sınır; sade modlar keskin kenar
-    # için biraz daha yüksek kalsın.
-    cap = 1100 if mode in ("logo_color", "photo_poster") else 1400
+    # ölçeklenir; sadakat karşılaştırması zaten 512px). Renkli modlarda sınır
+    # 1600: küçük metin/ince detay 1100'de okunmaz biçimde eziliyordu (carwash
+    # 1774->1100 küçültmesi harf bozuyordu; 1600 ile fid 86.8 -> 91.1, süre
+    # ~%25 artışla kabul edilebilir). Sade modlar 1400 (keskin kenar yeter).
+    cap = 1600 if mode in ("logo_color", "photo_poster") else 1400
     max_side = max(image.size)
     report_resize = None
     if max_side > cap:
