@@ -101,14 +101,145 @@ _SAMPLE_U = (0.12, 0.3, 0.5, 0.7, 0.88)  # segment-içi örnekleme parametreleri
 _REG_LAMBDA = 0.25                        # LSQ regülarizasyonu (küçük düzeltme tercihi)
 
 
+def _parse_subpaths_arc(d: str) -> list[dict[str, Any]] | None:
+    """curve_fairing gramerinin A (yay) segmentli genişletmesi.
+
+    Segmentler: ("L", end) | ("C", c1, c2, end) | ("A", rx, ry, xrot, laf, sf, end).
+    Regularize çıktısı yay doludur; yaylar atlanırsa geometrik modda sınır
+    refit'i hiçbir şeyi oturtamaz. Başka komut -> None (path'e dokunulmaz).
+    """
+    from app.curve_fairing import _CMD_RE, _NUM_RE  # noqa: PLC0415
+
+    subpaths: list[dict[str, Any]] = []
+    sp: dict[str, Any] | None = None
+    for m in _CMD_RE.finditer(d or ""):
+        cmd = m.group(1)
+        nums = [float(x) for x in _NUM_RE.findall(m.group(2))]
+        if cmd == "M":
+            if len(nums) < 2:
+                return None
+            if sp is not None:
+                subpaths.append(sp)
+            sp = {"start": (nums[0], nums[1]), "segs": [], "closed": False}
+            for j in range(2, len(nums) - 1, 2):
+                sp["segs"].append(("L", (nums[j], nums[j + 1])))
+        elif cmd == "L":
+            if sp is None or len(nums) < 2 or len(nums) % 2 != 0:
+                return None
+            for j in range(0, len(nums) - 1, 2):
+                sp["segs"].append(("L", (nums[j], nums[j + 1])))
+        elif cmd == "C":
+            if sp is None or len(nums) < 6 or len(nums) % 6 != 0:
+                return None
+            for j in range(0, len(nums) - 5, 6):
+                sp["segs"].append(("C", (nums[j], nums[j + 1]),
+                                   (nums[j + 2], nums[j + 3]), (nums[j + 4], nums[j + 5])))
+        elif cmd == "A":
+            if sp is None or len(nums) < 7 or len(nums) % 7 != 0:
+                return None
+            for j in range(0, len(nums) - 6, 7):
+                sp["segs"].append(("A", nums[j], nums[j + 1], nums[j + 2],
+                                   int(nums[j + 3]), int(nums[j + 4]),
+                                   (nums[j + 5], nums[j + 6])))
+        elif cmd == "Z":
+            if sp is None:
+                return None
+            sp["closed"] = True
+        else:
+            return None
+    if sp is not None:
+        subpaths.append(sp)
+    return subpaths
+
+
+def _serialize_subpaths_arc(subpaths: list[dict[str, Any]]) -> str:
+    from app.curve_fairing import _fmt  # noqa: PLC0415
+
+    parts: list[str] = []
+    for sp in subpaths:
+        parts.append(f"M{_fmt(sp['start'][0])} {_fmt(sp['start'][1])}")
+        for seg in sp["segs"]:
+            if seg[0] == "L":
+                parts.append(f"L{_fmt(seg[1][0])} {_fmt(seg[1][1])}")
+            elif seg[0] == "C":
+                _, c1, c2, end = seg
+                parts.append(f"C{_fmt(c1[0])} {_fmt(c1[1])} {_fmt(c2[0])} {_fmt(c2[1])} "
+                             f"{_fmt(end[0])} {_fmt(end[1])}")
+            else:
+                _, rx, ry, xrot, laf, sf, end = seg
+                parts.append(f"A{_fmt(rx)} {_fmt(ry)} {_fmt(xrot)} {laf} {sf} "
+                             f"{_fmt(end[0])} {_fmt(end[1])}")
+        if sp["closed"]:
+            parts.append("Z")
+    return " ".join(parts)
+
+
+def _arc_center_param(
+    p0: tuple[float, float], seg: tuple
+) -> tuple[float, float, float, float, float, float, float] | None:
+    """SVG F.6.5: uç-nokta parametrizasyonundan merkez parametrizasyonuna.
+
+    Döner: (cx, cy, rx, ry, phi, theta1, dtheta); dejenere yay için None.
+    """
+    import math
+
+    _, rx, ry, xrot, laf, sf, p1 = seg
+    rx, ry = abs(rx), abs(ry)
+    if rx < 1e-9 or ry < 1e-9:
+        return None
+    phi = math.radians(xrot)
+    cphi, sphi = math.cos(phi), math.sin(phi)
+    dx2, dy2 = (p0[0] - p1[0]) / 2.0, (p0[1] - p1[1]) / 2.0
+    x1p = cphi * dx2 + sphi * dy2
+    y1p = -sphi * dx2 + cphi * dy2
+    lam = (x1p * x1p) / (rx * rx) + (y1p * y1p) / (ry * ry)
+    if lam > 1.0:
+        s = math.sqrt(lam)
+        rx, ry = rx * s, ry * s
+    num = rx * rx * ry * ry - rx * rx * y1p * y1p - ry * ry * x1p * x1p
+    den = rx * rx * y1p * y1p + ry * ry * x1p * x1p
+    if den < 1e-12:
+        return None
+    co = math.sqrt(max(0.0, num / den))
+    if laf == sf:
+        co = -co
+    cxp = co * rx * y1p / ry
+    cyp = -co * ry * x1p / rx
+    cx = cphi * cxp - sphi * cyp + (p0[0] + p1[0]) / 2.0
+    cy = sphi * cxp + cphi * cyp + (p0[1] + p1[1]) / 2.0
+    th1 = math.atan2((y1p - cyp) / ry, (x1p - cxp) / rx)
+    th2 = math.atan2((-y1p - cyp) / ry, (-x1p - cxp) / rx)
+    dth = th2 - th1
+    if sf == 0 and dth > 0:
+        dth -= 2 * math.pi
+    elif sf == 1 and dth < 0:
+        dth += 2 * math.pi
+    return cx, cy, rx, ry, phi, th1, dth
+
+
 def _seg_point_tangent(
     p0: tuple[float, float], seg: tuple, u: float
 ) -> tuple[tuple[float, float], tuple[float, float]]:
-    """Segment üzerinde u'daki nokta ve teğet (L: doğru; C: kübik Bezier)."""
+    """Segment üzerinde u'daki nokta ve teğet (L: doğru; C: kübik; A: eliptik yay)."""
     if seg[0] == "L":
         p1 = seg[1]
         pt = (p0[0] + (p1[0] - p0[0]) * u, p0[1] + (p1[1] - p0[1]) * u)
         return pt, (p1[0] - p0[0], p1[1] - p0[1])
+    if seg[0] == "A":
+        import math
+
+        cp = _arc_center_param(p0, seg)
+        if cp is None:  # dejenere yay: doğru gibi davran (SVG kuralı)
+            p1 = seg[-1]
+            pt = (p0[0] + (p1[0] - p0[0]) * u, p0[1] + (p1[1] - p0[1]) * u)
+            return pt, (p1[0] - p0[0], p1[1] - p0[1])
+        cx, cy, rx, ry, phi, th1, dth = cp
+        th = th1 + u * dth
+        cphi, sphi = math.cos(phi), math.sin(phi)
+        ex, ey = rx * math.cos(th), ry * math.sin(th)
+        pt = (cphi * ex - sphi * ey + cx, sphi * ex + cphi * ey + cy)
+        dxe, dye = -rx * math.sin(th) * dth, ry * math.cos(th) * dth
+        return pt, (cphi * dxe - sphi * dye, sphi * dxe + cphi * dye)
     _, c1, c2, p3 = seg
     v = 1.0 - u
     pt = (
@@ -126,9 +257,11 @@ def _anchor_weights(seg: tuple, u: float) -> tuple[float, float]:
     """u'daki örneğin baş/uç çapa düzeltmelerine duyarlılığı.
 
     C segmentinde c1 baş çapayla, c2 uç çapayla sürüklenir varsayılır
-    (uygulama da böyle taşır): wA=(1-u)²(1+2u), wB=u²(3-2u). L: 1-u / u.
+    (uygulama da böyle taşır): wA=(1-u)²(1+2u), wB=u²(3-2u). L/A: 1-u / u
+    (yay parametreleri sabittir; uçların <1px ötelenmesi yayı ihmal edilir
+    ölçüde kaydırır).
     """
-    if seg[0] == "L":
+    if seg[0] != "C":
         return 1.0 - u, u
     v = 1.0 - u
     return v * v * (1.0 + 2.0 * u), u * u * (3.0 - 2.0 * u)
@@ -241,6 +374,11 @@ def _snap_subpath(
         if seg[0] == "L":
             if d_end is not None:
                 sp["segs"][i] = ("L", _shift(seg[1], d_end))
+        elif seg[0] == "A":
+            if d_end is not None:
+                _, rx, ry, xrot, laf, sf, end = seg
+                # yay parametreleri sabit; yalnız uç öteleniyor (<1px'te güvenli)
+                sp["segs"][i] = ("A", rx, ry, xrot, laf, sf, _shift(end, d_end))
         else:
             _, c1, c2, end = seg
             if d_start is not None:
@@ -263,7 +401,6 @@ def refit_svg_boundaries(
     başarısızlıkta {"moved": 0, "error": ...} (çökme yok). Benimseme kararı
     çağırana aittir (ölçülen fidelity artmalı).
     """
-    from app.curve_fairing import _parse_subpaths, _serialize_subpaths  # noqa: PLC0415
     from app.fidelity import load_reference_rgb  # noqa: PLC0415
 
     try:
@@ -334,7 +471,7 @@ def refit_svg_boundaries(
         d = el.get("d")
         if not d:
             continue
-        subpaths = _parse_subpaths(d)
+        subpaths = _parse_subpaths_arc(d)
         if subpaths is None:
             continue  # desteklenmeyen komut (ör. A yayı): aynen bırak
         p_moved = 0
@@ -342,7 +479,7 @@ def refit_svg_boundaries(
             anchors += len(sp["segs"]) + 1
             p_moved += _snap_subpath(sp, ref, to_px, to_user, offset)
         if p_moved:
-            el.set("d", _serialize_subpaths(subpaths))
+            el.set("d", _serialize_subpaths_arc(subpaths))
             moved += p_moved
             paths_changed += 1
 

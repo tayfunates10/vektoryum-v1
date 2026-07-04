@@ -74,9 +74,12 @@ aynı kodu çağırır):
    Çapa-başına doğrudan oturtma köşelerde yanılır; kenar-içi örnekler köşeyi iki
    kenarın kesişimi olarak doğru konuma çeker. Kontrastsız (örtülen) sınırlar ve
    çok-geçişli (paralel komşu kenar) profiller atlanır; translate-dışı transform
-   taşıyan path'lere dokunulmaz. Sonuç yalnızca ölçülen fidelity artarsa
-   benimsenir. Ölçüm: fixture ortalaması 94.21 → 95.87 (+1.66; gradient_logo
-   96.05 → 98.15, tavanın 0.17 altına).
+   taşıyan path'lere dokunulmaz. A (eliptik yay) segmentleri desteklenir
+   (F.6.5 merkez parametrizasyonuyla örneklenir; yay parametreleri sabit, yalnız
+   uçlar ötelenir — regularize çıktısı yay doludur). Sonuç yalnızca ölçülen
+   fidelity artarsa benimsenir. Ölçüm: fixture ortalaması 94.21 → 95.94
+   (gradient_logo 96.05 → 98.15, tavanın 0.17 altına; class_reklam 94.10 →
+   95.23; arcaates 92.49 → 94.45).
 8. **Export** (`app/exporters.py`) — SVG/PDF/EPS/DXF + "temizlenmiş" PNG.
 9. **Yapı bütünlüğü denetimi** (`app/fidelity.py` → `score_structure_integrity`) —
    nihai çıktı render edilip orijinalle karşılaştırılır: kopan/eksik çizgi
