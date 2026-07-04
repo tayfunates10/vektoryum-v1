@@ -394,14 +394,21 @@ def score_candidate(
 # Paralel aday üretimi (üret + skorla tek işçide; profil: aday-başına iş
 # ~25s'lik bölümdü, 4 çekirdekte ~3x kısalır). VEKTORYUM_WORKERS=1 kapatır.
 # ---------------------------------------------------------------------------
-def _worker_count(n_jobs: int) -> int:
+def _pool_size() -> int:
+    """Havuzun SABİT işçi sayısı (iş sayısından bağımsız).
+
+    Havuz boyu istek başına değişmez: eşzamanlı isteklerde küçük-işli bir
+    çağrının kurduğu dar havuzu geniş-işli çağrının kapatıp değiştirmesi,
+    uçuştaki map'in future'larını iptal edip yarım çıktı yarışına yol açar
+    (PR incelemesinde işaret edildi). Tek sabit boy = değiştirme yolu yok.
+    """
     env = os.environ.get("VEKTORYUM_WORKERS", "").strip()
     if env:
         try:
-            return max(1, min(int(env), n_jobs))
+            return max(1, int(env))
         except ValueError:
             pass
-    return max(1, min(os.cpu_count() or 1, n_jobs, 4))
+    return max(1, min(os.cpu_count() or 1, 4))
 
 
 def _pool_init() -> None:
@@ -419,16 +426,20 @@ def _pool_init() -> None:
 # kurulum maliyeti tekil havuzla yalnız İLK kullanımda ödenir (sunucuda istekler
 # arasında amorti olur).
 _POOL: ProcessPoolExecutor | None = None
-_POOL_WORKERS = 0
 
 
-def _get_pool(workers: int) -> ProcessPoolExecutor | None:
-    global _POOL, _POOL_WORKERS
-    if _POOL is not None and _POOL_WORKERS >= workers:
-        return _POOL
+def _get_pool() -> ProcessPoolExecutor | None:
+    """Tekil, SABİT boyutlu havuz; süreç ömrü boyunca asla kapatılmaz.
+
+    (Önceki sürüm dar havuzu genişletmek için shutdown ediyordu — eşzamanlı
+    isteklerde uçuştaki map iptal olup yarım dosya yarışı doğabilirdi.)
+    """
+    global _POOL
     if _POOL is not None:
-        _POOL.shutdown(wait=False, cancel_futures=True)
-        _POOL = None
+        return _POOL
+    workers = _pool_size()
+    if workers <= 1:
+        return None
     try:
         import multiprocessing as mp  # noqa: PLC0415
 
@@ -461,11 +472,9 @@ def _get_pool(workers: int) -> ProcessPoolExecutor | None:
                     os.environ.pop(k, None)
                 else:
                     os.environ[k] = v
-        _POOL_WORKERS = workers
     except Exception as e:  # noqa: BLE001
         logger.warning("Süreç havuzu kurulamadı, sıralı mod: %s", e)
         _POOL = None
-        _POOL_WORKERS = 0
     return _POOL
 
 
@@ -496,10 +505,9 @@ def _produce_and_score_job(args: tuple) -> tuple[dict[str, Any], dict[str, Any] 
 
 def _run_jobs(jobs: list[tuple]) -> list[tuple[dict[str, Any], dict[str, Any] | None]]:
     """İş listesini paralel (ya da tek işçide sıralı) çalıştırır."""
-    workers = _worker_count(len(jobs))
-    if workers <= 1 or len(jobs) <= 1:
+    if len(jobs) <= 1 or _pool_size() <= 1:
         return [_produce_and_score_job(j) for j in jobs]
-    pool = _get_pool(workers)
+    pool = _get_pool()
     if pool is None:
         return [_produce_and_score_job(j) for j in jobs]
     try:
@@ -810,6 +818,45 @@ def _apply_boundary_refit(
     return sc, info
 
 
+def _restore_source_dimensions(svg_path: Path, analysis: dict[str, Any]) -> None:
+    """Kazanan SVG'nin İÇ boyutlarını kaynak görsel boyutuna oturtur.
+
+    Ön işleme izleme rasterini ölçekler (küçük girdide 2x süperörnekleme,
+    büyükte performans küçültmesi); izlenen SVG'nin width/height/viewBox'ı o
+    rasterden gelir ve kaynak boyut sözleşmesi bozulur (500x300 girdi 1000x600
+    birimlik SVG/PDF veriyordu — PR incelemesinde işaret edildi). viewBox iz
+    koordinatlarında kalır, width/height kaynak piksel boyutuna çekilir;
+    render'lar ve koordinat-bazlı ölçümler etkilenmez, dışa aktarım boyutu
+    (SVG/PDF/EPS sayfası, DXF birim ölçeği) kaynağa döner.
+    """
+    ow, oh = int(analysis.get("width", 0) or 0), int(analysis.get("height", 0) or 0)
+    if ow <= 0 or oh <= 0:
+        return
+    import xml.etree.ElementTree as ET  # noqa: PLC0415
+
+    try:
+        ET.register_namespace("", "http://www.w3.org/2000/svg")
+        tree = ET.parse(str(svg_path))
+        root = tree.getroot()
+        if not root.get("viewBox"):
+            w_attr, h_attr = root.get("width"), root.get("height")
+            if not w_attr or not h_attr:
+                return
+            try:
+                vw = float(str(w_attr).rstrip("px"))
+                vh = float(str(h_attr).rstrip("px"))
+            except ValueError:
+                return
+            root.set("viewBox", f"0 0 {vw:g} {vh:g}")
+        if root.get("width") == str(ow) and root.get("height") == str(oh):
+            return
+        root.set("width", str(ow))
+        root.set("height", str(oh))
+        tree.write(str(svg_path), encoding="utf-8", xml_declaration=True)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("Kaynak boyut geri yüklemesi atlandı: %s", e)
+
+
 # ---------------------------------------------------------------------------
 # Çekirdek pipeline
 # ---------------------------------------------------------------------------
@@ -940,6 +987,10 @@ def run_pipeline(
         if bnd_info.get("applied"):
             selection_reason = f"{selection_reason}+boundary_refit"
         refit_info = {**refit_info, "boundary": bnd_info}
+        # 9.7 Kaynak boyut sözleşmesi: kazananın width/height'ı orijinal görsel
+        # boyutuna çekilir (viewBox iz koordinatlarında kalır)
+        if best is not None:
+            _restore_source_dimensions(Path(best["svg_path"]), analysis)
 
     # 10. Yapı bütünlüğü denetimi (kırık/eksik çizgi, hayalet çizik): nihai
     # çıktıda orijinaldeki her kontur karşılanıyor mu? Foto benzeri sürekli-tonlu

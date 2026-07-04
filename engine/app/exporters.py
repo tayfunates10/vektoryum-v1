@@ -179,6 +179,30 @@ def _svg_height(src: Path) -> float:
     return 0.0
 
 
+def _svg_unit_scale(src: Path) -> float:
+    """viewBox koordinatlarını width/height iç boyutuna taşıyan ölçek.
+
+    Ön işleme izleme rasterini ölçekleyebilir (süperörnekleme/küçültme);
+    pipeline width/height'ı kaynak boyuta çeker ama path koordinatları viewBox
+    uzayında kalır. DXF fiziksel birim taşıdığından koordinatlar bu ölçekle
+    kaynak piksel birimine indirgenir (500x300 girdinin 1000x600 birimlik DXF
+    vermesi gerçek bir hataydı — PR incelemesi).
+    """
+    try:
+        root = ET.parse(str(src)).getroot()
+        vb = root.get("viewBox")
+        w_attr = root.get("width")
+        if not vb or not w_attr:
+            return 1.0
+        parts = [float(x) for x in vb.replace(",", " ").split()]
+        w_px = float(str(w_attr).rstrip("px"))
+        if len(parts) == 4 and parts[2] > 0 and w_px > 0:
+            return w_px / parts[2]
+    except Exception:  # noqa: BLE001
+        pass
+    return 1.0
+
+
 def _is_finite_point(x: float, y: float) -> bool:
     return all(math.isfinite(v) for v in (x, y))
 
@@ -238,7 +262,8 @@ def export_dxf(src: Path, dst: Path) -> Path:
         raise RuntimeError(f"DXF için gerekli kütüphane eksik: {e}") from e
 
     src = Path(src)
-    height = _svg_height(src)
+    unit = _svg_unit_scale(src)          # viewBox -> kaynak piksel birimi
+    height = _svg_height(src) * unit
 
     try:
         paths, attributes, _svg_attr = svg2paths2(str(src))
@@ -279,9 +304,10 @@ def export_dxf(src: Path, dst: Path) -> Path:
                     pt = seg.point(t)
                 except Exception:  # noqa: BLE001
                     continue
-                # yerel koordinatı transform ile kullanıcı uzayına taşı
-                ux = xf[0] * pt.real + xf[2] * pt.imag + xf[4]
-                uy = xf[1] * pt.real + xf[3] * pt.imag + xf[5]
+                # yerel koordinatı transform ile kullanıcı uzayına taşı,
+                # sonra kaynak piksel birimine ölçekle
+                ux = (xf[0] * pt.real + xf[2] * pt.imag + xf[4]) * unit
+                uy = (xf[1] * pt.real + xf[3] * pt.imag + xf[5]) * unit
                 x = float(ux)
                 y = float(height - uy) if height > 0 else float(-uy)
                 if not _is_finite_point(x, y):
