@@ -127,6 +127,30 @@ python -m venv .venv
 
 API dokümanı: `http://127.0.0.1:8000/docs`
 
+## Docker ile Çalıştırma
+
+```bash
+docker compose up --build          # http://127.0.0.1:8000/
+# ya da compose'suz:
+docker build -t vektoryum ./engine
+docker run -p 8000:8000 vektoryum
+```
+
+Notlar:
+
+- **HED modeli** (58MB, opsiyonel): imaja gömmek için
+  `docker build --build-arg FETCH_HED=1 -t vektoryum ./engine`; ya da hazır
+  model klasörünü çalıştırırken bağlayın:
+  `docker run -v /yol/modeller:/srv/engine/models ...`. Model yoksa motor
+  klasik kenar yoluyla aynen çalışır.
+- **EPS çıktısı** imajdaki `libcairo2` ile üretilir (Dockerfile kurar);
+  eksikse API `output_errors.eps` ile dürüstçe raporlar, diğer formatlar
+  etkilenmez.
+- `VEKTORYUM_WORKERS` env'i paralel aday üretimini kontrol eder
+  (boş = otomatik min(çekirdek,4); `1` = sıralı).
+- Tek uvicorn süreci yeterlidir: pipeline kendi süreç havuzunu yönetir; ek
+  uvicorn worker'ı çekirdek kapışması yaratır.
+
 ## Web Arayüzü
 
 Sunucu kökünde (`http://127.0.0.1:8000/`) tek sayfalık arayüz servis edilir

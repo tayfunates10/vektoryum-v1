@@ -329,7 +329,9 @@ def calculate_structure_likelihood(image: Image.Image) -> dict[str, float]:
 
     if lines is not None:
         for raw_line in lines[:240]:
-            x1, y1, x2, y2 = [int(v) for v in raw_line[0]]
+            # OpenCV <5 satırı (1,4), OpenCV 5+ (4,) döndürür; ikisini de kaldır
+            vals = np.asarray(raw_line).reshape(-1)
+            x1, y1, x2, y2 = (int(v) for v in vals[:4])
             length = float(np.hypot(x2 - x1, y2 - y1))
 
             if length < min_line_length:
