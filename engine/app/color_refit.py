@@ -200,6 +200,101 @@ def _fit_linear_gradient(
     }
 
 
+def _adjacent_region_pairs(id_map: np.ndarray, n_bins: int) -> list[tuple[int, int, int]]:
+    """ID haritasından komşu bölge çiftlerini (a, b, sınır_uzunluğu) çıkarır."""
+    acc: dict[int, int] = {}
+    for a, b in ((id_map[:, :-1], id_map[:, 1:]), (id_map[:-1, :], id_map[1:, :])):
+        m = (a != b) & (a >= 1) & (a < n_bins) & (b >= 1) & (b < n_bins)
+        if not m.any():
+            continue
+        lo = np.minimum(a[m], b[m]).astype(np.int64)
+        hi = np.maximum(a[m], b[m]).astype(np.int64)
+        keys, cnts = np.unique(lo * n_bins + hi, return_counts=True)
+        for k, c in zip(keys.tolist(), cnts.tolist()):
+            acc[k] = acc.get(k, 0) + c
+    return [(k // n_bins, k % n_bins, c) for k, c in acc.items()]
+
+
+def _same_tone_family(a: tuple[int, int, int], b: tuple[int, int, int]) -> bool:
+    """İki dolgu aynı ton ailesinden mi? (bant-birleştirme adayı)
+
+    Yakın ΔE + benzer ton açısı: bir gradyanın kuantize bantları böyledir;
+    farklı nesnelerin renkleri (kırmızı domates / yeşil yaprak) elenir.
+    """
+    la = _lab(np.array([a], dtype=np.uint8))[0]
+    lb = _lab(np.array([b], dtype=np.uint8))[0]
+    # cv2 LAB ölçeği: L 0-255'e ölçeklenir (gerçek ΔE76'nın ~2.55 katı L'de);
+    # 45 ≈ gerçek ΔE ~18 — kaba posterizasyon adımlarını (erdogmus bandı,
+    # 30-RGB'lik gri merdiveni) kapsar, farklı nesne renklerini dışarıda tutar
+    if float(np.linalg.norm(la - lb)) > 45.0:
+        return False
+    ca = float(np.hypot(la[1] - 128.0, la[2] - 128.0))
+    cb = float(np.hypot(lb[1] - 128.0, lb[2] - 128.0))
+    if ca <= 10.0 and cb <= 10.0:
+        return True  # ikisi de nötr (gri merdiveni)
+    if ca <= 10.0 or cb <= 10.0:
+        return ca <= 14.0 and cb <= 14.0  # nötr-kromatik sınırı: ancak ikisi de soluksa
+    ha = float(np.degrees(np.arctan2(la[2] - 128.0, la[1] - 128.0)))
+    hb = float(np.degrees(np.arctan2(lb[2] - 128.0, lb[1] - 128.0)))
+    dh = abs(ha - hb) % 360.0
+    return min(dh, 360.0 - dh) <= 30.0
+
+
+_BAND_MIN_GAIN_DE = 0.8  # çok-bantlı mevcut gösterime göre asgari ΔE kazancı
+
+
+def _fit_linear_gradient_multi(
+    ys: np.ndarray, xs: np.ndarray, pix: np.ndarray, cur_rgb: np.ndarray
+) -> dict[str, Any] | None:
+    """Bant kümesi üzerinde doğrusal gradyan; kazanç MEVCUT bant renklerine göre.
+
+    _fit_linear_gradient tek sabit renge karşı ölçer; burada her pikselin
+    mevcut rengi kendi bandının dolgusudur (çok-bantlı posterizasyon).
+    """
+    n = len(xs)
+    if n < _GRAD_MIN_PX:
+        return None
+    a = np.stack([np.ones(n, np.float64), xs.astype(np.float64), ys.astype(np.float64)], axis=1)
+    coef, *_ = np.linalg.lstsq(a, pix.astype(np.float64), rcond=None)
+    pred = a @ coef
+
+    lab_t = _lab(pix.astype(np.uint8))
+    lab_c = _lab(np.clip(cur_rgb, 0, 255).astype(np.uint8))
+    de_cur = float(np.mean(np.linalg.norm(lab_t - lab_c, axis=1)))
+    lab_p = _lab(np.clip(pred, 0, 255).astype(np.uint8))
+    de_grad = float(np.mean(np.linalg.norm(lab_t - lab_p, axis=1)))
+    if de_cur - de_grad < _BAND_MIN_GAIN_DE:
+        return None
+
+    wl = np.array([0.299, 0.587, 0.114])
+    g = coef[1:, :]
+    gx, gy = float(g[0] @ wl), float(g[1] @ wl)
+    norm = (gx * gx + gy * gy) ** 0.5
+    if norm < 1e-9:
+        k = int(np.argmax(np.abs(g).sum(axis=1)))
+        gx, gy = float(g[0][k]), float(g[1][k])
+        norm = (gx * gx + gy * gy) ** 0.5
+        if norm < 1e-9:
+            return None
+    ux, uy = gx / norm, gy / norm
+    t = xs * ux + ys * uy
+    t1, t2 = float(np.percentile(t, 1)), float(np.percentile(t, 99))
+    if t2 - t1 < 4.0:
+        return None
+    cx, cy = float(np.mean(xs)), float(np.mean(ys))
+    p1 = (cx + (t1 - (cx * ux + cy * uy)) * ux, cy + (t1 - (cx * ux + cy * uy)) * uy)
+    p2 = (cx + (t2 - (cx * ux + cy * uy)) * ux, cy + (t2 - (cx * ux + cy * uy)) * uy)
+    c1 = np.clip(coef[0] + coef[1] * p1[0] + coef[2] * p1[1], 0, 255).astype(np.uint8)
+    c2 = np.clip(coef[0] + coef[1] * p2[0] + coef[2] * p2[1], 0, 255).astype(np.uint8)
+    if _delta_e(tuple(int(v) for v in c1), tuple(int(v) for v in c2)) < _GRAD_MIN_SPAN_DE:
+        return None
+    return {
+        "x1": p1[0], "y1": p1[1], "x2": p2[0], "y2": p2[1],
+        "c1": tuple(int(v) for v in c1), "c2": tuple(int(v) for v in c2),
+        "gain_de": round(de_cur - de_grad, 2),
+    }
+
+
 def refit_svg_colors_per_path(
     svg_path: Path,
     original_path: Path,
@@ -303,50 +398,129 @@ def refit_svg_colors_per_path(
     except ValueError:
         vbw, vbh = float(w), float(h)
     sx, sy = vbw / float(w), vbh / float(h)
-    # transform kapsamındaki path'lere gradyan verilmez (userSpaceOnUse çift dönüşüm)
-    no_grad: set[int] = set()
+    # Gradyan + transform: userSpaceOnUse uçları, path'in KENDİ kullanıcı
+    # uzayında yorumlanır. vtracer HER path'e translate(...) verir — bunlar
+    # dondurulursa hiçbir gerçek çıktı gradyan alamaz (ölçüldü: gradients hep
+    # 0'dı). Çözüm: yalnız-translate transform'larda uçlar path başına ters
+    # ofsetlenir (üye başına ayrı def, aynı doğru üzerinde -> görsel süreklilik
+    # birebir). Translate-dışı transform'lu path gradyan almaz.
+    xf_offset: dict[int, tuple[float, float] | None] = {}
 
-    def _mark_xf(el: ET.Element, inherited: bool) -> None:
-        has = inherited or (el.get("transform") is not None)
-        if has and el.tag.split("}")[-1] == "path":
-            no_grad.add(id(el))
+    def _mark_xf(el: ET.Element, inherited_blocked: bool) -> None:
+        if el.tag.split("}")[-1] == "path":
+            if inherited_blocked:
+                xf_offset[id(el)] = None
+            else:
+                t = el.get("transform")
+                if t is None:
+                    xf_offset[id(el)] = (0.0, 0.0)
+                else:
+                    m = re.match(r"^\s*translate\(\s*([-+0-9.eE]+)(?:[\s,]+([-+0-9.eE]+))?\s*\)\s*$", t)
+                    xf_offset[id(el)] = (float(m.group(1)), float(m.group(2) or 0.0)) if m else None
+        blocked = inherited_blocked or (
+            el.get("transform") is not None and el.tag.split("}")[-1] != "path"
+        )
         for ch in list(el):
-            _mark_xf(ch, has)
+            _mark_xf(ch, blocked)
 
     _mark_xf(root, False)
     defs_el: ET.Element | None = None
+
+    def _grad_ok(i: int) -> bool:
+        return xf_offset.get(id(paths[i])) is not None
+
+    def _emit_gradient(gid: str, grad: dict[str, Any], members: list[int]) -> None:
+        nonlocal defs_el, grad_applied, changed
+        if defs_el is None:
+            defs_el = root.find(f"{{{SVG_NS}}}defs")
+            if defs_el is None:
+                defs_el = ET.Element(f"{{{SVG_NS}}}defs")
+                root.insert(0, defs_el)
+        for i in members:
+            tx, ty = xf_offset[id(paths[i])] or (0.0, 0.0)
+            mid = gid if (tx == 0.0 and ty == 0.0) else f"{gid}_m{i}"
+            if defs_el.find(f"{{{SVG_NS}}}linearGradient[@id='{mid}']") is None:
+                g_el = ET.SubElement(defs_el, f"{{{SVG_NS}}}linearGradient", {
+                    "id": mid, "gradientUnits": "userSpaceOnUse",
+                    "x1": f"{grad['x1'] * sx - tx:.2f}", "y1": f"{grad['y1'] * sy - ty:.2f}",
+                    "x2": f"{grad['x2'] * sx - tx:.2f}", "y2": f"{grad['y2'] * sy - ty:.2f}",
+                })
+                ET.SubElement(g_el, f"{{{SVG_NS}}}stop",
+                              {"offset": "0", "stop-color": _hex(grad["c1"])})
+                ET.SubElement(g_el, f"{{{SVG_NS}}}stop",
+                              {"offset": "1", "stop-color": _hex(grad["c2"])})
+            paths[i].set("fill", f"url(#{mid})")
+            grad_applied += 1
+            changed += 1
+
+    # 3a) BANT-BİRLEŞTİRME (banding giderme): kuantizasyon, yumuşak gradyanı
+    # komşu ton bantlarına böler (siyah bandın griye akışı, domates gölgesi).
+    # Benzer tonlu KOMŞU bölgeler kümelege (union-find) toplanır ve kümeye TEK
+    # doğrusal gradyan oturtulur; tüm üyeler AYNI url(#) dolguyu alır. Geometri
+    # hiç değişmez (z-sırası/pyclipper riski yok) — renk bant sınırında sürekli
+    # olduğundan bantlaşma görsel olarak kaybolur. Kazanç, mevcut ÇOK-BANTLI
+    # gösterimin hatasına göre ölçülür.
+    in_cluster: set[int] = set()
+    pairs = _adjacent_region_pairs(id_map, n_bins)
+    parent = list(range(n_bins))
+
+    def _find(a: int) -> int:
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    for a, b, blen in pairs:
+        ia, ib = int(a) - 1, int(b) - 1
+        if ia not in new_fill or ib not in new_fill or blen < 15:
+            continue
+        if not _grad_ok(ia) or not _grad_ok(ib):
+            continue
+        if not _same_tone_family(new_fill[ia], new_fill[ib]):
+            continue
+        ra, rb = _find(int(a)), _find(int(b))
+        if ra != rb:
+            parent[rb] = ra
+
+    clusters: dict[int, list[int]] = {}
+    for code in range(1, n_bins):
+        i = code - 1
+        if i in new_fill:
+            clusters.setdefault(_find(code), []).append(code)
+    big_clusters = sorted(clusters.items(), key=lambda kv: -len(kv[1]))[:40]
+    for rank, (_rt, codes) in enumerate(big_clusters):
+        if len(codes) < 2 or len(codes) > 12:
+            continue
+        total_px = int(counts[codes].sum())
+        if total_px < 1500:
+            continue
+        mask = np.isin(id_map, codes) & interior
+        ys, xs = np.nonzero(mask)
+        cur_rgb = np.zeros((n_bins, 3), np.float64)
+        for c in codes:
+            cur_rgb[c] = new_fill[c - 1]
+        grad = _fit_linear_gradient_multi(ys, xs, ref[ys, xs], cur_rgb[id_map[mask]])
+        if grad is None:
+            continue
+        members = [c - 1 for c in codes]
+        _emit_gradient(f"refit_band_{rank}", grad, members)
+        in_cluster.update(members)
+
+    # 3b) tek-bölge gradyan uzanımı (kümede olmayan büyük bölgeler)
     big_codes = np.nonzero(counts >= _GRAD_MIN_PX)[0]
     big_codes = big_codes[np.argsort(-counts[big_codes])][:80]  # en büyük 80 bölge
     for code in big_codes:
         i = int(code) - 1
-        if i < 0 or i >= len(paths) or i not in new_fill:
+        if i < 0 or i >= len(paths) or i not in new_fill or i in in_cluster:
             continue
-        el = paths[i]
-        if id(el) in no_grad:
+        if not _grad_ok(i):
             continue
         mask = (id_map == code) & interior
         ys, xs = np.nonzero(mask)
         grad = _fit_linear_gradient(ys, xs, ref[ys, xs], new_fill[i])
         if grad is None:
             continue
-        if defs_el is None:
-            defs_el = root.find(f"{{{SVG_NS}}}defs")
-            if defs_el is None:
-                defs_el = ET.Element(f"{{{SVG_NS}}}defs")
-                root.insert(0, defs_el)
-        gid = f"refit_grad_{i}"
-        g_el = ET.SubElement(defs_el, f"{{{SVG_NS}}}linearGradient", {
-            "id": gid, "gradientUnits": "userSpaceOnUse",
-            "x1": f"{grad['x1'] * sx:.2f}", "y1": f"{grad['y1'] * sy:.2f}",
-            "x2": f"{grad['x2'] * sx:.2f}", "y2": f"{grad['y2'] * sy:.2f}",
-        })
-        ET.SubElement(g_el, f"{{{SVG_NS}}}stop",
-                      {"offset": "0", "stop-color": _hex(grad["c1"])})
-        ET.SubElement(g_el, f"{{{SVG_NS}}}stop",
-                      {"offset": "1", "stop-color": _hex(grad["c2"])})
-        el.set("fill", f"url(#{gid})")
-        grad_applied += 1
-        changed += 1
+        _emit_gradient(f"refit_grad_{i}", grad, [i])
 
     if changed == 0:
         return {"changed": 0}

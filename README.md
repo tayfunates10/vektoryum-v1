@@ -73,6 +73,15 @@ aynı kodu çağırır):
    ortalamasını alır (2048px ID-render + bincount ile vektörize, ~1s; izlemenin
    yuttuğu tonlar geri gelir: kahverengi→turuncu kayması, kaybolan sebze
    renkleri düzeldi — mangal 82.1→83.3, aslan 83.3→85.5, carwash 86.8→89.1).
+   Per-path modda iki gradyan katmanı daha çalışır: (a) BANT-BİRLEŞTİRME
+   (banding giderme) — kuantizasyonun böldüğü komşu ton bantları (ID-harita
+   komşuluğu + ton-ailesi + union-find) kümelenir ve kümeye TEK doğrusal
+   gradyan LSQ ile oturtulur; tüm üyeler aynı gradyanı aldığından bant sınırında
+   renk süreklidir, geometri hiç değişmez (kazanç, mevcut çok-bantlı gösterimin
+   hatasına göre ölçülür); (b) tekli büyük bölge gradyanı. vtracer'ın path-başına
+   translate transform'u, gradyan uçlarının üye başına ters ofsetlenmesiyle
+   desteklenir (aksi hiçbir gerçek çıktı gradyan alamıyordu — ölçülen gerçek
+   hata). Erdoğmuş bandı: düz kömür → tonlu akış, 86.8→87.9.
 7.6 **Sınır refit — alt-piksel kenar oturtma** (`app/boundary_refit.py`) —
    renk refit'ten sonra kalan izleme kaybının ana bileşeni, sınırların gerçek
    kenara göre YEREL yarım-piksel sapmasıdır (faz-korelasyon ölçümü global
