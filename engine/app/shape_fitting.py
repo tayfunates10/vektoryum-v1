@@ -43,7 +43,24 @@ def _fmt(v: float) -> str:
 # ---------------------------------------------------------------------------
 # Geometri yardımcıları
 # ---------------------------------------------------------------------------
-def _flatten_subpaths(d: str, max_pts: int = 700) -> list[tuple[np.ndarray, bool, str]]:
+def _flatten_subpaths(
+    d: str, max_pts: int = 700, skip_unfittable: bool = False
+) -> list[tuple[np.ndarray, bool, str]]:
+    """d-string'in alt yollarını (örnek_noktalar, kapalı_mı, alt_d) üçlülerine açar.
+
+    HIZLI YOL: mutlak M/L/C/Z path'leri (vtracer/opencv çıktısı) yerel parser +
+    vektörize Bezier değerlendirmesiyle örneklenir — svgpathtools'un nokta-nokta
+    ``sub.point()`` çağrısı ve sayısal ``length()`` entegrasyonu binlerce path'te
+    profilde %47'lik darboğaktı (56s/aday-turu -> ~2s). Başka komut içeren d
+    svgpathtools'a düşer (davranış birebir).
+
+    ``skip_unfittable=True`` (yalnız bütünsel şekil oturtma): açık ya da küçük
+    (kontrol-poligonu köşegeni < 12) alt yollar yoğun örneklenmeden, oturtucunun
+    zaten reddedeceği minimal noktayla döner — alt_d korunur, geometri değişmez.
+    """
+    fast = _flatten_subpaths_mlcz(d, max_pts, skip_unfittable)
+    if fast is not None:
+        return fast
     path = parse_path(d)
     out: list[tuple[np.ndarray, bool, str]] = []
     for sub in path.continuous_subpaths():
@@ -77,6 +94,82 @@ def _flatten_subpaths(d: str, max_pts: int = 700) -> list[tuple[np.ndarray, bool
             arr = arr[:-1]  # son tekrar noktayı at (kapalı)
         if len(arr) < 4:
             continue
+        out.append((arr, closed, sub_d))
+    return out
+
+
+def _flatten_subpaths_mlcz(
+    d: str, max_pts: int, skip_unfittable: bool
+) -> list[tuple[np.ndarray, bool, str]] | None:
+    """M/L/C/Z hızlı düzleştirici; desteklenmeyen komutta None (fallback)."""
+    from app.curve_fairing import _parse_subpaths, _serialize_subpaths  # noqa: PLC0415
+
+    sps = _parse_subpaths(d)
+    if sps is None:
+        return None
+    out: list[tuple[np.ndarray, bool, str]] = []
+    for sp in sps:
+        sub_d = _serialize_subpaths([sp])
+        p0 = np.asarray(sp["start"], dtype=float)
+        # kontrol poligonu (eğriyi KAPSAR): uzunluk yaklaşımı + hızlı bbox
+        ctrl = [p0]
+        for seg in sp["segs"]:
+            if seg[0] == "L":
+                ctrl.append(np.asarray(seg[1], dtype=float))
+            else:
+                ctrl.extend(np.asarray(p, dtype=float) for p in seg[1:])
+        ctrl_arr = np.array(ctrl)
+        last = np.asarray(sp["segs"][-1][-1], dtype=float) if sp["segs"] else p0
+        closed = bool(sp["closed"]) or bool(np.hypot(*(p0 - last)) < 1.5)
+        if skip_unfittable:
+            span = ctrl_arr.max(axis=0) - ctrl_arr.min(axis=0)
+            if not closed or float(np.hypot(*span)) < 12.0 or len(sp["segs"]) < 2:
+                # oturtucu zaten reddeder: yoğun örnekleme yapma, alt_d'yi koru
+                out.append((ctrl_arr[:3], closed, sub_d))
+                continue
+        chords = np.hypot(*(np.diff(ctrl_arr, axis=0).T)) if len(ctrl_arr) > 1 else np.array([0.0])
+        total = float(chords.sum())
+        n_total = int(min(max_pts, max(12, total / 2.0)))
+        # segment başına örnek: kiriş payına orantılı (en az 1)
+        seg_pts: list[np.ndarray] = [p0[None, :]]
+        cur = p0
+        for seg in sp["segs"]:
+            if seg[0] == "L":
+                end = np.asarray(seg[1], dtype=float)
+                m = max(1, int(round(n_total * (np.hypot(*(end - cur)) / total))) if total > 0 else 1)
+                u = np.linspace(0.0, 1.0, m + 1)[1:, None]
+                seg_pts.append(cur[None, :] * (1 - u) + end[None, :] * u)
+                cur = end
+            else:
+                c1 = np.asarray(seg[1], dtype=float)
+                c2 = np.asarray(seg[2], dtype=float)
+                end = np.asarray(seg[3], dtype=float)
+                approx = (np.hypot(*(c1 - cur)) + np.hypot(*(c2 - c1)) + np.hypot(*(end - c2)))
+                m = max(2, int(round(n_total * (approx / total))) if total > 0 else 2)
+                u = np.linspace(0.0, 1.0, m + 1)[1:, None]
+                v = 1.0 - u
+                seg_pts.append(
+                    v * v * v * cur[None, :] + 3 * v * v * u * c1[None, :]
+                    + 3 * v * u * u * c2[None, :] + u * u * u * end[None, :]
+                )
+                cur = end
+        arr = np.concatenate(seg_pts, axis=0)
+        if len(arr) < 4:
+            continue
+        # ardışık çok yakın noktaları temizle (vektörize)
+        diffs = np.hypot(*(np.diff(arr, axis=0).T))
+        keep = np.concatenate([[True], diffs > 0.4])
+        arr = arr[keep]
+        if closed and len(arr) > 1 and np.hypot(*(arr[0] - arr[-1])) < 1e-9:
+            arr = arr[:-1]
+        if len(arr) < 4:
+            if skip_unfittable:
+                out.append((arr, closed, sub_d))
+            continue
+        if closed and np.hypot(*(arr[0] - arr[-1])) < 1.5 and len(arr) > 4:
+            # kapalı: son nokta start tekrarıysa at
+            if np.hypot(*(arr[0] - arr[-1])) < 0.4:
+                arr = arr[:-1]
         out.append((arr, closed, sub_d))
     return out
 
@@ -367,7 +460,17 @@ def _signed_area(pts: np.ndarray) -> float:
 
 
 def _sample_d(d: str, max_pts: int = 420) -> np.ndarray | None:
-    """Bir d-string'i yoğun nokta dizisine örnekler (doğrulama için)."""
+    """Bir d-string'i yoğun nokta dizisine örnekler (doğrulama için).
+
+    HIZLI YOL: aday şekiller kendi ürettiğimiz M/L/C/A/Z d-string'leridir
+    (daire/elips yayları, roundrect, yıldız); yay-farkındalı yerel parser +
+    analitik değerlendirme svgpathtools'un nokta-nokta örneklemesinden ~50x
+    hızlıdır (profil: aday başına 1.6s -> ihmal edilebilir). Desteklenmeyen
+    komutta svgpathtools'a düşer.
+    """
+    fast = _sample_d_fast(d, max_pts)
+    if fast is not None:
+        return fast
     if parse_path is None:
         return None
     try:
@@ -384,6 +487,34 @@ def _sample_d(d: str, max_pts: int = 420) -> np.ndarray | None:
         return np.array(samples, dtype=float) if len(samples) >= 8 else None
     except Exception:  # noqa: BLE001
         return None
+
+
+def _sample_d_fast(d: str, max_pts: int) -> np.ndarray | None:
+    """M/L/C/A/Z d-string'ini analitik örnekler; başka komutta None."""
+    from app.boundary_refit import _parse_subpaths_arc, _seg_point_tangent  # noqa: PLC0415
+
+    try:
+        sps = _parse_subpaths_arc(d)
+    except Exception:  # noqa: BLE001
+        return None
+    if sps is None:
+        return None
+    samples: list[np.ndarray] = []
+    for sp in sps:
+        segs = sp["segs"]
+        if not segs:
+            continue
+        m = max(4, min(max_pts, 420) // max(1, len(segs)))
+        cur = sp["start"]
+        for seg in segs:
+            for i in range(m):
+                pt, _ = _seg_point_tangent(cur, seg, i / m)
+                samples.append(np.asarray(pt, dtype=float))
+            cur = seg[-1] if seg[0] != "A" else seg[-1]
+        samples.append(np.asarray(segs[-1][-1], dtype=float))
+    if len(samples) < 8:
+        return None
+    return np.vstack(samples)
 
 
 def _max_dist_to_polyline(points: np.ndarray, poly: np.ndarray) -> float:
@@ -598,20 +729,33 @@ def try_fit_whole_shape(pts: np.ndarray, closed: bool) -> str | None:
     if diag < 12:
         return None
     tol = max(1.5, 0.008 * diag)
-    ccw = _signed_area(pts) > 0
+    signed = _signed_area(pts)
+    ccw = signed > 0
     pf = pts.astype(np.float32)
 
-    # 1) daire
-    circ = _fit_circle(pts)
-    if circ and circ[2] >= 4:
-        cx, cy, r = circ
-        if _circle_residual(pts, circ) <= tol:
-            d = _validated(_circle_d(cx, cy, r, ccw), pts, tol, ccw)
-            if d:
-                return d
+    # UCUZ AYIRT EDİCİLER (profil: organik alt yollar — yaprak/harf — tüm pahalı
+    # denemelerden geçip sonunda reddediliyordu; aday turu başına ~4s). İki O(N)
+    # ölçü çoğunu baştan eler, gerçek şekiller eşiklerin rahat üstünde kalır:
+    # dairesellik 4πA/P² (daire=1, kare~0.785, organik<0.6), dikdörtgen doluluğu
+    # A/minAreaRect (dikdörtgen~1, yıldız/organik düşük). Yıldız denemesi ucuz
+    # olduğundan geçitlenmez.
+    area = abs(signed)
+    closed_ring = np.vstack([pts, pts[:1]])
+    perimeter = float(np.hypot(*np.diff(closed_ring, axis=0).T).sum())
+    circ_ratio = 4.0 * math.pi * area / max(perimeter * perimeter, 1e-9)
 
-    # 2) elips
-    if len(pts) >= 5:
+    # 1) daire
+    if circ_ratio >= 0.80:
+        circ = _fit_circle(pts)
+        if circ and circ[2] >= 4:
+            cx, cy, r = circ
+            if _circle_residual(pts, circ) <= tol:
+                d = _validated(_circle_d(cx, cy, r, ccw), pts, tol, ccw)
+                if d:
+                    return d
+
+    # 2) elips (basıklıkta dairesellik düşer; alt sınır geniş tutulur)
+    if circ_ratio >= 0.55 and len(pts) >= 5:
         try:
             (ecx, ecy), (d1, d2), ang = cv2.fitEllipse(pf)
             a, b = max(d1, d2) / 2.0, min(d1, d2) / 2.0
@@ -630,6 +774,12 @@ def try_fit_whole_shape(pts: np.ndarray, closed: bool) -> str | None:
         return None
     if min(rw, rh) < 4:
         return None
+    if area / max(rw * rh, 1e-9) < 0.82:
+        # minAreaRect'i dolduramıyor: dikdörtgen/roundrect olamaz; yıldıza geç
+        try:
+            return _try_fit_star(pts, tol, ccw)
+        except Exception:  # noqa: BLE001
+            return None
     # yerel çerçevede sağlam kenar/yarıçap tahmini: kenarlar yüzdelikle
     # (minAreaRect'in gürültü şişmesine dayanıklı), köşe yarıçapı KÖŞE-UZAKLIĞI
     # yöntemiyle (ideal keskin köşenin yola en yakın mesafesi d -> r = d/(√2-1))
@@ -701,7 +851,7 @@ def fit_whole_shapes_svg(svg_path: Path) -> dict[str, Any]:
         if not d:
             continue
         try:
-            subs = _flatten_subpaths(d)
+            subs = _flatten_subpaths(d, skip_unfittable=True)
         except Exception:  # noqa: BLE001
             continue
         if not subs:

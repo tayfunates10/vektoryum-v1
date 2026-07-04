@@ -229,7 +229,22 @@ $env:POTRACE_PATH  = "C:\Tools\potrace\potrace.exe"
 $env:AUTOTRACE_PATH = "C:\Tools\autotrace\autotrace.exe"
 $env:HED_PROTO_PATH = "C:\Models\deploy.prototxt"            # opsiyonel
 $env:HED_MODEL_PATH = "C:\Models\hed_pretrained_bsds.caffemodel"
+$env:VEKTORYUM_WORKERS = "1"   # paralel aday üretimini kapat (varsayılan: min(çekirdek,4))
 ```
+
+### Performans
+
+Aday üretimi + skorlama ve refinement varyantları (k-bump ön işlemeleri dahil)
+süreç havuzunda paralel çalışır (`VEKTORYUM_WORKERS`, varsayılan min(çekirdek,4);
+`1` sıralı moda döndürür). Ölçülen profil optimizasyonları: bütünsel şekil
+oturtmada ucuz ayırt ediciler (dairesellik 4πA/P² + dikdörtgen doluluğu — organik
+alt yollar pahalı denemelere girmeden elenir) ve analitik d-örnekleme; k-means
+merkez atamasında GEMM (d²=|x|²−2x·c+|c|²; 230MB'lık broadcast ara dizileri
+kalktı). k-means öncesi RNG tohumu sabitlenir: aynı girdi, sıralı/paralel her
+modda AYNI çıktıyı üretir (cv2 süreç-global RNG'si önceki çağrılara göre farklı
+palet doğuruyordu). Örnek görselde uçtan uca 120s → 43s paralel / 66s sıralı
+(çıktılar birebir aynı). Havuz forkserver/spawn ile kurulur (fork, thread'li
+native kütüphanelerle kilitleniyordu) ve süreç ömrü boyunca yeniden kullanılır.
 
 ## Testler
 

@@ -11,6 +11,8 @@ Export (SVG/PDF/EPS/DXF) ve HTTP'ye özgü her şey ``app.main``'de kalır.
 from __future__ import annotations
 
 import logging
+import os
+from concurrent.futures import ProcessPoolExecutor
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -389,6 +391,126 @@ def score_candidate(
 
 
 # ---------------------------------------------------------------------------
+# Paralel aday üretimi (üret + skorla tek işçide; profil: aday-başına iş
+# ~25s'lik bölümdü, 4 çekirdekte ~3x kısalır). VEKTORYUM_WORKERS=1 kapatır.
+# ---------------------------------------------------------------------------
+def _worker_count(n_jobs: int) -> int:
+    env = os.environ.get("VEKTORYUM_WORKERS", "").strip()
+    if env:
+        try:
+            return max(1, min(int(env), n_jobs))
+        except ValueError:
+            pass
+    return max(1, min(os.cpu_count() or 1, n_jobs, 4))
+
+
+def _pool_init() -> None:
+    # işçi başına cv2 iç thread'lerini kıs: N işçi x M thread çekirdek
+    # kapışmasına (thrash) dönmesin
+    try:
+        cv2.setNumThreads(1)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+# Havuz TEKİLDİR ve SPAWN bağlamıyla kurulur: fork, thread'li native kütüphane
+# (cv2/BLAS/resvg) yüklü ebeveynden kopyalanınca çocuklar kilitlenebiliyor
+# (ölçüldü: 4 işçi 0 CPU ile asılı kaldı). Spawn temiz süreç başlatır; ~1-2s/işçi
+# kurulum maliyeti tekil havuzla yalnız İLK kullanımda ödenir (sunucuda istekler
+# arasında amorti olur).
+_POOL: ProcessPoolExecutor | None = None
+_POOL_WORKERS = 0
+
+
+def _get_pool(workers: int) -> ProcessPoolExecutor | None:
+    global _POOL, _POOL_WORKERS
+    if _POOL is not None and _POOL_WORKERS >= workers:
+        return _POOL
+    if _POOL is not None:
+        _POOL.shutdown(wait=False, cancel_futures=True)
+        _POOL = None
+    try:
+        import multiprocessing as mp  # noqa: PLC0415
+
+        # Başlatma yöntemi: fork DEĞİL (thread'li native kütüphane yüklü
+        # ebeveynden fork kilitlenme yaptı — ölçüldü); tercihen forkserver
+        # (çocuklar __main__'i yeniden import etmez: korumasız çağıran betik
+        # sonsuz yinelenmez), yoksa spawn (Windows).
+        # işçiler native kütüphane thread'lerini TEKLİ kullansın (BLAS/OMP/
+        # RAYON=vtracer): N işçi x M thread çekirdek kapışması ölçülür şekilde
+        # yavaşlatıyor. Çocuklar ebeveyn env'ini devralır.
+        thread_env = {
+            "OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1",
+            "MKL_NUM_THREADS": "1", "NUMEXPR_NUM_THREADS": "1",
+            "RAYON_NUM_THREADS": "1",
+        }
+        saved = {k: os.environ.get(k) for k in thread_env}
+        os.environ.update(thread_env)
+        try:
+            method = "forkserver" if "forkserver" in mp.get_all_start_methods() else "spawn"
+            _POOL = ProcessPoolExecutor(
+                max_workers=workers, initializer=_pool_init,
+                mp_context=mp.get_context(method),
+            )
+            # işçiler İLK submit'te doğar; env penceresi kapanmadan hepsini
+            # doğurt (CPython ilk submit'te max_workers'a tamamlar)
+            _POOL.submit(_pool_init).result(timeout=180)
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+        _POOL_WORKERS = workers
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Süreç havuzu kurulamadı, sıralı mod: %s", e)
+        _POOL = None
+        _POOL_WORKERS = 0
+    return _POOL
+
+
+def _produce_and_score_job(args: tuple) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Tek işçi görevi: (opsiyonel ön işleme) -> üret -> skorla.
+
+    args: (name, spec, preprocessed_path|None, mode, job_dir, original_path,
+           palette_cap, analysis, pp_override)  — pp_override verilirse işçi
+    önce preprocess_for_mode çalıştırır (refine k-bump yolu; ağır k-means da
+    işçiye taşınır).
+    """
+    (name, spec, preprocessed_path, mode, job_dir,
+     original_path, palette_cap, analysis, pp_override) = args
+    if pp_override is not None:
+        try:
+            preprocessed_path, _ = preprocess_for_mode(
+                original_path, mode, job_dir, analysis=analysis,
+                color_override=pp_override, output_suffix=f"_k{pp_override}",
+            )
+        except Exception as e:  # noqa: BLE001
+            return {"name": name, "success": False, "error": str(e),
+                    "engine": spec.get("engine")}, None
+    res = produce_candidate(name, spec, preprocessed_path, mode, job_dir,
+                            original_path=original_path, palette_cap=palette_cap)
+    sc = score_candidate(res, original_path, analysis, mode)
+    return res, sc
+
+
+def _run_jobs(jobs: list[tuple]) -> list[tuple[dict[str, Any], dict[str, Any] | None]]:
+    """İş listesini paralel (ya da tek işçide sıralı) çalıştırır."""
+    workers = _worker_count(len(jobs))
+    if workers <= 1 or len(jobs) <= 1:
+        return [_produce_and_score_job(j) for j in jobs]
+    pool = _get_pool(workers)
+    if pool is None:
+        return [_produce_and_score_job(j) for j in jobs]
+    try:
+        # timeout: tek iş makul sürede bitmeli; asılı işçi tüm isteği kilitlemesin
+        return list(pool.map(_produce_and_score_job, jobs, timeout=600))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Paralel aday üretimi başarısız, sıralıya düşülüyor: %s", e)
+        return [_produce_and_score_job(j) for j in jobs]
+
+
+# ---------------------------------------------------------------------------
 # Refinement: en iyi adayın hata-güdümlü iyileştirilmesi (kapalı döngü)
 # ---------------------------------------------------------------------------
 def _refine_variants(spec: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
@@ -452,41 +574,33 @@ def refine_best(
     pool: list[dict[str, Any]] = [best]
     tried: list[dict[str, Any]] = []
 
-    def _consider(sc: dict[str, Any] | None) -> None:
+    # Varyant işleri tek listede toplanıp paralel çalıştırılır (profil: k-bump
+    # ön işlemeleri — ağır k-means — dahil aday-başına iş işçilere dağılır).
+    jobs: list[tuple] = []
+    # 1) VTracer parametre varyantları (mevcut ön işlenmiş görsel)
+    for vname, vparams in _refine_variants(spec):
+        vspec = {"engine": "vtracer", "vtracer_params": vparams, "cleanup": spec.get("cleanup")}
+        jobs.append((vname, vspec, preprocessed_path, mode, job_dir,
+                     original_path, None, analysis, None))
+    # 2) Renk-sayısı bump'ı (ΔE odaklı): işçi önce yüksek k ile yeniden ön işler
+    cur_k = int(analysis.get("estimated_color_count", 14))
+    for bump in (8, 16):
+        k = min(64, max(16, cur_k + bump))
+        vname = f"refine_k{k}"
+        vspec = {"engine": spec["engine"],
+                 "vtracer_params": dict(spec.get("vtracer_params") or {}),
+                 "cleanup": spec.get("cleanup")}
+        jobs.append((vname, vspec, None, mode, job_dir,
+                     original_path, None, analysis, k))
+
+    for _res, sc in _run_jobs(jobs):
         if sc is None:
-            return
+            continue
         scored.append(sc)
         tried.append({"name": sc["name"], "fidelity": sc.get("fidelity_score"),
                       "path_count": (sc.get("score_details") or {}).get("path_count")})
         if sc.get("rendered_ok") and sc.get("fidelity_score") is not None:
             pool.append(sc)
-
-    # 1) VTracer parametre varyantları (mevcut ön işlenmiş görsel)
-    for vname, vparams in _refine_variants(spec):
-        vspec = {"engine": "vtracer", "vtracer_params": vparams, "cleanup": spec.get("cleanup")}
-        _consider(score_candidate(produce_candidate(vname, vspec, preprocessed_path, mode, job_dir,
-                                                     original_path=original_path),
-                                  original_path, analysis, mode))
-
-    # 2) Renk-sayısı bump'ı (ΔE odaklı): daha yüksek k ile yeniden ön işle + trace
-    cur_k = int(analysis.get("estimated_color_count", 14))
-    for bump in (8, 16):
-        k = min(64, max(16, cur_k + bump))
-        try:
-            pp_path, _ = preprocess_for_mode(
-                original_path, mode, job_dir, analysis=analysis,
-                color_override=k, output_suffix=f"_k{k}",
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.debug("refine ön işleme atlandı (k=%s): %s", k, e)
-            continue
-        vname = f"refine_k{k}"
-        vspec = {"engine": spec["engine"],
-                 "vtracer_params": dict(spec.get("vtracer_params") or {}),
-                 "cleanup": spec.get("cleanup")}
-        _consider(score_candidate(produce_candidate(vname, vspec, pp_path, mode, job_dir,
-                                                     original_path=original_path),
-                                  original_path, analysis, mode))
 
     # Benimseme: seçimle AYNI sıralama anahtarı (fidelity → az path → total).
     # Orijinal best havuzda; kazanan oysa hiçbir şey değişmez.
@@ -750,18 +864,15 @@ def run_pipeline(
         ) or None
         if lc_cap:
             lc_cap = min(64, lc_cap)  # üretim paleti üst sınırı (quality eşiği 64)
-    results = [
-        produce_candidate(name, spec, preprocessed_path, mode_used, job_dir,
-                          original_path=original_path, palette_cap=lc_cap)
+    # 4.5 + 5. Üretim + skorlama (paralel: üret+skorla tek işçide)
+    jobs = [
+        (name, spec, preprocessed_path, mode_used, job_dir,
+         original_path, lc_cap, analysis, None)
         for name, spec in candidates.items()
     ]
-
-    # 5. Skorlama
-    scored: list[dict[str, Any]] = []
-    for res in results:
-        sc = score_candidate(res, original_path, analysis, mode_used)
-        if sc is not None:
-            scored.append(sc)
+    pairs = _run_jobs(jobs)
+    results = [r for r, _ in pairs]
+    scored: list[dict[str, Any]] = [s for _, s in pairs if s is not None]
 
     best: dict[str, Any] | None = None
     raw_best: dict[str, Any] | None = None

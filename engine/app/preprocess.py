@@ -101,15 +101,11 @@ def _quantize_flat_fg_aware(rgb: np.ndarray, colors: int) -> np.ndarray:
         fit = fg_lab[rng.choice(len(fg_lab), 60000, replace=False)]
     else:
         fit = fg_lab
+    cv2.setRNGSeed(1234567)  # determinizm (bkz. _kmeans_quantize_lab)
     _c, _l, centers = cv2.kmeans(fit, K, None, criteria, 3, cv2.KMEANS_PP_CENTERS)
     centers = np.clip(centers, 0, 255).astype(np.float32)
 
-    labels = np.empty(len(fg_lab), dtype=np.int32)
-    chunk = 200000
-    for s in range(0, len(fg_lab), chunk):
-        block = fg_lab[s:s + chunk]
-        d2 = ((block[:, None, :] - centers[None, :, :]) ** 2).sum(axis=2)
-        labels[s:s + chunk] = np.argmin(d2, axis=1)
+    labels = _assign_to_centers(fg_lab, centers)
     centers_rgb = cv2.cvtColor(
         centers.astype(np.uint8).reshape(1, -1, 3), cv2.COLOR_LAB2RGB
     ).reshape(-1, 3)
@@ -233,13 +229,9 @@ def _reduce_to_dominant(
                 added += 1
 
     dominant = np.array(dominant_list, dtype=np.int32)
-    # her piksel için en yakın dominant renk (parça parça, bellek dostu)
-    out = np.empty_like(flat)
-    chunk = 200000
-    for start in range(0, len(flat), chunk):
-        block = flat[start:start + chunk].astype(np.int32)
-        d = ((block[:, None, :] - dominant[None, :, :]) ** 2).sum(axis=2)
-        out[start:start + chunk] = dominant[np.argmin(d, axis=1)]
+    # her piksel için en yakın dominant renk (GEMM ataması; bkz. _assign_to_centers)
+    labels = _assign_to_centers(flat.astype(np.float32), dominant.astype(np.float32))
+    out = dominant[labels].astype(flat.dtype)
     return out.reshape(rgb.shape)
 
 
@@ -462,13 +454,21 @@ def preprocess_minimal_ai(arr: np.ndarray, report: dict) -> np.ndarray:
 
 
 def _assign_to_centers(samples: np.ndarray, centers: np.ndarray) -> np.ndarray:
-    """Tüm örnekleri en yakın merkeze atar (parça parça, bellek dostu)."""
+    """Tüm örnekleri en yakın merkeze atar (GEMM ile, bellek dostu).
+
+    d² = |x|² − 2x·c + |c|²; argmin için |x|² sabittir -> tek matris çarpımı
+    yeter. Eski (block − centers)² broadcast'i parça başına ~230MB ara dizi
+    kuruyordu (2.5M px × 96 merkez, profildeki k-means maliyetinin ana kısmı).
+    """
+    c = np.ascontiguousarray(centers, dtype=np.float32)
+    c_norm = (c * c).sum(axis=1)  # |c|²
     labels = np.empty(len(samples), dtype=np.int32)
-    chunk = 200000
+    chunk = 500000
     for s in range(0, len(samples), chunk):
-        block = samples[s:s + chunk]
-        d2 = ((block[:, None, :] - centers[None, :, :]) ** 2).sum(axis=2)
-        labels[s:s + chunk] = np.argmin(d2, axis=1)
+        block = np.ascontiguousarray(samples[s:s + chunk], dtype=np.float32)
+        scores = block @ (-2.0 * c.T)
+        scores += c_norm[None, :]
+        labels[s:s + chunk] = np.argmin(scores, axis=1)
     return labels
 
 
@@ -540,6 +540,11 @@ def _kmeans_quantize_lab(
     K = max(2, min(int(k), unique_n))
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 20, 1.0)
     rng = np.random.default_rng(0)
+    # DETERMİNİZM: cv2.kmeans PP-seçimi cv2'nin süreç-global RNG'sini kullanır;
+    # sabitlenmezse aynı görsel, önceki çağrıların RNG ilerletmesine (ya da
+    # paralel işçinin taze RNG'sine) göre FARKLI palet alır. Aynı girdi her
+    # süreçte/aşamada aynı çıktıyı vermeli.
+    cv2.setRNGSeed(1234567)
 
     # HIZ: merkezleri alt-örneklemde bul, sonra TÜM pikselleri en yakın merkeze ata
     if len(samples) > 60000:
