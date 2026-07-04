@@ -139,7 +139,14 @@ def basic_svg_quality_check(
     elif low_fidelity:
         # ölçülen sadakat düşükse "üretime hazır" diyemeyiz (dürüst beklenti)
         status = "needs_review"
-    elif not warnings and total_score >= 80.0:
+    elif not warnings and (
+        total_score >= 80.0
+        or (fidelity_score is not None and fidelity_score >= 90.0)
+    ):
+        # total_score yapısal bir SEZGİDİR; ölçülen algısal sadakat asıl ürün
+        # metriğidir. Uyarısız + yapısı sağlam + sadakati >= 90 çıktı (ör.
+        # 1-path gradyan: yapısal skoru düşük ama render birebir) üretime
+        # hazırdır — aksi kullanıcıya yanlış "gözden geçirin" sinyali veriyordu.
         status = "production_ready"
     elif total_score >= 70.0 and len(warnings) <= 1:
         status = "production_ready" if not warnings else "needs_review"

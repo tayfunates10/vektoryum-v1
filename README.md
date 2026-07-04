@@ -127,6 +127,16 @@ python -m venv .venv
 
 API dokümanı: `http://127.0.0.1:8000/docs`
 
+## Web Arayüzü
+
+Sunucu kökünde (`http://127.0.0.1:8000/`) tek sayfalık arayüz servis edilir
+(`app/static/index.html`, bağımsız — harici varlık yok): sürükle-bırak yükleme,
+mod + şekil yapısı (katmanlı/kesikli) seçimi, işlem göstergesi, orijinal/vektör
+yan-yana önizleme, kalite rozeti (`Üretime hazır` / `Gözden geçirin`) + uyarılar
+ve SVG/PDF/EPS/DXF/PNG indirme (üretilemeyen format soluk gösterilir). Statik
+dosya yoksa kök eski JSON sağlık yanıtına düşer; kanonik sağlık ucu artık
+`GET /api/health`.
+
 ## API
 
 - `POST /api/vectorize` — form-data: `file` (görsel), `trace_mode` (varsayılan
@@ -140,7 +150,7 @@ API dokümanı: `http://127.0.0.1:8000/docs`
 - `GET /api/download/{job_id}/{file_type}` — `file_type` ∈ `svg | pdf | eps | dxf | png`.
   `png` "temizlenmiş" raster çıktıdır: seçilen vektör, orijinal görsel
   boyutunda (en uzun kenar <= 4096) render edilir.
-- `GET /` — sağlık kontrolü.
+- `GET /api/health` — sağlık kontrolü (`GET /` web arayüzünü döndürür).
 
 ### Yanıt alanları (frontend için)
 

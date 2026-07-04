@@ -261,7 +261,20 @@ async def download_file(job_id: str, file_type: str):
     )
 
 
-@app.get("/", summary="Sağlık kontrolü")
+_STATIC_DIR = Path(__file__).parent / "static"
+
+
+@app.get("/", summary="Web arayüzü", include_in_schema=False)
+async def index():
+    """Kökte web arayüzü servis edilir; statik dosya yoksa JSON sağlık raporu
+    döner (eski davranış — API-yalnız kurulumlar bozulmaz)."""
+    index_html = _STATIC_DIR / "index.html"
+    if index_html.exists():
+        return FileResponse(index_html, media_type="text/html")
+    return JSONResponse({"status": "ok", "service": "vektoryum-api", "modes": ALLOWED_MODES})
+
+
+@app.get("/api/health", summary="Sağlık kontrolü")
 async def health() -> dict[str, Any]:
     return {"status": "ok", "service": "vektoryum-api", "modes": ALLOWED_MODES}
 
