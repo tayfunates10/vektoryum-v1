@@ -16,7 +16,7 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Deploy clean copy to Hugging Face
+      - name: Deploy engine folder to Hugging Face
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_SPACE: ATESOGLU/Vektoryum
@@ -27,24 +27,35 @@ jobs:
           rm -rf /tmp/hf-space
           mkdir -p /tmp/hf-space
 
-          rsync -a ./ /tmp/hf-space/ \
-            --exclude ".git" \
-            --exclude ".github" \
-            --exclude "engine/regression" \
+          echo "engine klasörünün içeriği HF kök dizinine kopyalanıyor..."
+          rsync -a ./engine/ /tmp/hf-space/ \
+            --exclude "regression" \
             --exclude "__pycache__" \
             --exclude ".pytest_cache" \
-            --exclude "node_modules" \
-            --exclude ".next" \
-            --exclude "dist" \
-            --exclude "build" \
-            --exclude ".venv" \
-            --exclude "venv"
+            --exclude ".vscode" \
+            --exclude "tests" \
+            --exclude "*.png" \
+            --exclude "*.jpg" \
+            --exclude "*.jpeg" \
+            --exclude "*.webp"
+
+          echo "README.md kopyalanıyor..."
+          cp README.md /tmp/hf-space/README.md
 
           cd /tmp/hf-space
 
-          echo "Kontrol: engine/regression gönderilmeyecek"
-          if [ -d "engine/regression" ]; then
-            echo "HATA: engine/regression hâlâ var"
+          echo "HF deploy içeriği:"
+          ls -la
+
+          echo "Dockerfile kontrol ediliyor..."
+          if [ ! -f "Dockerfile" ]; then
+            echo "HATA: Dockerfile bulunamadı."
+            exit 1
+          fi
+
+          echo "README.md kontrol ediliyor..."
+          if [ ! -f "README.md" ]; then
+            echo "HATA: README.md bulunamadı."
             exit 1
           fi
 
@@ -53,7 +64,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
           git add .
-          git commit -m "HF Space clean deploy"
+          git commit -m "HF Space engine deploy"
 
           git branch -M main
           git remote add hf "https://ATESOGLU:${HF_TOKEN}@huggingface.co/spaces/${HF_SPACE}"
