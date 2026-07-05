@@ -129,6 +129,12 @@
       </div>
       <button class="primary" id="go" disabled>Vektörleştir</button>
     </div>
+    <label style="display:flex;align-items:center;gap:8px;margin-top:12px;font-size:13px;color:var(--muted);cursor:pointer">
+      <input type="checkbox" id="edgeCleanup">
+      Kenar temizleme (deneysel): tırtıklı kenarları pürüzsüzleştirir + gömülü
+      renk-adası artefaktlarını ölçüm-korumalı temizler. Foto-gerçekçi görsellerde
+      etkisi sınırlıdır.
+    </label>
   </div>
 
   <div class="card" id="status">
@@ -202,6 +208,7 @@
     fd.append("file", file);
     fd.append("trace_mode", $("mode").value);
     fd.append("shape_stacking", $("stacking").value);
+    fd.append("edge_cleanup", $("edgeCleanup").checked ? "on" : "off");
     let data;
     try {
       const resp = await fetch("/api/vectorize", { method: "POST", body: fd });

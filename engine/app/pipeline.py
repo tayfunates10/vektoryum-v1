@@ -866,6 +866,7 @@ def run_pipeline(
     trace_mode: str,
     job_dir: Path,
     refine: bool = True,
+    edge_cleanup: bool = False,
 ) -> dict[str, Any]:
     """Analiz → ön işleme → aday → temizleme → skor → seçim → refinement akışı.
 
@@ -987,7 +988,24 @@ def run_pipeline(
         if bnd_info.get("applied"):
             selection_reason = f"{selection_reason}+boundary_refit"
         refit_info = {**refit_info, "boundary": bnd_info}
-        # 9.7 Kaynak boyut sözleşmesi: kazananın width/height'ı orijinal görsel
+        # 9.7 Kenar temizleme (OPSİYONEL — varsayılan kapalı): kontur yumuşatma
+        # + ada-yutma. Yalnız kullanıcı açtığında; varsayılan çıktı bit-bit
+        # korunur (regresyon fixture'ları etkilenmez).
+        if edge_cleanup and best is not None:
+            from app.edge_cleanup import apply_edge_cleanup  # noqa: PLC0415
+
+            src_svg = Path(best["svg_path"])
+            ec_dst = job_dir / f"{src_svg.stem}_edgeclean.svg"
+            try:
+                ec_rep = apply_edge_cleanup(src_svg, original_path, ec_dst)
+            except Exception as e:  # noqa: BLE001
+                logger.debug("edge_cleanup atlandı: %s", e)
+                ec_rep = {"applied": False, "error": str(e)}
+            if ec_rep.get("applied"):
+                best = {**best, "svg_path": ec_dst}
+                selection_reason = f"{selection_reason}+edge_cleanup"
+            refit_info = {**refit_info, "edge_cleanup": ec_rep}
+        # 9.8 Kaynak boyut sözleşmesi: kazananın width/height'ı orijinal görsel
         # boyutuna çekilir (viewBox iz koordinatlarında kalır)
         if best is not None:
             _restore_source_dimensions(Path(best["svg_path"]), analysis)

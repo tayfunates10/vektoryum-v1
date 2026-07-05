@@ -68,9 +68,13 @@ async def vectorize_image(
     file: UploadFile = File(...),
     trace_mode: str = Form("auto"),
     shape_stacking: str = Form("stacked"),
+    edge_cleanup: str = Form("off"),
 ):
     if not isinstance(shape_stacking, str):
         shape_stacking = "stacked"  # doğrudan (test) çağrıda Form varsayılanı nesne gelir
+    if not isinstance(edge_cleanup, str):
+        edge_cleanup = "off"
+    edge_cleanup_on = edge_cleanup.lower() in ("on", "true", "1", "yes")
     if trace_mode not in ALLOWED_MODES:
         raise HTTPException(status_code=400, detail=f"Geçersiz trace_mode. İzin verilenler: {ALLOWED_MODES}")
     if shape_stacking not in ("stacked", "cutouts"):
@@ -97,7 +101,7 @@ async def vectorize_image(
 
     # 1-7. Çekirdek pipeline (analiz → ön işleme → aday → temizleme → skor → seçim)
     try:
-        pipe = run_pipeline(image, original_path, trace_mode, job_dir)
+        pipe = run_pipeline(image, original_path, trace_mode, job_dir, edge_cleanup=edge_cleanup_on)
     except Exception as e:  # noqa: BLE001
         logger.error("Pipeline hatası: %s", e)
         raise HTTPException(status_code=500, detail=f"İşlem başarısız: {e}")

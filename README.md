@@ -185,6 +185,16 @@ dosya yoksa kök eski JSON sağlık yanıtına düşer; kanonik sağlık ucu art
   boyutunda (en uzun kenar <= 4096) render edilir.
 - `GET /api/health` — sağlık kontrolü (`GET /` web arayüzünü döndürür).
 
+`POST /api/vectorize` ek opsiyon: `edge_cleanup` ∈ `off | on` (varsayılan `off`).
+Açıkken kazanan çıktıya OPSİYONEL kenar temizleme geçişi uygulanır
+(`app/edge_cleanup.py`): (1) özellik-koruyan Taubin kontur yumuşatma — tırtıklı
+organik kenarları düzeltir, köşe/uç/ince-yapı korunur (piksel-metrik gürültülü
+JPEG'i ödüllendirdiğinden küçük fidelity düşüşü tolere edilir); (2) ada-yutma —
+büyük düz bölgeye gömülü küçük artefakt-renk-adalarını baskın komşuya çeker,
+YALNIZ ölçülen fidelity artarsa (gerçek fotografik detay ise ölçüm koruyup
+reddeder). Varsayılan kapalı olduğundan mevcut çıktı ve tüm regresyon
+fixture'ları bit-bit korunur.
+
 ### Yanıt alanları (frontend için)
 
 - `candidate_report.best_candidate` / `selection_reason` — seçilen aday ve neden
