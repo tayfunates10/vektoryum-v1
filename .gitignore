@@ -29,3 +29,4 @@ Thumbs.db
 
 # Derin öğrenme model ağırlıkları (models/fetch_hed.py ile indirilir)
 engine/models/*.caffemodel
+engine/regression/
