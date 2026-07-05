@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import io
 import logging
+import os
 import tempfile
 import uuid
 from pathlib import Path
@@ -60,6 +61,14 @@ def _job_dir(job_id: str) -> Path:
     return JOBS_ROOT / job_id
 
 
+def _max_input_side() -> int:
+    """VEKTORYUM_MAX_INPUT_SIDE (px). 0/geçersiz = küçültme kapalı."""
+    try:
+        return max(0, int(os.environ.get("VEKTORYUM_MAX_INPUT_SIDE", "0") or "0"))
+    except ValueError:
+        return 0
+
+
 # ---------------------------------------------------------------------------
 # /api/vectorize
 # ---------------------------------------------------------------------------
@@ -99,6 +108,27 @@ async def vectorize_image(
     suffix = Path(file.filename or "upload.png").suffix or ".png"
     original_path = job_dir / f"original{suffix}"
     original_path.write_bytes(contents)
+
+    # Bellek-kısıtlı barındırma (ör. Render free 512MB) için OPSİYONEL girdi
+    # küçültme: VEKTORYUM_MAX_INPUT_SIDE ayarlıysa ve en uzun kenar bunu aşıyorsa
+    # görsel küçültülür ve kaynak dosya da tutarlı olması için yeniden yazılır.
+    # Vektör izleme zaten ~1600px'de çalıştığından kayıp ihmal edilebilir; çok
+    # büyük görselde OOM/timeout (HTML hata sayfası -> istemcide JSON hatası)
+    # önlenir. Varsayılan KAPALI (0) — yerel/kütüphane davranışı değişmez.
+    max_side = _max_input_side()
+    if max_side and max(image.size) > max_side:
+        sc = max_side / float(max(image.size))
+        image = image.resize(
+            (max(1, round(image.width * sc)), max(1, round(image.height * sc))),
+            Image.LANCZOS,
+        )
+        save_img = image if image.mode in ("RGB", "L") else image.convert("RGB")
+        try:
+            save_img.save(original_path)
+        except Exception:  # noqa: BLE001
+            image.convert("RGB").save(original_path.with_suffix(".png"))
+            original_path = original_path.with_suffix(".png")
+        logger.info("Girdi %s'e küçültüldü (VEKTORYUM_MAX_INPUT_SIDE=%d)", image.size, max_side)
 
     # 1-7. Çekirdek pipeline (analiz → ön işleme → aday → temizleme → skor → seçim)
     try:

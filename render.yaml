@@ -2,8 +2,7 @@
 #
 # Kurulum (3 adım, ~2 dk):
 #   1) render.com → New + → "Blueprint"
-#   2) Bu GitHub reposunu (tayfunates10/vektoryum-v1) bağla ve dalı seç
-#      (henüz main'e merge edilmediyse: claude/project-refinement-testing-0evhpr)
+#   2) Bu GitHub reposunu (tayfunates10/vektoryum-v1) bağla ve dalı 'main' seç
 #   3) "Apply" → Render bu dosyayı okuyup imajı derler ve yayına alır.
 #      Bittiğinde servis URL'i: https://vektoryum.onrender.com (ad'a göre)
 #
@@ -29,3 +28,8 @@ services:
       # free/tek-CPU'da bellek güvenliği için tekil işlem; daha büyük planda 2-4
       - key: VEKTORYUM_WORKERS
         value: "1"
+      # 512MB RAM'de büyük görsel (ör. 3840px) OOM yapıp HTML hata sayfası döner;
+      # girdi en uzun kenarı bu değere küçültülür (vektör kalitesi ~kayıpsız).
+      # Standard (2GB) plana geçince 2600-3200 yapabilir ya da kaldırabilirsin.
+      - key: VEKTORYUM_MAX_INPUT_SIDE
+        value: "1800"

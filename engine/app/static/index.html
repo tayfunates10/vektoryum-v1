@@ -698,9 +698,21 @@
     let data;
     try {
       const resp = await fetch("/api/vectorize", { method:"POST", body: fd });
+      // Sunucu JSON yerine HTML/boş döndüyse (bellek limiti, zaman aşımı, proxy
+      // hata sayfası) resp.json() "Unexpected token '<'" atardı; önce tür bak.
+      const ct = resp.headers.get("content-type") || "";
+      if (!ct.includes("application/json")) {
+        throw new Error(resp.status >= 500 || resp.status === 0
+          ? "Sunucu görseli işleyemedi — büyük görselde bellek/süre limiti aşılmış olabilir. Daha küçük bir görsel deneyin ya da sunucu planını yükseltin."
+          : ("Beklenmeyen sunucu yanıtı (HTTP " + resp.status + ")."));
+      }
       data = await resp.json();
       if (!resp.ok) throw new Error(data.detail || data.error || ("HTTP " + resp.status));
-    } catch (err) { abortLoading(); go.disabled = false; showError("İşlem başarısız: " + err.message); return; }
+    } catch (err) {
+      abortLoading(); go.disabled = false;
+      showError("İşlem başarısız: " + (err && err.message ? err.message : err));
+      return;
+    }
 
     // rozet + meta
     const q = data.quality_report || {}; const status = q.status || "bilinmiyor"; const ok = status === "production_ready";
