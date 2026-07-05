@@ -4,105 +4,209 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Vektoryum — Raster → Vektör</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%231857d6'/%3E%3Cpath d='M6 7l6 10 6-10' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cg fill='%23fff'%3E%3Crect x='3.5' y='4.5' width='3.5' height='3.5' rx='1'/%3E%3Crect x='17' y='4.5' width='3.5' height='3.5' rx='1'/%3E%3Crect x='10.25' y='15' width='3.5' height='3.5' rx='1'/%3E%3C/g%3E%3C/svg%3E">
+
 <style>
   :root {
-    --bg: #f6f7f9; --card: #ffffff; --ink: #1c2430; --muted: #667085;
-    --line: #e4e7ec; --accent: #175cd3; --accent-ink: #ffffff;
+    --bg: #f5f6f8; --card: #ffffff; --ink: #131a24; --muted: #667085;
+    --line: #e4e7ec; --line-2: #d3d8e0;
+    --accent: #1857d6; --accent-2: #3b82f6; --accent-ink: #ffffff;
     --ok: #067647; --ok-bg: #ecfdf3; --warn: #b54708; --warn-bg: #fffaeb;
     --err: #b42318; --err-bg: #fef3f2;
+    --shadow: 0 1px 2px rgba(16,24,40,.05), 0 8px 24px -12px rgba(16,24,40,.18);
+    --check: repeating-conic-gradient(#eceff3 0% 25%, #ffffff 0% 50%) 0 0 / 20px 20px;
   }
   * { box-sizing: border-box; }
+  html, body { height: 100%; }
   body {
     margin: 0; background: var(--bg); color: var(--ink);
     font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
   }
-  .wrap { max-width: 1060px; margin: 0 auto; padding: 28px 20px 64px; }
-  header h1 { font-size: 26px; margin: 0 0 4px; letter-spacing: -0.02em; }
-  header p { margin: 0 0 24px; color: var(--muted); }
-  .card {
-    background: var(--card); border: 1px solid var(--line);
-    border-radius: 12px; padding: 20px; margin-bottom: 20px;
-  }
-  /* --- yükleme --- */
-  #drop {
-    border: 2px dashed var(--line); border-radius: 10px; padding: 36px 20px;
+  .ic { width: 1.1em; height: 1.1em; display: inline-block; vertical-align: -0.18em;
+        fill: none; stroke: currentColor; stroke-width: 2;
+        stroke-linecap: round; stroke-linejoin: round; flex: none; }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 30px 20px 72px; }
+
+  /* ---------- header ---------- */
+  header { display: flex; align-items: center; gap: 14px; margin-bottom: 26px; }
+  .brand { width: 44px; height: 44px; border-radius: 12px; flex: none;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    display: grid; place-items: center; box-shadow: var(--shadow); }
+  .brand .ic { width: 26px; height: 26px; stroke: #fff; stroke-width: 2; }
+  header h1 { font-size: 25px; margin: 0; letter-spacing: -0.02em; line-height: 1.1; }
+  header p { margin: 2px 0 0; color: var(--muted); font-size: 14px; }
+
+  .card { background: var(--card); border: 1px solid var(--line);
+    border-radius: 16px; padding: 22px; margin-bottom: 22px; box-shadow: var(--shadow); }
+
+  /* ---------- upload ---------- */
+  #drop { border: 2px dashed var(--line-2); border-radius: 12px; padding: 34px 20px;
     text-align: center; color: var(--muted); cursor: pointer;
-    transition: border-color .15s, background .15s;
-  }
-  #drop.over { border-color: var(--accent); background: #f0f6ff; }
+    transition: border-color .15s, background .15s; }
+  #drop.over { border-color: var(--accent); background: #eff5ff; }
+  #drop .drop-ic { width: 40px; height: 40px; color: var(--accent); margin-bottom: 8px; }
   #drop strong { color: var(--ink); }
-  #drop img { max-height: 160px; max-width: 100%; border-radius: 6px; }
-  .controls { display: flex; flex-wrap: wrap; gap: 14px; align-items: end; margin-top: 16px; }
-  .field label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
-  select {
-    padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px;
-    background: #fff; font: inherit; color: var(--ink);
-  }
-  button.primary {
-    padding: 10px 22px; border: 0; border-radius: 8px; font: inherit; font-weight: 600;
-    background: var(--accent); color: var(--accent-ink); cursor: pointer;
-  }
-  button.primary:disabled { opacity: .5; cursor: default; }
-  button.ghost {
-    padding: 8px 16px; border: 1px solid var(--line); border-radius: 8px;
-    background: #fff; font: inherit; color: var(--ink); cursor: pointer;
-  }
-  /* --- durum --- */
-  #status { display: none; align-items: center; gap: 12px; }
-  .spinner {
-    width: 22px; height: 22px; border: 3px solid var(--line);
-    border-top-color: var(--accent); border-radius: 50%;
-    animation: spin .8s linear infinite;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  /* --- sonuç --- */
+  #drop .thumb { max-height: 160px; max-width: 100%; border-radius: 8px; margin: 0 auto; display: block; }
+
+  .controls { display: flex; flex-wrap: wrap; gap: 14px; align-items: end; margin-top: 18px; }
+  .field { display: flex; flex-direction: column; }
+  .field label { font-size: 13px; color: var(--muted); margin-bottom: 5px; font-weight: 500; }
+  select { padding: 9px 11px; border: 1px solid var(--line-2); border-radius: 9px;
+    background: #fff; font: inherit; color: var(--ink); min-width: 190px; }
+  select:focus, button:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 1px; }
+
+  button { font: inherit; }
+  .btn { display: inline-flex; align-items: center; gap: 8px; padding: 10px 20px;
+    border-radius: 10px; font-weight: 600; cursor: pointer; border: 1px solid transparent; }
+  .btn.primary { background: var(--accent); color: var(--accent-ink); border: 0; }
+  .btn.primary:hover { background: #1449b8; }
+  .btn.primary:disabled { opacity: .45; cursor: default; }
+  .btn.ghost { background: #fff; color: var(--ink); border: 1px solid var(--line-2); }
+  .btn.ghost:hover { background: #f7f8fa; }
+
+  .opt { display: flex; align-items: flex-start; gap: 10px; margin-top: 14px;
+    font-size: 13px; color: var(--muted); cursor: pointer; line-height: 1.5; }
+  .opt input { margin-top: 3px; width: 16px; height: 16px; accent-color: var(--accent); flex: none; }
+
+  /* ---------- loading ---------- */
+  #status { display: none; }
+  #status.on { display: flex; align-items: center; gap: 22px; }
+  .loader-art { width: 96px; height: 96px; flex: none; }
+  .la-shape { fill: none; stroke: url(#laGrad); stroke-width: 3.4; stroke-linecap: round;
+    stroke-dasharray: 300; stroke-dashoffset: 300; animation: laDraw 2.6s ease-in-out infinite; }
+  .la-fill { fill: var(--accent); opacity: 0; animation: laFill 2.6s ease-in-out infinite; }
+  .la-node { fill: var(--accent); transform-box: fill-box; transform-origin: center;
+    animation: laPop 2.6s ease-in-out infinite; }
+  .la-node:nth-of-type(1){ animation-delay: .0s } .la-node:nth-of-type(2){ animation-delay: .5s }
+  .la-node:nth-of-type(3){ animation-delay: 1s } .la-node:nth-of-type(4){ animation-delay: 1.5s }
+  .la-scan { stroke: var(--accent-2); stroke-width: 2; opacity: 0;
+    animation: laScan 2.6s ease-in-out infinite; }
+  @keyframes laDraw { 0%{stroke-dashoffset:300} 50%{stroke-dashoffset:0} 100%{stroke-dashoffset:-300} }
+  @keyframes laFill { 0%,45%{opacity:0} 65%{opacity:.16} 100%{opacity:0} }
+  @keyframes laPop { 0%,100%{transform:scale(.35);opacity:.25} 50%{transform:scale(1);opacity:1} }
+  @keyframes laScan { 0%{transform:translateY(-34px);opacity:0} 20%,80%{opacity:.9} 100%{transform:translateY(34px);opacity:0} }
+  #status .st-title { font-weight: 600; font-size: 16px; }
+  #status .meta { color: var(--muted); font-size: 13px; margin-top: 4px; max-width: 560px; }
+  .dots span { animation: dots 1.4s infinite; } .dots span:nth-child(2){animation-delay:.2s}
+  .dots span:nth-child(3){animation-delay:.4s}
+  @keyframes dots { 0%,80%,100%{opacity:.2} 40%{opacity:1} }
+
+  /* ---------- result ---------- */
   #result { display: none; }
-  .badge {
-    display: inline-block; padding: 3px 10px; border-radius: 999px;
-    font-size: 13px; font-weight: 600;
-  }
+  .result-head { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 14px; margin-bottom: 16px; }
+  .badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px;
+    border-radius: 999px; font-size: 13px; font-weight: 600; }
+  .badge .ic { width: 15px; height: 15px; }
   .badge.ok { background: var(--ok-bg); color: var(--ok); }
   .badge.warn { background: var(--warn-bg); color: var(--warn); }
-  .meta { color: var(--muted); font-size: 13px; margin-left: 10px; }
-  .panes { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 16px 0; }
-  @media (max-width: 720px) { .panes { grid-template-columns: 1fr; } }
-  .pane {
-    border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background:
-    repeating-conic-gradient(#f1f3f5 0% 25%, #ffffff 0% 50%) 0 0 / 22px 22px;
-  }
-  .pane .label {
-    background: var(--card); border-bottom: 1px solid var(--line);
-    padding: 6px 12px; font-size: 13px; color: var(--muted);
-  }
-  .pane .img { display: flex; align-items: center; justify-content: center; min-height: 240px; padding: 10px; }
-  .pane img { max-width: 100%; max-height: 420px; display: block; }
-  ul.warnings { margin: 10px 0 0; padding-left: 20px; color: var(--warn); }
-  .downloads { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
-  .downloads a {
-    padding: 9px 18px; border-radius: 8px; text-decoration: none; font-weight: 600;
-    border: 1px solid var(--line); color: var(--ink); background: #fff;
-  }
+  .meta { color: var(--muted); font-size: 13px; }
+
+  /* ---------- viewer ---------- */
+  .viewer { position: relative; height: 64vh; min-height: 400px; border: 1px solid var(--line-2);
+    border-radius: 14px; overflow: hidden; background: var(--check); touch-action: none;
+    cursor: grab; user-select: none; }
+  .viewer.grabbing { cursor: grabbing; }
+  .pane { position: absolute; top: 0; bottom: 0; overflow: hidden; }
+  #paneL { left: 0; }
+  #paneR { right: 0; }
+  .content { position: absolute; top: 0; left: 0; transform-origin: 0 0; will-change: transform; }
+  .content img { display: block; -webkit-user-drag: none; user-select: none; pointer-events: none;
+    image-rendering: auto; }
+  .tag { position: absolute; top: 12px; display: inline-flex; align-items: center; gap: 6px;
+    padding: 5px 11px; border-radius: 999px; font-size: 12px; font-weight: 600; letter-spacing: .01em;
+    background: rgba(19,26,36,.72); color: #fff; backdrop-filter: blur(6px); pointer-events: none; z-index: 3; }
+  .tag .ic { width: 14px; height: 14px; stroke-width: 2.2; }
+  #tagL { left: 12px; } #tagR { right: 12px; }
+  .divider { position: absolute; top: 0; bottom: 0; width: 26px; transform: translateX(-50%);
+    cursor: col-resize; z-index: 5; display: flex; align-items: center; justify-content: center;
+    touch-action: none; }
+  .divider::before { content: ""; position: absolute; top: 0; bottom: 0; width: 2px;
+    background: rgba(255,255,255,.9); box-shadow: 0 0 0 1px rgba(19,26,36,.18); }
+  .divider .grip { position: relative; width: 30px; height: 30px; border-radius: 999px;
+    background: #fff; box-shadow: var(--shadow); display: grid; place-items: center; color: var(--muted); }
+  .divider .grip .ic { width: 17px; height: 17px; stroke-width: 2.2; }
+  .toolbar { position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%);
+    display: flex; gap: 4px; padding: 5px; background: rgba(255,255,255,.94);
+    border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); z-index: 6; }
+  .toolbar button { width: 38px; height: 34px; border: 0; background: transparent; border-radius: 8px;
+    color: var(--ink); cursor: pointer; display: grid; place-items: center; }
+  .toolbar button:hover { background: #eef1f6; }
+  .toolbar .zlabel { min-width: 52px; display: grid; place-items: center; font-size: 12px;
+    font-weight: 600; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .toolbar .sep { width: 1px; background: var(--line); margin: 4px 2px; }
+  .hint { position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+    display: inline-flex; align-items: center; gap: 7px; padding: 6px 12px; border-radius: 999px;
+    background: rgba(19,26,36,.72); color: #fff; font-size: 12px; z-index: 4;
+    transition: opacity .4s; pointer-events: none; }
+  .hint .ic { width: 15px; height: 15px; }
+  .viewer.touched .hint { opacity: 0; }
+
+  ul.warnings { margin: 14px 0 0; padding: 0; list-style: none; display: grid; gap: 8px; }
+  ul.warnings li { display: flex; gap: 9px; align-items: flex-start; color: var(--warn);
+    background: var(--warn-bg); border: 1px solid #fde3b7; border-radius: 10px; padding: 9px 12px; font-size: 13px; }
+  ul.warnings li .ic { width: 17px; height: 17px; margin-top: 1px; flex: none; }
+
+  .downloads { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
+  .downloads a { display: inline-flex; align-items: center; gap: 8px; padding: 10px 16px;
+    border-radius: 10px; text-decoration: none; font-weight: 600; font-size: 14px;
+    border: 1px solid var(--line-2); color: var(--ink); background: #fff; }
+  .downloads a:hover { background: #f7f8fa; }
   .downloads a.main { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .downloads a.main:hover { background: #1449b8; }
   .downloads a.dead { opacity: .4; pointer-events: none; }
-  #error { display: none; background: var(--err-bg); color: var(--err);
-    border: 1px solid #fecdca; border-radius: 10px; padding: 12px 16px; margin-bottom: 20px; }
-  footer { color: var(--muted); font-size: 13px; margin-top: 28px; }
-  code { background: #eef1f4; border-radius: 4px; padding: 1px 5px; }
+  .downloads a .ic { width: 16px; height: 16px; }
+
+  #error { display: none; align-items: flex-start; gap: 10px; background: var(--err-bg);
+    color: var(--err); border: 1px solid #fecdca; border-radius: 12px; padding: 13px 16px; margin-bottom: 22px; }
+  #error .ic { width: 18px; height: 18px; margin-top: 1px; flex: none; }
+  footer { color: var(--muted); font-size: 13px; margin-top: 30px; }
+  code { background: #eceff3; border-radius: 5px; padding: 1px 6px; font-size: 12px; }
+
+  @media (max-width: 640px) {
+    .viewer { height: 56vh; min-height: 320px; }
+    select { min-width: 0; flex: 1; }
+    .controls .btn.primary { width: 100%; justify-content: center; }
+  }
 </style>
 </head>
 <body>
+
+<!-- ===== SVG ikon seti (sprite) — sayfada emoji yok, tüm ikonlar vektör ===== -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <symbol id="i-logo" viewBox="0 0 24 24"><path d="M4 5.5l8 13 8-13"/><rect x="1.5" y="3" width="4.5" height="4.5" rx="1.2"/><rect x="18" y="3" width="4.5" height="4.5" rx="1.2"/><rect x="9.75" y="16.5" width="4.5" height="4.5" rx="1.2"/></symbol>
+  <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 15.5V4M8 8l4-4 4 4"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></symbol>
+  <symbol id="i-zoom-in" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35M11 8v6M8 11h6"/></symbol>
+  <symbol id="i-zoom-out" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35M8 11h6"/></symbol>
+  <symbol id="i-fit" viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M3 16v3a2 2 0 0 0 2 2h3"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12M8 11l4 4 4-4"/><path d="M4 20h16"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20.5 12a8.5 8.5 0 1 1-2.6-6.1M20.5 4v5h-5"/></symbol>
+  <symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 3.5l9 16H3z"/><path d="M12 10v4.5M12 17.5h.01"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6.5L9 17.5l-5-5"/></symbol>
+  <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2.4"/><circle cx="8.5" cy="9.5" r="1.6"/><path d="M20.5 16l-5-5-8.5 8.5"/></symbol>
+  <symbol id="i-vector" viewBox="0 0 24 24"><path d="M5 18.5C7 9.5 17 9.5 19 5.5"/><rect x="2.5" y="16.5" width="5" height="5" rx="1.2"/><rect x="16.5" y="3" width="5" height="5" rx="1.2"/><circle cx="12" cy="8.5" r="1.8"/></symbol>
+  <symbol id="i-move" viewBox="0 0 24 24"><path d="M12 2v20M2 12h20"/><path d="M9 5l3-3 3 3M9 19l3 3 3-3M5 9l-3 3 3 3M19 9l3 3-3 3"/></symbol>
+  <symbol id="i-grip" viewBox="0 0 24 24"><path d="M9 5v14M15 5v14"/></symbol>
+</defs></svg>
+
 <div class="wrap">
   <header>
-    <h1>Vektoryum</h1>
-    <p>Raster görseli (logo, amblem, tabela, illüstrasyon) SVG / PDF / EPS / DXF / PNG vektör çıktısına dönüştürür.</p>
+    <div class="brand"><svg class="ic"><use href="#i-logo"/></svg></div>
+    <div>
+      <h1>Vektoryum</h1>
+      <p>Raster görseli (logo, amblem, tabela, illüstrasyon) SVG / PDF / EPS / DXF / PNG vektör çıktısına dönüştürür.</p>
+    </div>
   </header>
 
-  <div id="error"></div>
+  <div id="error"><svg class="ic"><use href="#i-warn"/></svg><span id="errorMsg"></span></div>
 
   <div class="card" id="uploadCard">
     <div id="drop" tabindex="0">
-      <span id="dropHint"><strong>Görsel seçin</strong> ya da buraya sürükleyip bırakın<br>
-      <small>PNG, JPG, WEBP… — en iyi sonuç ≥ 700px</small></span>
+      <span id="dropHint">
+        <svg class="ic drop-ic"><use href="#i-upload"/></svg><br>
+        <strong>Görsel seçin</strong> ya da buraya sürükleyip bırakın<br>
+        <small>PNG, JPG, WEBP… — en iyi sonuç ≥ 700px</small>
+      </span>
     </div>
     <input type="file" id="file" accept="image/*" hidden>
     <div class="controls">
@@ -127,36 +231,64 @@
           <option value="cutouts">Kesikli (parçaları ayrı taşınabilir)</option>
         </select>
       </div>
-      <button class="primary" id="go" disabled>Vektörleştir</button>
+      <button class="btn primary" id="go" disabled>
+        <svg class="ic"><use href="#i-vector"/></svg> Vektörleştir
+      </button>
     </div>
-    <label style="display:flex;align-items:center;gap:8px;margin-top:12px;font-size:13px;color:var(--muted);cursor:pointer">
+    <label class="opt">
       <input type="checkbox" id="edgeCleanup" checked>
-      Kenar temizleme (varsayılan açık): tırtıklı kenarları pürüzsüzleştirir,
+      <span>Kenar temizleme (varsayılan açık): tırtıklı kenarları pürüzsüzleştirir,
       aşırı-segmenti Schneider eğri uydurmayla basitleştirir + gömülü renk-adası
-      artefaktlarını ölçüm-korumalı temizler. Her adım tolerans kapılıdır;
-      kapatmak için işareti kaldırın.
+      artefaktlarını ölçüm-korumalı temizler. Her adım tolerans kapılıdır; kapatmak için işareti kaldırın.</span>
     </label>
   </div>
 
   <div class="card" id="status">
-    <div class="spinner"></div>
-    <div>İşleniyor… <span id="elapsed">0</span> sn
+    <svg class="loader-art" viewBox="0 0 120 120" aria-hidden="true">
+      <defs><linearGradient id="laGrad" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#1857d6"/><stop offset="1" stop-color="#3b82f6"/></linearGradient></defs>
+      <path class="la-fill" d="M60 20 C88 20 104 44 96 70 C88 96 58 106 36 90 C14 74 22 40 60 20Z"/>
+      <path class="la-shape" d="M60 20 C88 20 104 44 96 70 C88 96 58 106 36 90 C14 74 22 40 60 20Z"/>
+      <line class="la-scan" x1="18" y1="60" x2="102" y2="60"/>
+      <rect class="la-node" x="55" y="15" width="10" height="10" rx="2.5"/>
+      <rect class="la-node" x="91" y="65" width="10" height="10" rx="2.5"/>
+      <rect class="la-node" x="31" y="85" width="10" height="10" rx="2.5"/>
+      <rect class="la-node" x="17" y="55" width="10" height="10" rx="2.5"/>
+    </svg>
+    <div>
+      <div class="st-title">İşleniyor<span class="dots"><span>.</span><span>.</span><span>.</span></span>
+        <span id="elapsed" style="color:var(--muted);font-weight:600">0</span><span style="color:var(--muted);font-weight:600"> sn</span></div>
       <div class="meta">Çok adaylı izleme + kalite optimizasyonu çalışıyor; görsel boyutuna göre 30 sn – 3 dk sürebilir.</div>
     </div>
   </div>
 
   <div class="card" id="result">
-    <div>
+    <div class="result-head">
       <span class="badge" id="qBadge"></span>
       <span class="meta" id="qMeta"></span>
     </div>
-    <ul class="warnings" id="qWarnings"></ul>
-    <div class="panes">
-      <div class="pane"><div class="label">Orijinal</div><div class="img"><img id="origImg" alt="Orijinal"></div></div>
-      <div class="pane"><div class="label">Vektör (SVG)</div><div class="img"><img id="vecImg" alt="Vektör"></div></div>
+
+    <div class="viewer" id="viewer">
+      <div class="pane" id="paneL"><div class="content" id="contentL"><img id="origImg" alt="Orijinal"></div></div>
+      <div class="pane" id="paneR"><div class="content" id="contentR"><img id="vecImg" alt="Vektör"></div></div>
+      <span class="tag" id="tagL"><svg class="ic"><use href="#i-image"/></svg> Orijinal</span>
+      <span class="tag" id="tagR"><svg class="ic"><use href="#i-vector"/></svg> Vektör · SVG</span>
+      <div class="divider" id="divider"><span class="grip"><svg class="ic"><use href="#i-grip"/></svg></span></div>
+      <div class="hint" id="hint"><svg class="ic"><use href="#i-move"/></svg> Tut-sürükle ile gezin · tekerlek ile yakınlaştır</div>
+      <div class="toolbar">
+        <button id="zoomOut" title="Uzaklaştır"><svg class="ic"><use href="#i-zoom-out"/></svg></button>
+        <span class="zlabel" id="zlabel">100%</span>
+        <button id="zoomIn" title="Yakınlaştır"><svg class="ic"><use href="#i-zoom-in"/></svg></button>
+        <span class="sep"></span>
+        <button id="fit" title="Ekrana sığdır"><svg class="ic"><use href="#i-fit"/></svg></button>
+      </div>
     </div>
+
+    <ul class="warnings" id="qWarnings"></ul>
     <div class="downloads" id="downloads"></div>
-    <div style="margin-top:16px"><button class="ghost" id="reset">Yeni görsel dönüştür</button></div>
+    <div style="margin-top:18px">
+      <button class="btn ghost" id="reset"><svg class="ic"><use href="#i-refresh"/></svg> Yeni görsel dönüştür</button>
+    </div>
   </div>
 
   <footer>API: <code>POST /api/vectorize</code> · <code>GET /api/download/{job}/{format}</code> · <code>GET /api/health</code></footer>
@@ -168,39 +300,133 @@
   const drop = $("drop"), fileIn = $("file"), go = $("go");
   let file = null, timer = null;
 
-  const show = (el, on) => { el.style.display = on ? (el.id === "status" ? "flex" : "block") : "none"; };
-  const showError = (msg) => { $("error").textContent = msg; show($("error"), true); };
+  const show = (el, on) => {
+    if (el.id === "status") { el.classList.toggle("on", on); return; }
+    el.style.display = on ? (el.id === "error" ? "flex" : "block") : "none";
+  };
+  const showError = (msg) => { $("errorMsg").textContent = msg; show($("error"), true); };
 
   function setFile(f) {
     if (!f || !f.type.startsWith("image/")) { showError("Lütfen bir görsel dosyası seçin."); return; }
     file = f;
     show($("error"), false);
     const url = URL.createObjectURL(f);
-    $("dropHint").innerHTML = "";
-    let img = drop.querySelector("img");
-    if (!img) { img = document.createElement("img"); drop.appendChild(img); }
-    img.src = url;
+    drop.innerHTML = "";
+    const img = document.createElement("img"); img.className = "thumb"; img.src = url; drop.appendChild(img);
     const cap = document.createElement("div");
-    cap.className = "meta"; cap.style.marginTop = "8px";
-    cap.textContent = f.name + " (" + Math.round(f.size / 1024) + " KB)";
-    const old = drop.querySelector(".meta"); if (old) old.remove();
+    cap.className = "meta"; cap.style.marginTop = "10px";
+    cap.textContent = f.name + " · " + Math.round(f.size / 1024) + " KB";
     drop.appendChild(cap);
     go.disabled = false;
   }
 
+  const dropReset = () => {
+    drop.innerHTML = '<span id="dropHint"><svg class="ic drop-ic"><use href="#i-upload"/></svg><br>' +
+      '<strong>Görsel seçin</strong> ya da buraya sürükleyip bırakın<br>' +
+      '<small>PNG, JPG, WEBP… — en iyi sonuç ≥ 700px</small></span>';
+  };
+
   drop.addEventListener("click", () => fileIn.click());
-  drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") fileIn.click(); });
+  drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fileIn.click(); } });
   fileIn.addEventListener("change", () => setFile(fileIn.files[0]));
   ["dragover", "dragenter"].forEach(ev => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("over"); }));
   ["dragleave", "drop"].forEach(ev => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
   drop.addEventListener("drop", (e) => setFile(e.dataTransfer.files[0]));
+
+  // ---------------------------------------------------------------------
+  // Karşılaştırma görüntüleyici: sol orijinal / sağ vektör, senkron zoom+pan.
+  // Ayraç (divider) sürüklendikçe iki panel aynı dönüşümü paylaştığından dikiş
+  // sürekli kalır -> before/after "silme" (wipe) etkisi.
+  // ---------------------------------------------------------------------
+  const viewer = $("viewer"), paneL = $("paneL"), paneR = $("paneR"),
+        contentL = $("contentL"), contentR = $("contentR"), divider = $("divider"), zlabel = $("zlabel");
+  const V = { W: 0, H: 0, scale: 1, tx: 0, ty: 0, split: 0.5, ready: false };
+  const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+
+  function apply() {
+    const t = `translate(${V.tx}px, ${V.ty}px) scale(${V.scale})`;
+    contentL.style.transform = t; contentR.style.transform = t;
+    zlabel.textContent = Math.round(V.scale * 100) + "%";
+  }
+  function layout() {
+    const vw = viewer.clientWidth;
+    const sx = Math.round(vw * V.split);
+    paneL.style.width = sx + "px";
+    paneR.style.left = sx + "px";
+    contentR.style.left = (-sx) + "px";
+    divider.style.left = sx + "px";
+  }
+  function fit() {
+    const vw = viewer.clientWidth, vh = viewer.clientHeight;
+    if (!V.W || !V.H) return;
+    V.scale = Math.min(vw / V.W, vh / V.H) * 0.92;
+    V.tx = (vw - V.W * V.scale) / 2;
+    V.ty = (vh - V.H * V.scale) / 2;
+    apply();
+  }
+  function zoomAt(cx, cy, factor) {
+    const ns = clamp(V.scale * factor, 0.05, 40);
+    V.tx = cx - (cx - V.tx) * (ns / V.scale);
+    V.ty = cy - (cy - V.ty) * (ns / V.scale);
+    V.scale = ns; apply();
+  }
+  function initViewer(w, h) {
+    V.W = w; V.H = h; V.split = 0.5; V.ready = true;
+    [ $("origImg"), $("vecImg") ].forEach(im => { im.style.width = w + "px"; im.style.height = h + "px"; });
+    viewer.classList.remove("touched");
+    layout(); fit();
+  }
+  const touched = () => viewer.classList.add("touched");
+
+  // tekerlek ile imleç merkezli zoom
+  viewer.addEventListener("wheel", (e) => {
+    if (!V.ready) return;
+    e.preventDefault();
+    const r = viewer.getBoundingClientRect();
+    zoomAt(e.clientX - r.left, e.clientY - r.top, e.deltaY < 0 ? 1.12 : 1 / 1.12);
+    touched();
+  }, { passive: false });
+
+  // tut-sürükle pan
+  let panning = false, lx = 0, ly = 0;
+  viewer.addEventListener("pointerdown", (e) => {
+    if (!V.ready || e.target.closest(".divider") || e.target.closest(".toolbar")) return;
+    panning = true; lx = e.clientX; ly = e.clientY;
+    viewer.setPointerCapture(e.pointerId); viewer.classList.add("grabbing"); touched();
+  });
+  viewer.addEventListener("pointermove", (e) => {
+    if (!panning) return;
+    V.tx += e.clientX - lx; V.ty += e.clientY - ly; lx = e.clientX; ly = e.clientY; apply();
+  });
+  const endPan = () => { panning = false; viewer.classList.remove("grabbing"); };
+  viewer.addEventListener("pointerup", endPan);
+  viewer.addEventListener("pointercancel", endPan);
+
+  // ayraç sürükleme (sağ/sol çekme)
+  let dividing = false;
+  divider.addEventListener("pointerdown", (e) => {
+    e.stopPropagation(); dividing = true; divider.setPointerCapture(e.pointerId); touched();
+  });
+  divider.addEventListener("pointermove", (e) => {
+    if (!dividing) return;
+    const r = viewer.getBoundingClientRect();
+    V.split = clamp((e.clientX - r.left) / r.width, 0.08, 0.92); layout();
+  });
+  divider.addEventListener("pointerup", () => { dividing = false; });
+
+  // araç çubuğu
+  $("zoomIn").addEventListener("click", () => { zoomAt(viewer.clientWidth / 2, viewer.clientHeight / 2, 1.25); touched(); });
+  $("zoomOut").addEventListener("click", () => { zoomAt(viewer.clientWidth / 2, viewer.clientHeight / 2, 1 / 1.25); touched(); });
+  $("fit").addEventListener("click", () => { fit(); });
+  viewer.addEventListener("dblclick", () => fit());
+  window.addEventListener("resize", () => { if (V.ready) { layout(); } });
 
   const FMT_LABELS = { svg: "SVG indir", pdf: "PDF", eps: "EPS", dxf: "DXF", png: "PNG" };
 
   go.addEventListener("click", async () => {
     if (!file) return;
     show($("error"), false); show($("result"), false);
-    show($("status"), true); $("status").style.display = "flex";
+    show($("status"), true);
     go.disabled = true;
     const t0 = Date.now();
     timer = setInterval(() => { $("elapsed").textContent = Math.round((Date.now() - t0) / 1000); }, 500);
@@ -225,44 +451,54 @@
     // kalite rozeti
     const q = data.quality_report || {};
     const status = q.status || "bilinmiyor";
+    const ok = status === "production_ready";
     const badge = $("qBadge");
-    badge.textContent = status === "production_ready" ? "Üretime hazır" : (status === "needs_review" ? "Gözden geçirin" : status);
-    badge.className = "badge " + (status === "production_ready" ? "ok" : "warn");
+    badge.className = "badge " + (ok ? "ok" : "warn");
+    badge.innerHTML = '<svg class="ic"><use href="#' + (ok ? "i-check" : "i-warn") + '"/></svg>' +
+      (ok ? "Üretime hazır" : (status === "needs_review" ? "Gözden geçirin" : status));
     const cr = data.candidate_report || {};
     const cand = (cr.candidates || []).find(c => c.name === cr.best_candidate) || {};
     const det = cand.details || {};
     const bits = [];
     if (cand.fidelity_score != null) bits.push("sadakat " + cand.fidelity_score);
     if (det.path_count != null) bits.push(det.path_count + " path");
-    if (det.unique_colors) bits.push(det.unique_colors + " renk");  // 0 = gradyan dolgu, gösterme
+    if (det.unique_colors) bits.push(det.unique_colors + " renk");
     bits.push("mod: " + (data.mode_used || "?"));
-    $("qMeta").textContent = bits.join(" · ");
+    $("qMeta").textContent = bits.join("  ·  ");
     const wl = $("qWarnings"); wl.innerHTML = "";
-    (q.warnings || []).forEach(w => { const li = document.createElement("li"); li.textContent = w; wl.appendChild(li); });
+    (q.warnings || []).forEach(w => {
+      const li = document.createElement("li");
+      li.innerHTML = '<svg class="ic"><use href="#i-warn"/></svg><span></span>';
+      li.querySelector("span").textContent = w; wl.appendChild(li);
+    });
 
-    // önizlemeler
-    $("origImg").src = URL.createObjectURL(file);
-    $("vecImg").src = (data.download_links || {}).svg + "?t=" + Date.now();
+    // önizlemeler + görüntüleyici
+    V.ready = false;
+    const origImg = $("origImg"), vecImg = $("vecImg");
+    vecImg.src = (data.download_links || {}).svg + "?t=" + Date.now();
+    origImg.onload = () => initViewer(origImg.naturalWidth || 800, origImg.naturalHeight || 800);
+    origImg.src = URL.createObjectURL(file);
 
     // indirme butonları (başarısız formatlar soluk)
     const dl = $("downloads"); dl.innerHTML = "";
     const errs = data.output_errors || {};
     Object.entries(data.download_links || {}).forEach(([fmt, href]) => {
       const a = document.createElement("a");
-      a.href = href; a.textContent = FMT_LABELS[fmt] || fmt.toUpperCase();
-      a.setAttribute("download", "");
+      a.href = href; a.setAttribute("download", "");
+      a.innerHTML = '<svg class="ic"><use href="#i-download"/></svg>' + (FMT_LABELS[fmt] || fmt.toUpperCase());
       if (fmt === "svg") a.className = "main";
       if (errs[fmt]) { a.className += " dead"; a.title = "Bu format üretilemedi: " + errs[fmt]; }
       dl.appendChild(a);
     });
     show($("result"), true);
-    $("result").scrollIntoView({ behavior: "smooth" });
+    // görüntüleyici görünür olunca yeniden ölç
+    requestAnimationFrame(() => { if (V.ready) { layout(); fit(); } });
+    $("result").scrollIntoView({ behavior: "smooth", block: "start" });
   });
 
   $("reset").addEventListener("click", () => {
-    file = null; fileIn.value = "";
-    $("dropHint") || (drop.innerHTML = '<span id="dropHint"></span>');
-    drop.innerHTML = '<span id="dropHint"><strong>Görsel seçin</strong> ya da buraya sürükleyip bırakın<br><small>PNG, JPG, WEBP… — en iyi sonuç ≥ 700px</small></span>';
+    file = null; fileIn.value = ""; V.ready = false;
+    dropReset();
     go.disabled = true;
     show($("result"), false); show($("error"), false);
     window.scrollTo({ top: 0, behavior: "smooth" });
