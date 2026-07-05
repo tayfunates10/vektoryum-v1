@@ -1,0 +1,31 @@
+# Render Blueprint — Vektoryum (Docker web servisi)
+#
+# Kurulum (3 adım, ~2 dk):
+#   1) render.com → New + → "Blueprint"
+#   2) Bu GitHub reposunu (tayfunates10/vektoryum-v1) bağla ve dalı seç
+#      (henüz main'e merge edilmediyse: claude/project-refinement-testing-0evhpr)
+#   3) "Apply" → Render bu dosyayı okuyup imajı derler ve yayına alır.
+#      Bittiğinde servis URL'i: https://vektoryum.onrender.com (ad'a göre)
+#
+# Not: Bu ağır bir CPU işidir. Ücretsiz kademe (512MB / 0.1 CPU) küçük logolarda
+# çalışır ama büyük görsellerde belleği aşabilir ve boştayken uykuya geçip ilk
+# istekte ~50 sn soğuk-başlangıç yaşar. Gerçek kullanım için Dashboard'dan planı
+# "Standard" (2GB / 1 CPU) yapıp VEKTORYUM_WORKERS'ı 2-3'e çıkar.
+
+services:
+  - type: web
+    name: vektoryum
+    runtime: docker
+    repo: https://github.com/tayfunates10/vektoryum-v1
+    dockerfilePath: ./engine/Dockerfile
+    dockerContext: ./engine
+    plan: free            # büyük görseller için: standard (2GB)
+    region: frankfurt     # TR'ye en yakın bölge
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      # free/tek-CPU'da bellek güvenliği için tekil işlem; daha büyük planda 2-4
+      - key: VEKTORYUM_WORKERS
+        value: "1"
