@@ -1003,7 +1003,19 @@ def run_pipeline(
                 logger.debug("edge_cleanup atlandı: %s", e)
                 ec_rep = {"applied": False, "error": str(e)}
             if ec_rep.get("applied"):
-                best = {**best, "svg_path": ec_dst}
+                # Kenar temizleme sadakati tolerans dahilinde DÜŞÜREBİLİR. Yalnız
+                # svg_path'i değiştirip eski skoru korumak, düşük-sadakat temizlenmiş
+                # dosyayı temizleme-öncesi skor/durumla (hatta production_ready)
+                # raporlamaya yol açardı (PR incelemesinde işaret edildi). Kazanan,
+                # dışa aktarılan dosya üzerinden YENİDEN skorlanır — fidelity_score,
+                # total_score, score_details ve geometri hepsi taze/tutarlı olur.
+                # cleanup_report (geometri düzenleme skoru) korunur — o, geometri
+                # temizleme AŞAMASININ yapısal ölçüsüdür; kenar temizleme yalnız
+                # konturu yumuşatır. Yeniden skorlama fidelity'yi (taze render) ve
+                # istatistikleri (path/düğüm sayısı) temiz dosyadan günceller.
+                cleaned = {**best, "svg_path": ec_dst}
+                rescored = score_candidate(cleaned, original_path, analysis, mode_used)
+                best = rescored if rescored is not None else {**best, "svg_path": ec_dst}
                 selection_reason = f"{selection_reason}+edge_cleanup"
             refit_info = {**refit_info, "edge_cleanup": ec_rep}
         # 9.8 Kaynak boyut sözleşmesi: kazananın width/height'ı orijinal görsel

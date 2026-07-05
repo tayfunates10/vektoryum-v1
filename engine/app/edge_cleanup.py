@@ -186,7 +186,10 @@ def apply_edge_cleanup(
         rs = smooth_svg_contours(cur, tmp_a)
         if rs.get("smoothed_paths"):
             f = _fid(tmp_a)
-            if base_fid is None or f is None or f >= base_fid - _SMOOTH_TOL:
+            # None yalnız TABAN da ölçülemediğinde kabul edilir (ölçüm imkânsız).
+            # Taban ölçülüp temiz SVG render edilemiyorsa (f is None) REDDET —
+            # render edilebilir kazananı doğrulanmamış dosyayla değiştirme.
+            if base_fid is None or (f is not None and f >= base_fid - _SMOOTH_TOL):
                 report["smoothed"] = rs["smoothed_paths"]
                 report["smooth_fidelity"] = f
                 cur, cur_fid = tmp_a, f
@@ -202,7 +205,9 @@ def apply_edge_cleanup(
         rr = refit_svg_curves(cur, tmp_r)
         if rr.get("refit_paths"):
             f = _fid(tmp_r)
-            if f_pre is None or f is None or f >= f_pre - _REFIT_TOL:
+            # None yalnız önceki aşama da ölçülemediyse kabul edilir; ölçülü
+            # cur render edilebilirken refit render edilemiyorsa (f is None) REDDET.
+            if f_pre is None or (f is not None and f >= f_pre - _REFIT_TOL):
                 report["refit"] = rr["refit_paths"]
                 report["refit_seg_before"] = rr.get("seg_before")
                 report["refit_seg_after"] = rr.get("seg_after")

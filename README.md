@@ -185,15 +185,18 @@ dosya yoksa kök eski JSON sağlık yanıtına düşer; kanonik sağlık ucu art
   boyutunda (en uzun kenar <= 4096) render edilir.
 - `GET /api/health` — sağlık kontrolü (`GET /` web arayüzünü döndürür).
 
-`POST /api/vectorize` ek opsiyon: `edge_cleanup` ∈ `off | on` (varsayılan `off`).
-Açıkken kazanan çıktıya OPSİYONEL kenar temizleme geçişi uygulanır
-(`app/edge_cleanup.py`): (1) özellik-koruyan Taubin kontur yumuşatma — tırtıklı
-organik kenarları düzeltir, köşe/uç/ince-yapı korunur (piksel-metrik gürültülü
-JPEG'i ödüllendirdiğinden küçük fidelity düşüşü tolere edilir); (2) ada-yutma —
-büyük düz bölgeye gömülü küçük artefakt-renk-adalarını baskın komşuya çeker,
-YALNIZ ölçülen fidelity artarsa (gerçek fotografik detay ise ölçüm koruyup
-reddeder). Varsayılan kapalı olduğundan mevcut çıktı ve tüm regresyon
-fixture'ları bit-bit korunur.
+`POST /api/vectorize` ek opsiyon: `edge_cleanup` ∈ `off | on` (**varsayılan `on`**;
+yalnız `off/false/0/no` ile kapatılır). Kazanan çıktıya kenar temizleme geçişi
+uygulanır (`app/edge_cleanup.py`): (1) özellik-koruyan Taubin kontur yumuşatma —
+tırtıklı organik kenarları düzeltir, köşe/uç/ince-yapı korunur; (2) Schneider
+kübik Bézier eğri basitleştirme — aşırı-segmentasyonu akıcı Bézier'lere indirir
+(segment/dosya ~%25-60 küçülür); (3) ada-yutma — büyük düz bölgeye gömülü küçük
+artefakt-renk-adalarını baskın komşuya çeker, YALNIZ ölçülen fidelity artarsa.
+Her adım ÖLÇÜM KORUMALIDIR (tolerans kapısı): piksel-metrik gürültülü JPEG'i
+ödüllendirdiğinden küçük fidelity düşüşü tolere edilir, ama büyük düşüş ya da
+render edilemeyen sonuç reddedilir — zarar veren adım kendini devre dışı bırakır.
+Kazanan, dışa aktarılan temizlenmiş dosya üzerinden yeniden skorlanır (raporlanan
+fidelity/durum ihraç edilen SVG ile tutarlı). Kapatmak için `edge_cleanup=off`.
 
 ### Yanıt alanları (frontend için)
 
