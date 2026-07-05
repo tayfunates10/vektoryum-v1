@@ -149,14 +149,18 @@ def apply_edge_cleanup(
     from shutil import copyfile  # noqa: PLC0415
 
     from app.contour_smooth import smooth_svg_contours  # noqa: PLC0415
+    from app.curve_refit import refit_svg_curves  # noqa: PLC0415
     from app.fidelity import (compute_fidelity, load_reference_rgb,  # noqa: PLC0415
                               render_svg_to_rgb)
 
     _SMOOTH_TOL = 0.6  # yumuşatma için kabul edilebilir azami fidelity düşüşü
+    _REFIT_TOL = 1.5   # Bézier basitleştirme için kabul edilebilir azami düşüş
+                       # (metrik-göz ayrışması: dosya/segment %25 düşerken
+                       # sadakat ~1 puan düşer; görsel olarak eğri daha akıcı)
 
     src = Path(svg_path)
     dst = Path(out_path)
-    report: dict[str, Any] = {"applied": False, "smoothed": 0, "absorbed": 0}
+    report: dict[str, Any] = {"applied": False, "smoothed": 0, "refit": 0, "absorbed": 0}
 
     try:
         ref, (w, h) = load_reference_rgb(Path(original_path), max_side=1024)
@@ -172,6 +176,7 @@ def apply_edge_cleanup(
     base_fid = _fid(src)
     cur = src
     tmp_a = dst.with_suffix(".smooth.svg")
+    tmp_r = dst.with_suffix(".refit.svg")
     tmp_b = dst.with_suffix(".island.svg")
 
     # 1) kontur yumuşatma (opt-in; büyük düşüşte reddet)
@@ -186,7 +191,25 @@ def apply_edge_cleanup(
     except Exception as e:  # noqa: BLE001
         logger.debug("kontur yumuşatma atlandı: %s", e)
 
-    # 2) ada-yutma (ölçüm korumalı: yalnız fidelity artar/nötr)
+    # 2) eğri basitleştirme (Schneider kübik Bézier; tolerans kapılı). Aşırı
+    #    segmentasyonu akıcı Bézier'lere indirger — dosya/segment küçülür, çentik
+    #    azalır. Metrik-göz ayrışması nedeniyle fidelity kapısı DEĞİL, tolerans
+    #    kapısı kullanılır; büyük düşüş yine reddedilir.
+    try:
+        f_pre = _fid(cur)
+        rr = refit_svg_curves(cur, tmp_r)
+        if rr.get("refit_paths"):
+            f = _fid(tmp_r)
+            if f_pre is None or f is None or f >= f_pre - _REFIT_TOL:
+                report["refit"] = rr["refit_paths"]
+                report["refit_seg_before"] = rr.get("seg_before")
+                report["refit_seg_after"] = rr.get("seg_after")
+                report["refit_fidelity"] = f
+                cur = tmp_r
+    except Exception as e:  # noqa: BLE001
+        logger.debug("eğri basitleştirme atlandı: %s", e)
+
+    # 3) ada-yutma (ölçüm korumalı: yalnız fidelity artar/nötr)
     try:
         ri = absorb_islands_svg(cur, original_path, tmp_b)
         if ri.get("absorbed"):
@@ -210,7 +233,7 @@ def apply_edge_cleanup(
         _cp(cur, dst)
     report["applied"] = True
     report["final_fidelity"] = _fid(dst)
-    for t in (tmp_a, tmp_b):
+    for t in (tmp_a, tmp_r, tmp_b):
         if t != dst:
             t.unlink(missing_ok=True)
     return report
