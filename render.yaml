@@ -6,10 +6,12 @@
 #   3) "Apply" → Render bu dosyayı okuyup imajı derler ve yayına alır.
 #      Bittiğinde servis URL'i: https://vektoryum.onrender.com (ad'a göre)
 #
-# Not: Bu ağır bir CPU işidir. Ücretsiz kademe (512MB / 0.1 CPU) küçük logolarda
-# çalışır ama büyük görsellerde belleği aşabilir ve boştayken uykuya geçip ilk
-# istekte ~50 sn soğuk-başlangıç yaşar. Gerçek kullanım için Dashboard'dan planı
-# "Standard" (2GB / 1 CPU) yapıp VEKTORYUM_WORKERS'ı 2-3'e çıkar.
+# ÖNEMLİ — BELLEK: Bu motor küçük bir logoda bile ~826MB tepe bellek kullanır
+# (ölçüldü). Ücretsiz VE Starter kademe 512MB'dır -> her istekte OOM olur, sunucu
+# boş/HTML yanıt döner ("Unexpected end of JSON input"). Bu nedenle Dashboard'dan
+# planı EN AZ "Standard" (2GB / 1 CPU) yapmak ZORUNLUDUR; ardından
+# VEKTORYUM_WORKERS'ı 2-3'e çıkarabilirsin. (Bu blueprint 'free' başlatır ki
+# Apply beklenmedik ücret açmasın; planı panelden yükselt.)
 
 services:
   - type: web

@@ -698,15 +698,16 @@
     let data;
     try {
       const resp = await fetch("/api/vectorize", { method:"POST", body: fd });
-      // Sunucu JSON yerine HTML/boş döndüyse (bellek limiti, zaman aşımı, proxy
-      // hata sayfası) resp.json() "Unexpected token '<'" atardı; önce tür bak.
-      const ct = resp.headers.get("content-type") || "";
-      if (!ct.includes("application/json")) {
-        throw new Error(resp.status >= 500 || resp.status === 0
-          ? "Sunucu görseli işleyemedi — büyük görselde bellek/süre limiti aşılmış olabilir. Daha küçük bir görsel deneyin ya da sunucu planını yükseltin."
-          : ("Beklenmeyen sunucu yanıtı (HTTP " + resp.status + ")."));
+      // Gövdeyi önce metin olarak al: sunucu OOM/timeout'ta BOŞ gövde ya da HTML
+      // dönebilir; doğrudan resp.json() "Unexpected token '<'" / "Unexpected end
+      // of JSON input" ham hatası verirdi. Metin-önce güvenli ayrıştırma:
+      const raw = await resp.text();
+      let parsed = null;
+      try { parsed = raw ? JSON.parse(raw) : null; } catch (_) { parsed = null; }
+      if (!parsed) {
+        throw new Error("Sunucu isteği tamamlayamadı — görsel işleme belleği/süresi aşılmış olabilir. Ücretsiz 512MB sunucu bu motor için yetersizdir (küçük logo bile ~826MB kullanır); sunucu planını 2GB'a yükseltin ya da daha küçük/basit bir görsel deneyin.");
       }
-      data = await resp.json();
+      data = parsed;
       if (!resp.ok) throw new Error(data.detail || data.error || ("HTTP " + resp.status));
     } catch (err) {
       abortLoading(); go.disabled = false;
