@@ -175,6 +175,8 @@ def apply_edge_cleanup(
 
     base_fid = _fid(src)
     cur = src
+    cur_fid = base_fid          # cur'ün sadakati her aşamada izlenir -> gereksiz
+                                # render yok (büyük SVG'de render darboğazdır)
     tmp_a = dst.with_suffix(".smooth.svg")
     tmp_r = dst.with_suffix(".refit.svg")
     tmp_b = dst.with_suffix(".island.svg")
@@ -187,7 +189,7 @@ def apply_edge_cleanup(
             if base_fid is None or f is None or f >= base_fid - _SMOOTH_TOL:
                 report["smoothed"] = rs["smoothed_paths"]
                 report["smooth_fidelity"] = f
-                cur = tmp_a
+                cur, cur_fid = tmp_a, f
     except Exception as e:  # noqa: BLE001
         logger.debug("kontur yumuşatma atlandı: %s", e)
 
@@ -196,7 +198,7 @@ def apply_edge_cleanup(
     #    azalır. Metrik-göz ayrışması nedeniyle fidelity kapısı DEĞİL, tolerans
     #    kapısı kullanılır; büyük düşüş yine reddedilir.
     try:
-        f_pre = _fid(cur)
+        f_pre = cur_fid            # cur zaten ölçülü; yeniden render etme
         rr = refit_svg_curves(cur, tmp_r)
         if rr.get("refit_paths"):
             f = _fid(tmp_r)
@@ -205,7 +207,7 @@ def apply_edge_cleanup(
                 report["refit_seg_before"] = rr.get("seg_before")
                 report["refit_seg_after"] = rr.get("seg_after")
                 report["refit_fidelity"] = f
-                cur = tmp_r
+                cur, cur_fid = tmp_r, f
     except Exception as e:  # noqa: BLE001
         logger.debug("eğri basitleştirme atlandı: %s", e)
 
@@ -213,7 +215,7 @@ def apply_edge_cleanup(
     try:
         ri = absorb_islands_svg(cur, original_path, tmp_b)
         if ri.get("absorbed"):
-            f_before = _fid(cur)
+            f_before = cur_fid     # cur zaten ölçülü; yeniden render etme
             f_after = _fid(tmp_b)
             # eşik gevşetildiğinden (dokulu bölge) ada-yutma yalnız fidelity'yi
             # GERÇEKTEN artırırsa tutulur — gerçek artefakt-adası kaldırmak
@@ -221,7 +223,7 @@ def apply_edge_cleanup(
             if f_before is not None and f_after is not None and f_after > f_before:
                 report["absorbed"] = ri["absorbed"]
                 report["island_fidelity"] = f_after
-                cur = tmp_b
+                cur, cur_fid = tmp_b, f_after
     except Exception as e:  # noqa: BLE001
         logger.debug("ada-yutma atlandı: %s", e)
 
@@ -232,7 +234,7 @@ def apply_edge_cleanup(
         from shutil import copyfile as _cp  # noqa: PLC0415
         _cp(cur, dst)
     report["applied"] = True
-    report["final_fidelity"] = _fid(dst)
+    report["final_fidelity"] = cur_fid     # cur'ün ölçülü sadakati (render yok)
     for t in (tmp_a, tmp_r, tmp_b):
         if t != dst:
             t.unlink(missing_ok=True)

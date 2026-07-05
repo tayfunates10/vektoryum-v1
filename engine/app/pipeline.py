@@ -866,7 +866,7 @@ def run_pipeline(
     trace_mode: str,
     job_dir: Path,
     refine: bool = True,
-    edge_cleanup: bool = False,
+    edge_cleanup: bool = True,
 ) -> dict[str, Any]:
     """Analiz → ön işleme → aday → temizleme → skor → seçim → refinement akışı.
 
@@ -988,9 +988,10 @@ def run_pipeline(
         if bnd_info.get("applied"):
             selection_reason = f"{selection_reason}+boundary_refit"
         refit_info = {**refit_info, "boundary": bnd_info}
-        # 9.7 Kenar temizleme (OPSİYONEL — varsayılan kapalı): kontur yumuşatma
-        # + ada-yutma. Yalnız kullanıcı açtığında; varsayılan çıktı bit-bit
-        # korunur (regresyon fixture'ları etkilenmez).
+        # 9.7 Kenar temizleme (VARSAYILAN AÇIK): kontur yumuşatma + Schneider
+        # eğri basitleştirme + ada-yutma. Her adım ÖLÇÜM KORUMALI (tolerans
+        # kapısı) — zarar veren adım kendini devre dışı bırakır; kullanıcı
+        # ``edge_cleanup="off"`` ile tümden kapatabilir.
         if edge_cleanup and best is not None:
             from app.edge_cleanup import apply_edge_cleanup  # noqa: PLC0415
 

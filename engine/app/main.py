@@ -68,13 +68,14 @@ async def vectorize_image(
     file: UploadFile = File(...),
     trace_mode: str = Form("auto"),
     shape_stacking: str = Form("stacked"),
-    edge_cleanup: str = Form("off"),
+    edge_cleanup: str = Form("on"),
 ):
     if not isinstance(shape_stacking, str):
         shape_stacking = "stacked"  # doğrudan (test) çağrıda Form varsayılanı nesne gelir
     if not isinstance(edge_cleanup, str):
-        edge_cleanup = "off"
-    edge_cleanup_on = edge_cleanup.lower() in ("on", "true", "1", "yes")
+        edge_cleanup = "on"
+    # VARSAYILAN AÇIK; yalnız açıkça kapatılırsa devre dışı (ölçüm korumalı geçiş)
+    edge_cleanup_on = edge_cleanup.lower() not in ("off", "false", "0", "no")
     if trace_mode not in ALLOWED_MODES:
         raise HTTPException(status_code=400, detail=f"Geçersiz trace_mode. İzin verilenler: {ALLOWED_MODES}")
     if shape_stacking not in ("stacked", "cutouts"):
