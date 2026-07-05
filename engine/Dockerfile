@@ -37,5 +37,7 @@ ENV PYTHONUNBUFFERED=1 \
 EXPOSE 8000
 
 # Tek uvicorn süreci: pipeline kendi süreç havuzunu yönetir (forkserver);
-# ek uvicorn worker'ı çekirdek kapışması yaratır.
-CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# ek uvicorn worker'ı çekirdek kapışması yaratır. Port, barındırıcının verdiği
+# $PORT'a uyar (Render/Cloud Run vb.); tanımsızsa 8000 (yerel docker-compose).
+# `exec` ile uvicorn PID 1 olur -> SIGTERM temiz kapanış.
+CMD ["sh", "-c", "exec python -m uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
