@@ -1,0 +1,45 @@
+name: Hugging Face Space'e dağıt
+
+# GitHub runner'ları HF'ye erişebildiğinden bu iş, repoyu HF Space'e push eder
+# ve HF Docker imajı derleyip yayına alır. GEREKLİ AYARLAR (repo → Settings →
+# Secrets and variables → Actions):
+#   • secret  HF_TOKEN  = huggingface.co/settings/tokens (write yetkili)
+#   • variable HF_SPACE = "kullanici_adi/space_adi" (önce Space'i Docker SDK ile oluştur)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: HF build dosyalarını hazırla ve push et
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_SPACE: ${{ vars.HF_SPACE }}
+        run: |
+          set -e
+          if [ -z "$HF_TOKEN" ] || [ -z "$HF_SPACE" ]; then
+            echo "::warning::HF_TOKEN (secret) ve HF_SPACE (variable) tanımlı değil — atlanıyor."
+            echo "Kurulum: Space oluştur (Docker), HF write token'ını HF_TOKEN secret'ı ve"
+            echo "'kullanici/space' değerini HF_SPACE variable'ı olarak ekle, sonra bu iş'i tekrar çalıştır."
+            exit 0
+          fi
+          # HF Space kök dosyalarını (.hf içinden) hazırla — GitHub README/Dockerfile kirlenmez
+          cp .hf/Dockerfile ./Dockerfile
+          cp .hf/README.md ./README.md
+          cp .hf/.dockerignore ./.dockerignore
+          git config user.email "actions@users.noreply.github.com"
+          git config user.name "github-actions"
+          git checkout -b hf-deploy
+          git add -A
+          git commit -m "HF Space build (otomatik senkron)" || echo "değişiklik yok"
+          echo "HF Space'e push ediliyor: $HF_SPACE"
+          git push --force "https://ci:${HF_TOKEN}@huggingface.co/spaces/${HF_SPACE}.git" hf-deploy:main
+          echo "Bitti → https://huggingface.co/spaces/${HF_SPACE}"

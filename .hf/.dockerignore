@@ -1,0 +1,16 @@
+# HF derleme bağlamı repo köküdür; imaj yalnız engine/app + models + requirements
+# kullanır. Bağlamı yalın tut (git geçmişi, testler, regresyon varlıkları hariç).
+.git
+.github
+.hf
+render.yaml
+docker-compose.yml
+**/__pycache__
+*.py[cod]
+.venv
+venv
+engine/regression
+engine/test_*.py
+engine/app/test_*.py
+engine/.venv
+**/*.md
