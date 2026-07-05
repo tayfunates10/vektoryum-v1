@@ -1,41 +1,62 @@
-- name: Deploy to Hugging Face Space
-  env:
-    HF_TOKEN: ${{ secrets.HF_TOKEN }}
-    HF_SPACE: ATESOGLU/Vektoryum
-  run: |
-    set -e
+name: Deploy to Hugging Face Space
 
-    echo "HF deploy klasörü hazırlanıyor..."
-    rm -rf /tmp/hf-space
-    mkdir -p /tmp/hf-space
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
 
-    rsync -a ./ /tmp/hf-space/ \
-      --exclude ".git" \
-      --exclude ".github" \
-      --exclude "engine/regression" \
-      --exclude "__pycache__" \
-      --exclude ".pytest_cache" \
-      --exclude "node_modules" \
-      --exclude ".next" \
-      --exclude "dist" \
-      --exclude "build" \
-      --exclude ".venv" \
-      --exclude "venv"
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
 
-    cd /tmp/hf-space
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
-    echo "Deploy klasörü içeriği:"
-    ls -la
+      - name: Deploy clean copy to Hugging Face
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_SPACE: ATESOGLU/Vektoryum
+        run: |
+          set -e
 
-    git init
-    git config user.name "github-actions[bot]"
-    git config user.email "github-actions[bot]@users.noreply.github.com"
+          echo "HF deploy klasörü hazırlanıyor..."
+          rm -rf /tmp/hf-space
+          mkdir -p /tmp/hf-space
 
-    git add .
-    git commit -m "HF Space build"
+          rsync -a ./ /tmp/hf-space/ \
+            --exclude ".git" \
+            --exclude ".github" \
+            --exclude "engine/regression" \
+            --exclude "__pycache__" \
+            --exclude ".pytest_cache" \
+            --exclude "node_modules" \
+            --exclude ".next" \
+            --exclude "dist" \
+            --exclude "build" \
+            --exclude ".venv" \
+            --exclude "venv"
 
-    git branch -M main
-    git remote add hf "https://ATESOGLU:${HF_TOKEN}@huggingface.co/spaces/${HF_SPACE}"
+          cd /tmp/hf-space
 
-    echo "HF Space'e temiz push ediliyor..."
-    git push --force hf main
+          echo "Kontrol: engine/regression gönderilmeyecek"
+          if [ -d "engine/regression" ]; then
+            echo "HATA: engine/regression hâlâ var"
+            exit 1
+          fi
+
+          git init
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add .
+          git commit -m "HF Space clean deploy"
+
+          git branch -M main
+          git remote add hf "https://ATESOGLU:${HF_TOKEN}@huggingface.co/spaces/${HF_SPACE}"
+
+          echo "HF Space'e temiz push ediliyor..."
+          git push --force hf main
