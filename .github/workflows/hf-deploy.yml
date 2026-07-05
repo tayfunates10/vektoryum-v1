@@ -31,6 +31,16 @@ jobs:
             echo "'kullanici/space' değerini HF_SPACE variable'ı olarak ekle, sonra bu iş'i tekrar çalıştır."
             exit 0
           fi
+          # HF_SPACE 'kullanici/space' olmalı. Kaza eseri tam URL girildiyse ayıkla.
+          HF_SPACE="${HF_SPACE#https://huggingface.co/spaces/}"
+          HF_SPACE="${HF_SPACE#huggingface.co/spaces/}"
+          HF_SPACE="${HF_SPACE%/}"
+          HF_USER="${HF_SPACE%%/*}"
+          if [ "$HF_USER" = "$HF_SPACE" ] || [ -z "$HF_USER" ]; then
+            echo "::error::HF_SPACE biçimi 'kullanici/space' olmalı (şu an: '$HF_SPACE'). Düzelt ve tekrar çalıştır."
+            exit 1
+          fi
+          echo "Hedef Space: $HF_SPACE  (kullanıcı: $HF_USER)"
           # HF Space kök dosyalarını (.hf içinden) hazırla — GitHub README/Dockerfile kirlenmez
           cp .hf/Dockerfile ./Dockerfile
           cp .hf/README.md ./README.md
@@ -39,7 +49,17 @@ jobs:
           git config user.name "github-actions"
           git checkout -b hf-deploy
           git add -A
-          git commit -m "HF Space build (otomatik senkron)" || echo "değişiklik yok"
-          echo "HF Space'e push ediliyor: $HF_SPACE"
-          git push --force "https://ci:${HF_TOKEN}@huggingface.co/spaces/${HF_SPACE}.git" hf-deploy:main
-          echo "Bitti → https://huggingface.co/spaces/${HF_SPACE}"
+          git commit -m "HF Space build (otomatik senkron)" || echo "commit: değişiklik yok"
+          # Kimlik: HF kullanıcı adı + write token. (Sırlar GitHub loglarında maskelenir.)
+          REMOTE="https://${HF_USER}:${HF_TOKEN}@huggingface.co/spaces/${HF_SPACE}"
+          echo "HF Space'e push ediliyor..."
+          if git push --force "$REMOTE" hf-deploy:main; then
+            echo "Bitti → https://huggingface.co/spaces/${HF_SPACE} (HF şimdi imajı derliyor)"
+          else
+            echo "::error::HF push başarısız. Kontrol et:"
+            echo " 1) Space OLUŞTURULDU mu? huggingface.co/new-space → SDK: Docker → ad: ${HF_SPACE#*/}"
+            echo " 2) HF_SPACE doğru mu? 'kullanici/space' (şu an: $HF_SPACE)"
+            echo " 3) HF_TOKEN 'write' yetkili mi? huggingface.co/settings/tokens"
+            echo " 4) Token, Space'in sahibine mi ait? (kullanıcı: $HF_USER)"
+            exit 1
+          fi
