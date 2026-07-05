@@ -1,3 +1,12 @@
+---
+title: Vektoryum
+emoji: 🧠
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+app_port: 7860
+pinned: false
+---
 # Vektoryum API
 
 FastAPI tabanlı raster-to-vector motoru. JPG, PNG ve WebP girdilerini analiz
