@@ -1,65 +1,41 @@
-name: Hugging Face Space'e dağıt
+- name: Deploy to Hugging Face Space
+  env:
+    HF_TOKEN: ${{ secrets.HF_TOKEN }}
+    HF_SPACE: ATESOGLU/Vektoryum
+  run: |
+    set -e
 
-# GitHub runner'ları HF'ye erişebildiğinden bu iş, repoyu HF Space'e push eder
-# ve HF Docker imajı derleyip yayına alır. GEREKLİ AYARLAR (repo → Settings →
-# Secrets and variables → Actions):
-#   • secret  HF_TOKEN  = huggingface.co/settings/tokens (write yetkili)
-#   • variable HF_SPACE = "kullanici_adi/space_adi" (önce Space'i Docker SDK ile oluştur)
+    echo "HF deploy klasörü hazırlanıyor..."
+    rm -rf /tmp/hf-space
+    mkdir -p /tmp/hf-space
 
-on:
-  push:
-    branches: [main]
-  workflow_dispatch:
+    rsync -a ./ /tmp/hf-space/ \
+      --exclude ".git" \
+      --exclude ".github" \
+      --exclude "engine/regression" \
+      --exclude "__pycache__" \
+      --exclude ".pytest_cache" \
+      --exclude "node_modules" \
+      --exclude ".next" \
+      --exclude "dist" \
+      --exclude "build" \
+      --exclude ".venv" \
+      --exclude "venv"
 
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+    cd /tmp/hf-space
 
-      - name: HF build dosyalarını hazırla ve push et
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          HF_SPACE: ${{ vars.HF_SPACE }}
-        run: |
-          set -e
-          if [ -z "$HF_TOKEN" ] || [ -z "$HF_SPACE" ]; then
-            echo "::warning::HF_TOKEN (secret) ve HF_SPACE (variable) tanımlı değil — atlanıyor."
-            echo "Kurulum: Space oluştur (Docker), HF write token'ını HF_TOKEN secret'ı ve"
-            echo "'kullanici/space' değerini HF_SPACE variable'ı olarak ekle, sonra bu iş'i tekrar çalıştır."
-            exit 0
-          fi
-          # HF_SPACE 'kullanici/space' olmalı. Kaza eseri tam URL girildiyse ayıkla.
-          HF_SPACE="${HF_SPACE#https://huggingface.co/spaces/}"
-          HF_SPACE="${HF_SPACE#huggingface.co/spaces/}"
-          HF_SPACE="${HF_SPACE%/}"
-          HF_USER="${HF_SPACE%%/*}"
-          if [ "$HF_USER" = "$HF_SPACE" ] || [ -z "$HF_USER" ]; then
-            echo "::error::HF_SPACE biçimi 'kullanici/space' olmalı (şu an: '$HF_SPACE'). Düzelt ve tekrar çalıştır."
-            exit 1
-          fi
-          echo "Hedef Space: $HF_SPACE  (kullanıcı: $HF_USER)"
-          # HF Space kök dosyalarını (.hf içinden) hazırla — GitHub README/Dockerfile kirlenmez
-          cp .hf/Dockerfile ./Dockerfile
-          cp .hf/README.md ./README.md
-          cp .hf/.dockerignore ./.dockerignore
-          git config user.email "actions@users.noreply.github.com"
-          git config user.name "github-actions"
-          git checkout -b hf-deploy
-          git add -A
-          git commit -m "HF Space build (otomatik senkron)" || echo "commit: değişiklik yok"
-          # Kimlik: HF kullanıcı adı + write token. (Sırlar GitHub loglarında maskelenir.)
-          REMOTE="https://${HF_USER}:${HF_TOKEN}@huggingface.co/spaces/${HF_SPACE}"
-          echo "HF Space'e push ediliyor..."
-          if git push --force "$REMOTE" hf-deploy:main; then
-            echo "Bitti → https://huggingface.co/spaces/${HF_SPACE} (HF şimdi imajı derliyor)"
-          else
-            echo "::error::HF push başarısız. Kontrol et:"
-            echo " 1) Space OLUŞTURULDU mu? huggingface.co/new-space → SDK: Docker → ad: ${HF_SPACE#*/}"
-            echo " 2) HF_SPACE doğru mu? 'kullanici/space' (şu an: $HF_SPACE)"
-            echo " 3) HF_TOKEN 'write' yetkili mi? huggingface.co/settings/tokens"
-            echo " 4) Token, Space'in sahibine mi ait? (kullanıcı: $HF_USER)"
-            exit 1
-          fi
+    echo "Deploy klasörü içeriği:"
+    ls -la
+
+    git init
+    git config user.name "github-actions[bot]"
+    git config user.email "github-actions[bot]@users.noreply.github.com"
+
+    git add .
+    git commit -m "HF Space build"
+
+    git branch -M main
+    git remote add hf "https://ATESOGLU:${HF_TOKEN}@huggingface.co/spaces/${HF_SPACE}"
+
+    echo "HF Space'e temiz push ediliyor..."
+    git push --force hf main
