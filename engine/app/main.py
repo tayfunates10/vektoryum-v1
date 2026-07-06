@@ -32,7 +32,7 @@ from typing import Any
 
 from fastapi import Cookie, FastAPI, File, Form, HTTPException, Response, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
-from PIL import Image
+from PIL import Image, ImageChops, ImageStat
 
 from app.exporters import export_all
 from app.pipeline import run_pipeline
@@ -445,6 +445,68 @@ async def me(session: str | None = Cookie(default=None)):
     return {"user": _safe_user(user) if user else None}
 
 
+
+def _quantized_color_count(image: Image.Image, max_side: int = 512) -> int:
+    img = image.convert("RGB")
+    if max(img.size) > max_side:
+        scale = max_side / float(max(img.size))
+        img = img.resize((max(1, round(img.width * scale)), max(1, round(img.height * scale))))
+    colors = {(r // 16, g // 16, b // 16) for r, g, b in img.getdata()}
+    return len(colors)
+
+
+def _build_feedback_analysis(job_id: str, report: dict[str, Any]) -> dict[str, Any] | None:
+    job_dir = _job_dir(job_id)
+    original = _find_original_file(job_dir)
+    rendered = job_dir / f"{job_id}.png"
+    if not original or not rendered.exists():
+        return None
+    try:
+        orig_img = Image.open(original).convert("RGB")
+        out_img = Image.open(rendered).convert("RGB")
+        if orig_img.size != out_img.size:
+            out_img = out_img.resize(orig_img.size)
+        diff = Image.eval(ImageChops.difference(orig_img, out_img), lambda p: p)
+        stat = ImageStat.Stat(diff)
+        mean_rgb = [round(float(v), 3) for v in stat.mean]
+        err = diff.convert("L").point(lambda p: 255 if p > 35 else 0)
+        bbox = err.getbbox()
+        err_pixels = err.histogram()[255]
+        total = orig_img.width * orig_img.height
+        high_error_ratio = round(err_pixels / float(total), 5) if total else 0.0
+        orig_q = _quantized_color_count(orig_img)
+        out_q = _quantized_color_count(out_img)
+        q = report.get("quality_report", {})
+        structure = q.get("structure_report") or {}
+        component_delta = structure.get("component_delta")
+        notes: list[str] = []
+        primary_issue = "minor_visual_difference"
+        severity = "low"
+        if orig_q > max(out_q * 1.15, 64) and out_q < 512:
+            primary_issue = "smooth_gradient_banding"
+            severity = "medium"
+            notes.append("Orijinaldeki yumuşak ton/gradient geçişleri çıktıdaki sınırlı düz renk bantlarına dönüşmüş.")
+        if high_error_ratio > 0.02:
+            severity = "high"
+            notes.append("Fark haritasında geniş alana yayılan görünür renk/kenar farkı var.")
+        if component_delta not in (None, 0):
+            notes.append(f"Bileşen sayısı değişmiş görünüyor: component_delta={component_delta}.")
+        if not notes:
+            notes.append("Farklar düşük seviyede; ana çıktı genel olarak orijinale yakın.")
+        return {
+            "primary_issue": primary_issue,
+            "severity": severity,
+            "mean_abs_rgb": mean_rgb,
+            "high_error_ratio": high_error_ratio,
+            "error_bbox": list(bbox) if bbox else None,
+            "original_quantized_colors": orig_q,
+            "output_quantized_colors": out_q,
+            "notes": notes,
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"primary_issue": "analysis_failed", "severity": "unknown", "error": str(exc)}
+
+
 @app.get("/api/admin/jobs", summary="Yönetici iş listesi")
 async def admin_jobs(session: str | None = Cookie(default=None)):
     _require_admin(session)
@@ -485,6 +547,7 @@ async def admin_job_detail(job_id: str, session: str | None = Cookie(default=Non
         "original": f"/api/admin/download/{job_id}/original" if _find_original_file(report_path.parent) else None,
         "report": f"/api/admin/jobs/{job_id}",
     }
+    data["feedback_analysis"] = _build_feedback_analysis(job_id, data)
     return data
 
 
