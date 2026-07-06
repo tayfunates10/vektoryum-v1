@@ -45,6 +45,7 @@ def basic_svg_quality_check(
     unique_colors = int(score_details.get("unique_colors", 0))
     has_bitmap = bool(score_details.get("has_bitmap", False))
     node_count = int(score_details.get("node_count", 0))
+    has_gradient = bool(score_details.get("has_gradient", False))
 
     warnings: list[str] = []
 
@@ -71,7 +72,7 @@ def basic_svg_quality_check(
     if mode == "logo_color":
         if 0 < path_count < 250 and not fidelity_ok:
             warnings.append("Low path count for a color logo; some detail may be lost.")
-        if unique_colors > 64:
+        if unique_colors > 64 and not has_gradient:
             warnings.append("High color count; consider reducing palette for production.")
     elif not low_path_exempt:
         if 0 < path_count < 4 and not fidelity_ok and not structure_ok:

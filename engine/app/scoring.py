@@ -263,5 +263,6 @@ def score_vector_candidate(
             "edge_f1": fidelity.get("edge_f1"),
             "banding_score": fidelity.get("banding_score"),
             "banding_ratio": fidelity.get("banding_ratio"),
+            "has_gradient": bool(analysis_report.get("has_gradient")),
         },
     }
