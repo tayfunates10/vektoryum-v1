@@ -38,6 +38,33 @@ jobs:
           cp -R engine/app /tmp/hf-space/engine/app
           cp -R engine/models /tmp/hf-space/engine/models
 
+      - name: Configure Space runtime persistence
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_SPACE: ATESOGLU/Vektoryum
+          HF_PERSIST_REPO: ATESOGLU/Vektoryum-jobs
+        run: |
+          set -euo pipefail
+          if [ -z "${HF_TOKEN:-}" ]; then
+            echo "HF_TOKEN secret is required." >&2
+            exit 1
+          fi
+          python -m pip install --quiet huggingface_hub
+          python - <<'PY'
+          import os
+          from huggingface_hub import HfApi
+
+          token = os.environ["HF_TOKEN"]
+          space = os.environ["HF_SPACE"]
+          persist_repo = os.environ["HF_PERSIST_REPO"]
+
+          api = HfApi(token=token)
+          api.create_repo(repo_id=persist_repo, repo_type="dataset", private=True, exist_ok=True)
+          api.add_space_secret(repo_id=space, key="HF_TOKEN", value=token)
+          api.add_space_variable(repo_id=space, key="VEKTORYUM_HF_PERSIST_REPO", value=persist_repo)
+          api.add_space_variable(repo_id=space, key="VEKTORYUM_HF_PERSIST_REPO_TYPE", value="dataset")
+          PY
+
       - name: Push to Hugging Face Space
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
