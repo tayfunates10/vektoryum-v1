@@ -111,11 +111,17 @@
     letter-spacing: .06em; text-transform: uppercase; color: var(--accent-3);
     border: 1px solid var(--line-2); border-radius: 999px; padding: 5px 12px; background: rgba(255,255,255,.03); }
   .kicker .ic { width: 15px; height: 15px; }
-  h2.title { font-size: clamp(26px, 4.4vw, 44px); line-height: 1.06; letter-spacing: -.03em; margin: 16px 0 10px; font-weight: 800; }
+  h2.title { font-size: clamp(32px, 5.4vw, 58px); line-height: 1.02; letter-spacing: -.04em; margin: 16px 0 14px; font-weight: 900; }
   .title-swap { display:inline-grid; vertical-align:baseline; min-width:clamp(210px, 34vw, 370px); }
   .title-swap span { grid-area:1/1; opacity:0; transform:translateY(.35em); animation:titleSwap 6s ease-in-out infinite; background:var(--grad); -webkit-background-clip:text; background-clip:text; color:transparent; }
   .title-swap span:nth-child(2){ animation-delay:3s; }
   .lead { color: var(--muted); font-size: clamp(14px, 1.7vw, 17px); max-width: 640px; }
+  .hero-facts { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; max-width:680px; margin:18px 0 0; }
+  .hero-fact { display:flex; align-items:center; gap:10px; border:1px solid var(--line); border-radius:14px; padding:10px 12px;
+    background:rgba(255,255,255,.035); color:var(--muted); font-size:13px; }
+  .hero-fact .ic { width:22px; height:22px; stroke:url(#fgrad); filter:drop-shadow(0 0 8px rgba(34,211,238,.35)); }
+  .hero-fact b { display:block; color:var(--ink); font-size:13.5px; line-height:1.15; }
+  .hero-fact span { display:block; line-height:1.25; }
 
   /* reveal base */
   .reveal { opacity: 0; transform: translateY(26px); transition: opacity .7s cubic-bezier(.2,.7,.2,1), transform .7s cubic-bezier(.2,.7,.2,1); }
@@ -274,6 +280,10 @@
     .snap { height:100dvh; min-height:100dvh; overflow:hidden; justify-content:flex-start; padding-top: calc(var(--hdr) + 24px); padding-bottom: 22px; }
     h2.title { margin-top:10px; }
     .lead { font-size:13.5px; }
+    .hero-facts { grid-template-columns:1fr 1fr; gap:8px; margin-top:12px; }
+    .hero-fact { padding:8px 9px; font-size:11.5px; border-radius:12px; }
+    .hero-fact .ic { width:19px; height:19px; }
+    .hero-fact b { font-size:12px; }
     .hero-grid { gap:14px; }
     .inner { max-width:100%; }
     .upload-switch { min-height:52px; }
@@ -382,8 +392,12 @@
   @media (max-width: 640px) {
     :root { --hdr: 56px; }
     .snap { padding: calc(var(--hdr) + 18px) 14px 10px; }
-    h2.title { margin: 7px 0 5px; font-size: 22px; }
+    h2.title { margin: 7px 0 8px; font-size: 25px; }
     .lead { font-size: 12.5px; }
+    .hero-facts { grid-template-columns:1fr 1fr; gap:7px; margin-top:10px; }
+    .hero-fact { padding:7px 8px; font-size:10.7px; }
+    .hero-fact .ic { width:17px; height:17px; }
+    .hero-fact b { font-size:11.4px; }
     .kicker { padding: 4px 10px; font-size: 11px; }
     /* hero */
     .hero-grid { gap: 10px; }
@@ -502,7 +516,12 @@
     <div class="inner hero-grid">
       <div>
         <h2 class="title reveal d1">Raster görselini <span class="title-swap"><span>temiz vektöre</span><span>ölçeklenebilir SVG’ye</span></span> dönüştür</h2>
-        <p class="lead reveal d2">Logo, amblem, tabela ve illüstrasyonları saniyeler içinde ölçeklenebilir SVG / PDF / EPS / DXF / PNG çıktısına çevir. Yapay zekâ en uygun modu kendi seçer.</p>
+        <div class="hero-facts reveal d2">
+          <div class="hero-fact"><svg class="ic"><use href="#i-spark"/></svg><span><b>Yapay zekâ analiz</b>Görsel tipini kendi anlar</span></div>
+          <div class="hero-fact"><svg class="ic"><use href="#i-vector"/></svg><span><b>Tek tuşla vektör</b>SVG / PDF / DXF hazır</span></div>
+          <div class="hero-fact"><svg class="ic"><use href="#i-gauge"/></svg><span><b>%99 kalite hedefi</b>Kusursuzluğa yakın sonuç</span></div>
+          <div class="hero-fact"><svg class="ic"><use href="#i-layers"/></svg><span><b>Otomatik temizlik</b>Kenarlar her işte düzelir</span></div>
+        </div>
         <ul class="conds reveal d3">
           <li><svg class="ic"><use href="#i-check"/></svg> Keskin kenarlı logo / amblem</li>
           <li><svg class="ic"><use href="#i-check"/></svg> Çözünürlük ≥ 700 piksel</li>
@@ -518,7 +537,6 @@
       </div>
 
       <div class="panel reveal d2">
-        <p class="upload-desc upload-desc-top">Dosyanı seç, modu belirle ve yapay zekâ destekli vektör motorunu başlat.</p>
         <div id="drop" tabindex="0">
           <span id="dropHint">
             <svg class="ic drop-ic"><use href="#i-upload"/></svg><br>
