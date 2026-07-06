@@ -31,8 +31,13 @@ ARG FETCH_HED=0
 RUN if [ "$FETCH_HED" = "1" ]; then python models/fetch_hed.py; fi
 
 # VEKTORYUM_WORKERS: paralel aday üretimi işçi sayısı (boş = min(çekirdek, 4))
+# VEKTORYUM_TRACE_CAP: renkli modda izleme çözünürlük tavanı (px). Yüksek-bellekli
+#   üretim (HF 16GB) için 3000: büyük logodaki minik öğeler (® simgesi, ince metin)
+#   1600'de çokgenleşip daireyi kaçırıyordu; 3000'de temiz izlenir (LEGO ® çemberi
+#   düzeldi, fidelity 97.5->98.9). Küçük girdiler zaten tavanın altında -> etkilenmez.
 ENV PYTHONUNBUFFERED=1 \
-    VEKTORYUM_WORKERS=""
+    VEKTORYUM_WORKERS="" \
+    VEKTORYUM_TRACE_CAP="3000"
 
 EXPOSE 8000
 

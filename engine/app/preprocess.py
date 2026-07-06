@@ -14,6 +14,7 @@ Tasarım ilkeleri:
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -941,6 +942,17 @@ def preprocess_for_mode(
     # 1774->1100 küçültmesi harf bozuyordu; 1600 ile fid 86.8 -> 91.1, süre
     # ~%25 artışla kabul edilebilir). Sade modlar 1400 (keskin kenar yeter).
     cap = 1600 if mode in ("logo_color", "photo_poster") else 1400
+    # İzleme çözünürlük tavanı env ile YÜKSELTİLEBİLİR (yüksek-bellekli host, ör.
+    # HF 16GB): büyük logodaki minik öğeler (® simgesi, ince metin) 1600'de az
+    # piksele düşüp çokgenleşiyor -> şekil-oturtma daireyi kaçırıyor. Tavan
+    # yükseldikçe bu öğeler temiz izlenir. Ayarlanmazsa varsayılan (yerel/test
+    # davranışı ve regresyon fixture'ları bit-bit korunur).
+    try:
+        _cap_env = int(os.environ.get("VEKTORYUM_TRACE_CAP", "0") or "0")
+        if _cap_env > cap:
+            cap = _cap_env
+    except ValueError:
+        pass
     max_side = max(image.size)
     report_resize = None
     if max_side > cap:
