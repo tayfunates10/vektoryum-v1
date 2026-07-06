@@ -55,6 +55,8 @@
   nav a.active { color: var(--ink); background: rgba(255,255,255,.06); }
   nav a.active::before { content:""; position:absolute; left:13px; right:13px; bottom:3px; height:2px;
     border-radius:2px; background: var(--grad); }
+  .auth-chip { margin-left: 8px; }
+  .auth-user { color: var(--muted); font-size: 12px; align-self: center; max-width: 170px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   @media (max-width: 640px) { nav a { padding: 8px 9px; font-size: 12.5px; } .brand small { display: none; } }
 
   /* ---------------- scroller + snap sections ---------------- */
@@ -246,6 +248,17 @@
   .downloads a.dead { opacity: .4; pointer-events: none; }
   .downloads a .ic { width: 15px; height: 15px; }
 
+  /* auth modal */
+  #authModal { align-items:center; justify-content:center; padding:18px; }
+  .auth-card { width:min(460px, 100%); background:linear-gradient(180deg,var(--panel),var(--bg-2)); border:1px solid var(--line-2); border-radius:18px; box-shadow:var(--shadow); padding:20px; }
+  .auth-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom:12px; }
+  .auth-tabs { display:flex; gap:8px; margin:14px 0; }
+  .auth-tabs button { flex:1; border:1px solid var(--line-2); border-radius:10px; padding:9px; background:rgba(255,255,255,.04); color:var(--muted); cursor:pointer; }
+  .auth-tabs button.on { color:#fff; background:var(--grad); border-color:transparent; font-weight:800; }
+  .auth-form { display:grid; gap:10px; }
+  .auth-form input { width:100%; padding:11px 12px; border-radius:10px; border:1px solid var(--line-2); background:#0c1430; color:var(--ink); font:inherit; }
+  .auth-note { color:var(--muted); font-size:12.5px; margin:8px 0 0; }
+
   /* error toast */
   #error { position: fixed; left: 50%; bottom: 22px; transform: translate(-50%, 30px); z-index: 80; opacity: 0; pointer-events: none;
     display: flex; align-items: center; gap: 10px; background: var(--err-bg); color: var(--err); border: 1px solid rgba(248,113,113,.4);
@@ -374,6 +387,8 @@
     <a href="#s3" data-nav="s3">SSS</a>
     <a href="#s4" data-nav="s4">İletişim</a>
   </nav>
+  <span class="auth-user" id="authUser"></span>
+  <button class="btn ghost auth-chip" id="authOpen">Giriş</button>
 </header>
 
 <div id="scroller">
@@ -557,6 +572,25 @@
   </div>
 </div>
 
+<div class="overlay" id="authModal">
+  <div class="auth-card">
+    <div class="auth-head">
+      <div><span class="kicker"><svg class="ic"><use href="#i-logo"/></svg> Üyelik</span>
+      <h2 class="title" style="font-size:26px;margin:10px 0 4px">Devam etmek için giriş yap</h2>
+      <p class="auth-note">Görseli yükleyip seçenekleri seçebilirsin; vektörleştirme adımı için üyelik gerekir. Yönetici hesabı girişten sonra admin paneline yönlenir.</p></div>
+      <button class="btn ghost" id="authClose"><svg class="ic"><use href="#i-close"/></svg></button>
+    </div>
+    <div class="auth-tabs"><button id="loginTab" class="on">Giriş yap</button><button id="registerTab">Kayıt ol</button></div>
+    <div class="auth-form">
+      <input id="authName" placeholder="Ad Soyad" autocomplete="name" style="display:none">
+      <input id="authEmail" placeholder="E-posta" type="email" autocomplete="email">
+      <input id="authPassword" placeholder="Şifre" type="password" autocomplete="current-password">
+      <button class="btn primary" id="authSubmit" style="margin-top:2px">Giriş yap</button>
+      <p class="auth-note">Varsayılan yönetici: ortam değişkenleriyle <code>VEKTORYUM_ADMIN_EMAIL</code> / <code>VEKTORYUM_ADMIN_PASSWORD</code> ayarlanabilir.</p>
+    </div>
+  </div>
+</div>
+
 <div id="error"><svg class="ic"><use href="#i-warn"/></svg><span id="errorMsg"></span></div>
 
 <script>
@@ -569,6 +603,41 @@
   let errT = null;
   const showError = (msg) => { $("errorMsg").textContent = msg; $("error").classList.add("on");
     clearTimeout(errT); errT = setTimeout(() => $("error").classList.remove("on"), 5000); };
+
+  // ---- auth ----
+  let currentUser = null, authMode = "login", pendingVectorize = false;
+  function renderAuth() {
+    $("authUser").textContent = currentUser ? (currentUser.role === "admin" ? "Yönetici · " : "") + currentUser.email : "";
+    $("authOpen").textContent = currentUser ? (currentUser.role === "admin" ? "Admin" : "Çıkış") : "Giriş";
+  }
+  function openAuth(mode="login") { authMode = mode; setAuthMode(mode); $("authModal").classList.add("on"); }
+  function closeAuth() { $("authModal").classList.remove("on"); }
+  function setAuthMode(mode) { authMode = mode; const reg = mode === "register";
+    $("loginTab").classList.toggle("on", !reg); $("registerTab").classList.toggle("on", reg);
+    $("authName").style.display = reg ? "block" : "none"; $("authSubmit").textContent = reg ? "Kayıt ol ve devam et" : "Giriş yap";
+    $("authPassword").autocomplete = reg ? "new-password" : "current-password";
+  }
+  async function loadMe(){ try { const r = await fetch("/api/auth/me"); const d = await r.json(); currentUser = d.user; renderAuth(); } catch(_){} }
+  $("authOpen").addEventListener("click", async () => {
+    if (currentUser && currentUser.role === "admin") { location.href = "/admin"; return; }
+    if (currentUser) { await fetch("/api/auth/logout", {method:"POST"}); currentUser = null; renderAuth(); return; }
+    openAuth("login");
+  });
+  $("authClose").addEventListener("click", closeAuth);
+  $("loginTab").addEventListener("click", () => setAuthMode("login"));
+  $("registerTab").addEventListener("click", () => setAuthMode("register"));
+  $("authSubmit").addEventListener("click", async () => {
+    const payload = { email: $("authEmail").value.trim(), password: $("authPassword").value };
+    if (authMode === "register") payload.name = $("authName").value.trim();
+    try {
+      const r = await fetch(authMode === "register" ? "/api/auth/register" : "/api/auth/login", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(payload) });
+      const d = await r.json(); if (!r.ok) throw new Error(d.detail || "Giriş başarısız");
+      currentUser = d.user; renderAuth(); closeAuth();
+      if (d.admin_url) { location.href = d.admin_url; return; }
+      if (pendingVectorize) { pendingVectorize = false; go.click(); }
+    } catch(err) { showError(err.message || String(err)); }
+  });
+  loadMe();
 
   // ---- nav + active section + back-to-top ----
   const sections = ["s1","s2","s3","s4"].map($);
@@ -692,6 +761,7 @@
   const FMT_LABELS = { svg:"SVG indir", pdf:"PDF", eps:"EPS", dxf:"DXF", png:"PNG" };
   go.addEventListener("click", async () => {
     if (!file) return;
+    if (!currentUser) { pendingVectorize = true; openAuth("login"); return; }
     go.disabled = true; startLoading();
     const fd = new FormData();
     fd.append("file", file); fd.append("trace_mode", $("mode").value);
