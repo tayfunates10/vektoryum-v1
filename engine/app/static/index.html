@@ -631,7 +631,9 @@
     const tick = (now) => {
       const t = (now - progT0) / 1000;
       // 90'a asimptotik yaklaşım; yanıt gelince 100'e tamamlanır
-      const target = done ? 100 : 90 * (1 - Math.exp(-t / 14));
+      // Yavaş asimptot (~97'ye, uzun zaman sabitiyle): uzun işlemde bile yüzde
+      // hep yavaşça artmaya devam eder -> "90'da donmuş" hissi olmaz.
+      const target = done ? 100 : 97 * (1 - Math.exp(-t / 45));
       const next = prog + (target - prog) * 0.12;
       setPct(next);
       let step = STEPS[0][1];
