@@ -61,22 +61,15 @@
   nav a.auth-link.session { color:var(--accent-3); }
   .auth-chip { margin-left: 8px; }
   .auth-user { color: var(--muted); font-size: 12px; align-self: center; max-width: 170px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .menu-toggle { display:none; margin-left:auto; width:48px; height:48px; border:1px solid var(--line-2); border-radius:15px;
-    background:linear-gradient(180deg, rgba(255,255,255,.10), rgba(255,255,255,.03)); color:var(--ink); cursor:pointer;
-    place-items:center; position:relative; overflow:hidden; box-shadow:0 12px 30px -16px rgba(34,211,238,.95); animation:menuGlow 2.8s ease-in-out infinite; }
-  .menu-toggle::before { content:""; position:absolute; inset:-18px;
-    background:linear-gradient(135deg, transparent 30%, rgba(255,255,255,.88) 45%, rgba(34,211,238,.55) 53%, transparent 68%);
-    transform:translateX(-72%); animation:menuSweep 2.15s ease-in-out infinite; opacity:.75; }
-  .menu-toggle::after { content:""; position:absolute; inset:7px; border-radius:11px; opacity:.36;
-    background:repeating-linear-gradient(0deg, transparent 0 6px, rgba(34,211,238,.55) 7px 8px, transparent 9px 15px);
-    transform:translateY(8px); animation:menuTrace 1.6s linear infinite; }
-  .menu-toggle svg { position:relative; z-index:1; width:29px; height:29px; stroke:url(#fgrad); filter:drop-shadow(0 0 9px rgba(34,211,238,.45)); }
-  .menu-toggle .m-dot { fill:#fff; stroke:none; animation:nodeBlink 1.55s ease-in-out infinite; }
-  .menu-toggle .m-dot:nth-child(2){ animation-delay:.22s } .menu-toggle .m-dot:nth-child(3){ animation-delay:.44s }
-  @keyframes menuSweep { 0%,30%{ transform:translateX(-78%); } 62%,100%{ transform:translateX(78%); } }
-  @keyframes menuTrace { to { transform:translateY(-8px); } }
-  @keyframes menuGlow { 0%,100%{ box-shadow:0 12px 30px -16px rgba(34,211,238,.95); } 50%{ box-shadow:0 0 0 1px rgba(255,255,255,.13), 0 18px 38px -12px rgba(139,92,246,.9); } }
-  @keyframes nodeBlink { 0%,100%{ opacity:.58; transform:scale(.78); } 45%{ opacity:1; transform:scale(1.16); } }
+  @property --menu-angle { syntax: '<angle>'; initial-value: 0deg; inherits: false; }
+  .menu-toggle { display:none; margin-left:auto; width:48px; height:48px; border:2px solid transparent; border-radius:15px;
+    background:
+      linear-gradient(180deg, #151f3d, #0e1732) padding-box,
+      conic-gradient(from var(--menu-angle), rgba(75,141,255,.35), rgba(34,211,238,.95), rgba(255,255,255,.75), rgba(139,92,246,.85), rgba(75,141,255,.35)) border-box;
+    color:var(--ink); cursor:pointer; place-items:center; position:relative; overflow:hidden;
+    box-shadow:0 12px 30px -16px rgba(34,211,238,.95); animation:menuBorder 3.4s linear infinite; }
+  .menu-toggle svg { position:relative; z-index:1; width:32px; height:32px; stroke:url(#fgrad); stroke-width:2.8; filter:drop-shadow(0 0 8px rgba(34,211,238,.38)); }
+  @keyframes menuBorder { to { --menu-angle: 360deg; } }
   @media (max-width: 900px) {
     :root { --hdr: 74px; }
     header { padding-block:10px; }
@@ -101,7 +94,7 @@
   @media (max-width: 460px) {
     header { padding-inline:8px; }
     .brand{gap:10px}.brand b{font-size:18px}.brand .mark{width:46px;height:46px;border-radius:14px}.brand .mark .ic{width:26px;height:26px}
-    .menu-toggle{width:52px;height:52px;border-radius:16px}.menu-toggle svg{width:31px;height:31px}
+    .menu-toggle{width:52px;height:52px;border-radius:16px}.menu-toggle svg{width:34px;height:34px}
     nav { right:8px; width:calc(100vw - 16px); grid-template-columns:1fr; }
     nav a { min-height:40px; font-size:13px; justify-content:flex-start; padding-inline:14px; }
   }
@@ -492,7 +485,7 @@
     <span><b>Vektoryum</b><small>Yapay zekâ ile vektörleştirme</small></span>
   </a>
   <button class="menu-toggle" id="menuToggle" type="button" aria-label="Menüyü aç" aria-controls="mainNav" aria-expanded="false">
-    <svg viewBox="0 0 24 24"><path d="M5 7h14M5 12h14M5 17h14"/><path d="M7 7l5 5 5-5" opacity=".45"/><circle class="m-dot" cx="5" cy="7" r="1.7"/><circle class="m-dot" cx="12" cy="12" r="1.7"/><circle class="m-dot" cx="19" cy="17" r="1.7"/></svg>
+    <svg viewBox="0 0 24 24"><path d="M4 6.5h16M4 12h16M4 17.5h16"/></svg>
   </button>
   <nav id="mainNav">
     <a href="#s1" data-nav="s1" class="active">Yükle</a>
