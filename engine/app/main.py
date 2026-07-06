@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import secrets
+import shutil
 import tempfile
 import uuid
 from pathlib import Path
@@ -55,6 +56,7 @@ DATA_ROOT = Path(os.environ.get("VEKTORYUM_DATA_ROOT", str(Path(tempfile.gettemp
 JOBS_ROOT = Path(os.environ.get("VEKTORYUM_JOBS_ROOT", str(DATA_ROOT / "jobs")))
 USERS_FILE = DATA_ROOT / "users.json"
 SESSIONS: dict[str, dict[str, Any]] = {}
+_HF_RESTORE_ATTEMPTED = False
 
 _MEDIA_TYPES = {
     "svg": "image/svg+xml",
@@ -139,6 +141,95 @@ def _job_dir(job_id: str) -> Path:
 def _validate_job_id(job_id: str) -> None:
     if not job_id.isalnum():
         raise HTTPException(status_code=400, detail="Geçersiz job_id.")
+
+
+def _hf_persist_token() -> str:
+    return (
+        os.environ.get("VEKTORYUM_HF_TOKEN")
+        or os.environ.get("HF_TOKEN")
+        or os.environ.get("HUGGINGFACE_TOKEN")
+        or ""
+    ).strip()
+
+
+def _default_hf_persist_repo() -> str:
+    space_id = os.environ.get("SPACE_ID", "").strip()
+    if "/" not in space_id:
+        return ""
+    owner, name = space_id.split("/", 1)
+    return f"{owner}/{name}-jobs"
+
+
+def _hf_persist_repo() -> str:
+    return os.environ.get("VEKTORYUM_HF_PERSIST_REPO", _default_hf_persist_repo()).strip()
+
+
+def _hf_persist_repo_type() -> str:
+    return os.environ.get("VEKTORYUM_HF_PERSIST_REPO_TYPE", "dataset").strip() or "dataset"
+
+
+def _hf_persistence_enabled() -> bool:
+    return bool(_hf_persist_token() and _hf_persist_repo())
+
+
+def _sync_job_to_hub(job_id: str) -> None:
+    """Runtime restart'larına karşı job klasörünü isteğe bağlı HF Hub'a kopyalar."""
+    if not _hf_persistence_enabled():
+        return
+
+    from huggingface_hub import HfApi
+
+    job_dir = _job_dir(job_id)
+    if not job_dir.exists():
+        return
+
+    token = _hf_persist_token()
+    repo_id = _hf_persist_repo()
+    repo_type = _hf_persist_repo_type()
+    try:
+        api = HfApi(token=token)
+        api.create_repo(repo_id=repo_id, repo_type=repo_type, private=True, exist_ok=True)
+        api.upload_folder(
+            folder_path=str(job_dir),
+            path_in_repo=f"jobs/{job_id}",
+            repo_id=repo_id,
+            repo_type=repo_type,
+            token=token,
+            commit_message=f"Persist Vektoryum job {job_id}",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("HF job persistence sync failed for %s: %s", job_id, exc)
+
+
+def _restore_jobs_from_hub_once() -> None:
+    """Local jobs boşsa isteğe bağlı HF Hub deposundan işleri geri yükler."""
+    global _HF_RESTORE_ATTEMPTED
+    if _HF_RESTORE_ATTEMPTED or not _hf_persistence_enabled():
+        return
+    _HF_RESTORE_ATTEMPTED = True
+    if any(JOBS_ROOT.glob("*/report.json")):
+        return
+
+    from huggingface_hub import snapshot_download
+
+    snapshot_dir = DATA_ROOT / "hf_jobs_snapshot"
+    try:
+        snapshot_download(
+            repo_id=_hf_persist_repo(),
+            repo_type=_hf_persist_repo_type(),
+            token=_hf_persist_token(),
+            allow_patterns="jobs/**",
+            local_dir=str(snapshot_dir),
+        )
+        source_jobs = snapshot_dir / "jobs"
+        if not source_jobs.exists():
+            return
+        JOBS_ROOT.mkdir(parents=True, exist_ok=True)
+        for source in source_jobs.iterdir():
+            if source.is_dir() and (source / "report.json").exists():
+                shutil.copytree(source, JOBS_ROOT / source.name, dirs_exist_ok=True)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("HF job persistence restore failed: %s", exc)
 
 
 def _find_original_file(job_dir: Path) -> Path | None:
@@ -340,6 +431,7 @@ async def vectorize_image(
     }
 
     (job_dir / "report.json").write_text(json.dumps(final_report, ensure_ascii=False, indent=2), encoding="utf-8")
+    _sync_job_to_hub(job_id)
     return JSONResponse(content=final_report)
 
 
@@ -510,6 +602,7 @@ def _build_feedback_analysis(job_id: str, report: dict[str, Any]) -> dict[str, A
 @app.get("/api/admin/jobs", summary="Yönetici iş listesi")
 async def admin_jobs(session: str | None = Cookie(default=None)):
     _require_admin(session)
+    _restore_jobs_from_hub_once()
     jobs = []
     if JOBS_ROOT.exists():
         for report in sorted(JOBS_ROOT.glob("*/report.json"), key=lambda p: p.stat().st_mtime, reverse=True):

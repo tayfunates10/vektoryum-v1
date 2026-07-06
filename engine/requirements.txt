@@ -3,6 +3,7 @@ fastapi
 uvicorn[standard]
 python-multipart
 pillow
+huggingface_hub
 # 4.x ve 5.x doğrulandı (HoughLinesP şekil farkı kodda kaldırılıyor);
 # gelecekteki major sürprizine karşı üst sınır
 opencv-python-headless>=4.8,<6
