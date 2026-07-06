@@ -112,6 +112,9 @@
     border: 1px solid var(--line-2); border-radius: 999px; padding: 5px 12px; background: rgba(255,255,255,.03); }
   .kicker .ic { width: 15px; height: 15px; }
   h2.title { font-size: clamp(26px, 4.4vw, 44px); line-height: 1.06; letter-spacing: -.03em; margin: 16px 0 10px; font-weight: 800; }
+  .title-swap { display:inline-grid; vertical-align:baseline; min-width:clamp(210px, 34vw, 370px); }
+  .title-swap span { grid-area:1/1; opacity:0; transform:translateY(.35em); animation:titleSwap 6s ease-in-out infinite; background:var(--grad); -webkit-background-clip:text; background-clip:text; color:transparent; }
+  .title-swap span:nth-child(2){ animation-delay:3s; }
   .lead { color: var(--muted); font-size: clamp(14px, 1.7vw, 17px); max-width: 640px; }
 
   /* reveal base */
@@ -136,11 +139,14 @@
   .upload-switch span:nth-child(2){ animation-delay:3s; }
   @keyframes titleSwap { 0%,42%{opacity:1; transform:none} 50%,100%{opacity:0; transform:translateY(-20px)} }
   .upload-desc { color:var(--muted); margin:0; font-size:clamp(13px,1.4vw,15px); }
+  .upload-desc-top { margin-bottom:14px; }
   #drop { border: 1.6px dashed var(--line-2); border-radius: 14px; padding: 22px 16px; text-align: center;
     color: var(--muted); cursor: pointer; transition: border-color .18s, background .18s; }
   #drop.over { border-color: var(--accent); background: rgba(75,141,255,.08); }
-  #drop .drop-ic { width: 38px; height: 38px; color: var(--accent); margin-bottom: 6px; }
-  #drop strong { color: var(--ink); }
+  #drop .drop-ic { width: 38px; height: 38px; color: var(--accent); margin-bottom: 6px; stroke:url(#fgrad); animation:dropIconGlow 2.2s ease-in-out infinite; }
+  #drop strong, #drop small { display:inline-block; background:var(--grad); background-size:220% 100%; -webkit-background-clip:text; background-clip:text; color:transparent; animation:dropTextGlow 2.4s ease-in-out infinite; }
+  @keyframes dropTextGlow { 0%,100%{ background-position:0% 50%; filter:brightness(.9); opacity:.78; } 50%{ background-position:100% 50%; filter:brightness(1.35); opacity:1; } }
+  @keyframes dropIconGlow { 0%,100%{ filter:drop-shadow(0 0 0 rgba(34,211,238,0)); opacity:.78; transform:translateY(0); } 50%{ filter:drop-shadow(0 0 12px rgba(34,211,238,.75)); opacity:1; transform:translateY(-2px); } }
   #drop .thumb { max-height: 120px; max-width: 100%; border-radius: 9px; display: block; margin: 0 auto; }
   .controls { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; }
   @media (max-width: 480px){ .controls { grid-template-columns: 1fr; } }
@@ -504,8 +510,7 @@
   <section class="snap" id="s1">
     <div class="inner hero-grid">
       <div>
-        <span class="kicker reveal"><svg class="ic"><use href="#i-spark"/></svg> Yapay zekâ destekli</span>
-        <h2 class="title reveal d1">Raster görselini <span class="gtext">temiz vektöre</span> dönüştür</h2>
+        <h2 class="title reveal d1">Raster görselini <span class="title-swap"><span>temiz vektöre</span><span>ölçeklenebilir SVG’ye</span></span> dönüştür</h2>
         <p class="lead reveal d2">Logo, amblem, tabela ve illüstrasyonları saniyeler içinde ölçeklenebilir SVG / PDF / EPS / DXF / PNG çıktısına çevir. Yapay zekâ en uygun modu kendi seçer.</p>
         <ul class="conds reveal d3">
           <li><svg class="ic"><use href="#i-check"/></svg> Keskin kenarlı logo / amblem</li>
@@ -522,14 +527,7 @@
       </div>
 
       <div class="panel reveal d2">
-        <div class="upload-head">
-          <span class="upload-eyebrow"><svg class="ic"><use href="#i-spark"/></svg> Akıllı yükleme</span>
-          <div class="upload-switch" aria-label="Vektöre dönüştürme başlığı">
-            <span>Görselini yükle</span>
-            <span class="gtext">Vektöre dönüştür</span>
-          </div>
-          <p class="upload-desc">Dosyanı seç, modu belirle ve yapay zekâ destekli vektör motorunu başlat.</p>
-        </div>
+        <p class="upload-desc upload-desc-top">Dosyanı seç, modu belirle ve yapay zekâ destekli vektör motorunu başlat.</p>
         <div id="drop" tabindex="0">
           <span id="dropHint">
             <svg class="ic drop-ic"><use href="#i-upload"/></svg><br>
