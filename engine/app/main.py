@@ -27,6 +27,7 @@ import os
 import secrets
 import tempfile
 import uuid
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -533,6 +534,43 @@ async def admin_jobs(session: str | None = Cookie(default=None)):
                 "original_url": f"/api/admin/download/{data.get('job_id')}/original" if _find_original_file(report.parent) else None,
             })
     return {"jobs": jobs}
+
+
+@app.get("/api/admin/storage", summary="Yönetici depolama durumu")
+async def admin_storage(session: str | None = Cookie(default=None)):
+    _require_admin(session)
+    DATA_ROOT.mkdir(parents=True, exist_ok=True)
+    JOBS_ROOT.mkdir(parents=True, exist_ok=True)
+    probe = DATA_ROOT / ".write_test"
+    writable = False
+    try:
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        writable = True
+    except Exception:  # noqa: BLE001
+        writable = False
+    data_root_s = str(DATA_ROOT)
+    return {
+        "data_root": data_root_s,
+        "jobs_root": str(JOBS_ROOT),
+        "jobs_root_exists": JOBS_ROOT.exists(),
+        "writable": writable,
+        "uses_hf_data_path": data_root_s == "/data" or data_root_s.startswith("/data/"),
+        "warning": None if data_root_s.startswith("/data/") else "Hugging Face için kalıcı storage istiyorsanız VEKTORYUM_DATA_ROOT=/data/vektoryum ve Space Persistent Storage kullanın.",
+    }
+
+
+@app.get("/api/admin/jobs-backup.zip", summary="Yönetici iş yedeği indir")
+async def admin_jobs_backup(session: str | None = Cookie(default=None)):
+    _require_admin(session)
+    if not JOBS_ROOT.exists():
+        raise HTTPException(status_code=404, detail="Yedeklenecek iş bulunamadı.")
+    backup_path = Path(tempfile.gettempdir()) / f"vektoryum_jobs_backup_{uuid.uuid4().hex}.zip"
+    with zipfile.ZipFile(backup_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for path in JOBS_ROOT.rglob("*"):
+            if path.is_file():
+                zf.write(path, path.relative_to(JOBS_ROOT.parent))
+    return FileResponse(backup_path, media_type="application/zip", filename="vektoryum_jobs_backup.zip")
 
 
 @app.get("/api/admin/jobs/{job_id}", summary="Yönetici iş detayı")

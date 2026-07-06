@@ -26,6 +26,7 @@
     </div>
     <button class="btn" onclick="logout()">Çıkış</button>
   </div>
+  <div class="card" id="storage">Depolama durumu yükleniyor...</div>
   <div id="jobs"></div>
 </div>
 <script>
@@ -57,7 +58,13 @@ async function detail(id){
   const d=await r.json();
   box.textContent=JSON.stringify(d,null,2);
 }
+async function loadStorage(){
+  const r=await fetch('/api/admin/storage');
+  const s=await r.json();
+  document.getElementById('storage').innerHTML=`<b>Depolama:</b> ${s.data_root}<br><b>Jobs:</b> ${s.jobs_root}<br><b>Yazılabilir:</b> ${s.writable?'Evet':'Hayır'} · <b>HF /data:</b> ${s.uses_hf_data_path?'Evet':'Hayır'}${s.warning?`<p class="warn">${s.warning}</p>`:''}<a class="btn" href="/api/admin/jobs-backup.zip">Tüm işleri ZIP indir</a>`;
+}
 async function load(){
+  await loadStorage();
   const r=await fetch('/api/admin/jobs');
   if(!r.ok){ location.href='/'; return }
   const data=await r.json();
