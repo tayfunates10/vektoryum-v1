@@ -61,23 +61,42 @@
   nav a.auth-link.session { color:var(--accent-3); }
   .auth-chip { margin-left: 8px; }
   .auth-user { color: var(--muted); font-size: 12px; align-self: center; max-width: 170px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  @media (max-width: 760px) {
-    :root { --hdr: 98px; }
-    header { align-content:center; align-items:center; gap:7px 10px; flex-wrap:wrap; padding-block:7px; }
-    .brand { flex:1 1 auto; min-width:150px; }
-    .brand b{font-size:16px}.brand .mark{width:34px;height:34px}.brand small { display: none; }
-    nav { flex:1 1 100%; order:3; margin-left:0; justify-content:space-between; gap:4px; overflow:visible; }
-    nav a { padding: 7px 8px; font-size: 12px; }
-    nav a.auth-link { padding-inline:9px; }
+  .menu-toggle { display:none; margin-left:auto; width:42px; height:42px; border:1px solid var(--line-2); border-radius:13px;
+    background:linear-gradient(180deg, rgba(255,255,255,.08), rgba(255,255,255,.025)); color:var(--ink); cursor:pointer;
+    place-items:center; position:relative; overflow:hidden; box-shadow:0 10px 26px -16px rgba(34,211,238,.9); }
+  .menu-toggle::before { content:""; position:absolute; inset:-40%; border-radius:50%;
+    background:conic-gradient(from 0deg, transparent 0 62%, rgba(255,255,255,.85) 68%, rgba(34,211,238,.85) 74%, transparent 82%);
+    animation:menuOrbit 2.8s linear infinite; opacity:.65; }
+  .menu-toggle svg { position:relative; width:24px; height:24px; stroke:url(#fgrad); filter:drop-shadow(0 0 8px rgba(34,211,238,.35)); }
+  .menu-toggle .m-dot { fill:#fff; stroke:none; animation:pulse 2s ease-in-out infinite; }
+  .menu-toggle .m-dot:nth-child(2){ animation-delay:.28s } .menu-toggle .m-dot:nth-child(3){ animation-delay:.56s }
+  @keyframes menuOrbit { to { transform:rotate(360deg); } }
+  @media (max-width: 900px) {
+    :root { --hdr: 62px; }
+    header { padding-block:9px; }
+    .brand { min-width:0; }
+    .brand small { display:none; }
+    .menu-toggle { display:grid; }
     .auth-user{display:none}
+    nav { position:absolute; top:calc(100% + 10px); right:clamp(10px,4vw,28px); width:min(330px, calc(100vw - 20px));
+      display:grid; grid-template-columns:1fr 1fr; gap:8px; padding:12px; margin:0; overflow:visible;
+      border:1px solid var(--line-2); border-radius:20px; background:rgba(13,20,43,.94); backdrop-filter:blur(18px);
+      box-shadow:0 24px 60px -24px rgba(0,0,0,.82), inset 0 1px 0 rgba(255,255,255,.06);
+      opacity:0; transform:translateY(-10px) scale(.98); pointer-events:none; transition:opacity .22s, transform .22s; }
+    nav::before { content:""; position:absolute; inset:0; border-radius:inherit; pointer-events:none;
+      background:radial-gradient(circle at 18% 0%, rgba(34,211,238,.18), transparent 35%), radial-gradient(circle at 100% 18%, rgba(139,92,246,.22), transparent 38%); }
+    header.menu-open nav { opacity:1; transform:none; pointer-events:auto; }
+    nav a { display:flex; align-items:center; justify-content:center; min-height:42px; padding:9px 10px; font-size:13px;
+      border:1px solid var(--line); background:rgba(255,255,255,.035); }
+    nav a.active::before { left:18px; right:18px; bottom:6px; }
+    nav a.auth-link { grid-column:auto; }
   }
   @media (max-width: 460px) {
-    :root { --hdr: 104px; }
-    header { padding-inline:8px; gap:6px; }
-    nav { gap:3px; }
-    nav a { padding:6px 5px; font-size:11.2px; letter-spacing:-.01em; }
-    nav a.active::before { left:7px; right:7px; }
-    .brand{gap:7px}.brand b{font-size:15px}.brand .mark{width:30px;height:30px;border-radius:9px}
+    header { padding-inline:8px; }
+    .brand{gap:7px}.brand b{font-size:15px}.brand .mark{width:34px;height:34px;border-radius:10px}
+    .menu-toggle{width:40px;height:40px;border-radius:12px}
+    nav { right:8px; width:calc(100vw - 16px); grid-template-columns:1fr; }
+    nav a { min-height:40px; font-size:13px; justify-content:flex-start; padding-inline:14px; }
   }
 
   /* ---------------- scroller + snap sections ---------------- */
@@ -156,10 +175,8 @@
   .btn.ghost:hover { background: rgba(255,255,255,.09); }
 
   .excards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 22px; }
-  @media (max-width: 900px){ .excards { grid-auto-flow: column; grid-template-columns: none; grid-auto-columns: 44%;
-    overflow-x: auto; scroll-snap-type: x mandatory; padding-bottom: 6px; } .excards .excard{ scroll-snap-align:start; } }
-  @media (max-width: 700px){ .conds{display:none}.excards{display:none}.panel{justify-content:flex-start} }
-  @media (max-width: 480px){ .excards { grid-auto-columns: 48%; } }
+  @media (max-width: 900px){ .excards { display:none; } .panel{justify-content:flex-start} }
+  @media (max-width: 700px){ .conds{display:none} }
   .excard { border: 1px solid var(--line); border-radius: 14px; overflow: hidden; background: linear-gradient(180deg, var(--panel), var(--bg-2));
     transition: transform .25s cubic-bezier(.2,.7,.2,1), box-shadow .25s, border-color .25s; will-change: transform; }
   .excard:hover { transform: translateY(-8px) rotate(-.6deg); box-shadow: 0 18px 40px -16px rgba(75,141,255,.5); border-color: var(--line-2); }
@@ -254,8 +271,8 @@
     .fcard { padding: 14px; }
     .metric-strip { margin-top: 12px; }
   }
-  @media (max-width: 700px) {
-    .snap { justify-content:flex-start; padding-top: calc(var(--hdr) + 16px); padding-bottom: 22px; }
+  @media (max-width: 900px) {
+    .snap { height:100dvh; min-height:100dvh; overflow:hidden; justify-content:flex-start; padding-top: calc(var(--hdr) + 16px); padding-bottom: 22px; }
     h2.title { margin-top:10px; }
     .lead { font-size:13.5px; }
     .hero-grid { gap:14px; }
@@ -467,7 +484,10 @@
     <span class="mark"><svg class="ic" viewBox="0 0 24 24"><use href="#i-logo"/></svg></span>
     <span><b>Vektoryum</b><small>Yapay zekâ ile vektörleştirme</small></span>
   </a>
-  <nav>
+  <button class="menu-toggle" id="menuToggle" type="button" aria-label="Menüyü aç" aria-controls="mainNav" aria-expanded="false">
+    <svg viewBox="0 0 24 24"><path d="M5 7h14M5 12h14M5 17h14"/><path d="M7 7l5 5 5-5" opacity=".45"/><circle class="m-dot" cx="5" cy="7" r="1.7"/><circle class="m-dot" cx="12" cy="12" r="1.7"/><circle class="m-dot" cx="19" cy="17" r="1.7"/></svg>
+  </button>
+  <nav id="mainNav">
     <a href="#s1" data-nav="s1" class="active">Yükle</a>
     <a href="#s2" data-nav="s2">Özellikler</a>
     <a href="#s3" data-nav="s3">SSS</a>
@@ -761,12 +781,25 @@
   });
   loadMe();
 
+
+  // ---- responsive AI/vector hamburger menu ----
+  const headerEl = document.querySelector("header");
+  const menuToggle = $("menuToggle");
+  const closeMenu = () => { headerEl.classList.remove("menu-open"); menuToggle?.setAttribute("aria-expanded", "false"); };
+  menuToggle?.addEventListener("click", (e) => {
+    e.preventDefault();
+    const open = headerEl.classList.toggle("menu-open");
+    menuToggle.setAttribute("aria-expanded", open ? "true" : "false");
+  });
+  document.addEventListener("click", (e) => { if (!headerEl.contains(e.target)) closeMenu(); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeMenu(); });
+
   // ---- nav + active section + back-to-top ----
   const sections = ["s1","s2","s3","s4"].map($);
   const navLinks = [...document.querySelectorAll("[data-nav]")];
   document.querySelectorAll('a[href^="#s"], [data-nav]').forEach(a => {
     a.addEventListener("click", (e) => { const id = a.getAttribute("data-nav"); if (!id) return;
-      e.preventDefault(); $(id).scrollIntoView({ behavior: "smooth" }); });
+      e.preventDefault(); closeMenu(); $(id).scrollIntoView({ behavior: "smooth" }); });
   });
   $("toTop").addEventListener("click", () => $("s1").scrollIntoView({ behavior: "smooth" }));
   $("goTop2").addEventListener("click", () => $("s1").scrollIntoView({ behavior: "smooth" }));
