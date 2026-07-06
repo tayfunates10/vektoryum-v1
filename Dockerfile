@@ -26,7 +26,8 @@ RUN if [ "$FETCH_HED" = "1" ]; then python models/fetch_hed.py; fi
 ENV PYTHONUNBUFFERED=1 \
     VEKTORYUM_WORKERS="1" \
     VEKTORYUM_TRACE_CAP="2200" \
-    VEKTORYUM_MAX_INPUT_SIDE="1800"
+    VEKTORYUM_MAX_INPUT_SIDE="1800" \
+    VEKTORYUM_DATA_ROOT="/data/vektoryum"
 
 EXPOSE 8000
 

@@ -51,8 +51,8 @@ ALLOWED_MODES = [
 # Geriye dönük uyumluluk için ikinci ad (README'de geçer)
 ALLOWED_TRACE_MODES = ALLOWED_MODES
 
-JOBS_ROOT = Path(tempfile.gettempdir()) / "vector_jobs"
 DATA_ROOT = Path(os.environ.get("VEKTORYUM_DATA_ROOT", str(Path(tempfile.gettempdir()) / "vektoryum_data")))
+JOBS_ROOT = Path(os.environ.get("VEKTORYUM_JOBS_ROOT", str(DATA_ROOT / "jobs")))
 USERS_FILE = DATA_ROOT / "users.json"
 SESSIONS: dict[str, dict[str, Any]] = {}
 
