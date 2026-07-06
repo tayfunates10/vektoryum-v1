@@ -413,16 +413,32 @@ def detect_gradient_like_surface(image: Image.Image) -> bool:
     small = resize_for_analysis(_rgba_to_rgb_on_white(image), 350)
     arr = np.array(small).astype(np.float32)
 
-    flattened = arr.reshape(-1, 3)
+    h, w = arr.shape[:2]
+    ph, pw = max(1, h // 10), max(1, w // 10)
+    corners = np.vstack([
+        arr[:ph, :pw].reshape(-1, 3),
+        arr[:ph, -pw:].reshape(-1, 3),
+        arr[-ph:, :pw].reshape(-1, 3),
+        arr[-ph:, -pw:].reshape(-1, 3),
+    ])
+    bg = np.median(corners, axis=0)
+    fg_mask = np.linalg.norm(arr - bg[None, None, :], axis=2) > 34
+    if int(fg_mask.sum()) < 120:
+        return False
+
+    # Beyaz/tekdüze zemin geniş yer kaplayan logolarda eski tüm-görüntü oranı
+    # gradyanı kaçırıyordu (örn. beyaz zemin üstünde renk geçişli kuş logosu).
+    # Renk sürekliliğini yalnız mürekkep/foreground üzerinde ölç.
+    flattened = arr[fg_mask].reshape(-1, 3)
     rounded = (flattened // 8) * 8
     unique_count = len(np.unique(rounded, axis=0))
     unique_ratio = unique_count / flattened.shape[0]
 
     gray = cv2.cvtColor(arr.astype(np.uint8), cv2.COLOR_RGB2GRAY)
     edge_mask = cv2.Canny(gray, 70, 160) > 0
-    smooth_area_ratio = float(np.mean(~edge_mask))
+    smooth_area_ratio = float(np.mean((~edge_mask)[fg_mask]))
 
-    return bool(unique_ratio > 0.095 and smooth_area_ratio > 0.68)
+    return bool(unique_ratio > 0.11 and smooth_area_ratio > 0.58)
 
 
 def score_image_quality(

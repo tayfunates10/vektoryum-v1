@@ -956,7 +956,11 @@ def run_pipeline(
         # görsellerde (est >= 22: çok tonlu fotoğrafik içerik) uygulanmaz —
         # orada detay ürünün kendisidir; az-path uğruna sadakatten ödün vermek
         # çıktıyı gözle görülür düzleştirir.
-        if mode_used in FIDELITY_LED_MODES and int(analysis.get("estimated_color_count", 0)) < 22:
+        if (
+            mode_used in FIDELITY_LED_MODES
+            and int(analysis.get("estimated_color_count", 0)) < 22
+            and not analysis.get("has_gradient")
+        ):
             edit_best, edit_reason = _apply_editability_preference(scored, best)
             if edit_best is not best:
                 best = edit_best

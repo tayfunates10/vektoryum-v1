@@ -899,6 +899,11 @@ def _auto_color_count(analysis: dict[str, Any] | None) -> int:
     est = int(analysis.get("estimated_color_count", 14))
     k = est + 10 + (8 if est >= 18 else 0) + (16 if est >= 22 else 0)
     cap = 64
+    if analysis.get("has_gradient"):
+        # Beyaz zeminli renk-geçişli logolarda dominant renk sayısı düşük
+        # görünebilir; daha yüksek k bantlaşmayı kaynağında inceltir.
+        k = max(k + 24, 48)
+        cap = 96
     if est >= 18:
         k += 24
         cap = 96
