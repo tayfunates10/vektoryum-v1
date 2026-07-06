@@ -10,6 +10,8 @@ birleştirilir:
    bantlaşma/kayma bunu doğrudan cezalandırır.
 3. **Kenar uyumu (edge-F1)** — Canny kenarlarının toleranslı eşleşmesi. Çizgi
    keskinliği / merdivenlenme bunda görünür.
+4. **Banding** — orijinalde yumuşak foreground geçişi varken render'ın yapay
+   bant kenarı üretmesini cezalandırır.
 
 Tasarım ilkesi: **yeni ağır bağımlılık yok.** Her şey zaten kurulu olan
 ``cv2 + numpy + scipy`` ile yapılır (scikit-image gerekmez). Rasterizer olarak
@@ -267,6 +269,52 @@ def _edge_f1(gray_a: np.ndarray, gray_b: np.ndarray, tolerance: int = 2) -> floa
     return 2.0 * precision * recall / (precision + recall)
 
 
+def _gradient_banding(original_rgb: np.ndarray, rendered_rgb: np.ndarray) -> dict[str, float]:
+    """Orijinalde yumuşak olan foreground bölgelerde yapay render kenarı ölçer.
+
+    Gradyan/posterizasyon hatası klasik ΔE'de bazen küçük kalır: renkler yakın
+    olsa bile çıktı düz bant sınırları üretir. Bu metrik, foreground içinde
+    orijinalin düşük gradyanlı olduğu piksellerde render'ın yüksek renk gradyanı
+    üretip üretmediğini ölçer. Düşük oran iyi, skor 100'e yakındır.
+    """
+    h, w = original_rgb.shape[:2]
+    ph, pw = max(1, h // 10), max(1, w // 10)
+    corners = np.vstack([
+        original_rgb[:ph, :pw].reshape(-1, 3),
+        original_rgb[:ph, -pw:].reshape(-1, 3),
+        original_rgb[-ph:, :pw].reshape(-1, 3),
+        original_rgb[-ph:, -pw:].reshape(-1, 3),
+    ]).astype(np.float32)
+    bg = np.median(corners, axis=0)
+    fg = np.linalg.norm(original_rgb.astype(np.float32) - bg[None, None, :], axis=2) > 34
+    if int(fg.sum()) < 100:
+        return {"banding_score": 100.0, "banding_ratio": 0.0}
+
+    lab_o = cv2.cvtColor(original_rgb, cv2.COLOR_RGB2LAB).astype(np.float32)
+    lab_r = cv2.cvtColor(rendered_rgb, cv2.COLOR_RGB2LAB).astype(np.float32)
+    grad_o = np.zeros((h, w), np.float32)
+    grad_r = np.zeros((h, w), np.float32)
+    for ch in range(3):
+        ox = cv2.Sobel(lab_o[:, :, ch], cv2.CV_32F, 1, 0, ksize=3)
+        oy = cv2.Sobel(lab_o[:, :, ch], cv2.CV_32F, 0, 1, ksize=3)
+        rx = cv2.Sobel(lab_r[:, :, ch], cv2.CV_32F, 1, 0, ksize=3)
+        ry = cv2.Sobel(lab_r[:, :, ch], cv2.CV_32F, 0, 1, ksize=3)
+        grad_o += ox * ox + oy * oy
+        grad_r += rx * rx + ry * ry
+    grad_o = np.sqrt(grad_o)
+    grad_r = np.sqrt(grad_r)
+
+    smooth_fg = fg & (grad_o < 32.0)
+    if int(smooth_fg.sum()) < 100:
+        return {"banding_score": 100.0, "banding_ratio": 0.0}
+    artificial_edges = smooth_fg & (grad_r > 58.0) & (grad_r > grad_o * 1.8 + 20.0)
+    ratio = float(artificial_edges.sum()) / float(smooth_fg.sum())
+    return {
+        "banding_score": round(max(0.0, 100.0 - ratio * 900.0), 2),
+        "banding_ratio": round(ratio, 5),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Birleşik sadakat
 # ---------------------------------------------------------------------------
@@ -286,6 +334,7 @@ def compute_fidelity(original_rgb: np.ndarray, rendered_rgb: np.ndarray) -> dict
     ssim = _ms_ssim(gray_r, gray_o)
     mean_de = _mean_delta_e(rendered_rgb, original_rgb)
     edge_f1 = _edge_f1(gray_r, gray_o)
+    banding = _gradient_banding(original_rgb, rendered_rgb)
 
     # 0-100 alt skorlar
     ssim_score = round(ssim * 100.0, 2)
@@ -293,8 +342,10 @@ def compute_fidelity(original_rgb: np.ndarray, rendered_rgb: np.ndarray) -> dict
     color_score = round(max(0.0, 100.0 - mean_de * 5.0), 2)
     edge_score = round(edge_f1 * 100.0, 2)
 
+    banding_score = float(banding["banding_score"])
+
     fidelity_score = round(
-        0.40 * ssim_score + 0.35 * color_score + 0.25 * edge_score, 2
+        0.38 * ssim_score + 0.33 * color_score + 0.24 * edge_score + 0.05 * banding_score, 2
     )
 
     # bölgesel hata haritası özeti (refinement için): ΔE eşiğini aşan piksel oranı
@@ -311,6 +362,7 @@ def compute_fidelity(original_rgb: np.ndarray, rendered_rgb: np.ndarray) -> dict
         "color_score": color_score,
         "edge_f1": round(edge_f1, 4),
         "edge_score": edge_score,
+        **banding,
         "high_error_ratio": high_error_ratio,
     }
 

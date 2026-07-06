@@ -674,9 +674,10 @@ def _refit_one(
     # gelir). Logo/markada (<=700 path) grup modu kalır: kaynak palet asla
     # bölünmez/şişmez. Sinyal analizör tahmini değil çıktının kendisidir
     # (mangal: est=20 ama 5002 path — foto-yoğun).
+    gradient_rich = bool(analysis.get("has_gradient") and mode in FIDELITY_LED_MODES)
     photo_rich = path_count > 700
     try:
-        if photo_rich:
+        if photo_rich or gradient_rich:
             if path_count > 12000:  # vektörize yol (~1-2s @11k path); aşırı uçta atla
                 return None
             rep = refit_svg_colors_per_path(src, original_path, dst)

@@ -261,5 +261,7 @@ def score_vector_candidate(
             "ssim": fidelity.get("ssim"),
             "mean_delta_e": fidelity.get("mean_delta_e"),
             "edge_f1": fidelity.get("edge_f1"),
+            "banding_score": fidelity.get("banding_score"),
+            "banding_ratio": fidelity.get("banding_ratio"),
         },
     }
