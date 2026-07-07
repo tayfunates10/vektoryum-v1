@@ -37,6 +37,7 @@ jobs:
           cp engine/requirements.txt /tmp/hf-space/engine/
           cp -R engine/app /tmp/hf-space/engine/app
           cp -R engine/models /tmp/hf-space/engine/models
+          cp -R services /tmp/hf-space/services
 
       - name: Configure Space runtime persistence
         env:
