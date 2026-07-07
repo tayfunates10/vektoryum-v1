@@ -251,6 +251,7 @@
   .in .faq details:nth-child(1){transition-delay:.05s}.in .faq details:nth-child(2){transition-delay:.11s}
   .in .faq details:nth-child(3){transition-delay:.17s}.in .faq details:nth-child(4){transition-delay:.23s}
   .in .faq details:nth-child(5){transition-delay:.29s}.in .faq details:nth-child(6){transition-delay:.35s}
+  .in .faq details:nth-child(7){transition-delay:.41s}
 
   /* ============ SECTION 4 — footer ============ */
   #s4 { padding-bottom: 30px; }
@@ -610,9 +611,10 @@
           <details class="reveal"><summary>Hangi görseller en iyi sonucu verir?<svg class="ic"><use href="#i-chevron"/></svg></summary><div class="ans">Keskin kenarlı, düz veya az renkli logolar ve amblemler en iyi sonucu verir. Çözünürlüğün ≥ 700 piksel, zeminin net ve gürültünün az olması sadakati belirgin artırır.</div></details>
           <details class="reveal"><summary>Fotoğraf yükleyebilir miyim?<svg class="ic"><use href="#i-chevron"/></svg></summary><div class="ans">Yükleyebilirsin; sürekli-tonlu fotoğraflar “foto poster” gibi modlarla yaklaşık bir vektör verir. Ancak vektörleştirme doğası gereği en iyi sonucu grafik/logo türü görsellerde alırsın.</div></details>
           <details class="reveal"><summary>Hangi dosya biçimlerini indirebilirim?<svg class="ic"><use href="#i-chevron"/></svg></summary><div class="ans">Her işlemde SVG, PDF, EPS, DXF ve PNG üretilir. SVG ve PDF web/baskı için, DXF kesim/CNC için, PNG hızlı önizleme için uygundur.</div></details>
-          <details class="reveal"><summary>Kenar temizleme nedir, kapatabilir miyim?<svg class="ic"><use href="#i-chevron"/></svg></summary><div class="ans">Tırtıklı kenarları pürüzsüzleştiren, aşırı segmenti eğri uydurmayla sadeleştiren ölçüm-korumalı bir geçiştir; varsayılan açıktır. Yükleme kartındaki işareti kaldırarak kapatabilirsin.</div></details>
+          <details class="reveal"><summary>Kenar temizleme nedir?<svg class="ic"><use href="#i-chevron"/></svg></summary><div class="ans">Tırtıklı kenarları pürüzsüzleştiren, aşırı segmenti eğri uydurmayla sadeleştiren ölçüm-korumalı bir geçiştir. Artık her görselde otomatik uygulanır.</div></details>
           <details class="reveal"><summary>Çıktı çözünürlüğü / boyutu ne olur?<svg class="ic"><use href="#i-chevron"/></svg></summary><div class="ans">Vektör çıktı ölçekten bağımsız keskindir; SVG/PDF/EPS/DXF sınırsız büyütülebilir. PNG önizleme, orijinal görselin boyutuna göre üretilir.</div></details>
           <details class="reveal"><summary>Görselim saklanıyor mu?<svg class="ic"><use href="#i-chevron"/></svg></summary><div class="ans">İşlem geçici bir iş klasöründe yapılır ve indirme bağlantıları o işe özeldir. Kalıcı bir galeri tutulmaz; çıktıyı indirip yerelinde saklarsın.</div></details>
+          <details class="reveal"><summary>Giriş yapmadan kullanabilir miyim?<svg class="ic"><use href="#i-chevron"/></svg></summary><div class="ans">Görsel seçip arayüzü inceleyebilirsin; vektörleştirme adımında giriş veya kayıt istenir. Yönetici hesabı aynı giriş ekranından admin paneline yönlenir.</div></details>
         </div>
         <aside class="tips-card reveal d2">
           <h3>En net çıktı için</h3>
@@ -804,6 +806,15 @@
   });
   document.addEventListener("click", (e) => { if (!headerEl.contains(e.target)) closeMenu(); });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeMenu(); });
+
+  // ---- FAQ accordion: sadece bir soru açık kalsın ----
+  const faqDetails = [...document.querySelectorAll("#s3 .faq details")];
+  faqDetails.forEach((item) => {
+    item.addEventListener("toggle", () => {
+      if (!item.open) return;
+      faqDetails.forEach((other) => { if (other !== item) other.open = false; });
+    });
+  });
 
   // ---- nav + active section + back-to-top ----
   const sections = ["s1","s2","s3","s4"].map($);
