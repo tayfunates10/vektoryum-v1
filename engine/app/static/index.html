@@ -161,6 +161,12 @@
   .btn:active { transform: translateY(1px); }
   .btn.primary { background: var(--grad); color: #fff; box-shadow: 0 10px 26px -10px rgba(75,141,255,.8); width: 100%; margin-top: 14px; }
   .btn.primary:disabled { opacity: .45; cursor: default; box-shadow: none; }
+  .upload-badges { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin-top:11px; align-items:center; }
+  .upload-badge { min-width:0; display:flex; align-items:center; justify-content:center; gap:7px; min-height:38px; border:1px solid rgba(255,255,255,.14); border-radius:999px;
+    background:linear-gradient(180deg, rgba(255,255,255,.07), rgba(255,255,255,.025)); color:rgba(234,240,255,.84); font-size:12px; font-weight:800; text-align:center;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.08), 0 12px 28px -24px rgba(34,211,238,.9); white-space:nowrap; }
+  .upload-badge:nth-child(2) { border-color:rgba(34,211,238,.34); color:#f4fbff; background:linear-gradient(120deg, rgba(75,141,255,.16), rgba(34,211,238,.10), rgba(139,92,246,.13)); }
+  .upload-badge .ic { width:17px; height:17px; stroke:url(#fgrad); filter:drop-shadow(0 0 7px rgba(34,211,238,.34)); }
   @property --ai-angle { syntax: '<angle>'; initial-value: 0deg; inherits: false; }
   .btn.primary.ready:not(:disabled) {
     border:2px solid transparent;
@@ -411,6 +417,9 @@
     .panel { padding: 11px; border-radius: 14px; }
     #drop { padding: 11px 12px; height:250px; } #drop .drop-ic { width: 30px; height: 30px; margin-bottom: 2px; }
     .btn.primary { margin-top: 8px; padding: 10px; }
+    .upload-badges { gap:6px; margin-top:8px; }
+    .upload-badge { min-height:31px; font-size:10.2px; gap:4px; padding:0 5px; }
+    .upload-badge .ic { width:14px; height:14px; }
     /* features: 2 sütun, sıkı */
     .fgrid { grid-template-columns: 1fr 1fr; gap: 9px; margin-top: 14px; }
     .fcard { padding: 12px; border-radius: 13px; }
@@ -550,6 +559,11 @@
         <input type="file" id="file" accept="image/*" hidden>
 
         <button class="btn primary" id="go" disabled><svg class="ic"><use href="#i-vector"/></svg> Vektörleştir</button>
+        <div class="upload-badges" aria-label="Vektörleştirme avantajları">
+          <span class="upload-badge"><svg class="ic"><use href="#i-vector"/></svg> SVG hazır</span>
+          <span class="upload-badge"><svg class="ic"><use href="#i-gauge"/></svg> Kalite skoru</span>
+          <span class="upload-badge"><svg class="ic"><use href="#i-spark"/></svg> AI temizlik</span>
+        </div>
       </div>
     </div>
   </section>
