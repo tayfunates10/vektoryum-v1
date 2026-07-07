@@ -390,6 +390,7 @@
   @keyframes authBorder { to { --auth-angle: 360deg; } }
   .auth-head { display:flex; align-items:flex-start; justify-content:center; gap:12px; margin-bottom:14px; text-align:center; }
   .auth-head > div { max-width:360px; margin:0 auto; }
+  .auth-head h2.title { padding:0 48px; }
   .auth-head #authClose { position:absolute; top:14px; right:14px; width:38px; height:38px; padding:0; border-radius:12px; }
   .auth-tabs { display:flex; gap:8px; margin:14px 0; }
   .auth-tabs button { flex:1; border:1px solid var(--line-2); border-radius:10px; padding:9px; background:rgba(255,255,255,.04); color:var(--muted); cursor:pointer; }
@@ -433,13 +434,13 @@
     .hero-fact b { font-size:11.4px; }
     .kicker { padding: 4px 10px; font-size: 11px; }
     /* hero */
-    .hero-grid { gap: 10px; }
+    #s1 .hero-grid { gap: 10px; min-height:calc(100dvh - var(--hdr) - 28px); grid-template-rows:auto minmax(0, 1fr); }
     .conds { margin-top: 8px; gap: 4px 12px; }
     .conds li { font-size: 11.5px; } .conds .ic { width: 15px; height: 15px; }
     .excards { margin-top: 10px; grid-auto-columns: 42%; gap: 8px; }
     .excard .art { aspect-ratio: 5/2; } .excard .cap { padding: 5px 8px; font-size: 10px; } .excard .cap b { font-size: 11px; }
-    .panel { padding: 11px; border-radius: 14px; }
-    #drop { padding: 11px 12px; height:250px; } #drop .drop-ic { width: 30px; height: 30px; margin-bottom: 2px; }
+    #s1 .panel { padding: 11px; border-radius: 14px; min-height:0; justify-content:flex-start; }
+    #s1 #drop { padding: 11px 12px; height:auto; flex:1; min-height:250px; } #drop .drop-ic { width: 30px; height: 30px; margin-bottom: 2px; }
     .btn.primary { margin-top: 8px; padding: 10px; }
     .upload-badges { gap:7px; margin-top:9px; }
     .upload-badge { min-height:72px; border-radius:14px; padding:8px 5px; font-size:10.5px; gap:6px; }
