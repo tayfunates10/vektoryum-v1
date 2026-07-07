@@ -46,6 +46,9 @@ def basic_svg_quality_check(
     has_bitmap = bool(score_details.get("has_bitmap", False))
     node_count = int(score_details.get("node_count", 0))
     has_gradient = bool(score_details.get("has_gradient", False))
+    edge_f1 = score_details.get("edge_f1")
+    mean_delta_e = score_details.get("mean_delta_e")
+    banding_score = score_details.get("banding_score")
 
     warnings: list[str] = []
 
@@ -98,6 +101,28 @@ def basic_svg_quality_check(
             "source image will give a better result."
         )
 
+    production_contract = {
+        "edge_f1": edge_f1,
+        "mean_delta_e": mean_delta_e,
+        "banding_score": banding_score,
+        "passed": True,
+        "issues": [],
+    }
+    contract_blocked = False
+    if edge_f1 is not None and float(edge_f1) < 0.68 and mode != "photo_poster":
+        warnings.append("Contour fidelity is below the production target; edges may not match the original cleanly.")
+        production_contract["issues"].append("edge_f1_below_target")
+        contract_blocked = True
+    if mean_delta_e is not None and float(mean_delta_e) > 7.5 and mode in {"logo_color", "geometric_logo"}:
+        warnings.append("Color difference is above the production target; brand colors may need a cleaner source.")
+        production_contract["issues"].append("color_delta_above_target")
+        contract_blocked = True
+    if banding_score is not None and float(banding_score) < 70.0 and has_gradient:
+        warnings.append("Gradient banding is visible; the smooth color transition could not be matched perfectly.")
+        production_contract["issues"].append("gradient_banding_below_target")
+        contract_blocked = True
+    production_contract["passed"] = not production_contract["issues"]
+
     # Yapı bütünlüğü: kırık/eksik çizgi ve hayalet çizik denetimi
     structure_broken = False
     structure_block = None
@@ -137,6 +162,8 @@ def basic_svg_quality_check(
     elif structure_broken:
         # kırık çizgi / hayalet çizik varken çıktı üretime hazır sayılamaz
         status = "needs_review"
+    elif contract_blocked:
+        status = "needs_review"
     elif low_fidelity:
         # ölçülen sadakat düşükse "üretime hazır" diyemeyiz (dürüst beklenti)
         status = "needs_review"
@@ -164,6 +191,7 @@ def basic_svg_quality_check(
             "has_bitmap": has_bitmap,
             "fidelity_score": fidelity_score,
         },
+        "production_contract": production_contract,
         "geometry_report": geometry_block,
         "structure_report": structure_block,
     }

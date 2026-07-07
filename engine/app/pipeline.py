@@ -89,6 +89,19 @@ _EDIT_EDGE_TOL = 0.03
 # (gerçek bir seçim hatasıydı).
 _EDIT_QUALITY_FLOOR = 78.0
 
+# Üretim sözleşmesi: nihai seçim yalnız "toplam skor" veya tek başına fidelity
+# ile yapılmaz. Müşterinin beklediği çıktı, belirli formatlarda AÇILAN ve görsel
+# olarak sadık kalan temiz vektördür; bu yüzden final aşamada renk, kenar ve
+# banding bileşenleri ayrı ayrı cezalandırılır. Eşikler "mükemmel garantisi"
+# değildir; hatalı/bozuk adayı seçmemek için ölçüm-tabanlı güvenlik ağıdır.
+_CONTRACT_TARGETS = {
+    "logo_color": {"fidelity": 88.0, "color": 76.0, "edge": 72.0, "banding": 74.0},
+    "geometric_logo": {"fidelity": 84.0, "color": 70.0, "edge": 70.0, "banding": 70.0},
+    "minimal_ai": {"fidelity": 82.0, "color": 68.0, "edge": 68.0, "banding": 70.0},
+    "centerline": {"fidelity": 78.0, "color": 60.0, "edge": 66.0, "banding": 68.0},
+    "photo_poster": {"fidelity": 68.0, "color": 58.0, "edge": 58.0, "banding": 62.0},
+}
+
 
 def _path_count(c: dict[str, Any]) -> int:
     return int((c.get("score_details") or {}).get("path_count", 0))
@@ -96,6 +109,107 @@ def _path_count(c: dict[str, Any]) -> int:
 
 def _edge_f1(c: dict[str, Any]) -> float:
     return float((c.get("score_details") or {}).get("edge_f1") or 0.0)
+
+
+def _production_contract_rank(c: dict[str, Any], mode: str) -> tuple[float, dict[str, Any]]:
+    """Adayın son ürün güven skorunu döndürür.
+
+    ``fidelity_score`` genel görünümü ölçer; fakat müşteri kusuru genelde tek bir
+    bileşende görür: renk kayması, kırık kontur veya gradyan banding. Bu nedenle
+    final seçimi "en yüksek fidelity"den sonra ikinci bir sözleşme kapısından
+    geçiriyoruz. Skor, bileşen eşiklerinden sapmaları cezalandırır; yine de daha
+    düşük ama dengeli bir adaya geçmek için ciddi avantaj gerekir.
+    """
+    details = c.get("score_details") or {}
+    targets = _CONTRACT_TARGETS.get(mode, _CONTRACT_TARGETS["geometric_logo"])
+    fid = float(c.get("fidelity_score") or 0.0)
+    color = float(c.get("color_score") or 0.0)
+    edge = 100.0 * float(details.get("edge_f1") or 0.0)
+    banding = float(details.get("banding_score") if details.get("banding_score") is not None else 100.0)
+    paths = int(details.get("path_count") or 0)
+    bitmap = bool(details.get("has_bitmap"))
+
+    penalties = 0.0
+    reasons: list[str] = []
+    if bitmap:
+        penalties += 120.0
+        reasons.append("bitmap_embed")
+    if paths <= 0:
+        penalties += 160.0
+        reasons.append("no_paths")
+    checks = {
+        "fidelity": (fid, targets["fidelity"], 1.35),
+        "color": (color, targets["color"], 0.35),
+        "edge": (edge, targets["edge"], 0.45),
+        "banding": (banding, targets["banding"], 0.40),
+    }
+    for name, (value, target, weight) in checks.items():
+        miss = max(0.0, target - value)
+        if miss > 0:
+            penalties += miss * weight
+            reasons.append(f"{name}_below_target")
+    if paths > 3500 and mode != "photo_poster":
+        penalties += min(18.0, (paths - 3500) / 450.0)
+        reasons.append("too_many_paths")
+
+    rank = fid - penalties + 0.015 * float(c.get("total_score") or 0.0)
+    return rank, {
+        "rank": round(rank, 3),
+        "fidelity": round(fid, 2),
+        "color": round(color, 2),
+        "edge": round(edge, 2),
+        "banding": round(banding, 2),
+        "path_count": paths,
+        "targets": targets,
+        "reasons": reasons,
+        "passed": not reasons,
+    }
+
+
+def _apply_final_quality_guard(
+    scored: list[dict[str, Any]], best: dict[str, Any], mode: str
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Son kazananı üretim sözleşmesine göre alternatiflerle karşılaştırır.
+
+    Edge cleanup/refit gibi işlemler ölçüm korumalı olsa da tek bir bileşeni
+    zayıflatabilir. Bu koruma, havuzdaki önceki/alternatif adaylardan üretim
+    sözleşmesi daha dengeli olanı seçer; ancak yalnızca güven skoru anlamlı
+    artıyorsa ve sadakat farkı kabul edilebilir sınırdaysa değiştirir.
+    """
+    pool = [
+        c for c in [*scored, best]
+        if c and c.get("rendered_ok") and c.get("fidelity_score") is not None
+    ]
+    if not pool:
+        return best, {"applied": False, "reason": "no_rendered_candidate"}
+    # Aynı isim/path tekrarlarını tekilleştir.
+    uniq: dict[tuple[str, str], dict[str, Any]] = {}
+    for c in pool:
+        uniq[(str(c.get("name")), str(c.get("svg_path")))] = c
+    pool = list(uniq.values())
+
+    current_rank, current_info = _production_contract_rank(best, mode)
+    winner = max(pool, key=lambda c: _production_contract_rank(c, mode)[0])
+    winner_rank, winner_info = _production_contract_rank(winner, mode)
+    current_fid = float(best.get("fidelity_score") or 0.0)
+    winner_fid = float(winner.get("fidelity_score") or 0.0)
+    # Dengeli adaya geçiş: kalite sözleşmesi anlamlı iyileşecek, genel görünüm
+    # ise ciddi düşmeyecek. Mevcut aday sözleşmeyi geçiyorsa daha muhafazakârız.
+    required_gain = 1.25 if current_info["passed"] else 0.35
+    can_switch = (
+        winner is not best
+        and winner_rank > current_rank + required_gain
+        and winner_fid >= current_fid - 2.0
+    )
+    return (
+        winner if can_switch else best,
+        {
+            "applied": bool(can_switch),
+            "current": current_info,
+            "winner": winner_info,
+            "winner_name": winner.get("name"),
+        },
+    )
 
 
 def _apply_editability_preference(
@@ -1023,6 +1137,16 @@ def run_pipeline(
                 best = rescored if rescored is not None else {**best, "svg_path": ec_dst}
                 selection_reason = f"{selection_reason}+edge_cleanup"
             refit_info = {**refit_info, "edge_cleanup": ec_rep}
+        # 9.75 Üretim sözleşmesi koruması: nihai adayın renk/kenar/banding
+        # bileşenleri dengeli mi? Eğer havuzda aynı genel sadakat seviyesinde ama
+        # daha kusursuz/dengeli bir aday varsa ona geri dön. Bu, "tek bileşen
+        # kusuru" olan çıktının sırf toplam skor yüksek diye seçilmesini engeller.
+        if best is not None:
+            guarded_best, contract_info = _apply_final_quality_guard(scored, best, mode_used)
+            if guarded_best is not best:
+                best = guarded_best
+                selection_reason = f"{selection_reason}+production_guard"
+            refit_info = {**refit_info, "production_contract": contract_info}
         # 9.8 Kaynak boyut sözleşmesi: kazananın width/height'ı orijinal görsel
         # boyutuna çekilir (viewBox iz koordinatlarında kalır)
         if best is not None:
