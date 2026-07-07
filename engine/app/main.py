@@ -57,6 +57,7 @@ JOBS_ROOT = Path(os.environ.get("VEKTORYUM_JOBS_ROOT", str(DATA_ROOT / "jobs")))
 USERS_FILE = DATA_ROOT / "users.json"
 SESSIONS: dict[str, dict[str, Any]] = {}
 _HF_RESTORE_ATTEMPTED = False
+_HF_USERS_RESTORE_ATTEMPTED = False
 
 _MEDIA_TYPES = {
     "svg": "image/svg+xml",
@@ -70,6 +71,7 @@ _MEDIA_TYPES = {
 
 def _load_users() -> dict[str, Any]:
     DATA_ROOT.mkdir(parents=True, exist_ok=True)
+    _restore_users_from_hub_once()
     if not USERS_FILE.exists():
         users: dict[str, Any] = {}
         admin_email = os.environ.get("VEKTORYUM_ADMIN_EMAIL", "admin@vektoryum.local").lower().strip()
@@ -80,7 +82,7 @@ def _load_users() -> dict[str, Any]:
             "role": "admin",
             "password": _hash_password(admin_password),
         }
-        USERS_FILE.write_text(json.dumps(users, ensure_ascii=False, indent=2), encoding="utf-8")
+        _save_users(users)
     try:
         return json.loads(USERS_FILE.read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001
@@ -90,6 +92,7 @@ def _load_users() -> dict[str, Any]:
 def _save_users(users: dict[str, Any]) -> None:
     DATA_ROOT.mkdir(parents=True, exist_ok=True)
     USERS_FILE.write_text(json.dumps(users, ensure_ascii=False, indent=2), encoding="utf-8")
+    _sync_users_to_hub()
 
 
 def _hash_password(password: str) -> str:
@@ -170,6 +173,54 @@ def _hf_persist_repo_type() -> str:
 
 def _hf_persistence_enabled() -> bool:
     return bool(_hf_persist_token() and _hf_persist_repo())
+
+
+def _sync_users_to_hub() -> None:
+    """Kayıtlı kullanıcıları Space restart'larına karşı HF Hub'a yedekler."""
+    if not _hf_persistence_enabled() or not USERS_FILE.exists():
+        return
+
+    from huggingface_hub import HfApi
+
+    token = _hf_persist_token()
+    repo_id = _hf_persist_repo()
+    repo_type = _hf_persist_repo_type()
+    try:
+        api = HfApi(token=token)
+        api.create_repo(repo_id=repo_id, repo_type=repo_type, private=True, exist_ok=True)
+        api.upload_file(
+            path_or_fileobj=str(USERS_FILE),
+            path_in_repo="users/users.json",
+            repo_id=repo_id,
+            repo_type=repo_type,
+            token=token,
+            commit_message="Persist Vektoryum.ai users",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("HF user persistence sync failed: %s", exc)
+
+
+def _restore_users_from_hub_once() -> None:
+    """Local users.json yoksa isteğe bağlı HF Hub yedeğinden geri yükler."""
+    global _HF_USERS_RESTORE_ATTEMPTED
+    if _HF_USERS_RESTORE_ATTEMPTED or USERS_FILE.exists() or not _hf_persistence_enabled():
+        return
+    _HF_USERS_RESTORE_ATTEMPTED = True
+
+    from huggingface_hub import hf_hub_download
+
+    try:
+        restored = hf_hub_download(
+            repo_id=_hf_persist_repo(),
+            repo_type=_hf_persist_repo_type(),
+            token=_hf_persist_token(),
+            filename="users/users.json",
+            local_dir=str(DATA_ROOT / "hf_users_snapshot"),
+        )
+        DATA_ROOT.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(restored, USERS_FILE)
+    except Exception as exc:  # noqa: BLE001
+        logger.info("HF user persistence restore skipped: %s", exc)
 
 
 def _sync_job_to_hub(job_id: str) -> None:
