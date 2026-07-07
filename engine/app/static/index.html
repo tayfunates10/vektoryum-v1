@@ -257,14 +257,16 @@
   #s4 { padding-bottom: 30px; }
   .foot-hero { text-align: center; margin-bottom: 22px; }
   .foot-cta { display: inline-flex; margin-top: 18px; }
-  .trust-row { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin:18px 0 18px; }
-  .trust-row span { border:1px solid var(--line); border-radius:14px; padding:12px; color:var(--muted); background:rgba(255,255,255,.035); text-align:center; font-size:13px; }
-  .trust-row b { display:block; color:var(--ink); font-size:15px; margin-bottom:2px; }
   .fcols { display: grid; grid-template-columns: 1.4fr 1fr 1fr; gap: 26px; padding: 22px 0 18px; border-top: 1px solid var(--line); }
+  .fcols > div { position:relative; overflow:hidden; }
+  .fcols > div::after { content:""; position:absolute; left:0; right:0; bottom:0; height:1px; border-radius:2px;
+    background:var(--grad); background-size:220% 100%; opacity:.45; transform:scaleX(.28); transform-origin:left; animation:footerGlowLine 5.5s ease-in-out infinite; }
+  .fcols > div:nth-child(2)::after { animation-delay:.6s; } .fcols > div:nth-child(3)::after { animation-delay:1.2s; }
+  @keyframes footerGlowLine { 0%,100%{ transform:scaleX(.25); background-position:0 50%; opacity:.28; } 50%{ transform:scaleX(1); background-position:100% 50%; opacity:.85; } }
   @media (max-width: 720px){ .fcols { grid-template-columns: 1fr 1fr; gap: 20px; } }
   @media (max-width: 440px){ .fcols { grid-template-columns: 1fr; } }
-  @media (max-width:720px){ .trust-row{grid-template-columns:1fr 1fr}.foot-hero{margin-bottom:14px}.fcols{padding-top:16px} }
-  @media (max-width:520px){ .trust-row{display:none}.foot-cta{margin-top:12px}.fcols p,.fcols a{font-size:12.8px;margin-bottom:6px}.foot-bar{font-size:11.8px} }
+  @media (max-width:720px){ .foot-hero{margin-bottom:14px}.fcols{padding-top:16px} }
+  @media (max-width:520px){ .foot-cta{margin-top:12px}.fcols p,.fcols a{font-size:12.8px;margin-bottom:6px}.foot-bar{font-size:11.8px} }
   .fcols h4 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 12px; }
   .fcols a, .fcols p { color: var(--muted); text-decoration: none; font-size: 13.5px; display: block; margin-bottom: 8px; }
   .fcols a:hover { color: var(--ink); }
@@ -447,12 +449,9 @@
     #s4 .foot-hero { margin-bottom:10px; }
     #s4 .foot-hero h2.title { font-size:clamp(31px, 9.4vw, 42px); line-height:1.02; margin:4px auto 0 !important; max-width:640px; }
     #s4 .foot-cta { margin-top: 14px; }
-    #s4 .trust-row { display:grid; grid-template-columns:1fr 1fr; gap:7px; margin:10px 0 10px; }
-    #s4 .trust-row span { padding:8px 7px; border-radius:12px; font-size:10.6px; line-height:1.18; }
-    #s4 .trust-row b { font-size:12px; margin-bottom:1px; }
     #s4 .drawline { margin-top:2px; }
     #s4 .fcols { grid-template-columns: 1fr 1fr; padding: 9px 0 9px; gap:8px; border-top:0; }
-    #s4 .fcols > div { border:1px solid var(--line); border-radius:14px; padding:10px 9px; background:rgba(255,255,255,.03); text-align:center; }
+    #s4 .fcols > div { border:0; border-radius:0; padding:8px 6px 10px; background:transparent; text-align:center; }
     #s4 .fcols > div:first-child { grid-column: 1 / -1; }
     #s4 .fcols > div:first-child .brand { justify-content:center; margin-bottom:7px !important; }
     #s4 .fcols h4 { margin-bottom: 7px; }
@@ -622,7 +621,7 @@
           <details class="reveal"><summary>Kenar temizleme nedir?<svg class="ic"><use href="#i-chevron"/></svg></summary><div class="ans">Tırtıklı kenarları pürüzsüzleştiren, aşırı segmenti eğri uydurmayla sadeleştiren ölçüm-korumalı bir geçiştir. Artık her görselde otomatik uygulanır.</div></details>
           <details class="reveal"><summary>Çıktı çözünürlüğü / boyutu ne olur?<svg class="ic"><use href="#i-chevron"/></svg></summary><div class="ans">Vektör çıktı ölçekten bağımsız keskindir; SVG/PDF/EPS/DXF sınırsız büyütülebilir. PNG önizleme, orijinal görselin boyutuna göre üretilir.</div></details>
           <details class="reveal"><summary>Görselim saklanıyor mu?<svg class="ic"><use href="#i-chevron"/></svg></summary><div class="ans">İşlem geçici bir iş klasöründe yapılır ve indirme bağlantıları o işe özeldir. Kalıcı bir galeri tutulmaz; çıktıyı indirip yerelinde saklarsın.</div></details>
-          <details class="reveal"><summary>Giriş yapmadan kullanabilir miyim?<svg class="ic"><use href="#i-chevron"/></svg></summary><div class="ans">Görsel seçip arayüzü inceleyebilirsin; vektörleştirme adımında giriş veya kayıt istenir. Yönetici hesabı aynı giriş ekranından admin paneline yönlenir.</div></details>
+          <details class="reveal"><summary>Giriş yapmadan kullanabilir miyim?<svg class="ic"><use href="#i-chevron"/></svg></summary><div class="ans">Görsel seçip arayüzü inceleyebilirsin; vektörleştirme adımında giriş veya kayıt istenir. Üyelik sonrası işlem kaldığın yerden devam eder.</div></details>
         </div>
         <aside class="tips-card reveal d2">
           <h3>En net çıktı için</h3>
@@ -645,12 +644,6 @@
         <h2 class="title reveal d1" style="margin-top:14px">Görselini <span class="gtext">vektöre</span> çevirmeye hazır mısın?</h2>
         <div class="foot-cta reveal d2"><button class="btn primary" style="width:auto;margin:0" id="goTop2"><svg class="ic"><use href="#i-upload"/></svg> Görsel yükle</button></div>
       </div>
-      <div class="trust-row reveal d2">
-        <span><b>5 format</b>SVG, PDF, EPS, DXF, PNG</span>
-        <span><b>Kalite skoru</b>Sadakat ve uyarı raporu</span>
-        <span><b>Admin panel</b>Beta çıktıları incelenir</span>
-        <span><b>Kalıcı işler</b>HF Hub yedekleme</span>
-      </div>
       <div class="drawline"></div>
       <div class="fcols">
         <div class="reveal d1">
@@ -662,8 +655,8 @@
         </div>
         <div class="reveal d2"><h4>Bölümler</h4>
           <a href="#s1" data-nav="s1">Görsel yükle</a><a href="#s2" data-nav="s2">Özellikler</a><a href="#s3" data-nav="s3">SSS</a></div>
-        <div class="reveal d3"><h4>API</h4>
-          <p><code>POST /api/vectorize</code></p><p><code>GET /api/download/{job}/{format}</code></p><p><code>GET /api/health</code></p></div>
+        <div class="reveal d3"><h4>Çıktılar</h4>
+          <p>SVG · PDF · EPS · DXF · PNG</p><p>Baskı, kesim ve web için hazır formatlar.</p></div>
       </div>
       <div class="foot-bar reveal d4">
         <span>© 2026 Vektoryum · Yapay zekâ ile vektörleştirme</span>
@@ -736,7 +729,7 @@
     <div class="auth-head">
       <div><span class="kicker"><svg class="ic"><use href="#i-logo"/></svg> Üyelik</span>
       <h2 class="title" style="font-size:26px;margin:10px 0 4px">Devam etmek için giriş yap</h2>
-      <p class="auth-note">Görseli yükleyip seçenekleri seçebilirsin; vektörleştirme adımı için üyelik gerekir. Yönetici hesabı girişten sonra admin paneline yönlenir.</p></div>
+      <p class="auth-note">Görseli seçip arayüzü inceleyebilirsin; vektörleştirme adımı için üyelik gerekir. Girişten sonra işlem kaldığın yerden devam eder.</p></div>
       <button class="btn ghost" id="authClose"><svg class="ic"><use href="#i-close"/></svg></button>
     </div>
     <div class="auth-tabs"><button id="loginTab" class="on">Giriş yap</button><button id="registerTab">Kayıt ol</button></div>
@@ -745,7 +738,7 @@
       <input id="authEmail" placeholder="E-posta" type="email" autocomplete="email">
       <input id="authPassword" placeholder="Şifre" type="password" autocomplete="current-password">
       <button class="btn primary" id="authSubmit" style="margin-top:2px">Giriş yap</button>
-      <p class="auth-note">Varsayılan yönetici: ortam değişkenleriyle <code>VEKTORYUM_ADMIN_EMAIL</code> / <code>VEKTORYUM_ADMIN_PASSWORD</code> ayarlanabilir.</p>
+      <p class="auth-note">Hesabını oluşturduktan sonra tek tuşla vektörel çıktı üretmeye devam edebilirsin.</p>
     </div>
   </div>
 </div>
@@ -766,8 +759,8 @@
   // ---- auth ----
   let currentUser = null, authMode = "login", pendingVectorize = false;
   function renderAuth() {
-    $("authUser").textContent = currentUser ? (currentUser.role === "admin" ? "Yönetici · " : "") + currentUser.email : "";
-    $("loginLink").textContent = currentUser ? (currentUser.role === "admin" ? "Admin" : "Çıkış") : "Giriş yap";
+    $("authUser").textContent = currentUser ? currentUser.email : "";
+    $("loginLink").textContent = currentUser ? (currentUser.role === "admin" ? "Panel" : "Çıkış") : "Giriş yap";
     $("loginLink").classList.toggle("session", !!currentUser);
     $("registerLink").style.display = currentUser ? "none" : "";
   }
