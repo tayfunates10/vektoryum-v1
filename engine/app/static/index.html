@@ -56,9 +56,21 @@
   nav a.active { color: var(--ink); background: rgba(255,255,255,.06); }
   nav a.active::before { content:""; position:absolute; left:13px; right:13px; bottom:3px; height:2px;
     border-radius:2px; background: var(--grad); }
-  nav a.auth-link { border:1px solid var(--line-2); background:rgba(255,255,255,.035); color:var(--ink); }
-  nav a.auth-link.register { background:linear-gradient(120deg, rgba(75,141,255,.20), rgba(139,92,246,.16)); color:#fff; }
+  @property --auth-nav-angle { syntax: '<angle>'; initial-value: 0deg; inherits: false; }
+  nav a.auth-link { font-weight:700; color:var(--ink); border:1px solid transparent;
+    background:
+      linear-gradient(180deg, rgba(20,31,65,.82), rgba(13,20,43,.62)) padding-box,
+      conic-gradient(from var(--auth-nav-angle), rgba(75,141,255,.24), rgba(34,211,238,.72), rgba(255,255,255,.34), rgba(139,92,246,.68), rgba(75,141,255,.24)) border-box;
+    box-shadow:0 0 0 1px rgba(255,255,255,.035), 0 12px 26px -22px rgba(34,211,238,.9);
+    animation:authNavBorder 5.5s linear infinite; overflow:hidden; }
+  nav a.auth-link::after { content:""; position:absolute; inset:auto 12px 4px; height:2px; border-radius:2px;
+    background:var(--grad); background-size:220% 100%; opacity:.72; animation:slide 4.5s linear infinite; }
+  nav a.auth-link.register { color:#fff;
+    background:
+      linear-gradient(120deg, rgba(75,141,255,.34), rgba(139,92,246,.24), rgba(34,211,238,.18)) padding-box,
+      conic-gradient(from var(--auth-nav-angle), rgba(255,255,255,.30), rgba(34,211,238,.78), rgba(139,92,246,.72), rgba(255,255,255,.30)) border-box; }
   nav a.auth-link.session { color:var(--accent-3); }
+  @keyframes authNavBorder { to { --auth-nav-angle: 360deg; } }
   .auth-chip { margin-left: 8px; }
   .auth-user { color: var(--muted); font-size: 12px; align-self: center; max-width: 170px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   @property --menu-angle { syntax: '<angle>'; initial-value: 0deg; inherits: false; }
