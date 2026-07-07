@@ -441,15 +441,23 @@
     .faq { margin-top: 14px; gap: 8px; }
     .faq summary { padding: 12px 13px; font-size: 13.5px; }
     .faq .ans { font-size: 12.5px; padding: 0 13px 12px; }
-    /* footer */
-    #s4 { padding-bottom: 12px; }
+    /* footer: mobilde simetrik, boşlukları dolu final ekran */
+    #s4 { padding-top:calc(var(--hdr) + 12px); padding-bottom: 10px; justify-content:flex-start; }
     #s4 .foot-hero .kicker { display: none; }
-    .foot-cta { margin-top: 12px; }
-    .fcols { grid-template-columns: 1fr 1fr; padding: 13px 0 10px; gap: 8px 16px; }
-    .fcols > div:first-child { grid-column: 1 / -1; }
-    .fcols h4 { margin-bottom: 8px; }
-    .fcols a, .fcols p { margin-bottom: 6px; }
-    .foot-bar { padding-top: 11px; }
+    #s4 .foot-hero { margin-bottom:10px; }
+    #s4 .foot-hero h2.title { font-size:clamp(31px, 9.4vw, 42px); line-height:1.02; margin:4px auto 0 !important; max-width:640px; }
+    #s4 .foot-cta { margin-top: 14px; }
+    #s4 .trust-row { display:grid; grid-template-columns:1fr 1fr; gap:7px; margin:10px 0 10px; }
+    #s4 .trust-row span { padding:8px 7px; border-radius:12px; font-size:10.6px; line-height:1.18; }
+    #s4 .trust-row b { font-size:12px; margin-bottom:1px; }
+    #s4 .drawline { margin-top:2px; }
+    #s4 .fcols { grid-template-columns: 1fr 1fr; padding: 9px 0 9px; gap:8px; border-top:0; }
+    #s4 .fcols > div { border:1px solid var(--line); border-radius:14px; padding:10px 9px; background:rgba(255,255,255,.03); text-align:center; }
+    #s4 .fcols > div:first-child { grid-column: 1 / -1; }
+    #s4 .fcols > div:first-child .brand { justify-content:center; margin-bottom:7px !important; }
+    #s4 .fcols h4 { margin-bottom: 7px; }
+    #s4 .fcols a, #s4 .fcols p { margin-bottom:5px; font-size:12px; line-height:1.32; }
+    #s4 .foot-bar { padding-top:9px; justify-content:center; text-align:center; gap:5px 12px; font-size:11.2px; }
   }
   /* kısa ekranlar (küçük telefon / yatay): dekoratifleri düşür, işlevi koru */
   @media (max-height: 800px) and (min-width: 701px) {
