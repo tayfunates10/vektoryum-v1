@@ -425,13 +425,17 @@
     .upload-badge { min-height:72px; border-radius:14px; padding:8px 5px; font-size:10.5px; gap:6px; }
     .upload-badge .badge-ico { width:32px; height:32px; }
     .upload-badge .ic { width:17px; height:17px; }
-    /* features: 2 sütun, sıkı */
-    .fgrid { grid-template-columns: 1fr 1fr; gap: 9px; margin-top: 14px; }
-    .fcard { padding: 12px; border-radius: 13px; }
-    .fcard .fic { width: 34px; height: 34px; margin-bottom: 8px; border-radius: 10px; }
-    .fcard .fic .ic { width: 19px; height: 19px; }
-    .fcard h3 { font-size: 13px; margin-bottom: 3px; }
-    .fcard p { font-size: 11.3px; line-height: 1.4; }
+    /* features: header + 2. bölüm mobilde tek ekrana sığsın */
+    #s2.snap { justify-content:flex-start; padding-top:calc(var(--hdr) + 12px); padding-bottom:8px; }
+    #s2 .kicker { padding:4px 10px; font-size:10.5px; }
+    #s2 h2.title { margin:10px 0 8px; font-size:clamp(30px, 9.8vw, 40px); line-height:.98; }
+    #s2 .lead { font-size:12px; line-height:1.34; max-width:100%; }
+    #s2 .fgrid { grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 10px; }
+    #s2 .fcard { padding: 9px; border-radius: 13px; min-height: 96px; }
+    #s2 .fcard .fic { width: 28px; height: 28px; margin-bottom: 5px; border-radius: 9px; }
+    #s2 .fcard .fic .ic { width: 16px; height: 16px; }
+    #s2 .fcard h3 { font-size: 12px; line-height:1.14; margin-bottom: 3px; }
+    #s2 .fcard p { font-size: 10.2px; line-height: 1.26; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
     /* faq */
     .faq { margin-top: 14px; gap: 8px; }
     .faq summary { padding: 12px 13px; font-size: 13.5px; }
