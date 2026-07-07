@@ -279,7 +279,9 @@
   }
   @media (max-width: 900px) {
     .snap { height:100dvh; min-height:100dvh; overflow:hidden; justify-content:flex-start; padding-top: calc(var(--hdr) + 24px); padding-bottom: 22px; }
-    h2.title { margin-top:8px; }
+    #s1 h2.title { text-align:center; margin:8px auto 14px; font-size:clamp(40px, 7vw, 58px); max-width:780px; }
+    #s1 .title-swap { display:grid; width:100%; min-width:0; margin:.02em 0; }
+    #s1 .title-swap span { justify-self:center; }
     .lead { font-size:13.5px; }
     .hero-facts { grid-template-columns:1fr 1fr; gap:8px; margin-top:12px; }
     .hero-fact { padding:8px 9px; font-size:11.5px; border-radius:12px; }
@@ -393,7 +395,7 @@
   @media (max-width: 640px) {
     :root { --hdr: 56px; }
     .snap { padding: calc(var(--hdr) + 18px) 14px 10px; }
-    h2.title { margin: 5px 0 8px; font-size: 33px; }
+    #s1 h2.title { margin: 5px auto 10px; font-size: 36px; line-height:1.04; }
     .lead { font-size: 12.5px; }
     .hero-facts { grid-template-columns:1fr 1fr; gap:7px; margin-top:10px; }
     .hero-fact { padding:7px 8px; font-size:10.7px; }
@@ -431,7 +433,7 @@
     .foot-bar { padding-top: 11px; }
   }
   /* kısa ekranlar (küçük telefon / yatay): dekoratifleri düşür, işlevi koru */
-  @media (max-height: 800px) {
+  @media (max-height: 800px) and (min-width: 701px) {
     .excards { display: none; }
     .snap .lead { display: none; }
     #s2 .kicker, #s3 .kicker, #s4 .kicker { display: none; }
