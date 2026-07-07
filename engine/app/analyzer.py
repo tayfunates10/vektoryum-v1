@@ -692,7 +692,7 @@ def analyze_image_from_mem(image: Image.Image) -> dict[str, Any]:
     vivid_hue_count = _distinct_vivid_hue_count(flat_dominant_colors)
     vivid_multicolor = vivid_hue_count >= 3
     # Gradyan/tonal-zengin ön plan: büyük zemin yüzünden estimate_color_count'un
-    # kaçırdığı tek-ton gradyan logoları (ör. Vektoryum mavi V) yakalar.
+    # kaçırdığı tek-ton gradyan logoları (ör. Vektoryum.ai mavi V) yakalar.
     fg_stats = _foreground_stats(image)
     foreground_color_count = fg_stats["chromatic_color_count"]
     vivid_foreground_ratio = fg_stats["vivid_ratio"]

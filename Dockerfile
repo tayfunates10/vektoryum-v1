@@ -1,4 +1,4 @@
-# Hugging Face Spaces Docker entrypoint for Vektoryum.
+# Hugging Face Spaces Docker entrypoint for Vektoryum.ai.
 #
 # Hugging Face builds Docker Spaces from the repository root. The production
 # Dockerfile used by Render lives at engine/Dockerfile, but Spaces will not use

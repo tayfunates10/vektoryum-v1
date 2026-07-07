@@ -1,5 +1,5 @@
 ---
-title: Vektoryum
+title: Vektoryum.ai
 emoji: 🧠
 colorFrom: blue
 colorTo: indigo
@@ -7,7 +7,7 @@ sdk: docker
 app_port: 8000
 pinned: false
 ---
-# Vektoryum API
+# Vektoryum.ai API
 
 FastAPI tabanlı raster-to-vector motoru. JPG, PNG ve WebP girdilerini analiz
 eder, uygun trace profilini seçer, birden fazla SVG adayı üretir, geometriyi
@@ -366,7 +366,7 @@ yok) + vaka bazlı sadakat tabanları. Kalite kapısının kırık çıktıyı a
 
 ## Marka Kılavuzu
 
-Vektoryum'un marka kimliği (renk paleti, tipografi, logo kuralları, ton ve
+Vektoryum.ai’nin marka kimliği (renk paleti, tipografi, logo kuralları, ton ve
 arayüz dili) için bkz. [`docs/BRAND_GUIDE.md`](docs/BRAND_GUIDE.md).
 
 ## Bilinen Sınırlamalar

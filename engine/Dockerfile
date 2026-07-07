@@ -1,4 +1,4 @@
-# Vektoryum API — üretim imajı
+# Vektoryum.ai API — üretim imajı
 #
 #   docker build -t vektoryum ./engine
 #   docker run -p 8000:8000 vektoryum

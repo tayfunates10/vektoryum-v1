@@ -1,4 +1,4 @@
-"""Vektoryum API - FastAPI giriş noktası.
+"""Vektoryum.ai API - FastAPI giriş noktası.
 
 Akış:
 1. Analiz (analyzer)
@@ -42,7 +42,7 @@ from app.quality import basic_svg_quality_check
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Vektoryum API", version="2.0.0")
+app = FastAPI(title="Vektoryum.ai API", version="2.0.0")
 
 ALLOWED_MODES = [
     "auto", "geometric_logo", "minimal_ai", "logo_color",
@@ -76,7 +76,7 @@ def _load_users() -> dict[str, Any]:
         admin_password = os.environ.get("VEKTORYUM_ADMIN_PASSWORD", "admin123")
         users[admin_email] = {
             "email": admin_email,
-            "name": "Vektoryum Yönetici",
+            "name": "Vektoryum.ai Yönetici",
             "role": "admin",
             "password": _hash_password(admin_password),
         }
@@ -195,7 +195,7 @@ def _sync_job_to_hub(job_id: str) -> None:
             repo_id=repo_id,
             repo_type=repo_type,
             token=token,
-            commit_message=f"Persist Vektoryum job {job_id}",
+            commit_message=f"Persist Vektoryum.ai job {job_id}",
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("HF job persistence sync failed for %s: %s", job_id, exc)

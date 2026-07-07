@@ -1,4 +1,4 @@
-"""Vektoryum API - motor doğrulama test scripti.
+"""Vektoryum.ai API - motor doğrulama test scripti.
 
 Çalıştırma (engine klasöründen):
 

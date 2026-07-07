@@ -1,18 +1,18 @@
-# VEKTORYUM Brand Guide
+# Vektoryum.ai Brand Guide
 
 ## 1. Marka Özeti
 
-**Marka adı:** Vektoryum
+**Marka adı:** Vektoryum.ai
 **Kategori:** AI destekli görsel vektörleştirme yazılımı
 **Ana vaat:** Raster görselleri bozmadan, düzenlenebilir ve profesyonel vektör formatına dönüştürmek.
-**Kısa tanım:** Vektoryum, logoları, çizimleri, ikonları, illüstrasyonları ve karmaşık görselleri analiz ederek net, düzenlenebilir ve yüksek kaliteli vektör çıktılara dönüştüren gelişmiş bir yazılımdır.
+**Kısa tanım:** Vektoryum.ai, logoları, çizimleri, ikonları, illüstrasyonları ve karmaşık görselleri analiz ederek net, düzenlenebilir ve yüksek kaliteli vektör çıktılara dönüştüren gelişmiş bir yazılımdır.
 
 ## 2. Marka Konumlandırması
 
-Vektoryum, klasik otomatik vektörleştirme araçlarından daha ileri bir çözüm olarak konumlanır. Sadece görüntüyü izlemekle kalmaz; pikselleri, kenarları, renk geçişlerini, çizgi karakterini, şekil bütünlüğünü ve görsel hiyerarşiyi analiz ederek daha temiz, daha düzenlenebilir ve daha profesyonel sonuç üretmeyi hedefler.
+Vektoryum.ai, klasik otomatik vektörleştirme araçlarından daha ileri bir çözüm olarak konumlanır. Sadece görüntüyü izlemekle kalmaz; pikselleri, kenarları, renk geçişlerini, çizgi karakterini, şekil bütünlüğünü ve görsel hiyerarşiyi analiz ederek daha temiz, daha düzenlenebilir ve daha profesyonel sonuç üretmeyi hedefler.
 
 **Konumlandırma cümlesi:**
-Vektoryum, görüntüleri yalnızca vektöre çeviren değil, onları yeniden okunabilir, düzenlenebilir ve üretime hazır hale getiren akıllı vektör motorudur.
+Vektoryum.ai, görüntüleri yalnızca vektöre çeviren değil, onları yeniden okunabilir, düzenlenebilir ve üretime hazır hale getiren akıllı vektör motorudur.
 
 ## 3. Misyon
 
@@ -32,7 +32,7 @@ Vektörleştirme alanında, tasarımcıların, reklamcıların, matbaacıların,
 
 ## 6. Hedef Kitle
 
-Vektoryum'un ana hedef kitlesi:
+Vektoryum.ai’nin ana hedef kitlesi:
 
 * Grafik tasarımcılar
 * Reklam ve tabela firmaları
@@ -46,7 +46,7 @@ Vektoryum'un ana hedef kitlesi:
 
 ## 7. Marka Kişiliği
 
-Vektoryum'un kişiliği teknolojik, güven veren, net, premium ve üretim odaklıdır.
+Vektoryum.ai’nin kişiliği teknolojik, güven veren, net, premium ve üretim odaklıdır.
 
 **Marka karakteri:**
 Akıllı, sade, güçlü, teknik ama anlaşılır.
@@ -72,7 +72,7 @@ Alternatif sloganlar:
 
 ### Ana Logo
 
-Vektoryum logosu modern, keskin ve teknolojik bir yapıya sahip olmalıdır. Logo, vektör dönüşümünü temsil eden çizgi, path, node, grid veya dönüşüm hissi taşımalıdır.
+Vektoryum.ai logosu modern, keskin ve teknolojik bir yapıya sahip olmalıdır. Logo, vektör dönüşümünü temsil eden çizgi, path, node, grid veya dönüşüm hissi taşımalıdır.
 
 **Önerilen logo yapısı:**
 
@@ -94,7 +94,7 @@ Sembol; piksel karelerinden başlayıp yumuşak bir vektör eğrisine dönüşen
 
 ### Logo Kullanım Varyasyonları
 
-1. **Ana logo:** Sembol + Vektoryum yazısı
+1. **Ana logo:** Sembol + Vektoryum.ai yazısı
 2. **Yatay logo:** Web header ve uygulama üst barı için
 3. **Dikey logo:** Sunum, kapak ve sosyal medya için
 4. **Sadece sembol:** Favicon, uygulama ikonu, küçük alanlar için
@@ -140,7 +140,7 @@ Yatay logo minimum 30 mm genişlikte kullanılmalıdır.
 
 ### Ana Renkler
 
-**Vektoryum Navy**
+**Vektoryum.ai Navy**
 HEX: `#07111F`
 Kullanım: Ana arka plan, header, footer, premium koyu yüzeyler.
 
@@ -180,7 +180,7 @@ Kullanım: Hata, başarısız işlem, düşük kalite uyarısı.
 
 ## 14. Gradient Sistemi
 
-Vektoryum'un ana gradient yapısı teknoloji ve dönüşüm hissi vermelidir.
+Vektoryum.ai’nin ana gradient yapısı teknoloji ve dönüşüm hissi vermelidir.
 
 **Ana gradient:**
 `#2563FF → #22D3EE`
@@ -243,7 +243,7 @@ Etiketler, yardımcı metinler, durum bilgileri.
 
 ## 17. Görsel Dil
 
-Vektoryum'un görsel dili teknik, temiz ve dönüşüm odaklı olmalıdır.
+Vektoryum.ai’nin görsel dili teknik, temiz ve dönüşüm odaklı olmalıdır.
 
 **Kullanılabilecek görsel unsurlar:**
 
@@ -291,7 +291,7 @@ Vektoryum'un görsel dili teknik, temiz ve dönüşüm odaklı olmalıdır.
 
 ## 19. UI Tasarım Dili
 
-Vektoryum'un arayüzü sade, hızlı ve profesyonel olmalıdır.
+Vektoryum.ai’nin arayüzü sade, hızlı ve profesyonel olmalıdır.
 
 ### Ana arayüz hissi
 
@@ -334,7 +334,7 @@ Gri ton, düşük opaklık.
 Pikselden kusursuz vektöre dönüşüm.
 
 **Alt açıklama:**
-Vektoryum, logoları, ikonları, çizimleri ve karmaşık raster görselleri analiz ederek temiz, düzenlenebilir ve üretime hazır vektör çıktılara dönüştüren AI destekli vektör motorudur.
+Vektoryum.ai, logoları, ikonları, çizimleri ve karmaşık raster görselleri analiz ederek temiz, düzenlenebilir ve üretime hazır vektör çıktılara dönüştüren AI destekli vektör motorudur.
 
 **CTA butonları:**
 Görsel Yükle
@@ -359,7 +359,7 @@ Dönüşümden önce ve sonra kalite farkını anlık olarak karşılaştırma i
 
 ## 22. Marka Dili
 
-Vektoryum'un iletişim dili güven veren, net ve profesyonel olmalıdır.
+Vektoryum.ai’nin iletişim dili güven veren, net ve profesyonel olmalıdır.
 
 **Dil karakteri:**
 
@@ -402,7 +402,7 @@ Sosyal medya içerikleri önce/sonra gösterimleri üzerine kurulmalıdır.
 
 **Örnek sosyal medya metni:**
 
-Düşük çözünürlüklü görseller artık üretim sürecini yavaşlatmak zorunda değil. Vektoryum, raster görselleri analiz eder, kenarları yorumlar ve düzenlenebilir vektör çıktılara dönüştürür.
+Düşük çözünürlüklü görseller artık üretim sürecini yavaşlatmak zorunda değil. Vektoryum.ai, raster görselleri analiz eder, kenarları yorumlar ve düzenlenebilir vektör çıktılara dönüştürür.
 
 ## 24. Uygulama İçi Mikro Metinler
 
@@ -429,7 +429,7 @@ Yüklenen görsel düşük çözünürlüklü. Daha iyi sonuç için daha net bi
 
 ## 25. Dosya Formatı Dili
 
-Vektoryum çıktı formatlarını sade ve anlaşılır şekilde sunmalıdır.
+Vektoryum.ai çıktı formatlarını sade ve anlaşılır şekilde sunmalıdır.
 
 **SVG:** Web ve tasarım düzenleme için ideal.
 **PDF:** Baskı ve paylaşım için uygun.
@@ -440,29 +440,29 @@ Vektoryum çıktı formatlarını sade ve anlaşılır şekilde sunmalıdır.
 ## 26. Marka Kullanım Örneği
 
 **Doğru kullanım:**
-Vektoryum ile görselinizi yükleyin, analiz edin ve üretime hazır vektör çıktınızı alın.
+Vektoryum.ai ile görselinizi yükleyin, analiz edin ve üretime hazır vektör çıktınızı alın.
 
 **Yanlış kullanım:**
-Vektoryum her görseli yüzde yüz mükemmel hale getirir.
+Vektoryum.ai her görseli yüzde yüz mükemmel hale getirir.
 
 ## 27. Marka Mesajı
 
-Vektoryum'un temel mesajı şudur:
+Vektoryum.ai’nin temel mesajı şudur:
 
-Görseller yalnızca piksellerden oluşmaz; çizgiler, formlar, renkler ve yapısal kararlar içerir. Vektoryum bu yapıyı analiz eder ve görseli yeniden üretilebilir, düzenlenebilir ve profesyonel bir vektör çıktıya dönüştürür.
+Görseller yalnızca piksellerden oluşmaz; çizgiler, formlar, renkler ve yapısal kararlar içerir. Vektoryum.ai bu yapıyı analiz eder ve görseli yeniden üretilebilir, düzenlenebilir ve profesyonel bir vektör çıktıya dönüştürür.
 
 ## 28. Kısa Marka Tanıtımı
 
-Vektoryum, raster görselleri gelişmiş analiz sistemiyle temiz, düzenlenebilir ve üretime hazır vektör dosyalarına dönüştüren AI destekli bir yazılımdır. Logo, ikon, çizim, tabela, baskı ve üretim süreçleri için daha net ve kontrollü sonuçlar sunar.
+Vektoryum.ai, raster görselleri gelişmiş analiz sistemiyle temiz, düzenlenebilir ve üretime hazır vektör dosyalarına dönüştüren AI destekli bir yazılımdır. Logo, ikon, çizim, tabela, baskı ve üretim süreçleri için daha net ve kontrollü sonuçlar sunar.
 
 ## 29. Uzun Marka Tanıtımı
 
-Vektoryum, düşük çözünürlüklü veya raster yapıdaki görselleri profesyonel vektör çıktılara dönüştürmek için geliştirilmiş akıllı bir vektörleştirme yazılımıdır. Görseldeki kenarları, renkleri, çizgi formlarını, gradient geçişlerini ve şekil bütünlüğünü analiz ederek düzenlenebilir path yapıları oluşturur. Böylece kullanıcılar logoları, ikonları, çizimleri ve görsel tasarımları web, baskı, tabela, CNC, lazer kesim ve dijital üretim süreçlerinde daha rahat kullanabilir.
+Vektoryum.ai, düşük çözünürlüklü veya raster yapıdaki görselleri profesyonel vektör çıktılara dönüştürmek için geliştirilmiş akıllı bir vektörleştirme yazılımıdır. Görseldeki kenarları, renkleri, çizgi formlarını, gradient geçişlerini ve şekil bütünlüğünü analiz ederek düzenlenebilir path yapıları oluşturur. Böylece kullanıcılar logoları, ikonları, çizimleri ve görsel tasarımları web, baskı, tabela, CNC, lazer kesim ve dijital üretim süreçlerinde daha rahat kullanabilir.
 
 ## 30. Genel Tasarım Yönü
 
-Vektoryum markası koyu zeminli, teknoloji hissi yüksek, mavi-cyan vurgulu ve net çizgilerden oluşan bir görsel dünyaya sahip olmalıdır. Tasarımda gereksiz süslemeler yerine dönüşüm, analiz, path, netlik ve profesyonel çıktı hissi ön planda tutulmalıdır.
+Vektoryum.ai markası koyu zeminli, teknoloji hissi yüksek, mavi-cyan vurgulu ve net çizgilerden oluşan bir görsel dünyaya sahip olmalıdır. Tasarımda gereksiz süslemeler yerine dönüşüm, analiz, path, netlik ve profesyonel çıktı hissi ön planda tutulmalıdır.
 
 ## 31. Marka Öz Cümlesi
 
-**Vektoryum, pikselli görüntüleri akıllı analizle temiz, düzenlenebilir ve üretime hazır vektörlere dönüştürür.**
+**Vektoryum.ai, pikselli görüntüleri akıllı analizle temiz, düzenlenebilir ve üretime hazır vektörlere dönüştürür.**
