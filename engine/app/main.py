@@ -821,6 +821,62 @@ def _build_feedback_analysis(job_id: str, report: dict[str, Any]) -> dict[str, A
         return {"primary_issue": "analysis_failed", "severity": "unknown", "error": str(exc)}
 
 
+def _report_fidelity(report: dict[str, Any]) -> float | None:
+    metrics = (report.get("quality_report") or {}).get("metrics") or {}
+    value = metrics.get("fidelity_score")
+    if value is None:
+        value = (report.get("fidelity_report") or {}).get("fidelity_score")
+    if value is None:
+        value = (report.get("candidate_report") or {}).get("best_score")
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _build_v2_comparison(source_job_id: str, source_report: dict[str, Any], v2_report: dict[str, Any]) -> dict[str, Any]:
+    stable_fidelity = _report_fidelity(source_report)
+    v2_fidelity = _report_fidelity(v2_report)
+    stable_status = (source_report.get("quality_report") or {}).get("status")
+    v2_status = (v2_report.get("quality_report") or {}).get("status")
+    delta = None if stable_fidelity is None or v2_fidelity is None else round(v2_fidelity - stable_fidelity, 3)
+
+    winner = "manual_review"
+    reasons: list[str] = []
+    if v2_status == "production_ready" and stable_status != "production_ready":
+        winner = "v2_canary"
+        reasons.append("v2 üretime hazır, stabil çıktı gözden geçirme istiyor.")
+    elif stable_status == "production_ready" and v2_status != "production_ready":
+        winner = "stable"
+        reasons.append("stabil çıktı üretime hazır, v2 hâlâ inceleme istiyor.")
+    elif delta is not None and delta >= 1.0 and v2_status != "failed":
+        winner = "v2_canary"
+        reasons.append(f"v2 fidelity +{delta} puan daha yüksek.")
+    elif delta is not None and delta <= -1.0:
+        winner = "stable"
+        reasons.append(f"stabil fidelity {abs(delta)} puan daha yüksek.")
+    else:
+        reasons.append("Skor farkı küçük; görsel admin incelemesi gerekiyor.")
+
+    return {
+        "source_job_id": source_job_id,
+        "v2_job_id": v2_report.get("job_id"),
+        "stable": {
+            "status": stable_status,
+            "fidelity_score": stable_fidelity,
+            "engine_version": source_report.get("engine_version", "stable-v1"),
+        },
+        "v2_canary": {
+            "status": v2_status,
+            "fidelity_score": v2_fidelity,
+            "engine_version": v2_report.get("engine_version"),
+        },
+        "delta_fidelity": delta,
+        "winner": winner,
+        "reasons": reasons,
+    }
+
+
 @app.get("/api/admin/jobs", summary="Yönetici iş listesi")
 async def admin_jobs(session: str | None = Cookie(default=None)):
     _require_admin(session)
@@ -861,9 +917,40 @@ async def admin_job_detail(job_id: str, session: str | None = Cookie(default=Non
     data["admin_links"] = {
         "original": f"/api/admin/download/{job_id}/original" if _find_original_file(report_path.parent) else None,
         "report": f"/api/admin/jobs/{job_id}",
+        "v2_compare": f"/api/admin/jobs/{job_id}/v2-compare",
     }
     data["feedback_analysis"] = _build_feedback_analysis(job_id, data)
     return data
+
+
+@app.post("/api/admin/jobs/{job_id}/v2-compare", summary="Stabil çıktı ile v2 canary çıktısını karşılaştır")
+async def admin_job_v2_compare(job_id: str, session: str | None = Cookie(default=None)):
+    admin = _require_admin(session)
+    _validate_job_id(job_id)
+    job_dir = _job_dir(job_id)
+    report_path = job_dir / "report.json"
+    if not report_path.exists():
+        raise HTTPException(status_code=404, detail="İş raporu bulunamadı.")
+    original = _find_original_file(job_dir)
+    if not original:
+        raise HTTPException(status_code=404, detail="Orijinal görsel bulunamadı; v2 karşılaştırma yapılamaz.")
+
+    source_report = json.loads(report_path.read_text(encoding="utf-8"))
+    v2_report = _run_v2_canary(original.read_bytes(), original.name, admin)
+    comparison = _build_v2_comparison(job_id, source_report, v2_report)
+    response = {
+        "source_job_id": job_id,
+        "v2_job_id": v2_report.get("job_id"),
+        "comparison": comparison,
+        "stable_detail_url": f"/api/admin/jobs/{job_id}",
+        "v2_detail_url": f"/api/admin/jobs/{v2_report.get('job_id')}",
+        "v2_downloads": v2_report.get("download_links", {}),
+    }
+
+    comparison_path = job_dir / f"v2_comparison_{v2_report.get('job_id')}.json"
+    comparison_path.write_text(json.dumps(response, ensure_ascii=False, indent=2), encoding="utf-8")
+    _sync_job_to_hub(job_id)
+    return response
 
 
 @app.get("/api/admin/download/{job_id}/original", summary="Yönetici orijinal görsel indirme")

@@ -46,3 +46,10 @@ format pipeline, stores fidelity/structure metrics in `report.json`, and keeps
 Hugging Face persistence active. Admin review can inspect v2 output without
 sending regular users through the new engine. Set `VEKTORYUM_V2_CANARY=0` to
 disable the canary gate completely.
+
+Admins can also compare an existing stable job with a freshly generated v2
+canary output without changing customer traffic:
+
+```text
+POST /api/admin/jobs/{job_id}/v2-compare
+```
