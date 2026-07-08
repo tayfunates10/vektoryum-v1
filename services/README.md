@@ -41,7 +41,8 @@ monolith exposes the v2 worker only through an authenticated canary endpoint:
 POST /api/vectorize-v2
 ```
 
-This endpoint writes a normal job folder and `report.json`, so admin review,
-download links and Hugging Face persistence can inspect v2 output without
+This endpoint writes a normal job folder, exports the v2 SVG through the same
+format pipeline, stores fidelity/structure metrics in `report.json`, and keeps
+Hugging Face persistence active. Admin review can inspect v2 output without
 sending regular users through the new engine. Set `VEKTORYUM_V2_CANARY=0` to
 disable the canary gate completely.

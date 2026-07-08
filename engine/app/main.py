@@ -318,8 +318,18 @@ def _copy_v2_artifact(source: Path | None, target: Path) -> str | None:
     return target.name
 
 
+def _count_svg_fill_colors(svg_text: str) -> int:
+    colors: set[str] = set()
+    for part in svg_text.split('fill="')[1:]:
+        color = part.split('"', 1)[0].strip().lower()
+        if color and color != "none":
+            colors.add(color)
+    return len(colors)
+
+
 def _run_v2_canary(contents: bytes, filename: str | None, user: dict[str, Any]) -> dict[str, Any]:
     """v2 motorunu canlı trafiğe dokunmadan test edilebilir job olarak çalıştırır."""
+    from app.fidelity import score_structure_integrity, score_svg_fidelity
     from services.vectorizer_worker.vectorizer import PerfectVectorizer
 
     job_id = uuid.uuid4().hex
@@ -331,10 +341,25 @@ def _run_v2_canary(contents: bytes, filename: str | None, user: dict[str, Any]) 
     original_path.write_bytes(contents)
 
     artifacts = PerfectVectorizer().vectorize(original_path, job_dir / "v2_artifacts")
-    svg_path = job_dir / f"{job_id}.svg"
-    shutil.copy2(artifacts.svg_path, svg_path)
+    raw_svg_path = job_dir / f"{job_id}_v2_raw.svg"
+    shutil.copy2(artifacts.svg_path, raw_svg_path)
 
-    outputs: dict[str, str] = {"svg": svg_path.name}
+    try:
+        with Image.open(original_path) as original_image:
+            png_size = original_image.size
+    except Exception:  # noqa: BLE001
+        png_size = None
+
+    outputs_abs, output_errors = export_all(
+        best_svg=raw_svg_path,
+        job_dir=job_dir,
+        job_id=job_id,
+        candidate_id="v2:PerfectVectorizer",
+        png_size=png_size,
+    )
+    svg_path = Path(outputs_abs.get("svg", raw_svg_path))
+
+    outputs: dict[str, str] = {fmt: Path(path).name for fmt, path in outputs_abs.items()}
     copied_preprocessed = _copy_v2_artifact(artifacts.preprocessed, job_dir / f"{job_id}_v2_preprocessed.png")
     copied_edges = _copy_v2_artifact(artifacts.edge_map, job_dir / f"{job_id}_v2_edges.png")
     copied_segments = _copy_v2_artifact(artifacts.segment_map, job_dir / f"{job_id}_v2_segments.png")
@@ -347,16 +372,31 @@ def _run_v2_canary(contents: bytes, filename: str | None, user: dict[str, Any]) 
 
     svg_text = svg_path.read_text(encoding="utf-8", errors="ignore")
     path_count = svg_text.count("<path")
-    quality_report = {
-        "status": "canary_review",
-        "warnings": [
-            "v2 canary çıktısıdır; ana /api/vectorize akışı değiştirilmeden kontrollü inceleme için üretilmiştir."
-        ],
-        "metrics": {
-            "path_count": path_count,
-            "has_bitmap": "<image" in svg_text.lower(),
-            "empty_groups": svg_text.count("<g></g>"),
-        },
+    fidelity_report = score_svg_fidelity(svg_path, original_path) or {}
+    structure_report = score_structure_integrity(svg_path, original_path)
+    fidelity_score = fidelity_report.get("fidelity_score")
+    score_details = {
+        "path_count": path_count,
+        "node_count": svg_text.count("<path") + svg_text.count("<rect") + svg_text.count("<circle"),
+        "unique_colors": _count_svg_fill_colors(svg_text),
+        "has_bitmap": "<image" in svg_text.lower(),
+        "has_gradient": bool(fidelity_report.get("banding_score", 100.0) < 100.0),
+        "edge_f1": fidelity_report.get("edge_f1"),
+        "mean_delta_e": fidelity_report.get("mean_delta_e"),
+        "banding_score": fidelity_report.get("banding_score"),
+        "banding_ratio": fidelity_report.get("banding_ratio"),
+    }
+    quality_report = basic_svg_quality_check(
+        score_details=score_details,
+        mode="logo_color",
+        total_score=float(fidelity_score or 0.0),
+        fidelity_score=fidelity_score,
+        structure_report=structure_report,
+    )
+    quality_report["canary"] = {
+        "engine_version": "v2-canary",
+        "review_required": True,
+        "note": "Ana /api/vectorize akışı değiştirilmeden kontrollü v2 inceleme çıktısıdır.",
     }
 
     final_report = {
@@ -378,13 +418,21 @@ def _run_v2_canary(contents: bytes, filename: str | None, user: dict[str, Any]) 
                     "success": True,
                     "engine": "services.vectorizer_worker.vectorizer",
                     "path_count": path_count,
+                    "fidelity_score": fidelity_score,
+                    "details": score_details,
                 }
             ],
         },
         "quality_report": quality_report,
+        "fidelity_report": fidelity_report,
+        "structure_report": structure_report,
         "outputs": outputs,
-        "output_errors": {},
-        "download_links": {"svg": f"/api/download/{job_id}/svg"},
+        "output_errors": output_errors,
+        "download_links": {
+            fmt: f"/api/download/{job_id}/{fmt}"
+            for fmt in outputs_abs
+            if fmt in _MEDIA_TYPES
+        },
     }
 
     (job_dir / "report.json").write_text(json.dumps(final_report, ensure_ascii=False, indent=2), encoding="utf-8")
