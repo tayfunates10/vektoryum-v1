@@ -757,6 +757,138 @@
   viewer.addEventListener("dblclick", fit);
   window.addEventListener("resize", () => { if (V.ready && $("preview").classList.contains("on")) layout(); });
 
+  // ---- Click-to-Feedback system (invisible background, native prompt, no custom UI) ----
+  function addSvgFeedbackListener(svgEl, jobId) {
+    let isDrag = false;
+    let startX = 0, startY = 0;
+
+    svgEl.addEventListener("pointerdown", (e) => {
+      startX = e.clientX;
+      startY = e.clientY;
+      isDrag = false;
+    });
+
+    svgEl.addEventListener("pointermove", (e) => {
+      if (Math.abs(e.clientX - startX) > 4 || Math.abs(e.clientY - startY) > 4) {
+        isDrag = true;
+      }
+    });
+
+    svgEl.addEventListener("click", async (e) => {
+      if (isDrag) return; // Ignore dragging or panning
+      e.stopPropagation();
+
+      // 1. Calculate precise coordinates inside SVG user space (viewBox)
+      let coords = { x: 0, y: 0 };
+      try {
+        const pt = svgEl.createSVGPoint();
+        pt.x = e.clientX;
+        pt.y = e.clientY;
+        const svgP = pt.matrixTransform(svgEl.getScreenCTM().inverse());
+        coords.x = parseFloat(svgP.x.toFixed(2));
+        coords.y = parseFloat(svgP.y.toFixed(2));
+      } catch (err) {
+        // Fallback calculation using bounding box
+        const rect = svgEl.getBoundingClientRect();
+        const clickX = e.clientX - rect.left;
+        const clickY = e.clientY - rect.top;
+        const viewBoxAttr = svgEl.getAttribute("viewBox");
+        if (viewBoxAttr) {
+          const [vbX, vbY, vbW, vbH] = viewBoxAttr.split(/\s+/).map(Number);
+          coords.x = parseFloat((vbX + clickX * (vbW / rect.width)).toFixed(2));
+          coords.y = parseFloat((vbY + clickY * (vbH / rect.height)).toFixed(2));
+        } else {
+          coords.x = parseFloat(clickX.toFixed(2));
+          coords.y = parseFloat(clickY.toFixed(2));
+        }
+      }
+
+      // 2. Identify the clicked path or rect fill/stroke color
+      const target = e.target;
+      let actualColor = null;
+      if (target) {
+        actualColor = target.getAttribute("fill") || target.getAttribute("stroke") || null;
+        // Strip rgb() format to clean hex or use as is
+        if (actualColor && actualColor.startsWith("rgb")) {
+          try {
+            const parts = actualColor.match(/\d+/g).map(Number);
+            const hex = "#" + parts.map(x => x.toString(16).padStart(2, "0")).join("");
+            actualColor = hex;
+          } catch (_) {}
+        }
+      }
+
+      // 3. User prompts (all native, no custom UI markup/classes)
+      const issuePrompt = "Görsel hatası geri bildirimi:\n\n" +
+        "Lütfen karşılaştığınız hata tipini seçin (1-4):\n" +
+        "1 - Renk Sapması (Color Deviation)\n" +
+        "2 - Kenar Bozulması (Edge Distortion)\n" +
+        "3 - Eksik Detay (Missing Detail)\n" +
+        "4 - Diğer (Other)\n\n" +
+        "Seçmek istediğiniz seçeneğin numarasını yazın:";
+
+      const choice = window.prompt(issuePrompt);
+      if (choice === null) return; // User cancelled
+
+      let issueType = "";
+      switch (choice.trim()) {
+        case "1": issueType = "color_deviation"; break;
+        case "2": issueType = "edge_distortion"; break;
+        case "3": issueType = "missing_detail"; break;
+        case "4": issueType = "other"; break;
+        default:
+          alert("Geçersiz seçim yaptınız. Geri bildirim iptal edildi.");
+          return;
+      }
+
+      let expectedColorHex = null;
+      if (issueType === "color_deviation") {
+        const expectedColorInput = window.prompt("Beklenen rengin hex kodunu girin (örn: #ff0000) veya boş bırakın:");
+        if (expectedColorInput === null) return; // User cancelled
+        if (expectedColorInput.trim()) {
+          const hexRegex = /^#[0-9a-fA-F]{6}$/;
+          if (hexRegex.test(expectedColorInput.trim())) {
+            expectedColorHex = expectedColorInput.trim();
+          } else {
+            alert("Geçersiz hex renk kodu girdiniz. Geri bildirim renk farkı ölçümü yapılmadan kaydedilecek.");
+          }
+        }
+      }
+
+      const userComment = window.prompt("İsteğe bağlı ek açıklama ve yorumlarınızı yazabilirsiniz:");
+      if (userComment === null) return; // User cancelled
+
+      // 4. Send gathered feedback payload to /v1/feedback
+      const feedbackPayload = {
+        job_id: jobId,
+        issue_type: issueType,
+        coordinate_x: coords.x,
+        coordinate_y: coords.y,
+        user_comment: userComment.trim() || null,
+        expected_color_hex: expectedColorHex,
+        actual_color_hex: actualColor
+      };
+
+      try {
+        const resp = await fetch("/v1/feedback", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(feedbackPayload)
+        });
+        const resData = await resp.json();
+        if (!resp.ok) {
+          throw new Error(resData.detail || "Bir hata oluştu.");
+        }
+        // 5. Success alert and console log
+        alert("Geri bildiriminiz başarıyla kaydedildi! Teşekkür ederiz.");
+        console.log("Feedback recorded:", resData);
+      } catch (err) {
+        alert("Geri bildirim kaydedilirken bir hata oluştu: " + err.message);
+        console.error("Feedback error:", err);
+      }
+    });
+  }
+
   // ---- vectorize flow ----
   const FMT_LABELS = { svg:"SVG indir", pdf:"PDF", eps:"EPS", dxf:"DXF", png:"PNG" };
   go.addEventListener("click", async () => {
@@ -801,8 +933,40 @@
 
     // görseller + indirmeler
     V.ready = false;
-    const origImg = $("origImg"), vecImg = $("vecImg");
-    vecImg.src = (data.download_links||{}).svg + "?t=" + Date.now();
+    const origImg = $("origImg");
+    const contentR = $("contentR");
+    contentR.innerHTML = "";
+
+    const svgUrl = (data.download_links||{}).svg;
+    if (svgUrl) {
+      fetch(svgUrl + "?t=" + Date.now())
+        .then(r => r.text())
+        .then(svgText => {
+          const parser = new DOMParser();
+          const doc = parser.parseFromString(svgText, "image/svg+xml");
+          const svgEl = doc.querySelector("svg");
+          if (svgEl) {
+            svgEl.id = "vecImg";
+            const targetW = V.W || origImg.naturalWidth || 800;
+            const targetH = V.H || origImg.naturalHeight || 800;
+            svgEl.style.width = targetW + "px";
+            svgEl.style.height = targetH + "px";
+            contentR.appendChild(svgEl);
+            addSvgFeedbackListener(svgEl, data.job_id);
+          } else {
+            throw new Error("Invalid SVG");
+          }
+        })
+        .catch(err => {
+          console.error("SVG fetch fallback:", err);
+          const img = document.createElement("img");
+          img.id = "vecImg";
+          img.alt = "Vektör";
+          img.src = svgUrl + "?t=" + Date.now();
+          contentR.appendChild(img);
+        });
+    }
+
     origImg.onload = () => initViewer(origImg.naturalWidth||800, origImg.naturalHeight||800);
     origImg.src = URL.createObjectURL(file);
     const dl = $("downloads"); dl.innerHTML = ""; const errs = data.output_errors || {};

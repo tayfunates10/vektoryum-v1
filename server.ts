@@ -321,6 +321,85 @@ app.get('/api/download/:job_id/:file_type', (req, res) => {
   return res.sendFile(path.resolve(filePath));
 });
 
+// Ensure FEEDBACK_ROOT exists
+const FEEDBACK_ROOT = './feedback_cases';
+if (!fs.existsSync(FEEDBACK_ROOT)) {
+  fs.mkdirSync(FEEDBACK_ROOT, { recursive: true });
+}
+
+// POST /v1/feedback
+app.post('/v1/feedback', (req, res) => {
+  const {
+    job_id,
+    issue_type,
+    coordinate_x,
+    coordinate_y,
+    user_comment,
+    expected_color_hex,
+    actual_color_hex
+  } = req.body || {};
+
+  if (!job_id || typeof job_id !== 'string' || job_id.length !== 32 || !/^[a-zA-Z0-9]+$/.test(job_id)) {
+    return res.status(400).json({ detail: "Geçersiz job_id." });
+  }
+
+  const validIssues = ["color_deviation", "edge_distortion", "missing_detail", "other"];
+  if (!issue_type || !validIssues.includes(issue_type)) {
+    return res.status(400).json({ detail: "Geçersiz hata kategorisi." });
+  }
+
+  // Delta E estimation
+  let delta_e_estimation: number | null = null;
+  if (expected_color_hex && actual_color_hex) {
+    try {
+      const hexPattern = /^#[0-9a-fA-F]{6}$/;
+      if (hexPattern.test(expected_color_hex) && hexPattern.test(actual_color_hex)) {
+        const r1 = parseInt(expected_color_hex.substring(1, 3), 16);
+        const g1 = parseInt(expected_color_hex.substring(3, 5), 16);
+        const b1 = parseInt(expected_color_hex.substring(5, 7), 16);
+
+        const r2 = parseInt(actual_color_hex.substring(1, 3), 16);
+        const g2 = parseInt(actual_color_hex.substring(3, 5), 16);
+        const b2 = parseInt(actual_color_hex.substring(5, 7), 16);
+
+        delta_e_estimation = Math.sqrt(
+          Math.pow(r1 - r2, 2) + Math.pow(g1 - g2, 2) + Math.pow(b1 - b2, 2)
+        ) * 0.1;
+      }
+    } catch (e) {
+      // Ignore
+    }
+  }
+
+  const case_id = uuidv4().replace(/-/g, '');
+  const case_data = {
+    job_id,
+    issue_type,
+    coordinate_x: typeof coordinate_x === 'number' ? coordinate_x : null,
+    coordinate_y: typeof coordinate_y === 'number' ? coordinate_y : null,
+    user_comment: user_comment || null,
+    expected_color_hex: expected_color_hex || null,
+    actual_color_hex: actual_color_hex || null,
+    case_id,
+    delta_e_estimation,
+    timestamp: uuidv4().replace(/-/g, '')
+  };
+
+  const casePath = path.join(FEEDBACK_ROOT, `${job_id}_${case_id}.json`);
+  try {
+    fs.writeFileSync(casePath, JSON.stringify(case_data, null, 2), 'utf-8');
+  } catch (err: any) {
+    return res.status(500).json({ detail: `Geri bildirim kaydedilirken hata oluştu: ${err.message}` });
+  }
+
+  return res.status(201).json({
+    status: "logged",
+    case_id,
+    delta_e_estimation,
+    message: "Geri bildirim başarıyla kaydedildi. Kendi kendini eğiten regresyon motoruna iletildi."
+  });
+});
+
 // Start the server
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Vektoryum running on port ${PORT}`);

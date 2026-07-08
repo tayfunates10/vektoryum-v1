@@ -14,7 +14,7 @@ RUN npm ci --only=production
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/engine/app/static ./engine/app/static
 
-ENV PORT=8000
-EXPOSE 8000
+ENV PORT=7860
+EXPOSE 7860
 
 CMD ["node", "dist/server.cjs"]
