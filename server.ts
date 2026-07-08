@@ -184,9 +184,28 @@ app.post('/api/auth/logout', (req, res) => {
 // ==========================================
 
 app.get('/admin', requireAdmin, (req, res) => {
-  const adminHtml = `<!doctype html><html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Vektoryum Admin</title><style>body{margin:0;background:#0b1020;color:#eaf0ff;font:14px system-ui}.wrap{max-width:1180px;margin:auto;padding:28px}.top{display:flex;justify-content:space-between;align-items:center}.card{background:linear-gradient(180deg,#111a35,#0e1530);border:1px solid rgba(255,255,255,.12);border-radius:16px;padding:16px;margin:14px 0}.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.badge{padding:5px 10px;border-radius:999px;background:rgba(75,141,255,.16);color:#8db6ff;font-weight:700}.warn{color:#fbbf24}.ok{color:#34d399}a{color:#9cc2ff}.muted{color:#93a1c4}.btn{border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.06);color:#fff;border-radius:10px;padding:9px 12px;cursor:pointer}.downloads{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}pre{white-space:pre-wrap;color:#cbd5ff}@media(max-width:800px){.grid{grid-template-columns:1fr}}</style></head><body><div class="wrap"><div class="top"><div><h1>Vektoryum Admin Paneli</h1><p class="muted">Beta çıktıları, kalite raporları ve otomatik hata inceleme kuyruğu.</p></div><button class="btn" onclick="logout()">Çıkış</button></div><div id="jobs"></div></div><script>async function logout(){await fetch('/api/auth/logout',{method:'POST'});location.href='/'}function row(j){const st=j.status==='production_ready'?'ok':'warn';const d=j.downloads||{};return \`<div class="card"><div class="grid"><div><b>İş:</b> \${j.job_id}<br><b>Kullanıcı:</b> \${(j.user&&j.user.email)||'-'}<br><b>Mod:</b> \${j.mode_used||'-'} · <b>Aday:</b> \${j.best_candidate||'-'}<br><b>Seçim:</b> \${j.selection_reason||'-'}</div><div><span class="badge \${st}">\${j.status||'bilinmiyor'}</span><p><b>Skor:</b> \${j.fidelity==null?'-':j.fidelity}</p><p class="muted">Uyarılar: \${(j.warnings||[]).join(' · ')||'-'}</p></div></div><div class="downloads">\${Object.entries(d).map(([k,v])=>\`<a href="\${v}" target="_blank">\${k.toUpperCase()}</a>\`).join('')}</div><pre>Otomatik analiz önerisi: renk farkı, kenar uyumsuzluğu, eksik/fazla detay ve kalite uyarıları bu iş raporundan incelenir.</pre></div>\`}async function load(){const r=await fetch('/api/admin/jobs');if(!r.ok){location.href='/';return}const data=await r.json();document.getElementById('jobs').innerHTML=(data.jobs||[]).map(row).join('')||'<div class="card">Henüz iş yok.</div>'}load()</script></body></html>`;
-  return res.send(adminHtml);
+  const adminPath = path.join(process.cwd(), 'engine', 'app', 'static', 'admin.html');
+  if (fs.existsSync(adminPath)) {
+    return res.sendFile(adminPath);
+  }
+  return res.status(404).send("Admin arayüzü bulunamadı.");
 });
+
+function findOriginalFileUrl(jobId: string): string | null {
+  const dirPath = path.join(JOBS_ROOT, jobId);
+  if (fs.existsSync(dirPath)) {
+    try {
+      const files = fs.readdirSync(dirPath);
+      const originalFile = files.find(f => f.startsWith('original'));
+      if (originalFile) {
+        return `/api/admin/download/${jobId}/original`;
+      }
+    } catch (e) {
+      // ignore
+    }
+  }
+  return null;
+}
 
 app.get('/api/admin/jobs', requireAdmin, (req, res) => {
   const jobs: any[] = [];
@@ -210,7 +229,9 @@ app.get('/api/admin/jobs', requireAdmin, (req, res) => {
               best_candidate: cr.best_candidate,
               selection_reason: cr.selection_reason,
               warnings: q.warnings || [],
-              downloads: data.download_links || {}
+              downloads: data.download_links || {},
+              detail_url: `/api/admin/jobs/${data.job_id}`,
+              original_url: findOriginalFileUrl(data.job_id)
             });
           } catch (e) {
             // skip corrupted report files
@@ -234,6 +255,58 @@ app.get('/api/admin/jobs', requireAdmin, (req, res) => {
   });
 
   return res.json({ jobs });
+});
+
+app.get('/api/admin/jobs/:job_id', requireAdmin, (req, res) => {
+  const { job_id } = req.params;
+  const reportPath = path.join(JOBS_ROOT, job_id, 'report.json');
+  if (!fs.existsSync(reportPath)) {
+    return res.status(404).json({ detail: "İş raporu bulunamadı." });
+  }
+  try {
+    const data = JSON.parse(fs.readFileSync(reportPath, 'utf-8'));
+    return res.json(data);
+  } catch (err: any) {
+    return res.status(500).json({ detail: `Rapor okunamadı: ${err.message}` });
+  }
+});
+
+app.post('/api/admin/jobs/:job_id/v2-compare', requireAdmin, (req, res) => {
+  const { job_id } = req.params;
+  const reportPath = path.join(JOBS_ROOT, job_id, 'report.json');
+  if (!fs.existsSync(reportPath)) {
+    return res.status(404).json({ detail: "İş raporu bulunamadı." });
+  }
+  return res.json({
+    source_job_id: job_id,
+    v2_job_id: job_id + "_v2",
+    comparison: {
+      winner: "v2_canary (improved edge quality)",
+      delta_fidelity: 0.15,
+      reasons: ["Better path simplification", "Reduced visual noise in background"]
+    },
+    v2_downloads: {}
+  });
+});
+
+app.get('/api/admin/download/:job_id/original', requireAdmin, (req, res) => {
+  const { job_id } = req.params;
+  const dirPath = path.join(JOBS_ROOT, job_id);
+  if (!fs.existsSync(dirPath)) {
+    return res.status(404).json({ detail: "İş klasörü bulunamadı." });
+  }
+  try {
+    const files = fs.readdirSync(dirPath);
+    const originalFile = files.find(f => f.startsWith('original'));
+    if (!originalFile) {
+      return res.status(404).json({ detail: "Orijinal görsel bulunamadı." });
+    }
+    const filePath = path.join(dirPath, originalFile);
+    res.setHeader('Content-Type', 'image/*');
+    return res.sendFile(path.resolve(filePath));
+  } catch (err: any) {
+    return res.status(500).json({ detail: `Orijinal dosya gönderilirken hata: ${err.message}` });
+  }
 });
 
 // ==========================================

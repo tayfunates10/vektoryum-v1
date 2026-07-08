@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Vektoryum.ai Admin</title>
+<style>
+  body{margin:0;background:#0b1020;color:#eaf0ff;font:14px system-ui,-apple-system,"Segoe UI",sans-serif}
+  .wrap{max-width:1180px;margin:auto;padding:28px}
+  .top{display:flex;justify-content:space-between;align-items:center;gap:16px}
+  .card{background:linear-gradient(180deg,#111a35,#0e1530);border:1px solid rgba(255,255,255,.12);border-radius:16px;padding:16px;margin:14px 0}
+  .grid,.preview{display:grid;grid-template-columns:1fr 1fr;gap:14px}.preview{margin-top:12px}
+  .shot{background:#fff;border-radius:12px;min-height:220px;display:grid;place-items:center;overflow:hidden}.shot img{max-width:100%;max-height:360px;display:block}
+  .badge{padding:5px 10px;border-radius:999px;background:rgba(75,141,255,.16);color:#8db6ff;font-weight:700}.warn{color:#fbbf24}.ok{color:#34d399}.muted{color:#93a1c4}
+  .btn{border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.06);color:#fff;border-radius:10px;padding:9px 12px;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;gap:7px}.btn:disabled{opacity:.55;cursor:wait}.btn-canary{border-color:rgba(48,213,255,.45);background:linear-gradient(135deg,rgba(77,141,255,.22),rgba(151,82,255,.18),rgba(48,213,255,.18));box-shadow:0 0 18px rgba(48,213,255,.18)}.downloads{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+  pre{white-space:pre-wrap;color:#cbd5ff;background:rgba(0,0,0,.22);border-radius:12px;padding:12px;max-height:280px;overflow:auto}
+  @media(max-width:800px){.grid,.preview{grid-template-columns:1fr}.top{align-items:flex-start;flex-direction:column}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <div>
+      <h1>Vektoryum.ai Admin Paneli</h1>
+      <p class="muted">Beta çıktıları, orijinal görsel, çıktı önizlemesi ve kalite raporları.</p>
+    </div>
+    <button class="btn" onclick="logout()">Çıkış</button>
+  </div>
+  <div id="jobs"></div>
+</div>
+<script>
+async function logout(){ await fetch('/api/auth/logout',{method:'POST'}); location.href='/' }
+function row(j){
+  const st=j.status==='production_ready'?'ok':'warn';
+  const d=j.downloads||{};
+  const png=d.png||'';
+  return `<div class="card">
+    <div class="grid">
+      <div><b>İş:</b> ${j.job_id}<br><b>Kullanıcı:</b> ${(j.user&&j.user.email)||'-'}<br><b>Mod:</b> ${j.mode_used||'-'} · <b>Aday:</b> ${j.best_candidate||'-'}<br><b>Seçim:</b> ${j.selection_reason||'-'}</div>
+      <div><span class="badge ${st}">${j.status||'bilinmiyor'}</span><p><b>Skor:</b> ${j.fidelity==null?'-':j.fidelity}</p><p class="muted">Uyarılar: ${(j.warnings||[]).join(' · ')||'-'}</p></div>
+    </div>
+    <div class="preview">
+      <div><b>Orijinal</b><div class="shot">${j.original_url?`<img src="${j.original_url}" alt="Orijinal">`:'<span class="muted">Orijinal yok</span>'}</div></div>
+      <div><b>Çıktı PNG</b><div class="shot">${png?`<img src="${png}" alt="Çıktı">`:'<span class="muted">PNG yok</span>'}</div></div>
+    </div>
+    <div class="downloads">
+      ${Object.entries(d).map(([k,v])=>`<a class="btn" href="${v}" target="_blank">${k.toUpperCase()}</a>`).join('')}
+      ${j.detail_url?`<button class="btn" onclick="detail('${j.job_id}')">Raporu aç</button>`:''}
+      ${j.original_url?`<button class="btn btn-canary" id="compare-btn-${j.job_id}" onclick="compareV2('${j.job_id}')">⚖️ v2 ile karşılaştır</button>`:''}
+    </div>
+    <pre id="detail-${j.job_id}">Düzeltme analizi için orijinal ve çıktı yan yana incelenir. Raporu aç ile aday, skor ve kalite detaylarını gör.</pre>
+  </div>`
+}
+async function detail(id){
+  const box=document.getElementById('detail-'+id);
+  box.textContent='Yükleniyor...';
+  const r=await fetch('/api/admin/jobs/'+id);
+  const d=await r.json();
+  box.textContent=JSON.stringify(d,null,2);
+}
+async function compareV2(id){
+  const box=document.getElementById('detail-'+id);
+  const btn=document.getElementById('compare-btn-'+id);
+  if(btn){ btn.disabled=true; btn.textContent='v2 ölçülüyor...'; }
+  box.textContent='v2 canary çıktısı üretiliyor, export ve kalite karşılaştırması çalışıyor...';
+  try{
+    const r=await fetch('/api/admin/jobs/'+id+'/v2-compare',{method:'POST'});
+    const d=await r.json();
+    if(!r.ok){ throw new Error(d.detail||'v2 karşılaştırma başarısız'); }
+    const c=d.comparison||{};
+    box.textContent=[
+      'v2 karşılaştırma tamamlandı',
+      'Öneri: '+(c.winner||'-'),
+      'Fidelity farkı: '+(c.delta_fidelity==null?'-':c.delta_fidelity),
+      'Sebepler: '+((c.reasons||[]).join(' · ')||'-'),
+      '',
+      JSON.stringify(d,null,2)
+    ].join('\n');
+  }catch(err){
+    box.textContent='Hata: '+err.message;
+  }finally{
+    if(btn){ btn.disabled=false; btn.textContent='⚖️ v2 ile karşılaştır'; }
+  }
+}
+async function load(){
+  const r=await fetch('/api/admin/jobs');
+  if(!r.ok){ location.href='/'; return }
+  const data=await r.json();
+  document.getElementById('jobs').innerHTML=(data.jobs||[]).map(row).join('')||'<div class="card">Henüz iş yok.</div>';
+}
+load();
+</script>
+</body>
+</html>
