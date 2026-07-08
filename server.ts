@@ -15,6 +15,10 @@ import {
 } from './auth.js';
 import { runVectorizerPipeline } from './vectorizer.js';
 
+console.log("=== VEKTORYUM SERVER INITIATING ===");
+console.log("Current working directory:", process.cwd());
+console.log("Environment PORT:", process.env.PORT);
+
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 const JOBS_ROOT = './vector_jobs';
@@ -400,7 +404,26 @@ app.post('/v1/feedback', (req, res) => {
   });
 });
 
-// Start the server
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Vektoryum running on port ${PORT}`);
-});
+// Start the server on multiple ports to avoid Hugging Face router mismatch issues (7860 vs 8000)
+function startServerOnPort(port: number, isPrimary: boolean) {
+  try {
+    const server = app.listen(port, '0.0.0.0', () => {
+      console.log(`Vektoryum running successfully on port ${port} (${isPrimary ? 'Primary' : 'Fallback'})`);
+    });
+    server.on('error', (err: any) => {
+      console.warn(`Could not bind to port ${port} (${isPrimary ? 'Primary' : 'Fallback'}):`, err.message);
+    });
+  } catch (err: any) {
+    console.warn(`Error starting server on port ${port}:`, err.message);
+  }
+}
+
+const primaryPort = PORT;
+console.log(`Starting listeners. Primary port: ${primaryPort}`);
+startServerOnPort(primaryPort, true);
+
+// Fallback ports
+const fallbacks = [8000, 7860, 3000].filter(p => p !== primaryPort);
+for (const fallbackPort of fallbacks) {
+  startServerOnPort(fallbackPort, false);
+}
