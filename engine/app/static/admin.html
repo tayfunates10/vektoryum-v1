@@ -12,7 +12,7 @@
   .grid,.preview{display:grid;grid-template-columns:1fr 1fr;gap:14px}.preview{margin-top:12px}
   .shot{background:#fff;border-radius:12px;min-height:220px;display:grid;place-items:center;overflow:hidden}.shot img{max-width:100%;max-height:360px;display:block}
   .badge{padding:5px 10px;border-radius:999px;background:rgba(75,141,255,.16);color:#8db6ff;font-weight:700}.warn{color:#fbbf24}.ok{color:#34d399}.muted{color:#93a1c4}
-  .btn{border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.06);color:#fff;border-radius:10px;padding:9px 12px;cursor:pointer;text-decoration:none;display:inline-flex}.downloads{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+  .btn{border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.06);color:#fff;border-radius:10px;padding:9px 12px;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;gap:7px}.btn:disabled{opacity:.55;cursor:wait}.btn-canary{border-color:rgba(48,213,255,.45);background:linear-gradient(135deg,rgba(77,141,255,.22),rgba(151,82,255,.18),rgba(48,213,255,.18));box-shadow:0 0 18px rgba(48,213,255,.18)}.downloads{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
   pre{white-space:pre-wrap;color:#cbd5ff;background:rgba(0,0,0,.22);border-radius:12px;padding:12px;max-height:280px;overflow:auto}
   @media(max-width:800px){.grid,.preview{grid-template-columns:1fr}.top{align-items:flex-start;flex-direction:column}}
 </style>
@@ -46,6 +46,7 @@ function row(j){
     <div class="downloads">
       ${Object.entries(d).map(([k,v])=>`<a class="btn" href="${v}" target="_blank">${k.toUpperCase()}</a>`).join('')}
       ${j.detail_url?`<button class="btn" onclick="detail('${j.job_id}')">Raporu aç</button>`:''}
+      ${j.original_url?`<button class="btn btn-canary" id="compare-btn-${j.job_id}" onclick="compareV2('${j.job_id}')">⚖️ v2 ile karşılaştır</button>`:''}
     </div>
     <pre id="detail-${j.job_id}">Düzeltme analizi için orijinal ve çıktı yan yana incelenir. Raporu aç ile aday, skor ve kalite detaylarını gör.</pre>
   </div>`
@@ -56,6 +57,30 @@ async function detail(id){
   const r=await fetch('/api/admin/jobs/'+id);
   const d=await r.json();
   box.textContent=JSON.stringify(d,null,2);
+}
+async function compareV2(id){
+  const box=document.getElementById('detail-'+id);
+  const btn=document.getElementById('compare-btn-'+id);
+  if(btn){ btn.disabled=true; btn.textContent='v2 ölçülüyor...'; }
+  box.textContent='v2 canary çıktısı üretiliyor, export ve kalite karşılaştırması çalışıyor...';
+  try{
+    const r=await fetch('/api/admin/jobs/'+id+'/v2-compare',{method:'POST'});
+    const d=await r.json();
+    if(!r.ok){ throw new Error(d.detail||'v2 karşılaştırma başarısız'); }
+    const c=d.comparison||{};
+    box.textContent=[
+      'v2 karşılaştırma tamamlandı',
+      'Öneri: '+(c.winner||'-'),
+      'Fidelity farkı: '+(c.delta_fidelity==null?'-':c.delta_fidelity),
+      'Sebepler: '+((c.reasons||[]).join(' · ')||'-'),
+      '',
+      JSON.stringify(d,null,2)
+    ].join('\n');
+  }catch(err){
+    box.textContent='Hata: '+err.message;
+  }finally{
+    if(btn){ btn.disabled=false; btn.textContent='⚖️ v2 ile karşılaştır'; }
+  }
 }
 async function load(){
   const r=await fetch('/api/admin/jobs');
