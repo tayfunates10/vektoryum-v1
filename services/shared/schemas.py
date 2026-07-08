@@ -79,3 +79,21 @@ class VectorizeResult(BaseModel):
     outputs: dict[OutputFormat, Path] = Field(default_factory=dict)
     quality_report: QualityReport | None = None
     error: str | None = None
+
+
+class FeedbackIssue(str, Enum):
+    color_deviation = "color_deviation"  # Renk sapması
+    edge_distortion = "edge_distortion"  # Kenar bozulması
+    missing_detail = "missing_detail"    # Eksik detay
+    other = "other"                      # Diğer
+
+
+class FeedbackRequest(BaseModel):
+    job_id: str = Field(..., min_length=32, max_length=32, description="Sorunlu işin benzersiz kimliği")
+    issue_type: FeedbackIssue = Field(..., description="Hata kategorisi")
+    coordinate_x: float | None = Field(default=None, description="Hatanın oluştuğu X koordinatı (isteğe bağlı)")
+    coordinate_y: float | None = Field(default=None, description="Hatanın oluştuğu Y koordinatı (isteğe bağlı)")
+    user_comment: str | None = Field(default=None, description="Kullanıcı geri bildirimi ve açıklaması")
+    expected_color_hex: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$", description="Beklenen renk (CIELAB ΔE hesaplamaları için)")
+    actual_color_hex: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$", description="Gözlemlenen renk")
+

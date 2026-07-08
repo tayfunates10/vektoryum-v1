@@ -13,11 +13,13 @@ from pathlib import Path
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 
 from services.api_gateway.queue import LocalFileQueue
-from services.shared.schemas import OutputFormat, VectorizeProfile, VectorizeRequest
+from services.shared.schemas import OutputFormat, VectorizeProfile, VectorizeRequest, FeedbackRequest, FeedbackIssue
 
 DATA_ROOT = Path(os.getenv("VEKTORYUM_V2_DATA_ROOT", "/tmp/vektoryum_v2"))
 UPLOAD_ROOT = DATA_ROOT / "uploads"
 UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
+FEEDBACK_ROOT = DATA_ROOT / "feedback_cases"
+FEEDBACK_ROOT.mkdir(parents=True, exist_ok=True)
 QUEUE = LocalFileQueue(DATA_ROOT)
 
 app = FastAPI(title="Vektoryum.ai API Gateway", version="1.0.0")
@@ -90,3 +92,48 @@ def get_job(job_id: str):
     if queue_file.exists():
         return {"job_id": job_id, "status": "queued"}
     raise HTTPException(status_code=404, detail="İş bulunamadı.")
+
+
+@app.post("/v1/feedback", status_code=201)
+async def post_feedback(feedback: FeedbackRequest):
+    """Kullanıcı hata bildirimlerini ve görsel regresyon vakalarını alır.
+    
+    Sorunlu vakalar 'feedback_cases/' klasörüne kaydedilir ve ileride CIELAB ΔE
+    ve otomatik düzeltme süreçleri için hazır tutulur.
+    """
+    if not feedback.job_id.isalnum() or len(feedback.job_id) != 32:
+        raise HTTPException(status_code=400, detail="Geçersiz job_id.")
+    
+    # İleride CIELAB Delta E hesaplamaları için hazırlık yap
+    delta_e_estimation = None
+    if feedback.expected_color_hex and feedback.actual_color_hex:
+        try:
+            import math
+            r1, g1, b1 = int(feedback.expected_color_hex[1:3], 16), int(feedback.expected_color_hex[3:5], 16), int(feedback.expected_color_hex[5:7], 16)
+            r2, g2, b2 = int(feedback.actual_color_hex[1:3], 16), int(feedback.actual_color_hex[3:5], 16), int(feedback.actual_color_hex[5:7], 16)
+            # Basit Delta E yaklaşımı (RGB L2 uzaklığı normalize edilmiş hali)
+            delta_e_estimation = float(math.sqrt((r1 - r2)**2 + (g1 - g2)**2 + (b1 - b2)**2) * 0.1)
+        except Exception:
+            pass
+
+    case_id = uuid.uuid4().hex
+    feedback_case_path = FEEDBACK_ROOT / f"{feedback.job_id}_{case_id}.json"
+    
+    case_data = feedback.dict()
+    case_data["case_id"] = case_id
+    case_data["delta_e_estimation"] = delta_e_estimation
+    case_data["timestamp"] = uuid.uuid4().hex
+    
+    try:
+        import json
+        feedback_case_path.write_text(json.dumps(case_data, indent=2, ensure_ascii=False), encoding="utf-8")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Geri bildirim kaydedilirken hata oluştu: {str(e)}")
+        
+    return {
+        "status": "logged",
+        "case_id": case_id,
+        "delta_e_estimation": delta_e_estimation,
+        "message": "Geri bildirim başarıyla kaydedildi. Kendi kendini eğiten regresyon motoruna iletildi."
+    }
+

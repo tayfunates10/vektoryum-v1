@@ -170,20 +170,69 @@ class PerfectVectorizer:
         contours = sorted(contours, key=cv2.contourArea, reverse=True)
         return contours
 
+    def _rdp(self, points: np.ndarray, epsilon: float) -> np.ndarray:
+        """Standard Ramer-Douglas-Peucker (RDP) path simplification algorithm."""
+        if len(points) < 3 or epsilon <= 0:
+            return points
+
+        def find_furthest(pts, start, end):
+            max_dist = 0.0
+            idx = -1
+            a = pts[start]
+            b = pts[end]
+            ab_vec = b - a
+            ab_len_sq = np.dot(ab_vec, ab_vec)
+            for i in range(start + 1, end):
+                p = pts[i]
+                if ab_len_sq == 0:
+                    dist = np.linalg.norm(p - a)
+                else:
+                    # Projection of p onto the line segment ab
+                    t = np.dot(p - a, ab_vec) / ab_len_sq
+                    t = np.clip(t, 0.0, 1.0)
+                    projection = a + t * ab_vec
+                    dist = np.linalg.norm(p - projection)
+                if dist > max_dist:
+                    max_dist = dist
+                    idx = i
+            return idx, max_dist
+
+        keep = np.zeros(len(points), dtype=bool)
+        keep[0] = True
+        keep[-1] = True
+
+        stack = [(0, len(points) - 1)]
+        while stack:
+            start, end = stack.pop()
+            if end - start < 2:
+                continue
+            idx, max_dist = find_furthest(points, start, end)
+            if max_dist > epsilon:
+                keep[idx] = True
+                stack.append((start, idx))
+                stack.append((idx, end))
+
+        return points[keep]
+
     def _contour_to_path(self, contour: np.ndarray, *, smooth: bool) -> str | None:
         peri = cv2.arcLength(contour, True)
         if peri <= 0:
             return None
         epsilon = max(0.65, 0.0028 * peri)
-        approx = cv2.approxPolyDP(contour, epsilon, True).reshape(-1, 2).astype(float)
-        if len(approx) < 3:
+        
+        # Reshape contour of shape (N, 1, 2) to (N, 2)
+        pts = contour.reshape(-1, 2).astype(float)
+        # Apply the native RDP algorithm for high fidelity/minimal anchor points
+        simplified = self._rdp(pts, epsilon)
+        
+        if len(simplified) < 3:
             return None
-        if not smooth or len(approx) < 7:
-            coords = [f"M {approx[0,0]:.2f} {approx[0,1]:.2f}"]
-            coords += [f"L {x:.2f} {y:.2f}" for x, y in approx[1:]]
+        if not smooth or len(simplified) < 7:
+            coords = [f"M {simplified[0,0]:.2f} {simplified[0,1]:.2f}"]
+            coords += [f"L {x:.2f} {y:.2f}" for x, y in simplified[1:]]
             coords.append("Z")
             return " ".join(coords)
-        return self._catmull_rom_closed_path(approx)
+        return self._catmull_rom_closed_path(simplified)
 
     def _catmull_rom_closed_path(self, pts: np.ndarray) -> str:
         commands = [f"M {pts[0,0]:.2f} {pts[0,1]:.2f}"]
