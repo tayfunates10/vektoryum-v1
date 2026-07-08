@@ -30,3 +30,11 @@ Thumbs.db
 # Derin öğrenme model ağırlıkları (models/fetch_hed.py ile indirilir)
 engine/models/*.caffemodel
 engine/regression/
+
+# Node.js
+node_modules/
+dist/
+vector_jobs/
+vektoryum_data/
+.dev.env.json
+.dev.pid

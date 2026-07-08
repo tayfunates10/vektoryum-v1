@@ -1,26 +1,20 @@
-# Hugging Face Spaces (Docker SDK) derleme imajı — derleme bağlamı repo KÖKÜdür.
-# (Yerel/Render için engine/Dockerfile kullanılır; bu yalnız HF Space içindir.)
-FROM python:3.11-slim
+# Build stage
+FROM node:20-slim AS builder
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY . .
+RUN npm run build
 
-RUN apt-get update \
- && apt-get install -y --no-install-recommends libglib2.0-0 libcairo2 \
- && rm -rf /var/lib/apt/lists/*
+# Production stage
+FROM node:20-slim
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --only=production
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/engine/app/static ./engine/app/static
 
-WORKDIR /srv/engine
-
-COPY engine/requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
-
-COPY engine/app ./app
-COPY engine/models ./models
-
-# HF free kademe 16GB RAM verir: paralel aday + daha yüksek girdi sınırı rahat.
-ENV PYTHONUNBUFFERED=1 \
-    VEKTORYUM_WORKERS=2 \
-    VEKTORYUM_MAX_INPUT_SIDE=2600
-
+ENV PORT=8000
 EXPOSE 8000
 
-# HF, app_port'a (README frontmatter = 8000) yönlendirir ve PORT env'ini verir;
-# exec ile uvicorn PID 1 -> temiz kapanış.
-CMD ["sh", "-c", "exec python -m uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+CMD ["node", "dist/server.cjs"]

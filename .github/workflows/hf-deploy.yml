@@ -27,20 +27,16 @@ jobs:
           rm -rf /tmp/hf-space
           mkdir -p /tmp/hf-space
 
-          echo "engine klasörünün içeriği HF kök dizinine kopyalanıyor..."
-          rsync -a ./engine/ /tmp/hf-space/ \
-            --exclude "regression" \
-            --exclude "__pycache__" \
-            --exclude ".pytest_cache" \
-            --exclude ".vscode" \
-            --exclude "tests" \
-            --exclude "*.png" \
-            --exclude "*.jpg" \
-            --exclude "*.jpeg" \
-            --exclude "*.webp"
-
-          echo "README.md kopyalanıyor..."
-          cp README.md /tmp/hf-space/README.md
+          echo "Tüm repository içeriği HF kök dizinine kopyalanıyor..."
+          rsync -a ./ /tmp/hf-space/ \
+            --exclude "node_modules" \
+            --exclude "dist" \
+            --exclude ".git" \
+            --exclude "vector_jobs" \
+            --exclude "vektoryum_data" \
+            --exclude "engine/regression" \
+            --exclude "engine/__pycache__" \
+            --exclude "engine/.vscode"
 
           cd /tmp/hf-space
 
