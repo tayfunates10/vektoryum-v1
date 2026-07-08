@@ -298,6 +298,129 @@ def _max_input_side() -> int:
         return 0
 
 
+def _truthy_env(name: str, default: str = "0") -> bool:
+    return os.environ.get(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _v2_canary_enabled() -> bool:
+    """Yeni motoru kontrollü devreye almak için ayrı canary kapısı.
+
+    Varsayılan açık; çünkü bu endpoint mevcut /api/vectorize akışını değiştirmez.
+    İstenirse VEKTORYUM_V2_CANARY=0 ile tamamen kapatılabilir.
+    """
+    return _truthy_env("VEKTORYUM_V2_CANARY", "1")
+
+
+def _copy_v2_artifact(source: Path | None, target: Path) -> str | None:
+    if not source or not source.exists():
+        return None
+    shutil.copy2(source, target)
+    return target.name
+
+
+def _run_v2_canary(contents: bytes, filename: str | None, user: dict[str, Any]) -> dict[str, Any]:
+    """v2 motorunu canlı trafiğe dokunmadan test edilebilir job olarak çalıştırır."""
+    from services.vectorizer_worker.vectorizer import PerfectVectorizer
+
+    job_id = uuid.uuid4().hex
+    job_dir = _job_dir(job_id)
+    job_dir.mkdir(parents=True, exist_ok=True)
+
+    suffix = Path(filename or "upload.png").suffix or ".png"
+    original_path = job_dir / f"original{suffix}"
+    original_path.write_bytes(contents)
+
+    artifacts = PerfectVectorizer().vectorize(original_path, job_dir / "v2_artifacts")
+    svg_path = job_dir / f"{job_id}.svg"
+    shutil.copy2(artifacts.svg_path, svg_path)
+
+    outputs: dict[str, str] = {"svg": svg_path.name}
+    copied_preprocessed = _copy_v2_artifact(artifacts.preprocessed, job_dir / f"{job_id}_v2_preprocessed.png")
+    copied_edges = _copy_v2_artifact(artifacts.edge_map, job_dir / f"{job_id}_v2_edges.png")
+    copied_segments = _copy_v2_artifact(artifacts.segment_map, job_dir / f"{job_id}_v2_segments.png")
+    if copied_preprocessed:
+        outputs["preprocessed_png"] = copied_preprocessed
+    if copied_edges:
+        outputs["edge_map_png"] = copied_edges
+    if copied_segments:
+        outputs["segment_map_png"] = copied_segments
+
+    svg_text = svg_path.read_text(encoding="utf-8", errors="ignore")
+    path_count = svg_text.count("<path")
+    quality_report = {
+        "status": "canary_review",
+        "warnings": [
+            "v2 canary çıktısıdır; ana /api/vectorize akışı değiştirilmeden kontrollü inceleme için üretilmiştir."
+        ],
+        "metrics": {
+            "path_count": path_count,
+            "has_bitmap": "<image" in svg_text.lower(),
+            "empty_groups": svg_text.count("<g></g>"),
+        },
+    }
+
+    final_report = {
+        "job_id": job_id,
+        "engine_version": "v2-canary",
+        "rollout": {
+            "mode": "controlled_canary",
+            "stable_endpoint_unchanged": True,
+            "canary_endpoint": "/api/vectorize-v2",
+        },
+        "user": {"email": user.get("email"), "name": user.get("name")},
+        "mode_used": "v2_auto",
+        "candidate_report": {
+            "best_candidate": "PerfectVectorizer",
+            "selection_reason": "v2 kontrollü canary endpoint'i üzerinden izole çalıştırıldı.",
+            "candidates": [
+                {
+                    "name": "PerfectVectorizer",
+                    "success": True,
+                    "engine": "services.vectorizer_worker.vectorizer",
+                    "path_count": path_count,
+                }
+            ],
+        },
+        "quality_report": quality_report,
+        "outputs": outputs,
+        "output_errors": {},
+        "download_links": {"svg": f"/api/download/{job_id}/svg"},
+    }
+
+    (job_dir / "report.json").write_text(json.dumps(final_report, ensure_ascii=False, indent=2), encoding="utf-8")
+    _sync_job_to_hub(job_id)
+    return final_report
+
+
+# ---------------------------------------------------------------------------
+# /api/vectorize-v2
+# ---------------------------------------------------------------------------
+@app.post("/api/vectorize-v2", summary="v2 motorunu kontrollü canary olarak çalıştırır")
+async def vectorize_image_v2(
+    file: UploadFile = File(...),
+    session: str | None = Cookie(default=None),
+):
+    user = _require_user(session)
+    if not _v2_canary_enabled():
+        raise HTTPException(status_code=404, detail="v2 canary endpoint şu anda kapalı.")
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Desteklenmeyen dosya türü.")
+
+    try:
+        contents = await file.read()
+        image = Image.open(io.BytesIO(contents))
+        image.load()
+    except Exception as e:  # noqa: BLE001
+        logger.error("v2 canary görsel okuma hatası: %s", e)
+        raise HTTPException(status_code=400, detail="Görsel dosyası bozuk veya okunamıyor.")
+
+    try:
+        return JSONResponse(content=_run_v2_canary(contents, file.filename, user))
+    except Exception as e:  # noqa: BLE001
+        logger.error("v2 canary pipeline hatası: %s", e)
+        raise HTTPException(status_code=500, detail=f"v2 canary işlemi başarısız: {e}")
+
+
 # ---------------------------------------------------------------------------
 # /api/vectorize
 # ---------------------------------------------------------------------------

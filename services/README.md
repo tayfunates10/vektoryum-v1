@@ -31,3 +31,17 @@ services/
 The current monolith remains active while this v2 system is built. New code must
 not call legacy internals directly; shared behavior should move behind contracts
 in `services/shared`.
+
+## Controlled rollout
+
+The production `/api/vectorize` endpoint is intentionally unchanged. The
+monolith exposes the v2 worker only through an authenticated canary endpoint:
+
+```text
+POST /api/vectorize-v2
+```
+
+This endpoint writes a normal job folder and `report.json`, so admin review,
+download links and Hugging Face persistence can inspect v2 output without
+sending regular users through the new engine. Set `VEKTORYUM_V2_CANARY=0` to
+disable the canary gate completely.
