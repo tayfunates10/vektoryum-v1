@@ -345,25 +345,129 @@
   .overlay { position: fixed; inset: 0; z-index: 60; display: none; background: rgba(8,12,26,.86);
     backdrop-filter: blur(10px); }
   .overlay.on { display: flex; }
-  #loading { flex-direction: column; align-items: center; justify-content: center; gap: 20px; text-align: center; }
-  .loader-wrap { position: relative; width: 176px; height: 176px; }
-  .loader-ring { position: absolute; inset: 0; transform: rotate(-90deg); }
-  .loader-ring .track { fill: none; stroke: rgba(255,255,255,.10); stroke-width: 6; }
-  .loader-ring .prog { fill: none; stroke: url(#ldGrad); stroke-width: 6; stroke-linecap: round;
-    stroke-dasharray: 339.29; stroke-dashoffset: 339.29; transition: stroke-dashoffset .3s ease; }
-  .loader-core { position: absolute; inset: 0; display: grid; place-items: center; }
-  .loader-core svg { width: 92px; height: 92px; }
-  .lc-link { stroke: url(#ldGrad); stroke-width: 3; stroke-linecap: round; opacity: .5;
-    stroke-dasharray: 4 6; animation: dashmove 1.2s linear infinite; }
-  @keyframes dashmove { to { stroke-dashoffset: -20; } }
-  .lc-node { fill: #fff; transform-box: fill-box; transform-origin: center; animation: pulse 1.8s ease-in-out infinite; }
-  .lc-node.n2{animation-delay:.3s}.lc-node.n3{animation-delay:.6s}.lc-node.n4{animation-delay:.9s}.lc-node.n5{animation-delay:1.2s}
-  .lc-trace { fill: none; stroke: var(--accent-3); stroke-width: 3; stroke-linecap: round;
-    stroke-dasharray: 190; stroke-dashoffset: 190; animation: laDraw 2.4s ease-in-out infinite; }
-  @keyframes laDraw { 0%{stroke-dashoffset:190} 50%{stroke-dashoffset:0} 100%{stroke-dashoffset:-190} }
-  .loader-pct { position: absolute; inset: 0; display: grid; place-items: center; font-size: 30px; font-weight: 800; letter-spacing: -.02em; }
-  #loading .lmsg { font-size: 15px; color: var(--muted); }
-  #loading .lstep { font-weight: 700; color: var(--ink); }
+  /* ============ AI İŞLEME EKRANI (referans görsel uyarlaması) ============ */
+  #loading { flex-direction: column; align-items: center; justify-content: center; text-align: center;
+    gap: clamp(10px, 2dvh, 20px); overflow-y: auto; overflow-x: hidden;
+    padding: max(16px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom));
+    background:
+      radial-gradient(560px 420px at 12% 8%, rgba(124,69,245,.16) 0%, transparent 60%),
+      radial-gradient(620px 520px at 88% 42%, rgba(50,130,255,.13) 0%, transparent 62%),
+      radial-gradient(120% 90% at 50% 50%, transparent 55%, rgba(0,0,0,.5) 100%),
+      linear-gradient(180deg, #030718 0%, #071027 100%); backdrop-filter: none; }
+  /* açılış sıralaması */
+  @keyframes ldIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+  @keyframes ldInOrb { from { opacity: 0; transform: scale(.96); } to { opacity: 1; transform: none; } }
+  #loading.on .ld-e1 { animation: ldIn .55s cubic-bezier(.22,1,.36,1) .15s both; }
+  #loading.on .ld-e2 { animation: ldIn .6s cubic-bezier(.22,1,.36,1) .25s both; }
+  #loading.on .ld-e2 .ld-orbwrap { animation: ldInOrb .6s cubic-bezier(.22,1,.36,1) .4s both; }
+  #loading.on .ld-e3 { animation: ldIn .6s cubic-bezier(.22,1,.36,1) .75s both; }
+  #loading.on .ld-e4 { animation: ldIn .6s cubic-bezier(.22,1,.36,1) .9s both; }
+
+  /* üst durum rozeti */
+  .ld-badge { display: inline-flex; align-items: center; gap: 10px; color: #cfd9f6; }
+  .ld-cap { display: inline-flex; align-items: center; gap: 9px; padding: 8px 16px; border-radius: 999px;
+    border: 1px solid rgba(112,139,255,.28); background: rgba(10,18,47,.62);
+    font-size: 11.5px; font-weight: 600; letter-spacing: .12em; color: #dfe6fb; }
+  .ld-orb { width: 13px; height: 13px; border-radius: 50%; flex: none;
+    background: radial-gradient(circle at 32% 28%, #dffcff 0%, #28e7ff 34%, #3282ff 62%, #b44cff 100%);
+    box-shadow: 0 0 10px 1px rgba(40,231,255,.55); animation: statusPulse 2.4s ease-in-out infinite; }
+  @keyframes statusPulse { 0%,100% { transform: scale(.9); box-shadow: 0 0 7px 0 rgba(40,231,255,.4); }
+    50% { transform: scale(1.06); box-shadow: 0 0 14px 3px rgba(40,231,255,.7); } }
+  .ld-dash { width: 26px; height: 1px; flex: none; background: linear-gradient(90deg, transparent, rgba(112,139,255,.55)); position: relative; }
+  .ld-dash.r { transform: scaleX(-1); }
+  .ld-dash::after { content: ""; position: absolute; right: -7px; top: -1.5px; width: 4px; height: 4px; border-radius: 50%;
+    background: #3282ff; animation: ldBlink 1.6s ease-in-out infinite; }
+  .ld-dash.r::after { animation-delay: .8s; }
+  @keyframes ldBlink { 0%,100% { opacity: .25; } 50% { opacity: 1; } }
+
+  /* cam panel */
+  .ld-panel { position: relative; width: min(88vw, 440px, calc(100dvh - 300px)); min-width: 236px; aspect-ratio: 1 / 1.04;
+    border-radius: 36px; border: 1px solid rgba(112,139,255,.26); background: rgba(10,18,47,.62);
+    backdrop-filter: blur(8px); overflow: hidden; flex: none;
+    box-shadow: 0 30px 80px -40px rgba(0,0,0,.9), inset 0 1px 0 rgba(255,255,255,.05); }
+  .ld-panel::before { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+    background: radial-gradient(300px 190px at 0% 0%, rgba(180,76,255,.14) 0%, transparent 60%),
+      radial-gradient(300px 190px at 100% 0%, rgba(40,231,255,.10) 0%, transparent 60%); }
+  .ld-orbwrap { position: relative; width: 88%; margin: 5% auto 0; aspect-ratio: 1; z-index: 2; }
+  .ld-orbwrap > svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+  /* dekoratif sahne: yörüngeler + halkalar + tikler + ışık noktası */
+  .ld-rot { transform-origin: 300px 300px; }
+  .ld-main-ring { animation: ldSpin 16s linear infinite; }
+  .ld-ticks { animation: ldSpinRev 22s linear infinite; }
+  .ld-tickwave { animation: ldTickWave 5.5s linear infinite; }
+  @keyframes ldTickWave { to { stroke-dashoffset: -942.5; } }
+  .ld-rotor { animation: ldSpin 6s cubic-bezier(.42,.1,.58,.9) infinite; }
+  .ld-o1 { animation: ldSpin 9s linear infinite; }
+  .ld-o2 { animation: ldSpinRev 13s linear infinite; }
+  .ld-o3 { animation: ldSpin 18s linear infinite; }
+  .ld-o4 { animation: ldSpinRev 24s linear infinite; }
+  @keyframes ldSpin { to { transform: rotate(360deg); } }
+  @keyframes ldSpinRev { to { transform: rotate(-360deg); } }
+
+  /* gerçek ilerleme halkası (JS: #ringProg — dokunma). Ana halkanın hemen
+     içinde durur: yarıçap oranı 176/600, kendi kutusunda 54/120 -> %65.2. */
+  .ld-real { transform: rotate(-90deg); left: 17.4% !important; top: 17.4% !important;
+    width: 65.2% !important; height: 65.2% !important; }
+  .ld-real .track { fill: none; stroke: rgba(255,255,255,.07); stroke-width: 2.6; }
+  .ld-real .prog { fill: none; stroke: url(#ldGrad); stroke-width: 2.6; stroke-linecap: round;
+    stroke-dasharray: 339.29; stroke-dashoffset: 339.29; transition: stroke-dashoffset .3s ease;
+    filter: drop-shadow(0 0 4px rgba(40,231,255,.55)); }
+
+  /* merkez: yüzde + sonsuzluk */
+  .ld-center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: clamp(2px, 1.2vmin, 10px); z-index: 3; pointer-events: none; }
+  .ld-pct { display: inline-flex; align-items: baseline; line-height: 1; font-weight: 800; letter-spacing: -.03em;
+    font-variant-numeric: tabular-nums; font-size: clamp(40px, 10.5vmin, 84px);
+    background: linear-gradient(180deg, #ffffff 30%, #bcd7ff 100%); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .ld-pct .ld-pcts { font-size: .38em; font-weight: 700; margin-left: .06em; }
+  .ld-inf { width: clamp(74px, 18vmin, 138px); height: auto; overflow: visible; animation: ldInfGlow 3.6s ease-in-out infinite; }
+  @keyframes ldInfGlow { 0%,100% { filter: drop-shadow(0 0 4px rgba(86,104,255,.35)); }
+    50% { filter: drop-shadow(0 0 10px rgba(120,88,255,.6)); } }
+  /* 271 = path'in ölçülen gerçek uzunluğu; toplam dash = uzunluk -> dikişsiz döngü */
+  .ld-inf .inf-flow { stroke-dasharray: 34 237; animation: ldInfFlow 3.2s linear infinite; }
+  @keyframes ldInfFlow { to { stroke-dashoffset: -271; } }
+
+  /* dijital mesh dalgası */
+  .ld-mesh { position: absolute; left: 0; right: 0; bottom: 0; height: 29%; z-index: 1; overflow: hidden; pointer-events: none;
+    -webkit-mask-image: linear-gradient(180deg, transparent 0%, #000 34%); mask-image: linear-gradient(180deg, transparent 0%, #000 34%); }
+  .ld-mesh svg { position: absolute; bottom: -4px; left: 0; width: 200%; height: 100%; }
+  .ld-mesh .m1 { animation: ldMeshL 12s linear infinite; }
+  .ld-mesh .m2 { animation: ldMeshR 16s linear infinite; }
+  .ld-mesh .m3 { animation: ldMeshL 15s linear infinite; }
+  @keyframes ldMeshL { to { transform: translateX(-50%); } }
+  @keyframes ldMeshR { from { transform: translateX(-50%); } to { transform: none; } }
+
+  /* metinler + durum noktaları */
+  #loading .lstep { font-weight: 680; color: #f4f7ff; font-size: clamp(20px, 5.4vw, 29px); letter-spacing: -.015em; }
+  #loading .lmsg { color: #8f9ec2; font-size: clamp(13.5px, 3.6vw, 16.5px); margin-top: 4px; }
+  #loading .lmsg .ldd { display: inline-block; animation: ldBlink 1.4s ease-in-out infinite; }
+  #loading .lmsg .ldd:nth-child(2) { animation-delay: .16s; }
+  #loading .lmsg .ldd:nth-child(3) { animation-delay: .32s; }
+  .ld-dots { display: flex; gap: 10px; justify-content: center; }
+  .ld-dots span { width: 7px; height: 7px; border-radius: 50%; background: #26314f; transition: background .3s, box-shadow .3s; }
+  .ld-dots span.on { background: #28e7ff; box-shadow: 0 0 8px 1px rgba(40,231,255,.6); animation: statusPulse 2.2s ease-in-out infinite; }
+
+  /* alt adım göstergesi */
+  .ld-steps { display: flex; align-items: center; width: min(88vw, 400px); flex: none; }
+  .ld-step { width: clamp(40px, 11vw, 52px); aspect-ratio: 1; border-radius: 50%; flex: none; display: grid; place-items: center;
+    border: 1.4px solid rgba(112,139,255,.35); background: rgba(10,18,47,.72); color: #8f9ec2; transition: color .3s, border-color .3s, box-shadow .3s; }
+  .ld-step svg { width: 45%; height: 45%; }
+  .ld-step.s1 { border-color: rgba(180,76,255,.5); color: #b44cff; }
+  .ld-step.s3 { border-color: rgba(45,216,190,.5); color: #2dd8be; }
+  .ld-step.on { color: #28e7ff; border-color: rgba(40,231,255,.75); box-shadow: 0 0 16px -2px rgba(40,231,255,.5); animation: ldStepPulse 2.2s ease-in-out infinite; }
+  .ld-step.on svg { animation: ldInfGlow 2.2s ease-in-out infinite; }
+  .ld-step.done { color: #b44cff; }
+  @keyframes ldStepPulse { 0%,100% { box-shadow: 0 0 10px -3px rgba(40,231,255,.45); } 50% { box-shadow: 0 0 20px -1px rgba(40,231,255,.7); } }
+  .ld-link { flex: 1; height: 2px; position: relative; margin: 0 8px; }
+  .ld-link.dashed { background: repeating-linear-gradient(90deg, rgba(140,120,255,.55) 0 7px, transparent 7px 14px); height: 2px; }
+  .ld-link.solid { background: rgba(80,140,255,.4); }
+  .ld-link .ld-cdot { position: absolute; top: -2.5px; left: 2%; width: 7px; height: 7px; border-radius: 50%; }
+  .ld-link.dashed .ld-cdot { background: #b44cff; box-shadow: 0 0 8px 1px rgba(180,76,255,.7); animation: ldTravel 3.4s ease-in-out infinite; }
+  .ld-link.solid .ld-cdot { background: #28e7ff; box-shadow: 0 0 8px 1px rgba(40,231,255,.7); animation: ldTravel 2.8s ease-in-out infinite .6s; }
+  @keyframes ldTravel { 0% { left: 2%; opacity: 0; } 12% { opacity: 1; } 88% { opacity: 1; } 100% { left: 92%; opacity: 0; } }
+  .ld-stepnum { display: flex; align-items: center; gap: 12px; color: #8f9ec2; font-size: 13px; letter-spacing: .04em; }
+  .ld-stepnum::before, .ld-stepnum::after { content: ""; width: 22px; height: 1px; background: rgba(112,139,255,.4); }
 
   /* preview overlay */
   #preview { flex-direction: column; background: rgba(8,12,26,.96); }
@@ -773,28 +877,126 @@
 <!-- back to top -->
 <button id="toTop" title="Başa dön" aria-label="Başa dön"><svg class="ic"><use href="#i-arrow-up"/></svg></button>
 
-<!-- ============ LOADING OVERLAY (yüzdelikli, animasyonlu AI-vektör) ============ -->
-<div class="overlay" id="loading">
-  <div class="loader-wrap">
-    <svg class="loader-ring" viewBox="0 0 120 120"><circle class="track" cx="60" cy="60" r="54"/><circle class="prog" id="ringProg" cx="60" cy="60" r="54"/></svg>
-    <div class="loader-core">
-      <svg viewBox="0 0 100 100">
-        <path class="lc-trace" d="M30 68 C34 40 54 36 60 54 C66 34 82 40 74 60"/>
-        <line class="lc-link" x1="26" y1="30" x2="50" y2="20"/>
-        <line class="lc-link" x1="50" y1="20" x2="76" y2="34"/>
-        <line class="lc-link" x1="26" y1="30" x2="34" y2="60"/>
-        <line class="lc-link" x1="76" y1="34" x2="70" y2="64"/>
-        <line class="lc-link" x1="34" y1="60" x2="70" y2="64"/>
-        <rect class="lc-node n1" x="22" y="26" width="8" height="8" rx="2"/>
-        <rect class="lc-node n2" x="46" y="16" width="8" height="8" rx="2"/>
-        <rect class="lc-node n3" x="72" y="30" width="8" height="8" rx="2"/>
-        <rect class="lc-node n4" x="30" y="56" width="8" height="8" rx="2"/>
-        <rect class="lc-node n5" x="66" y="60" width="8" height="8" rx="2"/>
+<!-- ============ AI İŞLEME EKRANI (referans görsel uyarlaması; tamamı SVG+CSS) ============ -->
+<div class="overlay" id="loading" aria-busy="true">
+
+  <div class="ld-badge ld-e1">
+    <span class="ld-dash" aria-hidden="true"></span>
+    <span class="ld-cap"><span class="ld-orb" aria-hidden="true"></span>AI İŞLENİYOR</span>
+    <span class="ld-dash r" aria-hidden="true"></span>
+  </div>
+
+  <div class="ld-panel ld-e2">
+    <div class="ld-orbwrap">
+      <svg class="ld-scene" viewBox="0 0 600 600" fill="none" aria-hidden="true" focusable="false">
+        <defs>
+          <linearGradient id="leftRingGradient" x1="230" y1="500" x2="230" y2="100" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#6f5bff"/><stop offset=".55" stop-color="#9b55ff"/><stop offset="1" stop-color="#d15bff"/>
+          </linearGradient>
+          <linearGradient id="rightRingGradient" x1="370" y1="100" x2="370" y2="500" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#456bff"/><stop offset=".55" stop-color="#2da9ff"/><stop offset="1" stop-color="#32eaff"/>
+          </linearGradient>
+          <linearGradient id="trailGrad" x1="244" y1="108" x2="298" y2="100" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#28e7ff" stop-opacity="0"/><stop offset="1" stop-color="#28e7ff" stop-opacity=".8"/>
+          </linearGradient>
+          <radialGradient id="orbSphere" cx=".35" cy=".3" r=".9">
+            <stop offset="0" stop-color="#e8dcff"/><stop offset=".45" stop-color="#9b55ff"/><stop offset="1" stop-color="#5a2ea6"/>
+          </radialGradient>
+        </defs>
+        <!-- merkez: koyu disk + arkasında yumuşak glow -->
+        <circle cx="300" cy="300" r="168" fill="rgba(50,110,255,.06)"/>
+        <circle cx="300" cy="300" r="142" fill="rgba(4,8,24,.6)"/>
+        <!-- yörüngeler -->
+        <g class="orbit-layer">
+          <circle cx="300" cy="300" r="232" stroke="rgba(80,140,255,.20)" stroke-width="1" stroke-dasharray="3 10"/>
+          <circle cx="300" cy="300" r="252" stroke="rgba(118,140,255,.12)" stroke-width="1"/>
+          <ellipse cx="300" cy="300" rx="286" ry="196" transform="rotate(-16 300 300)" stroke="rgba(180,76,255,.16)" stroke-width="1"/>
+          <ellipse cx="300" cy="300" rx="298" ry="150" transform="rotate(14 300 300)" stroke="rgba(40,231,255,.13)" stroke-width="1"/>
+          <circle cx="90" cy="140" r="2" fill="#b44cff" opacity=".5"/>
+          <circle cx="512" cy="180" r="2" fill="#28e7ff" opacity=".5"/>
+        </g>
+        <!-- yörünge parçacıkları (farklı hız ve yönler) -->
+        <g class="ld-rot ld-o1"><circle cx="300" cy="68" r="4.5" fill="#28e7ff"/><circle cx="300" cy="68" r="8.5" stroke="rgba(40,231,255,.35)" stroke-width="1.2"/></g>
+        <g class="ld-rot ld-o2"><circle cx="104" cy="300" r="8" fill="url(#orbSphere)"/></g>
+        <g class="ld-rot ld-o3"><rect x="296" y="44" width="7" height="7" rx="1.5" fill="#3282ff" opacity=".8"/></g>
+        <g class="ld-rot ld-o4"><circle cx="532" cy="300" r="2.6" fill="#fff" opacity=".85"/><circle cx="300" cy="536" r="6" stroke="rgba(40,231,255,.5)" stroke-width="1.4"/></g>
+        <!-- ince dış çemberler -->
+        <g class="outer-rings">
+          <circle cx="300" cy="300" r="224" stroke="rgba(118,140,255,.18)" stroke-width="1.5"/>
+          <circle cx="300" cy="300" r="176" stroke="rgba(118,140,255,.14)" stroke-width="1.2"/>
+        </g>
+        <!-- ana iki renkli halka: glow + ana + highlight (yavaş döner) -->
+        <g class="ld-rot ld-main-ring">
+          <path d="M275.6 498.5 A200 200 0 0 1 275.6 101.5" stroke="url(#leftRingGradient)" stroke-width="34" stroke-linecap="round" opacity=".22"/>
+          <path d="M324.4 101.5 A200 200 0 0 1 324.4 498.5" stroke="url(#rightRingGradient)" stroke-width="34" stroke-linecap="round" opacity=".22"/>
+          <path d="M275.6 498.5 A200 200 0 0 1 275.6 101.5" stroke="url(#leftRingGradient)" stroke-width="22" stroke-linecap="round"/>
+          <path d="M324.4 101.5 A200 200 0 0 1 324.4 498.5" stroke="url(#rightRingGradient)" stroke-width="22" stroke-linecap="round"/>
+          <path d="M275.6 498.5 A200 200 0 0 1 275.6 101.5" stroke="rgba(255,255,255,.35)" stroke-width="5" stroke-linecap="round"/>
+          <path d="M324.4 101.5 A200 200 0 0 1 324.4 498.5" stroke="rgba(255,255,255,.35)" stroke-width="5" stroke-linecap="round"/>
+        </g>
+        <!-- halka üzerinde ilerleyen ışık noktası + kısa iz -->
+        <g class="ld-rot ld-rotor">
+          <path d="M244.9 107.8 A200 200 0 0 1 293 100.1" stroke="url(#trailGrad)" stroke-width="10" stroke-linecap="round"/>
+          <circle cx="300" cy="100" r="15" fill="rgba(40,231,255,.16)"/>
+          <circle cx="300" cy="100" r="9" fill="rgba(40,231,255,.45)"/>
+          <circle cx="300" cy="100" r="4.5" fill="#fff"/>
+        </g>
+        <!-- iç ölçüm/tik halkası (ters yönde döner, tarama dalgası) -->
+        <g class="ld-rot ld-ticks">
+          <circle cx="300" cy="300" r="150" stroke="rgba(50,130,255,.28)" stroke-width="14" stroke-dasharray="2.2 10.89"/>
+          <circle class="ld-tickwave" cx="300" cy="300" r="150" stroke="rgba(40,231,255,.55)" stroke-width="14" stroke-dasharray="2.2 115.6125"/>
+        </g>
+      </svg>
+      <!-- GERÇEK ilerleme halkası (JS #ringProg buraya bağlı; sahte sayaç yok) -->
+      <svg class="ld-real" viewBox="0 0 120 120" aria-hidden="true" focusable="false">
+        <circle class="track" cx="60" cy="60" r="54"/>
+        <circle class="prog" id="ringProg" cx="60" cy="60" r="54"/>
+      </svg>
+      <div class="ld-center">
+        <div class="ld-pct" aria-hidden="true"><span id="pct">0</span><span class="ld-pcts">%</span></div>
+        <svg class="ld-inf" viewBox="0 0 220 110" fill="none" aria-hidden="true" focusable="false">
+          <defs>
+            <linearGradient id="infGrad" x1="40" y1="55" x2="180" y2="55" gradientUnits="userSpaceOnUse">
+              <stop offset="0" stop-color="#9b55ff"/><stop offset=".5" stop-color="#456bff"/><stop offset="1" stop-color="#32eaff"/>
+            </linearGradient>
+          </defs>
+          <path class="inf-glow" d="M60 55 C60 30 90 30 110 55 C130 80 160 80 160 55 C160 30 130 30 110 55 C90 80 60 80 60 55 Z" stroke="url(#infGrad)" stroke-width="13" stroke-linecap="round" opacity=".3"/>
+          <path class="inf-main" d="M60 55 C60 30 90 30 110 55 C130 80 160 80 160 55 C160 30 130 30 110 55 C90 80 60 80 60 55 Z" stroke="url(#infGrad)" stroke-width="8.5" stroke-linecap="round"/>
+          <path class="inf-flow" d="M60 55 C60 30 90 30 110 55 C130 80 160 80 160 55 C160 30 130 30 110 55 C90 80 60 80 60 55 Z" stroke="#dffcff" stroke-width="4" stroke-linecap="round"/>
+        </svg>
+      </div>
+    </div>
+    <!-- dijital mesh dalgası (periyodik yol + kopya -> dikişsiz döngü) -->
+    <div class="ld-mesh" aria-hidden="true">
+      <svg viewBox="0 0 1200 160" preserveAspectRatio="none" fill="none" focusable="false">
+        <defs>
+          <linearGradient id="meshGrad" x1="0" y1="0" x2="1200" y2="0" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#3282ff"/><stop offset=".5" stop-color="#7658ff"/><stop offset="1" stop-color="#b44cff"/>
+          </linearGradient>
+          <path id="meshP" d="M0 108 C60 82 110 126 170 104 C230 82 280 122 340 100 C400 78 460 124 520 106 C560 94 580 100 600 108"
+            stroke="url(#meshGrad)" stroke-width="2.4" stroke-linecap="round" stroke-dasharray="0.1 7.2" fill="none"/>
+        </defs>
+        <g class="m1" opacity=".75"><use href="#meshP"/><use href="#meshP" x="600"/></g>
+        <g class="m2" opacity=".52"><use href="#meshP" y="18"/><use href="#meshP" x="600" y="18"/></g>
+        <g class="m3" opacity=".36"><use href="#meshP" y="36"/><use href="#meshP" x="600" y="36"/></g>
       </svg>
     </div>
-    <div class="loader-pct"><span id="pct">0</span><span style="font-size:16px">%</span></div>
   </div>
-  <div><div class="lstep" id="lstep">Görsel hazırlanıyor</div><div class="lmsg" id="lmsg">Yapay zekâ adayları izliyor…</div></div>
+
+  <div class="ld-texts ld-e3" role="status" aria-live="polite">
+    <div class="lstep" id="lstep">Önizleme hazırlanıyor</div>
+    <div class="lmsg" id="lmsg">Yapay zekâ adayları izliyor<span class="ldd">.</span><span class="ldd">.</span><span class="ldd">.</span></div>
+  </div>
+  <div class="ld-dots ld-e3" aria-hidden="true"><span id="ldDot1"></span><span id="ldDot2" class="on"></span><span id="ldDot3"></span></div>
+
+  <div class="ld-steps ld-e4" aria-hidden="true">
+    <span class="ld-step s1" id="ldStep1"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7.5 3.5h6l4 4V20.5h-10z"/><path d="M13 3.5V8h4.5"/><path d="M10 12.5h5M10 16h5"/></svg></span>
+    <span class="ld-link dashed"><span class="ld-cdot"></span></span>
+    <span class="ld-step s2" id="ldStep2"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4.5l1.7 4.9 4.9 1.7-4.9 1.7L12 17.7l-1.7-4.9-4.9-1.7 4.9-1.7z"/><path d="M18.5 16.5v3M17 18h3"/></svg></span>
+    <span class="ld-link solid"><span class="ld-cdot"></span></span>
+    <span class="ld-step s3" id="ldStep3"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 12.5l3.5 3.5 7-8"/></svg></span>
+  </div>
+  <div class="ld-stepnum ld-e4">Adım&nbsp;<span id="ldStepNum">1</span>&nbsp;/&nbsp;3</div>
 </div>
 
 <!-- ============ PREVIEW OVERLAY (önizleme geçişi) ============ -->
@@ -982,14 +1184,24 @@
 
   // ---- loading overlay w/ percentage ----
   const RING = 2 * Math.PI * 54;
-  let prog = 0, progRAF = null, progT0 = 0, done = false;
+  let prog = 0, progRAF = null, progT0 = 0, done = false, lastPhase = 0;
+  // Alt adım göstergesi + durum noktaları GERÇEK ilerlemeye bağlı:
+  // <42 hazırlık (belge), <88 yapay zekâ işleme, >=88 önizleme/onay.
+  function syncLoadPhase(ph) {
+    $("ldStepNum").textContent = ph;
+    for (let i = 1; i <= 3; i++) {
+      $("ldStep" + i).classList.toggle("on", i === ph);
+      $("ldStep" + i).classList.toggle("done", i < ph);
+      $("ldDot" + i).classList.toggle("on", i === ph);
+    }
+  }
   function setPct(p) {
     prog = p; $("pct").textContent = Math.round(p);
     $("ringProg").style.strokeDashoffset = RING * (1 - p / 100);
   }
   const STEPS = [[0,"Görsel hazırlanıyor"],[18,"Renkler analiz ediliyor"],[42,"Vektör adayları izleniyor"],[70,"Kenarlar temizleniyor"],[88,"Önizleme hazırlanıyor"]];
   function startLoading() {
-    done = false; setPct(0); progT0 = performance.now();
+    done = false; setPct(0); lastPhase = 0; progT0 = performance.now();
     $("loading").classList.add("on");
     const tick = (now) => {
       const t = (now - progT0) / 1000;
@@ -1002,6 +1214,8 @@
       let step = STEPS[0][1];
       for (const [th, lbl] of STEPS) if (next >= th) step = lbl;
       $("lstep").textContent = step;
+      const phase = next < 42 ? 1 : (next < 88 ? 2 : 3);
+      if (phase !== lastPhase) { lastPhase = phase; syncLoadPhase(phase); }
       if (done && next > 99.4) { setPct(100); return; }
       progRAF = requestAnimationFrame(tick);
     };
