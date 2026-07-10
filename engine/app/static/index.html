@@ -8,7 +8,7 @@
 <style>
   :root {
     --hdr: 62px;
-    --bg: #0b1020; --bg-2: #0e1530; --panel: #111a35; --panel-2: #16224a;
+    --bg: #050816; --bg-2: #0b1226; --panel: #111a35; --panel-2: #16224a;
     --ink: #eaf0ff; --muted: #93a1c4; --line: rgba(255,255,255,.10); --line-2: rgba(255,255,255,.18);
     --accent: #4b8dff; --accent-2: #8b5cf6; --accent-3: #22d3ee;
     --ok: #34d399; --ok-bg: rgba(52,211,153,.14); --warn: #fbbf24; --warn-bg: rgba(251,191,36,.14);
@@ -20,8 +20,9 @@
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
   body {
-    background: radial-gradient(1200px 700px at 78% -8%, #1b2a5e 0%, transparent 55%),
-                radial-gradient(900px 600px at 8% 108%, #2a1a5e 0%, transparent 55%), var(--bg);
+    background: radial-gradient(1100px 760px at 82% 26%, rgba(52,103,242,.15) 0%, transparent 60%),
+                radial-gradient(940px 700px at 2% 96%, rgba(124,69,245,.17) 0%, transparent 56%),
+                linear-gradient(180deg, #050816 0%, #070C1C 52%, #0A1024 100%);
     color: var(--ink); overflow: hidden;
     font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; -webkit-font-smoothing: antialiased;
   }
@@ -124,16 +125,7 @@
     border: 1px solid var(--line-2); border-radius: 999px; padding: 5px 12px; background: rgba(255,255,255,.03); }
   .kicker .ic { width: 15px; height: 15px; }
   h2.title { font-size: clamp(38px, 6.2vw, 68px); line-height: 1.02; letter-spacing: -.04em; margin: 16px 0 14px; font-weight: 900; }
-  .title-swap { display:inline-grid; vertical-align:baseline; min-width:clamp(210px, 34vw, 370px); }
-  .title-swap span { grid-area:1/1; opacity:0; transform:translateY(.35em); animation:titleSwap 6s ease-in-out infinite; background:var(--grad); -webkit-background-clip:text; background-clip:text; color:transparent; }
-  .title-swap span:nth-child(2){ animation-delay:3s; }
   .lead { color: var(--muted); font-size: clamp(14px, 1.7vw, 17px); max-width: 640px; }
-  .hero-facts { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; max-width:680px; margin:18px 0 0; }
-  .hero-fact { display:flex; align-items:center; gap:10px; border:1px solid var(--line); border-radius:14px; padding:10px 12px;
-    background:rgba(255,255,255,.035); color:var(--muted); font-size:13px; }
-  .hero-fact .ic { width:22px; height:22px; stroke:url(#fgrad); filter:drop-shadow(0 0 8px rgba(34,211,238,.35)); }
-  .hero-fact b { display:block; color:var(--ink); font-size:13.5px; line-height:1.15; }
-  .hero-fact span { display:block; line-height:1.25; }
 
   /* reveal base */
   .reveal { opacity: 0; transform: translateY(26px); transition: opacity .7s cubic-bezier(.2,.7,.2,1), transform .7s cubic-bezier(.2,.7,.2,1); }
@@ -141,81 +133,99 @@
   .reveal.d1{transition-delay:.06s}.reveal.d2{transition-delay:.14s}.reveal.d3{transition-delay:.22s}
   .reveal.d4{transition-delay:.30s}.reveal.d5{transition-delay:.38s}.reveal.d6{transition-delay:.46s}
 
-  /* ============ SECTION 1 — hero / upload ============ */
-  .hero-grid { display: grid; grid-template-columns: minmax(0,1.05fr) minmax(340px,.95fr); gap: clamp(18px, 3.5vw, 42px); align-items: stretch; }
-  @media (max-width: 900px) { .hero-grid { grid-template-columns: 1fr; gap: 20px; } }
-  .conds { list-style: none; margin: 18px 0 0; padding: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 8px 18px; }
-  @media (max-width: 480px){ .conds { grid-template-columns: 1fr; } }
-  .conds li { display: flex; gap: 9px; align-items: flex-start; font-size: 13.5px; color: var(--ink); }
-  .conds .ic { width: 18px; height: 18px; color: var(--ok); margin-top: 1px; }
-  .panel { background: linear-gradient(180deg, rgba(17,26,53,.58), rgba(14,21,48,.42)); border: 0;
-    border-radius: 18px; padding: clamp(16px,2.4vw,24px); box-shadow: none; align-self:stretch; display:flex; flex-direction:column; justify-content:center; }
-  .upload-head { margin-bottom:14px; }
-  .upload-eyebrow { display:inline-flex; gap:7px; align-items:center; color:var(--accent-3); font-size:12px; font-weight:800; text-transform:uppercase; letter-spacing:.08em; }
-  .upload-switch { position:relative; min-height:clamp(58px, 8vw, 82px); margin:7px 0 8px; overflow:hidden; }
-  .upload-switch span { position:absolute; inset:0 auto auto 0; font-weight:900; letter-spacing:-.04em; line-height:1.02; font-size:clamp(28px, 4vw, 48px); opacity:0; transform:translateY(20px); animation:titleSwap 6s ease-in-out infinite; }
-  .upload-switch span:nth-child(2){ animation-delay:3s; }
-  @keyframes titleSwap { 0%,42%{opacity:1; transform:none} 50%,100%{opacity:0; transform:translateY(-20px)} }
-  .upload-desc { color:var(--muted); margin:0; font-size:clamp(13px,1.4vw,15px); }
-  .upload-desc-top { margin-bottom:14px; }
-  #drop { border: 1.6px dashed var(--line-2); border-radius: 14px; padding: 22px 16px; text-align: center; height:clamp(230px, 34dvh, 360px);
-    display:flex; flex-direction:column; align-items:center; justify-content:center;
-    color: var(--muted); cursor: pointer; transition: border-color .18s, background .18s; }
-  #drop.over { border-color: var(--accent); background: rgba(75,141,255,.08); }
-  #drop .drop-ic { width: 38px; height: 38px; color: var(--accent); margin-bottom: 6px; stroke:url(#fgrad); animation:dropIconGlow 2.2s ease-in-out infinite; }
-  #drop strong, #drop small { display:inline-block; background:var(--grad); background-size:220% 100%; -webkit-background-clip:text; background-clip:text; color:transparent; animation:dropTextGlow 2.4s ease-in-out infinite; }
-  @keyframes dropTextGlow { 0%,100%{ background-position:0% 50%; filter:brightness(.9); opacity:.78; } 50%{ background-position:100% 50%; filter:brightness(1.35); opacity:1; } }
-  @keyframes dropIconGlow { 0%,100%{ filter:drop-shadow(0 0 0 rgba(34,211,238,0)); opacity:.78; transform:translateY(0); } 50%{ filter:drop-shadow(0 0 12px rgba(34,211,238,.75)); opacity:1; transform:translateY(-2px); } }
-  #drop .thumb { max-height: calc(100% - 34px); max-width: 100%; border-radius: 9px; display: block; margin: 0 auto; object-fit: contain; }
+  /* ============ SECTION 1 — hero / upload (mockup yeniden tasarımı) ============ */
+  #s1 .inner { max-width: min(1460px, 100%); }
+  .hero-grid { display: grid; grid-template-columns: minmax(0, .95fr) minmax(0, 1.05fr); gap: clamp(26px, 4.2vw, 72px); align-items: center; }
+  .hero-title { position: relative; margin: 0 0 clamp(14px, 2.4dvh, 24px); font-size: clamp(42px, 4.9vw, 76px); line-height: 1.04; font-weight: 800; letter-spacing: -.03em; color: #F7F8FF; }
+  .hero-grad { background: linear-gradient(92deg, #38A8FF 0%, #5668FF 48%, #914CFF 100%); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .hero-sparkle { position: absolute; left: -44px; bottom: .22em; width: 30px; height: 30px; color: #9B5CFF; opacity: .75; filter: drop-shadow(0 0 12px rgba(155,92,255,.65)); }
+  .hero-desc { margin: 0 0 clamp(18px, 3dvh, 28px); max-width: 600px; font-size: clamp(15px, 1.3vw, 18.5px); line-height: 1.6; color: #AEB8D2; }
+  .feature-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+  .feature-card { display: flex; align-items: flex-start; gap: 14px; min-height: clamp(98px, 13dvh, 132px); padding: clamp(14px, 1.4vw, 20px); border-radius: 18px; background: rgba(13,21,47,.72); border: 1px solid rgba(121,144,205,.20); box-shadow: 0 20px 44px -34px rgba(3,6,18,.95); }
+  .feature-ico { flex: none; width: 48px; height: 48px; border-radius: 14px; display: grid; place-items: center; color: #3599FF; background: rgba(53,103,242,.13); border: 1px solid rgba(121,144,205,.26); }
+  .feature-card:nth-child(even) .feature-ico { color: #9B5CFF; background: rgba(124,69,245,.13); }
+  .feature-ico .ic { width: 26px; height: 26px; filter: drop-shadow(0 0 8px currentColor); }
+  .feature-card h3 { margin: 2px 0 4px; font-size: clamp(15px, 1.2vw, 18px); font-weight: 650; letter-spacing: -.01em; color: #F7F8FF; }
+  .feature-card p { margin: 0; font-size: clamp(12.5px, .95vw, 14px); line-height: 1.45; color: #AAB4CF; }
+  .criteria-panel { display: grid; grid-template-columns: 1fr 1fr; column-gap: clamp(16px, 2vw, 28px); margin-top: 16px; padding: clamp(16px, 1.7dvh, 22px) clamp(16px, 1.8vw, 26px); border-radius: 18px; background: rgba(13,21,47,.55); border: 1px solid rgba(121,144,205,.18); }
+  .criteria-panel ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; align-content: center; }
+  .criteria-panel ul + ul { border-left: 1px solid rgba(121,144,205,.18); padding-left: clamp(16px, 2vw, 28px); }
+  .criteria-panel li { display: flex; align-items: center; gap: 10px; font-size: clamp(12.5px, 1vw, 15px); color: #DDE4F7; }
+  .criteria-panel li .ic { width: 20px; height: 20px; flex: none; color: #3599FF; }
+
+  /* sağ sütun: premium yükleme paneli */
+  .upload-panel { position: relative; display: flex; flex-direction: column; justify-content: center; border-radius: 28px; padding: clamp(16px, 1.8vw, 30px); background: rgba(8,15,35,.88); border: 1px solid rgba(118,140,204,.28); box-shadow: 0 0 70px -34px rgba(46,115,246,.55), 0 34px 90px -50px rgba(3,6,18,1), inset 0 1px 0 rgba(255,255,255,.04); }
+  #drop { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; height: clamp(250px, 38dvh, 380px); border-radius: 24px; background: rgba(10,16,36,.45); color: #AAB4CF; text-align: center; cursor: pointer; transition: background .18s, box-shadow .18s; }
+  .drop-border { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; opacity: .8; transition: opacity .18s, filter .18s; }
+  .db-rect { width: calc(100% - 3px); height: calc(100% - 3px); fill: none; stroke: url(#dzDashGrad); stroke-width: 1.8; stroke-dasharray: 7 10; }
+  #drop.over { background: rgba(56,104,255,.10); box-shadow: inset 0 0 46px -20px rgba(86,104,255,.75); }
+  #drop.over .drop-border { opacity: 1; filter: drop-shadow(0 0 7px rgba(86,104,255,.75)); }
+  #dropHint { display: flex; flex-direction: column; align-items: center; gap: 7px; padding: 0 20px; }
+  .drop-ic { width: 64px; height: 64px; margin-bottom: 12px; transition: transform .22s; filter: drop-shadow(0 4px 18px rgba(86,104,255,.35)); }
+  #drop.over .drop-ic { transform: translateY(-6px); }
+  #dropHint strong { font-size: clamp(16px, 1.35vw, 20px); font-weight: 600; color: #F7F8FF; }
+  #dropHint small { font-size: clamp(13px, 1.05vw, 15.5px); color: #929DBA; }
+  #drop .thumb { max-height: calc(100% - 64px); max-width: calc(100% - 28px); border-radius: 12px; display: block; object-fit: contain; }
+  #drop .thumb-cap { font-size: 12px; color: #929DBA; }
   button:focus-visible, #drop:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .btn { display: inline-flex; align-items: center; justify-content: center; gap: 9px; padding: 12px 22px;
     border-radius: 12px; font-weight: 700; cursor: pointer; border: 1px solid transparent; transition: transform .12s, box-shadow .2s, background .2s; position:relative; overflow:hidden; isolation:isolate; }
   .btn:active { transform: translateY(1px); }
   .btn.primary { background: var(--grad); color: #fff; box-shadow: 0 10px 26px -10px rgba(75,141,255,.8); width: 100%; margin-top: 14px; }
   .btn.primary:disabled { opacity: .45; cursor: default; box-shadow: none; }
-  .upload-badges { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin-top:14px; align-items:stretch; }
-  .upload-badge { min-width:0; min-height:92px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px;
-    border:1px solid rgba(255,255,255,.14); border-radius:18px; padding:12px 8px;
-    background:linear-gradient(180deg, rgba(255,255,255,.075), rgba(255,255,255,.028)); color:rgba(234,240,255,.86);
-    font-size:12px; font-weight:850; text-align:center; line-height:1.15; box-shadow:inset 0 1px 0 rgba(255,255,255,.08), 0 16px 34px -28px rgba(34,211,238,.95); }
-  .upload-badge:nth-child(2) { border-color:rgba(34,211,238,.34); color:#f7fcff; background:linear-gradient(145deg, rgba(75,141,255,.18), rgba(34,211,238,.10), rgba(139,92,246,.15)); }
-  .upload-badge .badge-ico { width:42px; height:42px; border-radius:50%; display:grid; place-items:center;
-    background:radial-gradient(circle at 35% 25%, rgba(255,255,255,.30), rgba(34,211,238,.12) 38%, rgba(139,92,246,.12));
-    border:1px solid rgba(255,255,255,.18); box-shadow:0 0 22px -10px rgba(34,211,238,.95), inset 0 1px 0 rgba(255,255,255,.16); }
-  .upload-badge .ic { width:22px; height:22px; stroke:url(#fgrad); filter:drop-shadow(0 0 7px rgba(34,211,238,.38)); }
   @property --ai-angle { syntax: '<angle>'; initial-value: 0deg; inherits: false; }
-  .btn.primary.ready:not(:disabled) {
-    border:2px solid transparent;
-    background:
-      linear-gradient(120deg, #356de0, #7c4dff 52%, #1397bc) padding-box,
-      conic-gradient(from var(--ai-angle), rgba(255,255,255,.12), rgba(255,255,255,.12) 18%, #ffffff 27%, #dffcff 31%, rgba(34,211,238,.95) 36%, rgba(255,255,255,.12) 48%, rgba(255,255,255,.12) 72%, #ffffff 81%, rgba(139,92,246,.95) 87%, rgba(255,255,255,.12) 100%) border-box;
-    animation: aiBorderSpin 1.65s linear infinite;
-    box-shadow: 0 0 0 1px rgba(255,255,255,.10), 0 0 30px -10px rgba(255,255,255,.9), 0 18px 34px -14px rgba(34,211,238,.75);
-  }
-  .btn.primary.ready:not(:disabled)::before { content:""; position:absolute; inset:3px; border-radius:9px; pointer-events:none;
-    background: linear-gradient(90deg, transparent, rgba(255,255,255,.34), transparent);
-    opacity:.42; transform:translateX(-90%); animation: vectorScan 1.45s linear infinite; z-index:0; }
-  .btn.primary.ready:not(:disabled)::after { content:""; position:absolute; inset:-9px; border-radius:18px; pointer-events:none;
-    background: radial-gradient(circle at 50% 50%, rgba(255,255,255,.22), transparent 58%); opacity:.35; filter:blur(10px); z-index:0; }
   @keyframes aiBorderSpin { to { --ai-angle: 360deg; } }
-  @keyframes vectorScan { to { transform:translateX(90%); } }
+
+  /* Vektörleştir CTA */
+  .cta { position: relative; display: flex; align-items: center; justify-content: center; gap: 12px; width: 100%; min-height: clamp(56px, 7.4dvh, 68px); margin-top: clamp(14px, 2dvh, 20px); border: 1px solid transparent; border-radius: 16px; cursor: pointer; font-size: clamp(17px, 1.45vw, 20px); font-weight: 650; color: #fff; background: linear-gradient(90deg, #2E73F6 0%, #5648E8 52%, #822DE9 100%); box-shadow: 0 18px 44px -18px rgba(86,72,232,.55); transition: transform .15s, box-shadow .2s, filter .2s; }
+  .cta:hover:not(:disabled) { transform: translateY(-2px); filter: brightness(1.08); box-shadow: 0 24px 56px -18px rgba(86,72,232,.8); }
+  .cta:active:not(:disabled) { transform: none; filter: none; }
+  .cta:disabled { opacity: .45; cursor: not-allowed; box-shadow: none; }
+  .cta:focus-visible { outline: 2px solid #38A8FF; outline-offset: 3px; }
+  .cta .ic { width: 22px; height: 22px; }
+  .cta.ready:not(:disabled) { animation: ctaGlow 2.2s ease-in-out infinite; }
+  @keyframes ctaGlow { 0%,100% { box-shadow: 0 18px 44px -18px rgba(86,72,232,.55); } 50% { box-shadow: 0 18px 52px -14px rgba(56,168,255,.85), 0 0 26px -6px rgba(130,45,233,.55); } }
+  .cta-spinner { display: none; width: 22px; height: 22px; transform-origin: center; }
+  .cta.loading .cta-spinner { display: block; animation: ctaSpin .9s linear infinite; }
+  .cta.loading .cta-wand { display: none; }
+  @keyframes ctaSpin { to { transform: rotate(360deg); } }
+
+  /* alt aksiyon kartları: yükle / önizle / indir */
+  .action-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-top: clamp(14px, 2dvh, 20px); }
+  .action-card { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; min-height: clamp(118px, 17dvh, 160px); padding: 14px 10px; border-radius: 20px; background: rgba(13,21,47,.72); border: 1px solid rgba(121,144,205,.20); color: #F7F8FF; font: inherit; text-align: center; cursor: pointer; transition: transform .16s, border-color .2s, background .2s, box-shadow .2s; }
+  .action-card > .ic { width: 44px; height: 44px; stroke-width: 1.8; margin-bottom: 6px; color: #5D8DFF; filter: drop-shadow(0 0 10px rgba(53,153,255,.4)); transition: color .2s; }
+  .action-card:nth-child(2) > .ic { color: #9B5CFF; filter: drop-shadow(0 0 10px rgba(155,92,255,.4)); }
+  .action-card:nth-child(3) > .ic { color: #7C45F5; filter: drop-shadow(0 0 10px rgba(124,69,245,.4)); }
+  .action-card b { font-size: clamp(13.5px, 1.1vw, 16.5px); font-weight: 650; }
+  .action-card span { font-size: clamp(11.5px, .9vw, 13.5px); color: #AAB4CF; }
+  .action-card:hover:not(:disabled) { transform: translateY(-3px); border-color: rgba(121,144,205,.5); background: rgba(20,31,63,.85); box-shadow: 0 18px 40px -26px rgba(53,103,242,.7); }
+  .action-card:hover:not(:disabled) > .ic { color: #A9C6FF; }
+  .action-card:disabled { opacity: .4; cursor: not-allowed; }
   .btn.ghost { background: rgba(255,255,255,.04); color: var(--ink); border-color: var(--line-2); }
   .btn.ghost:hover { background: rgba(255,255,255,.09); }
 
-  .excards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 22px; }
-  @media (max-width: 900px){ .excards { display:none; } .panel{justify-content:flex-start} }
-  @media (max-width: 700px){ .conds{display:none} }
-  .excard { border: 1px solid var(--line); border-radius: 14px; overflow: hidden; background: linear-gradient(180deg, var(--panel), var(--bg-2));
-    transition: transform .25s cubic-bezier(.2,.7,.2,1), box-shadow .25s, border-color .25s; will-change: transform; }
-  .excard:hover { transform: translateY(-8px) rotate(-.6deg); box-shadow: 0 18px 40px -16px rgba(75,141,255,.5); border-color: var(--line-2); }
-  .excard .art { aspect-ratio: 16/10; background: var(--check); display: grid; place-items: center; }
-  .excard .art svg { width: 66%; height: 66%; transition: transform .5s cubic-bezier(.2,.7,.2,1); }
-  .excard:hover .art svg { transform: scale(1.08); }
-  .excard .art svg .st { stroke-dasharray: 260; stroke-dashoffset: 0; transition: stroke-dashoffset .9s ease; }
-  .excard:hover .art svg .st { stroke-dashoffset: 260; animation: redraw 1.1s ease forwards; }
-  @keyframes redraw { from{ stroke-dashoffset:260 } to{ stroke-dashoffset:0 } }
-  .excard .cap { padding: 9px 11px; font-size: 12px; color: var(--muted); border-top: 1px solid var(--line); }
-  .excard .cap b { color: var(--ink); display: block; font-size: 12.5px; }
+  /* s1 responsive: 1024–1399 iki sütun daralır; ≤1023 tek sütun (önce sol içerik) */
+  @media (max-width: 1023px) {
+    .hero-grid { grid-template-columns: 1fr; gap: clamp(22px, 4vw, 34px); }
+    .hero-sparkle { display: none; }
+    .upload-panel { width: 100%; max-width: 740px; margin: 0 auto; }
+    #s1.snap { height: auto; min-height: 100dvh; overflow: visible; }
+    .hero-title { font-size: clamp(42px, 6.4vw, 60px); }
+  }
+  @media (max-width: 767px) {
+    .feature-grid { grid-template-columns: 1fr; gap: 12px; }
+    .feature-card { min-height: 0; }
+    .criteria-panel { grid-template-columns: 1fr; row-gap: 12px; }
+    .criteria-panel ul + ul { border-left: 0; padding-left: 0; border-top: 1px solid rgba(121,144,205,.18); padding-top: 12px; }
+    .hero-title { font-size: clamp(42px, 11.8vw, 52px); }
+    .hero-desc { font-size: 14px; }
+    .upload-panel { padding: 14px; border-radius: 22px; }
+    #drop { height: clamp(240px, 34dvh, 280px); border-radius: 20px; }
+    .drop-ic { width: 52px; height: 52px; }
+    .cta { min-height: 58px; font-size: 17.5px; }
+    .action-row { grid-template-columns: 1fr; gap: 10px; }
+    .action-card { min-height: 0; padding: 14px 12px; }
+  }
 
   /* ============ SECTION 2 — features ============ */
   .fgrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 26px; }
@@ -294,30 +304,29 @@
     .snap { padding-top: calc(var(--hdr) + 14px); padding-bottom: 18px; }
     h2.title { font-size: clamp(28px, 3.6vw, 40px); margin: 12px 0 8px; }
     .lead { font-size: 15px; }
-    .excards { margin-top: 16px; }
-    .panel { padding: 18px; }
-    .upload-switch { min-height: 62px; }
-    #drop { padding: 18px 14px; }
+    .hero-title { font-size: clamp(34px, 3.9vw, 52px); margin-bottom: 12px; }
+    .hero-desc { font-size: 14.5px; margin-bottom: 14px; }
+    .feature-grid { gap: 12px; }
+    .feature-card { min-height: 0; padding: 12px 14px; }
+    .feature-card p { font-size: 12px; }
+    .criteria-panel { margin-top: 12px; padding: 12px 16px; }
+    .upload-panel { padding: 16px; }
+    #drop { height: clamp(200px, 34dvh, 300px); }
+    .drop-ic { width: 50px; height: 50px; margin-bottom: 8px; }
+    .cta { min-height: 52px; }
+    .action-card { min-height: clamp(94px, 14dvh, 128px); }
+    .action-card > .ic { width: 36px; height: 36px; margin-bottom: 3px; }
     .fgrid { margin-top: 18px; gap: 12px; }
     .fcard { padding: 14px; }
     .metric-strip { margin-top: 12px; }
   }
   @media (max-width: 900px) {
     .snap { height:100dvh; min-height:100dvh; overflow:hidden; justify-content:flex-start; padding-top: calc(var(--hdr) + 24px); padding-bottom: 22px; }
+    #s1.snap { height:auto; min-height:100dvh; overflow:visible; padding-bottom:26px; }
     #s2 .inner, #s3 .inner, #s4 .inner { min-height:calc(100dvh - var(--hdr) - 46px); display:flex; flex-direction:column; }
     #s2 .fgrid, #s3 .faq-layout, #s4 .fcols { flex:1; }
-    #s1 h2.title { text-align:center; margin:8px auto 14px; font-size:clamp(40px, 7vw, 58px); max-width:780px; }
-    #s1 .title-swap { display:grid; width:100%; min-width:0; margin:.02em 0; }
-    #s1 .title-swap span { justify-self:center; }
     .lead { font-size:13.5px; }
-    .hero-facts { grid-template-columns:1fr 1fr; gap:8px; margin-top:12px; }
-    .hero-fact { padding:8px 9px; font-size:11.5px; border-radius:12px; }
-    .hero-fact .ic { width:19px; height:19px; }
-    .hero-fact b { font-size:12px; }
-    .hero-grid { gap:14px; }
     .inner { max-width:100%; }
-    .upload-switch { min-height:52px; }
-    #drop { padding:16px 12px; height:clamp(230px, 34dvh, 330px); }
   }
 
   /* ---------------- overlays: loading + preview ---------------- */
@@ -439,27 +448,20 @@
   /* ---- kompakt mobil: her bölüm + header tek ekrana sığsın ---- */
   @media (max-width: 640px) {
     :root { --hdr: 56px; }
-    .snap { padding: calc(var(--hdr) + 18px) 14px 10px; }
-    #s1 h2.title { margin: 5px auto 10px; font-size: 36px; line-height:1.04; }
+    .snap { padding: calc(var(--hdr) + 18px) 16px 10px; }
     .lead { font-size: 12.5px; }
-    .hero-facts { grid-template-columns:1fr 1fr; gap:7px; margin-top:10px; }
-    .hero-fact { padding:7px 8px; font-size:10.7px; }
-    .hero-fact .ic { width:17px; height:17px; }
-    .hero-fact b { font-size:11.4px; }
     .kicker { padding: 4px 10px; font-size: 11px; }
-    /* hero */
-    #s1 .hero-grid { gap: 10px; min-height:calc(100dvh - var(--hdr) - 28px); grid-template-rows:auto minmax(0, 1fr); }
-    .conds { margin-top: 8px; gap: 4px 12px; }
-    .conds li { font-size: 11.5px; } .conds .ic { width: 15px; height: 15px; }
-    .excards { margin-top: 10px; grid-auto-columns: 42%; gap: 8px; }
-    .excard .art { aspect-ratio: 5/2; } .excard .cap { padding: 5px 8px; font-size: 10px; } .excard .cap b { font-size: 11px; }
-    #s1 .panel { padding: 11px; border-radius: 14px; min-height:0; justify-content:flex-start; }
-    #s1 #drop { padding: 11px 12px; height:auto; flex:1; min-height:250px; } #drop .drop-ic { width: 30px; height: 30px; margin-bottom: 2px; }
-    .btn.primary { margin-top: 8px; padding: 10px; }
-    .upload-badges { gap:7px; margin-top:9px; }
-    .upload-badge { min-height:72px; border-radius:14px; padding:8px 5px; font-size:10.5px; gap:6px; }
-    .upload-badge .badge-ico { width:32px; height:32px; }
-    .upload-badge .ic { width:17px; height:17px; }
+    /* hero (s1): tek sütun, serbest yükseklik — içerik akar, taşma yok */
+    #s1.snap { padding-bottom: 26px; }
+    .hero-title { margin-bottom: 12px; }
+    .hero-desc { margin-bottom: 16px; }
+    .feature-card { padding: 13px 14px; }
+    .criteria-panel { margin-top: 12px; padding: 14px 16px; }
+    .criteria-panel li { font-size: 12.5px; }
+    .upload-panel { padding: 12px; border-radius: 20px; }
+    #drop { height: clamp(230px, 32dvh, 270px); }
+    #dropHint strong { font-size: 15.5px; }
+    .cta { min-height: 54px; font-size: 16.5px; }
     /* features: header + 2. bölüm mobilde tek ekrana sığsın */
     #s2.snap { justify-content:flex-start; padding-top:calc(var(--hdr) + 12px); padding-bottom:8px; }
     #s2 .inner { min-height:calc(100dvh - var(--hdr) - 22px); justify-content:flex-start; }
@@ -497,11 +499,10 @@
   }
   /* kısa ekranlar (küçük telefon / yatay): dekoratifleri düşür, işlevi koru */
   @media (max-height: 800px) and (min-width: 701px) {
-    .excards { display: none; }
     .snap .lead { display: none; }
     #s2 .kicker, #s3 .kicker, #s4 .kicker { display: none; }
     h2.title { font-size: clamp(20px, 4vw, 30px); margin: 6px 0 4px; }
-    .conds { margin-top: 8px; }
+    .criteria-panel { padding: 12px 16px; }
     .fgrid { margin-top: 12px; gap: 8px; }
     .fcard { padding: 11px; } .fcard .fic { width: 32px; height: 32px; margin-bottom: 7px; }
     .fcard p { font-size: 11px; }
@@ -509,8 +510,8 @@
     #s4 .foot-hero .kicker { display: none; }
   }
   /* çok kısa ekranlar: sadece işlevsel öz */
-  @media (max-height: 640px) {
-    .snap .conds, #s1 .kicker { display: none; }
+  @media (max-height: 640px) and (min-width: 901px) {
+    #s1 .criteria-panel { display: none; }
   }
 
   @media (prefers-reduced-motion: reduce) { * { animation: none !important; } .reveal { transition: none; opacity: 1; transform: none; } }
@@ -522,8 +523,6 @@
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
   <linearGradient id="fgrad" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4b8dff"/><stop offset="1" stop-color="#22d3ee"/></linearGradient>
   <linearGradient id="ldGrad" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4b8dff"/><stop offset=".5" stop-color="#8b5cf6"/><stop offset="1" stop-color="#22d3ee"/></linearGradient>
-  <linearGradient id="exg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4b8dff"/><stop offset="1" stop-color="#8b5cf6"/></linearGradient>
-  <linearGradient id="exg2" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#22d3ee"/><stop offset="1" stop-color="#4b8dff"/></linearGradient>
 
   <symbol id="i-logo" viewBox="0 0 24 24"><path d="M4 5.5l8 13 8-13"/><rect x="1.5" y="3" width="4.5" height="4.5" rx="1.2" class="nd"/><rect x="18" y="3" width="4.5" height="4.5" rx="1.2" class="nd"/><rect x="9.75" y="16.5" width="4.5" height="4.5" rx="1.2" class="nd"/></symbol>
   <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 15.5V4M8 8l4-4 4 4"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></symbol>
@@ -549,11 +548,12 @@
   <symbol id="i-droplet" viewBox="0 0 24 24"><path d="M12 3s6 6.5 6 10.5A6 6 0 0 1 6 13.5C6 9.5 12 3 12 3z"/><path d="M9.5 14a2.5 2.5 0 0 0 2.5 2.5" opacity=".6"/></symbol>
   <symbol id="i-gauge" viewBox="0 0 24 24"><path d="M4 18a8 8 0 1 1 16 0"/><path d="M12 14l4-4"/><circle cx="12" cy="14" r="1.4"/></symbol>
   <symbol id="i-compare" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/><path d="M6.5 12h3M8 10.5v3" opacity=".7"/></symbol>
-  <!-- example illustrations -->
-  <symbol id="ex-bird" viewBox="0 0 100 100"><path class="st" d="M22 74 C28 40 44 34 52 52 C58 30 74 34 80 44 C70 40 62 50 60 60 C74 58 82 66 82 66 C68 66 58 70 50 78 C42 72 30 74 22 74Z" fill="url(#exg)" stroke="url(#exg)" stroke-width="2"/><circle cx="63" cy="49" r="2.4" fill="#fff"/></symbol>
-  <symbol id="ex-mono" viewBox="0 0 100 100"><rect x="16" y="16" width="68" height="68" rx="16" fill="none" stroke="url(#exg)" stroke-width="5" class="st"/><path class="st" d="M34 34l16 30 16-30" fill="none" stroke="url(#exg2)" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
-  <symbol id="ex-scape" viewBox="0 0 100 100"><circle cx="50" cy="42" r="13" fill="url(#exg2)"/><path class="st" d="M14 74 L38 50 L52 62 L68 44 L86 66" fill="none" stroke="url(#exg)" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 80h76" stroke="url(#exg)" stroke-width="4" stroke-linecap="round"/></symbol>
-  <symbol id="ex-node" viewBox="0 0 100 100"><path class="st" d="M30 30 L70 30 L50 66 Z M30 30 L50 66 M70 30 L50 66" fill="none" stroke="url(#exg)" stroke-width="3"/><circle cx="30" cy="30" r="6" fill="url(#exg2)"/><circle cx="70" cy="30" r="6" fill="url(#exg2)"/><circle cx="50" cy="66" r="6" fill="url(#exg)"/></symbol>
+  <!-- hero (mockup) ikonları — tamamı outline, stroke: currentColor -->
+  <symbol id="i-brain" viewBox="0 0 24 24"><path d="M12 5a3 3 0 0 0-5.7-1.3A3.2 3.2 0 0 0 4 7.3a3.3 3.3 0 0 0-1.2 5.4A3.3 3.3 0 0 0 5 17.9 3 3 0 0 0 10.6 19c.9-.6 1.4-1.6 1.4-2.7z"/><path d="M12 5a3 3 0 0 1 5.7-1.3A3.2 3.2 0 0 1 20 7.3a3.3 3.3 0 0 1 1.2 5.4A3.3 3.3 0 0 1 19 17.9 3 3 0 0 1 13.4 19c-.9-.6-1.4-1.6-1.4-2.7z"/><path d="M8.4 9.1c.9.5 2 .4 3-.1M15.6 12.6c-.9-.5-2-.4-3 .1"/></symbol>
+  <symbol id="i-wand" viewBox="0 0 24 24"><path d="M20 4 4 20"/><path d="m15.6 5.4 3 3"/><path d="M9 2.8v3.4M7.3 4.5h3.4M19 12.6v3.4M17.3 14.3h3.4M5.4 8v3.4M3.7 9.7h3.4"/></symbol>
+  <symbol id="i-shield-gem" viewBox="0 0 24 24"><path d="M12 3l7 2.6v5.5c0 4.6-3 7.7-7 9.4-4-1.7-7-4.8-7-9.4V5.6z"/><path d="M12 8l2.7 2.7L12 15.2l-2.7-4.5z"/></symbol>
+  <symbol id="i-check-o" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.6"/><path d="m8.3 12.4 2.5 2.5 4.9-5.4"/></symbol>
+  <symbol id="i-cloud-up" viewBox="0 0 24 24"><path d="M7.2 18.2a4.6 4.6 0 0 1-.7-9.1 5.6 5.6 0 0 1 10.9-1.2 4.4 4.4 0 0 1-.7 8.7"/><path d="M12 21v-7.4M8.9 16.6 12 13.5l3.1 3.1"/></symbol>
 </defs></svg>
 
 <header>
@@ -577,46 +577,94 @@
 
 <div id="scroller">
 
-  <!-- ===================== 1) YÜKLEME ===================== -->
+  <!-- ===================== 1) YÜKLEME (mockup hero) ===================== -->
   <section class="snap" id="s1">
     <div class="inner hero-grid">
-      <div>
-        <h2 class="title reveal d1">Görselini <span class="title-swap"><span>akıllı vektöre</span><span>temiz SVG’ye</span></span> çevir</h2>
-        <div class="hero-facts reveal d2">
-          <div class="hero-fact"><svg class="ic"><use href="#i-spark"/></svg><span><b>Yapay zekâ analiz</b>Görsel tipini kendi anlar</span></div>
-          <div class="hero-fact"><svg class="ic"><use href="#i-vector"/></svg><span><b>Tek tuşla vektör</b>SVG / PDF / DXF hazır</span></div>
-          <div class="hero-fact"><svg class="ic"><use href="#i-gauge"/></svg><span><b>%99 kalite hedefi</b>Kusursuzluğa yakın sonuç</span></div>
-          <div class="hero-fact"><svg class="ic"><use href="#i-layers"/></svg><span><b>Otomatik temizlik</b>Kenarlar her işte düzelir</span></div>
+      <div class="hero-left">
+        <h1 class="hero-title reveal d1">
+          <svg class="hero-sparkle" viewBox="0 0 32 32" fill="none" aria-hidden="true" focusable="false">
+            <path d="M16 2.6c1.05 5.5 2.7 8.2 7.6 9.2-4.9 1-6.55 3.7-7.6 9.2-1.05-5.5-2.7-8.2-7.6-9.2 4.9-1 6.55-3.7 7.6-9.2z" fill="currentColor" opacity=".85"/>
+            <path d="M25.4 20.2c.5 2.7 1.35 4 3.7 4.5-2.35.5-3.2 1.8-3.7 4.5-.5-2.7-1.35-4-3.7-4.5 2.35-.5 3.2-1.8 3.7-4.5z" fill="currentColor" opacity=".5"/>
+          </svg>
+          Görselini<br>
+          <span class="hero-grad">akıllı vektöre</span><br>
+          çevir
+        </h1>
+        <p class="hero-desc reveal d2">Yapay zekâ destekli motorumuzla görsellerini saniyeler içinde keskin, temiz ve ölçeklenebilir vektör dosyalarına dönüştür.</p>
+        <div class="feature-grid reveal d3">
+          <article class="feature-card">
+            <span class="feature-ico" aria-hidden="true"><svg class="ic" focusable="false"><use href="#i-brain"/></svg></span>
+            <div><h3>Yapay zekâ analiz</h3><p>Görsel tipini algılar ve en iyi vektörleştirme yöntemini uygular.</p></div>
+          </article>
+          <article class="feature-card">
+            <span class="feature-ico" aria-hidden="true"><svg class="ic" focusable="false"><use href="#i-wand"/></svg></span>
+            <div><h3>Tek tuşla vektör</h3><p>SVG, PDF veya DXF formatında anında dışa aktar.</p></div>
+          </article>
+          <article class="feature-card">
+            <span class="feature-ico" aria-hidden="true"><svg class="ic" focusable="false"><use href="#i-shield-gem"/></svg></span>
+            <div><h3>%99 kalite hedefi</h3><p>Kusursuzluğa yakın sonuçlarla yüksek kaliteli vektör çıktılar.</p></div>
+          </article>
+          <article class="feature-card">
+            <span class="feature-ico" aria-hidden="true"><svg class="ic" focusable="false"><use href="#i-layers"/></svg></span>
+            <div><h3>Otomatik temizlik</h3><p>Kenarlardaki gürültü ve fazlalıkları otomatik temizler.</p></div>
+          </article>
         </div>
-        <ul class="conds reveal d3">
-          <li><svg class="ic"><use href="#i-check"/></svg> Keskin kenarlı logo / amblem</li>
-          <li><svg class="ic"><use href="#i-check"/></svg> Çözünürlük ≥ 700 piksel</li>
-          <li><svg class="ic"><use href="#i-check"/></svg> Düz / az renkli, net zemin</li>
-          <li><svg class="ic"><use href="#i-check"/></svg> Belirgin kontur, az gürültü</li>
-        </ul>
-        <div class="excards reveal d4">
-          <div class="excard"><div class="art"><svg><use href="#ex-mono"/></svg></div><div class="cap"><b>Monogram</b>Geometrik logo</div></div>
-          <div class="excard"><div class="art"><svg><use href="#ex-bird"/></svg></div><div class="cap"><b>Amblem</b>Renkli logo</div></div>
-          <div class="excard"><div class="art"><svg><use href="#ex-scape"/></svg></div><div class="cap"><b>İllüstrasyon</b>Düz renk</div></div>
-          <div class="excard"><div class="art"><svg><use href="#ex-node"/></svg></div><div class="cap"><b>İşaret</b>Çizgi / ikon</div></div>
+        <div class="criteria-panel reveal d4">
+          <ul>
+            <li><svg class="ic" aria-hidden="true" focusable="false"><use href="#i-check-o"/></svg> Keskin kenarlı logo / amblem</li>
+            <li><svg class="ic" aria-hidden="true" focusable="false"><use href="#i-check-o"/></svg> Düz / az renkli, net zemin</li>
+          </ul>
+          <ul>
+            <li><svg class="ic" aria-hidden="true" focusable="false"><use href="#i-check-o"/></svg> Çözünürlük ≥ 700 piksel</li>
+            <li><svg class="ic" aria-hidden="true" focusable="false"><use href="#i-check-o"/></svg> Belirgin kontur, az gürültü</li>
+          </ul>
         </div>
       </div>
 
-      <div class="panel reveal d2">
-        <div id="drop" tabindex="0">
+      <div class="upload-panel reveal d2">
+        <div id="drop" tabindex="0" role="button" aria-label="Görsel seçin ya da sürükleyip bırakın — PNG, JPG, WEBP">
+          <svg class="drop-border" aria-hidden="true" focusable="false">
+            <defs><linearGradient id="dzDashGrad" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0" stop-color="#38A8FF"/><stop offset=".52" stop-color="#5668FF"/><stop offset="1" stop-color="#914CFF"/>
+            </linearGradient></defs>
+            <rect class="db-rect" x="1.5" y="1.5" rx="22" ry="22"/>
+          </svg>
           <span id="dropHint">
-            <svg class="ic drop-ic"><use href="#i-upload"/></svg><br>
-            <strong>Görsel seçin</strong> ya da sürükleyip bırakın<br>
-            <small style="color:var(--muted)">PNG, JPG, WEBP</small>
+            <svg class="drop-ic" viewBox="0 0 64 64" fill="none" aria-hidden="true" focusable="false">
+              <defs><linearGradient id="dzIcoGrad" x1="10" y1="8" x2="56" y2="54" gradientUnits="userSpaceOnUse">
+                <stop offset="0" stop-color="#38A8FF"/><stop offset=".52" stop-color="#5668FF"/><stop offset="1" stop-color="#914CFF"/>
+              </linearGradient></defs>
+              <path d="M14 35v9a6 6 0 0 0 6 6h24a6 6 0 0 0 6-6v-9" stroke="url(#dzIcoGrad)" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M32 40V15.5M21.5 25.4 32 14.8l10.5 10.6" stroke="url(#dzIcoGrad)" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <strong>Görsel seçin ya da sürükleyip bırakın</strong>
+            <small>PNG, JPG, WEBP</small>
           </span>
         </div>
         <input type="file" id="file" accept="image/*" hidden>
 
-        <button class="btn primary" id="go" disabled><svg class="ic"><use href="#i-vector"/></svg> Vektörleştir</button>
-        <div class="upload-badges" aria-label="Vektörleştirme avantajları">
-          <span class="upload-badge"><span class="badge-ico"><svg class="ic"><use href="#i-vector"/></svg></span><span>Görseli yükle</span></span>
-          <span class="upload-badge"><span class="badge-ico"><svg class="ic"><use href="#i-compare"/></svg></span><span>Önizle</span></span>
-          <span class="upload-badge"><span class="badge-ico"><svg class="ic"><use href="#i-download"/></svg></span><span>İndir</span></span>
+        <button class="cta" id="go" type="button" disabled>
+          <svg class="ic cta-wand" aria-hidden="true" focusable="false"><use href="#i-wand"/></svg>
+          <svg class="cta-spinner" viewBox="0 0 24 24" fill="none" aria-hidden="true" focusable="false">
+            <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2.6" opacity=".28"/>
+            <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/>
+          </svg>
+          <span id="goLabel">Vektörleştir</span>
+        </button>
+
+        <div class="action-row">
+          <button class="action-card" id="actUpload" type="button">
+            <svg class="ic" aria-hidden="true" focusable="false"><use href="#i-cloud-up"/></svg>
+            <b>Görseli yükle</b><span>Dosyayı seçin</span>
+          </button>
+          <button class="action-card" id="actPreview" type="button" disabled>
+            <svg class="ic" aria-hidden="true" focusable="false"><use href="#i-image"/></svg>
+            <b>Önizle</b><span>Sonucu görüntüleyin</span>
+          </button>
+          <button class="action-card" id="actDownload" type="button" disabled>
+            <svg class="ic" aria-hidden="true" focusable="false"><use href="#i-download"/></svg>
+            <b>İndir</b><span>Vektör dosyanızı alın</span>
+          </button>
         </div>
       </div>
     </div>
@@ -786,7 +834,7 @@
 (() => {
   const $ = (id) => document.getElementById(id);
   const scroller = $("scroller");
-  let file = null;
+  let file = null, lastDims = null;
 
   // ---- error toast ----
   let errT = null;
@@ -889,16 +937,19 @@
   });
 
   // ---- upload ----
+  // İpucu (#dropHint) ve kesikli gradyan çerçeve (.drop-border) DOM'da kalır;
+  // dosya seçilince ipucu gizlenir, küçük önizleme eklenir. innerHTML string
+  // kopyası tutulmaz -> SVG tek kaynak.
   const drop = $("drop"), fileIn = $("file"), go = $("go");
-  const dropReset = () => { drop.innerHTML = '<span id="dropHint"><svg class="ic drop-ic"><use href="#i-upload"/></svg><br>' +
-    '<strong>Görsel seçin</strong> ya da sürükleyip bırakın<br><small style="color:var(--muted)">PNG, JPG, WEBP</small></span>'; };
+  const dropClear = () => { drop.querySelectorAll(".thumb, .thumb-cap").forEach(el => el.remove()); };
+  const dropReset = () => { dropClear(); $("dropHint").style.display = ""; };
   function setFile(f) {
     if (!f || !f.type.startsWith("image/")) { showError("Lütfen bir görsel dosyası seçin."); return; }
     file = f;
     const url = URL.createObjectURL(f);
-    drop.innerHTML = "";
+    dropClear(); $("dropHint").style.display = "none";
     const img = document.createElement("img"); img.className = "thumb"; img.src = url; drop.appendChild(img);
-    const cap = document.createElement("div"); cap.style.cssText = "margin-top:8px;font-size:12px;color:var(--muted)";
+    const cap = document.createElement("div"); cap.className = "thumb-cap";
     cap.textContent = f.name + " · " + Math.round(f.size / 1024) + " KB"; drop.appendChild(cap);
     go.disabled = false;
     go.classList.add("ready");
@@ -987,6 +1038,7 @@
     if (!file) return;
     if (!currentUser) { pendingVectorize = true; openAuth("login"); return; }
     go.disabled = true; startLoading();
+    go.classList.add("loading"); $("goLabel").textContent = "Vektörleştiriliyor…";
     const fd = new FormData();
     fd.append("file", file);
     fd.append("trace_mode", "auto");
@@ -1008,6 +1060,7 @@
       if (!resp.ok) throw new Error(data.detail || data.error || ("HTTP " + resp.status));
     } catch (err) {
       abortLoading(); go.disabled = false;
+      go.classList.remove("loading"); $("goLabel").textContent = "Vektörleştir";
       showError("İşlem başarısız: " + (err && err.message ? err.message : err));
       return;
     }
@@ -1028,7 +1081,8 @@
     V.ready = false;
     const origImg = $("origImg"), vecImg = $("vecImg");
     vecImg.src = (data.download_links||{}).svg + "?t=" + Date.now();
-    origImg.onload = () => initViewer(origImg.naturalWidth||800, origImg.naturalHeight||800);
+    origImg.onload = () => { lastDims = { w: origImg.naturalWidth || 800, h: origImg.naturalHeight || 800 };
+      initViewer(lastDims.w, lastDims.h); };
     origImg.src = URL.createObjectURL(file);
     const dl = $("downloads"); dl.innerHTML = ""; const errs = data.output_errors || {};
     Object.entries(data.download_links||{}).forEach(([fmt,href]) => { const a = document.createElement("a");
@@ -1038,6 +1092,8 @@
     // yükleme%100 -> önizleme geçişi
     finishLoading(() => {
       $("loading").classList.remove("on"); go.disabled = false;
+      go.classList.remove("loading"); $("goLabel").textContent = "Vektörleştir";
+      $("actPreview").disabled = false; $("actDownload").disabled = false;
       $("preview").classList.add("on");
       requestAnimationFrame(() => { if (V.ready) { layout(); fit(); } });
     });
@@ -1045,8 +1101,22 @@
 
   $("pvClose").addEventListener("click", () => { $("preview").classList.remove("on"); V.ready = false; });
   $("reset").addEventListener("click", () => {
-    $("preview").classList.remove("on"); V.ready = false; file = null; fileIn.value = "";
-    dropReset(); go.disabled = true; $("s1").scrollIntoView({ behavior:"smooth" });
+    $("preview").classList.remove("on"); V.ready = false; file = null; fileIn.value = ""; lastDims = null;
+    dropReset(); go.disabled = true; go.classList.remove("ready");
+    $("actPreview").disabled = true; $("actDownload").disabled = true;
+    $("s1").scrollIntoView({ behavior:"smooth" });
+  });
+
+  // ---- alt aksiyon kartları: yükle / önizle / indir ----
+  $("actUpload").addEventListener("click", () => fileIn.click());
+  $("actPreview").addEventListener("click", () => {
+    // Sonuç varsa mevcut karşılaştırma önizlemesini yeniden açar.
+    $("preview").classList.add("on");
+    requestAnimationFrame(() => { if (lastDims) initViewer(lastDims.w, lastDims.h); });
+  });
+  $("actDownload").addEventListener("click", () => {
+    const a = document.querySelector("#downloads a.main") || document.querySelector("#downloads a");
+    if (a) a.click();
   });
 })();
 </script>

@@ -26,6 +26,7 @@ import logging
 import os
 import secrets
 import tempfile
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -51,9 +52,13 @@ ALLOWED_MODES = [
 # Geriye dönük uyumluluk için ikinci ad (README'de geçer)
 ALLOWED_TRACE_MODES = ALLOWED_MODES
 
-JOBS_ROOT = Path(tempfile.gettempdir()) / "vector_jobs"
+# Yol'lar env ile kalıcı bir konuma (ör. HF paid Persistent Storage /data)
+# yönlendirilebilir; kalıcı disk yoksa küçük JSON'lar HF Dataset'e senkronlanır
+# (app/store.py). Varsayılan geçici yol -> yerel/test davranışı değişmez.
+JOBS_ROOT = Path(os.environ.get("VEKTORYUM_JOBS_ROOT", str(Path(tempfile.gettempdir()) / "vector_jobs")))
 DATA_ROOT = Path(os.environ.get("VEKTORYUM_DATA_ROOT", str(Path(tempfile.gettempdir()) / "vektoryum_data")))
 USERS_FILE = DATA_ROOT / "users.json"
+FEEDBACK_FILE = DATA_ROOT / "feedback.jsonl"   # kalıcı geri-bildirim/iş kaydı
 SESSIONS: dict[str, dict[str, Any]] = {}
 
 _MEDIA_TYPES = {
@@ -88,6 +93,24 @@ def _load_users() -> dict[str, Any]:
 def _save_users(users: dict[str, Any]) -> None:
     DATA_ROOT.mkdir(parents=True, exist_ok=True)
     USERS_FILE.write_text(json.dumps(users, ensure_ascii=False, indent=2), encoding="utf-8")
+    from app import store  # noqa: PLC0415
+    store.persist(USERS_FILE, "users.json")  # kalıcı depoya senkronla (best-effort)
+
+
+def _append_feedback(record: dict[str, Any]) -> None:
+    """Geri-bildirim/iş özetini kalıcı JSONL'e ekler + kalıcı depoya senkronlar.
+
+    Admin paneli bu dosyadan okur; HF Dataset senkronu sayesinde restart'ta
+    kaybolmaz. Yerele yazma her zaman çalışır; senkron best-effort.
+    """
+    try:
+        DATA_ROOT.mkdir(parents=True, exist_ok=True)
+        with FEEDBACK_FILE.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        from app import store  # noqa: PLC0415
+        store.persist(FEEDBACK_FILE, "feedback.jsonl")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("geri-bildirim kaydı atlandı: %s", e)
 
 
 def _hash_password(password: str) -> str:
@@ -328,6 +351,20 @@ async def vectorize_image(
     }
 
     (job_dir / "report.json").write_text(json.dumps(final_report, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    # KALICI geri-bildirim kaydı: admin paneli bunu okur, restart'ta kaybolmaz.
+    _append_feedback({
+        "job_id": job_id,
+        "ts": int(time.time()),
+        "user": {"email": user.get("email"), "name": user.get("name")},
+        "mode_used": mode_used,
+        "status": quality_report.get("status"),
+        "fidelity": best.get("fidelity_score"),
+        "best_candidate": best.get("name"),
+        "selection_reason": selection_reason,
+        "warnings": quality_report.get("warnings", []),
+        "download_links": download_links,
+    })
     return JSONResponse(content=final_report)
 
 
@@ -437,27 +474,45 @@ async def me(session: str | None = Cookie(default=None)):
 @app.get("/api/admin/jobs", summary="Yönetici iş listesi")
 async def admin_jobs(session: str | None = Cookie(default=None)):
     _require_admin(session)
+    # KALICI geri-bildirim kaydından okunur (HF Dataset ile senkron -> restart'ta
+    # kaybolmaz). Geçici /tmp iş klasörlerini taramaz; en yeni en üstte.
     jobs = []
-    if JOBS_ROOT.exists():
-        for report in sorted(JOBS_ROOT.glob("*/report.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+    if FEEDBACK_FILE.exists():
+        try:
+            lines = FEEDBACK_FILE.read_text(encoding="utf-8").splitlines()
+        except Exception:  # noqa: BLE001
+            lines = []
+        for ln in reversed(lines):
+            ln = ln.strip()
+            if not ln:
+                continue
             try:
-                data = json.loads(report.read_text(encoding="utf-8"))
+                d = json.loads(ln)
             except Exception:  # noqa: BLE001
                 continue
-            q = data.get("quality_report", {})
-            cr = data.get("candidate_report", {})
             jobs.append({
-                "job_id": data.get("job_id"),
-                "user": data.get("user"),
-                "mode_used": data.get("mode_used"),
-                "status": q.get("status"),
-                "fidelity": (q.get("metrics") or {}).get("fidelity_score") or cr.get("best_score"),
-                "best_candidate": cr.get("best_candidate"),
-                "selection_reason": cr.get("selection_reason"),
-                "warnings": q.get("warnings", []),
-                "downloads": data.get("download_links", {}),
+                "job_id": d.get("job_id"),
+                "user": d.get("user"),
+                "mode_used": d.get("mode_used"),
+                "status": d.get("status"),
+                "fidelity": d.get("fidelity"),
+                "best_candidate": d.get("best_candidate"),
+                "selection_reason": d.get("selection_reason"),
+                "warnings": d.get("warnings", []),
+                "downloads": d.get("download_links", {}),
             })
     return {"jobs": jobs}
+
+
+@app.on_event("startup")
+def _restore_persisted_state() -> None:
+    """Açılışta kalıcı depodan (HF Dataset) users.json + feedback.jsonl indir."""
+    try:
+        from app import store  # noqa: PLC0415
+        store.restore(DATA_ROOT, ["users.json", "feedback.jsonl"])
+    except Exception as e:  # noqa: BLE001
+        logger.warning("kalıcı durum geri yüklenemedi: %s", e)
+    _load_users()  # restore sonrası admin kullanıcısını garanti et
 
 
 @app.get("/admin", include_in_schema=False)
