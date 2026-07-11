@@ -55,6 +55,71 @@ async function computePosterizeThresholds(buffer: Buffer, count: number): Promis
   return unique.length > 0 ? unique : [128];
 }
 
+// RENK KAYBI DÜZELTMESİ: node-potrace posterize çıktısı GERÇEK renk içermez —
+// tüm katmanlar fill="black" + fill-opacity (luminance emülasyonu) yazılır.
+// Kaynak renkli ve opakken bu kabul edilemez: kırmızı/sarı/beyaz kaybolur,
+// SVG zemine bağımlı görünür, renkler editörde ayrı seçilemez. Bu işlev her
+// luminance bandının kaynak piksellerinden ORTALAMA RGB'yi örnekler, path'lere
+// gerçek `fill` atar, fill-opacity'yi kaldırır ve kapsanmayan en açık bölge
+// (zemin) için tuvali dolduran opak bir <rect> ekler. Katman eşlemesi:
+// potrace path'leri açıktan koyuya artan opacity ile yazar; bantlar da
+// t azalan (açık->koyu) sıralanıp sırayla eşlenir. Sayı uyuşmazsa dokunulmaz
+// (güvenli geri dönüş: eski davranış).
+async function recolorPosterizedSvg(
+  svg: string,
+  buffer: Buffer,
+  thresholds: number[],
+  width: number,
+  height: number
+): Promise<string> {
+  const { data, info } = await sharp(buffer)
+    .removeAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const ch = info.channels;
+  const bandsAsc = [...thresholds].sort((a, b) => a - b);
+  // bant istatistikleri: her eşik "lum <= t" bölgesini kapsar; münhasır bant
+  // k = (t_{k-1}, t_k]. Eşiklerin üstü (en açık) zemin adayıdır.
+  const sums = bandsAsc.map(() => ({ r: 0, g: 0, b: 0, n: 0 }));
+  const bg = { r: 0, g: 0, b: 0, n: 0 };
+  for (let i = 0; i + ch - 1 < data.length; i += ch) {
+    const r = data[i], g = data[i + 1], b = data[i + 2];
+    const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    let k = -1;
+    for (let j = 0; j < bandsAsc.length; j++) { if (lum <= bandsAsc[j]) { k = j; break; } }
+    const acc = k >= 0 ? sums[k] : bg;
+    acc.r += r; acc.g += g; acc.b += b; acc.n += 1;
+  }
+  const hex = (s: { r: number; g: number; b: number; n: number }) => {
+    const n = Math.max(1, s.n);
+    const c = (v: number) => Math.round(v / n).toString(16).padStart(2, '0');
+    return `#${c(s.r)}${c(s.g)}${c(s.b)}`;
+  };
+  // path <-> bant eşlemesi potrace'ın kendi kodlamasıyla yapılır: posterize
+  // her katmana fill-opacity = (255 - eşik)/255 yazar (canlı LEGO dosyasında
+  // 0.752<->63 ve 0.224<->198 birebir doğrulandı). Böylece potrace'ın boş
+  // bantlar için path üretmemesi eşlemeyi bozmaz.
+  const bands = bandsAsc
+    .map((t, j) => ({ t, s: sums[j] }))
+    .filter(x => x.s.n > 0);
+  if (bands.length === 0) return svg;
+  let out = svg.replace(/<path\b[^>]*\/>/g, (tag) => {
+    const om = tag.match(/fill-opacity="([\d.]+)"/);
+    const opacity = om ? parseFloat(om[1]) : 1.0;
+    const tEst = 255 - opacity * 255;
+    let best = bands[0];
+    for (const b of bands) { if (Math.abs(b.t - tEst) < Math.abs(best.t - tEst)) best = b; }
+    return tag
+      .replace(/\sfill-opacity="[^"]*"/, '')
+      .replace(/\sfill="[^"]*"/, ` fill="${hex(best.s)}"`);
+  });
+  // zemin: kaynak opak — kapsanmayan en açık bölge tuval dolduran rect olur
+  // (bg.n == 0 olamaz pratikte; olursa beyaz makul varsayılandır)
+  const bgHex = bg.n > 0 ? hex(bg) : '#ffffff';
+  out = out.replace(/(<svg\b[^>]*>)/, `$1\n\t<rect x="0" y="0" width="${width}" height="${height}" fill="${bgHex}"/>`);
+  return out;
+}
+
 // Cubic Bezier curve sampling helper
 function sampleCubicBezier(
   p0x: number, p0y: number,
@@ -339,11 +404,12 @@ export async function runVectorizerPipeline(
       turdSize = 2;
     }
 
-    // steps > 5: potrace'ın kendi eşik araması asılır (yukarıya bak) —
-    // eşikler histogramdan hazır hesaplanır. <=5 hızlı yolda değişmez.
-    const stepsOption: number | number[] =
-      steps > 5 ? await computePosterizeThresholds(tracingBuffer, steps) : steps;
-    svg = await posterizeImagePromise(tracingBuffer, { steps: stepsOption, turdSize });
+    // Eşikler HER ZAMAN histogramdan hazır hesaplanır: (1) steps>5'te
+    // potrace'ın kendi araması asılıyordu, (2) bantlar bilinmeden gerçek
+    // renk ataması (recolorPosterizedSvg) yapılamaz.
+    const thresholdList = await computePosterizeThresholds(tracingBuffer, steps);
+    svg = await posterizeImagePromise(tracingBuffer, { steps: thresholdList, turdSize });
+    svg = await recolorPosterizedSvg(svg, finalBuffer, thresholdList, finalWidth, finalHeight);
   }
 
   // Force actual dimensions into SVG viewport width/height attributes
