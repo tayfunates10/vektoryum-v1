@@ -469,6 +469,18 @@
   .ld-stepnum { display: flex; align-items: center; gap: 12px; color: #8f9ec2; font-size: 13px; letter-spacing: .04em; }
   .ld-stepnum::before, .ld-stepnum::after { content: ""; width: 22px; height: 1px; background: rgba(112,139,255,.4); }
 
+  /* kalıcı hata durumu: sessizce yükleme ekranına DÖNÜLMEZ — kullanıcı
+     "Tekrar dene" ya da "Yeni görsel seç" ile karar verir */
+  .ld-error { display: none; flex-direction: column; align-items: center; gap: 10px; max-width: min(88vw, 460px);
+    padding: 18px 20px; border-radius: 18px; background: rgba(255,92,124,.08); border: 1px solid rgba(255,92,124,.35); }
+  .ld-error .ic { width: 26px; height: 26px; color: #FF5C7C; }
+  .ld-error-title { font-weight: 700; color: #f4f7ff; font-size: 17px; }
+  .ld-error-msg { color: #c9d3ee; font-size: 13.5px; line-height: 1.5; text-align: center; }
+  .ld-error-actions { display: flex; gap: 10px; margin-top: 4px; flex-wrap: wrap; justify-content: center; }
+  #loading.err .ld-texts, #loading.err .ld-dots, #loading.err .ld-steps, #loading.err .ld-stepnum { display: none; }
+  #loading.err .ld-error { display: flex; }
+  #loading.err .ld-rotor, #loading.err .ld-tickwave { animation-play-state: paused; }
+
   /* preview overlay */
   #preview { flex-direction: column; background: rgba(8,12,26,.96); }
   .pv-top { height: var(--hdr); display: flex; align-items: center; gap: 12px; padding: 0 clamp(14px,4vw,28px); border-bottom: 1px solid var(--line); }
@@ -997,6 +1009,16 @@
     <span class="ld-step s3" id="ldStep3"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 12.5l3.5 3.5 7-8"/></svg></span>
   </div>
   <div class="ld-stepnum ld-e4">Adım&nbsp;<span id="ldStepNum">1</span>&nbsp;/&nbsp;3</div>
+
+  <div class="ld-error" id="ldError" role="alert">
+    <svg class="ic" aria-hidden="true" focusable="false"><use href="#i-warn"/></svg>
+    <div class="ld-error-title">İşlem tamamlanamadı</div>
+    <div class="ld-error-msg" id="ldErrMsg"></div>
+    <div class="ld-error-actions">
+      <button class="btn primary" id="ldRetry" type="button" style="width:auto;margin:0">Tekrar dene</button>
+      <button class="btn ghost" id="ldBack" type="button">Yeni görsel seç</button>
+    </div>
+  </div>
 </div>
 
 <!-- ============ PREVIEW OVERLAY (önizleme geçişi) ============ -->
@@ -1228,6 +1250,20 @@
     requestAnimationFrame(wait);
   }
   function abortLoading() { done = true; cancelAnimationFrame(progRAF); $("loading").classList.remove("on"); }
+  // Hata: yükleme katmanı KAPANMAZ, kalıcı hata paneline geçer. Kullanıcı
+  // "Tekrar dene" ya da "Yeni görsel seç" ile karar verir — sessiz dönüş yok.
+  function failLoading(msg) {
+    done = true; cancelAnimationFrame(progRAF);
+    $("ldErrMsg").textContent = msg;
+    $("loading").classList.add("err");
+  }
+  $("ldRetry").addEventListener("click", () => {
+    $("loading").classList.remove("err", "on");
+    if (file) { go.click(); }
+  });
+  $("ldBack").addEventListener("click", () => {
+    $("loading").classList.remove("err", "on");
+  });
 
   // ---- comparison viewer (senkron zoom/pan + sürükle-ayraç) ----
   const viewer = $("viewer"), paneL = $("paneL"), paneR = $("paneR"),
@@ -1267,6 +1303,60 @@
 
   // ---- vectorize flow ----
   const FMT_LABELS = { svg:"SVG indir", pdf:"PDF", eps:"EPS", dxf:"DXF", png:"PNG" };
+  const RESULT_KEY = "vektoryum:sonuc";
+
+  // Sonucu arayüze uygular (başarı anında VE sayfa yenileme geri yüklemesinde
+  // aynı yol kullanılır) — rozet, meta, uyarılar, görseller, indirme listesi.
+  function applyResult(data, origUrl) {
+    const q = data.quality_report || {}; const status = q.status || "bilinmiyor"; const ok = status === "production_ready";
+    const badge = $("qBadge"); badge.className = "badge " + (ok ? "ok" : "warn");
+    badge.innerHTML = '<svg class="ic"><use href="#'+(ok?"i-check":"i-warn")+'"/></svg>' + (ok?"Üretime hazır":(status==="needs_review"?"Gözden geçirin":status));
+    const cr = data.candidate_report || {}; const cand = (cr.candidates||[]).find(c => c.name===cr.best_candidate) || {}; const det = cand.details || {};
+    const bits = []; if (cand.fidelity_score!=null) bits.push("sadakat "+cand.fidelity_score);
+    if (det.path_count!=null) bits.push(det.path_count+" path"); if (det.unique_colors) bits.push(det.unique_colors+" renk");
+    bits.push("mod: "+(data.mode_used||"?")); $("qMeta").textContent = bits.join("  ·  ");
+    const wl = $("qWarnings"); wl.innerHTML = "";
+    (q.warnings||[]).forEach(w => { const li = document.createElement("li");
+      li.innerHTML = '<svg class="ic"><use href="#i-warn"/></svg><span></span>'; li.querySelector("span").textContent = w; wl.appendChild(li); });
+    V.ready = false;
+    const origImg = $("origImg"), vecImg = $("vecImg");
+    vecImg.src = (data.download_links||{}).svg + "?t=" + Date.now();
+    origImg.onload = () => { lastDims = { w: origImg.naturalWidth || 800, h: origImg.naturalHeight || 800 };
+      initViewer(lastDims.w, lastDims.h); };
+    origImg.src = origUrl;
+    const dl = $("downloads"); dl.innerHTML = ""; const errs = data.output_errors || {};
+    Object.entries(data.download_links||{}).forEach(([fmt,href]) => { const a = document.createElement("a");
+      a.href = href; a.setAttribute("download",""); a.innerHTML = '<svg class="ic"><use href="#i-download"/></svg>'+(FMT_LABELS[fmt]||fmt.toUpperCase());
+      if (fmt==="svg") a.className = "main"; if (errs[fmt]) { a.className += " dead"; a.title = "Üretilemedi: "+errs[fmt]; } dl.appendChild(a); });
+  }
+
+  // Sonuç kalıcılığı: sayfa yenilenirse job_id + indirme bağlantıları ve
+  // kaynak küçük önizlemesi sessionStorage'dan geri yüklenir (kriter: yenileme
+  // sonrası sonuca ulaşılabilir). "Yeni görsel" açıkça sıfırlar.
+  function saveResult(data, origThumb) {
+    try {
+      sessionStorage.setItem(RESULT_KEY, JSON.stringify({ v: 1, ts: Date.now(), orig: origThumb, data: {
+        job_id: data.job_id, mode_used: data.mode_used, download_links: data.download_links,
+        output_errors: data.output_errors || {}, quality_report: data.quality_report || {},
+        candidate_report: data.candidate_report || {} } }));
+    } catch (_) { /* kota/gizli mod: kalıcılık en-iyi-çaba */ }
+  }
+  function fileToThumb(f, cb) {
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const s = Math.min(1, 1024 / Math.max(img.width, img.height));
+        const c = document.createElement("canvas");
+        c.width = Math.max(1, Math.round(img.width * s)); c.height = Math.max(1, Math.round(img.height * s));
+        c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+        cb(c.toDataURL("image/jpeg", 0.82));
+      } catch (_) { cb(null); }
+      URL.revokeObjectURL(img.src);
+    };
+    img.onerror = () => cb(null);
+    img.src = URL.createObjectURL(f);
+  }
+
   go.addEventListener("click", async () => {
     if (!file) return;
     if (!currentUser) { pendingVectorize = true; openAuth("login"); return; }
@@ -1292,35 +1382,23 @@
       data = parsed;
       if (!resp.ok) throw new Error(data.detail || data.error || ("HTTP " + resp.status));
     } catch (err) {
-      abortLoading(); go.disabled = false;
+      go.disabled = false;
       go.classList.remove("loading"); $("goLabel").textContent = "Vektörleştir";
-      showError("İşlem başarısız: " + (err && err.message ? err.message : err));
+      failLoading((err && err.message ? err.message : String(err)));
       return;
     }
 
-    // rozet + meta
-    const q = data.quality_report || {}; const status = q.status || "bilinmiyor"; const ok = status === "production_ready";
-    const badge = $("qBadge"); badge.className = "badge " + (ok ? "ok" : "warn");
-    badge.innerHTML = '<svg class="ic"><use href="#'+(ok?"i-check":"i-warn")+'"/></svg>' + (ok?"Üretime hazır":(status==="needs_review"?"Gözden geçirin":status));
-    const cr = data.candidate_report || {}; const cand = (cr.candidates||[]).find(c => c.name===cr.best_candidate) || {}; const det = cand.details || {};
-    const bits = []; if (cand.fidelity_score!=null) bits.push("sadakat "+cand.fidelity_score);
-    if (det.path_count!=null) bits.push(det.path_count+" path"); if (det.unique_colors) bits.push(det.unique_colors+" renk");
-    bits.push("mod: "+(data.mode_used||"?")); $("qMeta").textContent = bits.join("  ·  ");
-    const wl = $("qWarnings"); wl.innerHTML = "";
-    (q.warnings||[]).forEach(w => { const li = document.createElement("li");
-      li.innerHTML = '<svg class="ic"><use href="#i-warn"/></svg><span></span>'; li.querySelector("span").textContent = w; wl.appendChild(li); });
+    // sonuç sözleşmesi doğrulaması: SVG bağlantısı olmayan "başarılı" yanıt
+    // sonuç değildir — sessizce önizleme açmak yerine kalıcı hata göster.
+    if (!data.download_links || !data.download_links.svg) {
+      go.disabled = false;
+      go.classList.remove("loading"); $("goLabel").textContent = "Vektörleştir";
+      failLoading("Sunucu sonucu eksik döndürdü (SVG bağlantısı yok). Lütfen tekrar deneyin.");
+      return;
+    }
 
-    // görseller + indirmeler
-    V.ready = false;
-    const origImg = $("origImg"), vecImg = $("vecImg");
-    vecImg.src = (data.download_links||{}).svg + "?t=" + Date.now();
-    origImg.onload = () => { lastDims = { w: origImg.naturalWidth || 800, h: origImg.naturalHeight || 800 };
-      initViewer(lastDims.w, lastDims.h); };
-    origImg.src = URL.createObjectURL(file);
-    const dl = $("downloads"); dl.innerHTML = ""; const errs = data.output_errors || {};
-    Object.entries(data.download_links||{}).forEach(([fmt,href]) => { const a = document.createElement("a");
-      a.href = href; a.setAttribute("download",""); a.innerHTML = '<svg class="ic"><use href="#i-download"/></svg>'+(FMT_LABELS[fmt]||fmt.toUpperCase());
-      if (fmt==="svg") a.className = "main"; if (errs[fmt]) { a.className += " dead"; a.title = "Üretilemedi: "+errs[fmt]; } dl.appendChild(a); });
+    applyResult(data, URL.createObjectURL(file));
+    fileToThumb(file, (thumb) => saveResult(data, thumb));
 
     // yükleme%100 -> önizleme geçişi
     finishLoading(() => {
@@ -1333,12 +1411,24 @@
   });
 
   $("pvClose").addEventListener("click", () => { $("preview").classList.remove("on"); V.ready = false; });
+  // resetWorkflow: YALNIZ kullanıcı açıkça "Yeni görsel" dediğinde çalışır.
   $("reset").addEventListener("click", () => {
     $("preview").classList.remove("on"); V.ready = false; file = null; fileIn.value = ""; lastDims = null;
+    try { sessionStorage.removeItem(RESULT_KEY); } catch (_) {}
     dropReset(); go.disabled = true; go.classList.remove("ready");
     $("actPreview").disabled = true; $("actDownload").disabled = true;
     $("s1").scrollIntoView({ behavior:"smooth" });
   });
+
+  // ---- sayfa yenileme geri yüklemesi: kayıtlı sonuç varsa önizleme ve
+  // indirme kartları yeniden aktifleşir (job dosyaları sunucuda durduğu sürece) ----
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(RESULT_KEY) || "null");
+    if (saved && saved.data && (saved.data.download_links || {}).svg) {
+      applyResult(saved.data, saved.orig || saved.data.download_links.png || saved.data.download_links.svg);
+      $("actPreview").disabled = false; $("actDownload").disabled = false;
+    }
+  } catch (_) { /* bozuk kayıt: sessizce yok say */ }
 
   // ---- alt aksiyon kartları: yükle / önizle / indir ----
   $("actUpload").addEventListener("click", () => fileIn.click());

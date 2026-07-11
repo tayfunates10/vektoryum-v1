@@ -336,14 +336,28 @@ app.post('/api/vectorize', requireUser, upload.single('file'), async (req, res) 
   }
 
   try {
-    const report = await runVectorizerPipeline(
-      file.buffer,
-      file.originalname,
-      traceMode,
-      shapeStacking,
-      edgeCleanup,
-      JOBS_ROOT
-    );
+    // Güvenlik zaman aşımı: işleme asılırsa proxy'nin boş gövdeli 504'ü
+    // yerine kontrollü ve açıklayıcı bir hata dönülür (frontend bunu
+    // kullanıcıya kalıcı hata panelinde gösterir; sessizce upload'a dönmez).
+    const VECTORIZE_TIMEOUT_MS = 120000;
+    const report = (await Promise.race([
+      runVectorizerPipeline(
+        file.buffer,
+        file.originalname,
+        traceMode,
+        shapeStacking,
+        edgeCleanup,
+        JOBS_ROOT
+      ),
+      new Promise((_, reject) =>
+        setTimeout(
+          () => reject(new Error(
+            "İşlem zaman aşımına uğradı (120 sn). Görsel çok büyük/karmaşık olabilir; daha küçük bir görsel ya da farklı bir mod deneyin."
+          )),
+          VECTORIZE_TIMEOUT_MS
+        )
+      ),
+    ])) as Awaited<ReturnType<typeof runVectorizerPipeline>>;
 
     // Attach active user's metadata to report
     report.user = {

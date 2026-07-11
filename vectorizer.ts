@@ -25,6 +25,36 @@ function posterizeImagePromise(buffer: Buffer, options: any): Promise<string> {
   });
 }
 
+// KÖK NEDEN DÜZELTMESİ: node-potrace, steps SAYI olarak verilip 5'i aşınca
+// çok-seviyeli eşikleri kendisi aramaya çalışır ve bu arama kombinatorik
+// patlar ("Threshold computation for more than 5 levels may take a long
+// time" uyarısının ardından istek pratikte sonsuza asılır). Canlıda auto ->
+// logo_color modu steps=12 kullanır: /api/vectorize hiç yanıt dönmez, proxy
+// zaman aşımı frontend'i hata yoluna düşürür ve kullanıcı önizleme yerine
+// yükleme ekranına geri döner. Eşikleri histogramdan EŞİT-KÜTLELİ quantile
+// olarak biz hesaplayıp potrace'a HAZIR liste veririz; asılan kod yolu hiç
+// çalışmaz. Deterministiktir (rastgelelik yok) ve steps<=5 davranışı aynıdır.
+async function computePosterizeThresholds(buffer: Buffer, count: number): Promise<number[]> {
+  const { data } = await sharp(buffer).greyscale().raw().toBuffer({ resolveWithObject: true });
+  const hist = new Array<number>(256).fill(0);
+  for (let i = 0; i < data.length; i++) hist[data[i]]++;
+  const total = data.length;
+  const thresholds: number[] = [];
+  let acc = 0;
+  let next = 1;
+  for (let v = 0; v < 256 && thresholds.length < count; v++) {
+    acc += hist[v];
+    while (next <= count && acc >= (next / (count + 1)) * total) {
+      thresholds.push(v);
+      next++;
+    }
+  }
+  // yinelenenleri at (düz renkli görsellerde quantile'lar çakışabilir);
+  // en az bir eşik kalsın
+  const unique = [...new Set(thresholds)];
+  return unique.length > 0 ? unique : [128];
+}
+
 // Cubic Bezier curve sampling helper
 function sampleCubicBezier(
   p0x: number, p0y: number,
@@ -309,7 +339,11 @@ export async function runVectorizerPipeline(
       turdSize = 2;
     }
 
-    svg = await posterizeImagePromise(tracingBuffer, { steps, turdSize });
+    // steps > 5: potrace'ın kendi eşik araması asılır (yukarıya bak) —
+    // eşikler histogramdan hazır hesaplanır. <=5 hızlı yolda değişmez.
+    const stepsOption: number | number[] =
+      steps > 5 ? await computePosterizeThresholds(tracingBuffer, steps) : steps;
+    svg = await posterizeImagePromise(tracingBuffer, { steps: stepsOption, turdSize });
   }
 
   // Force actual dimensions into SVG viewport width/height attributes
