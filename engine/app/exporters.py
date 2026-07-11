@@ -65,6 +65,21 @@ def clean_svg(src: Path, dst: Path, candidate_id: str | None = None) -> Path:
         if candidate_id:
             root.set("data-candidate", candidate_id)
 
+        # Bileşik (çok alt-yollu) path'lerde fill-rule AÇIK yazılır: delikler
+        # sarım yönüyle kurulur (nonzero varsayılanı doğru render eder) ama
+        # örtük bırakmak editör/araç uyumluluğunda belirsizlik yaratır.
+        # "nonzero"yu açıkça yazmak görüntüyü değiştirmez (varsayılanla aynı),
+        # sözleşmeyi netleştirir; evenodd YAZILMAZ — aynı yönlü örtüşen
+        # alt-yolları olan birleşimlerde deliğe dönüşürdü.
+        import re as _re  # noqa: PLC0415
+
+        for el in root.iter():
+            if el.tag.split("}")[-1] != "path" or el.get("fill-rule"):
+                continue
+            d = el.get("d") or ""
+            if len(_re.findall(r"(?<![0-9a-zA-Z.,-])[Mm]", " " + d)) >= 2:
+                el.set("fill-rule", "nonzero")
+
         tree.write(str(dst), encoding="utf-8", xml_declaration=True)
         return dst
     except Exception as e:  # noqa: BLE001

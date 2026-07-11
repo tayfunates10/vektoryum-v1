@@ -270,6 +270,121 @@ def _edge_f1(gray_a: np.ndarray, gray_b: np.ndarray, tolerance: int = 2) -> floa
 # ---------------------------------------------------------------------------
 # Birleşik sadakat
 # ---------------------------------------------------------------------------
+def _component_class_report(
+    original_rgb: np.ndarray,
+    rendered_rgb: np.ndarray,
+    k: int = 6,
+) -> dict[str, Any] | None:
+    """Palet-sınıfı bağlı-bileşen raporu: EN KÖTÜ bileşen IoU'su.
+
+    Global skorlar (SSIM/ΔE/edge) alan ağırlıklıdır: ® gibi küçük ama anlamlı
+    bir bileşen tamamen bozulsa bile genel skor ~%99 kalır ve aday seçimi
+    hatayı görmez (LEGO ® vakası: global %99.5, ® bölgesi IoU %46). Bu rapor
+    orijinali küçük K ile (LAB) kümeler, her iki görüntüyü en yakın merkeze
+    sınıflar ve orijinal sınıf maskelerinin HER bağlı bileşeni için render
+    maskesiyle bileşen-yerel IoU ölçer.
+
+    Yalnız düz-renk/palet karakterli görsellerde anlamlıdır: kuantalama artığı
+    (medyan LAB uzaklığı) yüksekse ``None`` döner ve çağıran eski formüle düşer
+    (foto/gradyan girdiler cezalandırılmaz). AA kırıntıları alan tabanıyla elenir.
+    """
+    try:
+        h, w = original_rgb.shape[:2]
+        lab_o = cv2.cvtColor(original_rgb, cv2.COLOR_RGB2LAB).astype(np.float32)
+        lab_r = cv2.cvtColor(rendered_rgb, cv2.COLOR_RGB2LAB).astype(np.float32)
+        samples = lab_o.reshape(-1, 3)
+        # hızlı kümeleme için alt örnekleme (deterministik adım)
+        step = max(1, samples.shape[0] // 40000)
+        sub = samples[::step]
+        crit = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 20, 0.5)
+        cv2.setRNGSeed(7)  # kmeans deterministik olsun (skorlama tekrarlanabilir)
+        _compact, _labels, centers = cv2.kmeans(
+            sub, k, None, crit, 3, cv2.KMEANS_PP_CENTERS
+        )
+        def _classify(lab: np.ndarray) -> np.ndarray:
+            d = np.linalg.norm(lab[:, :, None, :] - centers[None, None, :, :], axis=3)
+            return np.argmin(d, axis=2)
+        cls_o = _classify(lab_o)
+        cls_r = _classify(lab_r)
+        # palet karakteri kontrolü: kuantalama artığı büyükse (foto) rapor üretme
+        resid = np.take(centers, cls_o.reshape(-1), axis=0).reshape(lab_o.shape)
+        med_err = float(np.median(np.linalg.norm(lab_o - resid, axis=2)))
+        if med_err > 10.0:
+            return None
+        min_area = max(48, int(0.0001 * h * w))
+        ious: list[float] = []
+        worst = None
+        weak: list[dict[str, Any]] = []
+        for ci in range(centers.shape[0]):
+            mo = (cls_o == ci).astype(np.uint8)
+            if int(mo.sum()) < min_area:
+                continue
+            mr = cls_r == ci
+            n, lab_map, stats, _ = cv2.connectedComponentsWithStats(mo, 8)
+            for i in range(1, n):
+                x, y, ww, hh, area = stats[i]
+                if area < min_area:
+                    continue
+                pad = 6
+                x0, y0 = max(0, x - pad), max(0, y - pad)
+                x1, y1 = min(w, x + ww + pad), min(h, y + hh + pad)
+                mm = lab_map[y0:y1, x0:x1] == i
+                rr = mr[y0:y1, x0:x1]
+                # yerellik: aynı sınıfın KOMŞU bileşenleri (ör. çerçeve bbox'ı
+                # tüm tuvali kapsar, içine harfler girer) birleşimi şişirmesin.
+                # Render pikselleri yalnız kaynak bileşenin ~4px komşuluğunda
+                # sayılır; daha büyük kayma zaten kesişim kaybıyla cezalanır.
+                near = cv2.dilate(mm.astype(np.uint8), np.ones((9, 9), np.uint8)) > 0
+                rr = rr & near
+                union = int((mm | rr).sum())
+                if union == 0:
+                    continue
+                iou = float((mm & rr).sum()) / union
+                ious.append(iou)
+                if worst is None or iou < worst[0]:
+                    worst = (iou, [int(x), int(y), int(ww), int(hh)])
+                # zayıf KÜÇÜK bileşen: hizalama refiti adayı. Kestirim GRUP
+                # bazlıdır (penceredeki sınıfın tümü — ör. halka + R birlikte):
+                # render tarafında bileşen ayrımı olmadığından tek bileşenle
+                # centroid karşılaştırmak yanıltır. Ölçek, alan yerine RMS
+                # yarıçap oranından kestirilir; AA incelmesi (kaynak küçültme
+                # yumuşatması ince şekillerin sınıf alanını düşürür) alanı
+                # bozar ama RMS yarıçapı korur.
+                small = max(ww, hh) <= 0.18 * max(w, h)
+                if iou < 0.88 and small and len(weak) < 6:
+                    pad2 = max(8, int(0.35 * max(ww, hh)))
+                    ax0, ay0 = max(0, x - pad2), max(0, y - pad2)
+                    ax1, ay1 = min(w, x + ww + pad2), min(h, y + hh + pad2)
+                    grp_o = cls_o[ay0:ay1, ax0:ax1] == ci
+                    grp_r = mr[ay0:ay1, ax0:ax1]
+                    if grp_r.sum() >= min_area * 0.4 and grp_o.sum() >= min_area * 0.4:
+                        ys, xs = np.nonzero(grp_o)
+                        yr, xr = np.nonzero(grp_r)
+                        dx = float(xs.mean() - xr.mean())
+                        dy = float(ys.mean() - yr.mean())
+                        rms_o = float(np.sqrt(((xs - xs.mean()) ** 2 + (ys - ys.mean()) ** 2).mean()))
+                        rms_r = float(np.sqrt(((xr - xr.mean()) ** 2 + (yr - yr.mean()) ** 2).mean()))
+                        s = rms_o / max(rms_r, 1e-6)
+                        weak.append({
+                            "iou": round(iou, 4),
+                            "bbox": [int(x), int(y), int(ww), int(hh)],
+                            "dx": round(dx, 2), "dy": round(dy, 2),
+                            "scale": round(s, 4),
+                        })
+        if not ious:
+            return None
+        return {
+            "component_min_iou": round(min(ious), 4),
+            "component_mean_iou": round(float(np.mean(ious)), 4),
+            "components_measured": len(ious),
+            "worst_component_bbox": worst[1] if worst else None,
+            "weak_components": weak,
+        }
+    except Exception as e:  # noqa: BLE001 (ölçüm başarısızsa eski davranışa dön)
+        logger.debug("Bileşen raporu hesaplanamadı: %s", e)
+        return None
+
+
 def compute_fidelity(original_rgb: np.ndarray, rendered_rgb: np.ndarray) -> dict[str, Any]:
     """İki RGB dizi (aynı boyut) arasında algısal sadakat raporu üretir.
 
@@ -399,7 +514,35 @@ def score_svg_fidelity(
         return None
 
     try:
-        return compute_fidelity(reference, rendered)
+        report = compute_fidelity(reference, rendered)
     except Exception as e:  # noqa: BLE001
         logger.debug("Sadakat hesaplanamadı (%s): %s", Path(svg_path).name, e)
         return None
+
+    # Bileşen-ağırlıklı ceza: küçük ama anlamlı bir bileşen ciddi bozuksa
+    # (ör. ® halkası dikeyde şişmişse) global skor bunu maskelememeli.
+    # 512'de ince şekiller (glif konturları) sınıflandırma asimetrisiyle
+    # YANLIŞ düşük ölçülebilir; bu yüzden şüphe (min<0.92) yalnızca daha
+    # yüksek çözünürlükte (1024, kalınlık 2x) İKİNCİ ölçümle doğrulanırsa
+    # cezaya dönüşür — ekstra render yalnız şüphe durumunda yapılır.
+    try:
+        comp = _component_class_report(reference, rendered)
+        if comp is not None and comp["component_min_iou"] < 0.92:
+            ref_hi, (w2, h2) = load_reference_rgb(Path(original_path), max_side=1024)
+            rnd_hi = render_svg_to_rgb(Path(svg_path), w2, h2)
+            if rnd_hi is not None:
+                comp_hi = _component_class_report(ref_hi, rnd_hi)
+                if comp_hi is not None:
+                    comp = comp_hi
+        if comp is not None:
+            shortfall = max(0.0, 0.92 - comp["component_min_iou"])
+            penalty = round(min(12.0, shortfall * 12.0), 2)
+            if penalty > 0:
+                report["fidelity_score"] = round(
+                    max(0.0, report["fidelity_score"] - penalty), 2
+                )
+            comp["component_penalty"] = penalty
+            report["component_report"] = comp
+    except Exception as e:  # noqa: BLE001 (ölçüm hatası cezasız eski davranış)
+        logger.debug("Bileşen cezası hesaplanamadı (%s): %s", Path(svg_path).name, e)
+    return report
