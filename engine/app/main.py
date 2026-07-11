@@ -174,6 +174,12 @@ def _max_input_side() -> int:
 async def vectorize_image(
     file: UploadFile = File(...),
     trace_mode: str = Form("auto"),
+    # NOT: cutouts (gerçek evenodd delikleri) varsayılan YAPILMADI — pyclipper
+    # boolean'ı eğrileri poligonize eder; LEGO fixture'ında komut sayısı
+    # 339 -> 49.942'ye şişti (ölçüldü). Delikler için doğru hedef, eğri
+    # KORUYAN sayaç-birleştirme (üstteki zemin-renkli örtme path'ini alttaki
+    # path'e evenodd alt-yol olarak gömme); backlog'dadır. cutouts seçenek
+    # olarak duruyor.
     shape_stacking: str = Form("stacked"),
     edge_cleanup: str = Form("on"),
     session: str | None = Cookie(default=None),

@@ -819,19 +819,25 @@ def _apply_boundary_refit(
 
 
 def _restore_source_dimensions(svg_path: Path, analysis: dict[str, Any]) -> None:
-    """Kazanan SVG'nin İÇ boyutlarını kaynak görsel boyutuna oturtur.
+    """Kazanan SVG'yi KAYNAK koordinat uzayına normalize eder.
 
-    Ön işleme izleme rasterini ölçekler (küçük girdide 2x süperörnekleme,
-    büyükte performans küçültmesi); izlenen SVG'nin width/height/viewBox'ı o
-    rasterden gelir ve kaynak boyut sözleşmesi bozulur (500x300 girdi 1000x600
-    birimlik SVG/PDF veriyordu — PR incelemesinde işaret edildi). viewBox iz
-    koordinatlarında kalır, width/height kaynak piksel boyutuna çekilir;
-    render'lar ve koordinat-bazlı ölçümler etkilenmez, dışa aktarım boyutu
-    (SVG/PDF/EPS sayfası, DXF birim ölçeği) kaynağa döner.
+    Ön işleme izleme rasterini ölçekler (küçük girdide süperörnekleme, büyükte
+    izleme tavanı); izlenen SVG'nin koordinatları o rasterin uzayındadır.
+    Yalnız width/height'ı kaynağa çekmek üç ayrı ölçek doğurur (kaynak 1536 /
+    viewBox 2200 / width 3840 — kullanıcı incelemesinde işaret edildi):
+    boyutlar tutarsız görünür, toleransların hangi uzaya ait olduğu
+    belirsizleşir. Burada path KOORDİNATLARI kaynak uzaya ölçeklenir,
+    element translate'leri düzleştirilir (flatten), viewBox/width/height
+    üçü de kaynak boyuta eşitlenir ve hassasiyet 0.01 birime sınırlanır.
+
+    svgpathtools yoksa ya da path dışı geometri (rect/circle) varsa güvenli
+    eski davranışa düşülür: viewBox iz uzayında kalır, yalnız width/height
+    kaynağa çekilir (oran korunduğundan görünüm birebir aynıdır).
     """
     ow, oh = int(analysis.get("width", 0) or 0), int(analysis.get("height", 0) or 0)
     if ow <= 0 or oh <= 0:
         return
+    import re as _re  # noqa: PLC0415
     import xml.etree.ElementTree as ET  # noqa: PLC0415
 
     try:
@@ -848,11 +854,67 @@ def _restore_source_dimensions(svg_path: Path, analysis: dict[str, Any]) -> None
             except ValueError:
                 return
             root.set("viewBox", f"0 0 {vw:g} {vh:g}")
-        if root.get("width") == str(ow) and root.get("height") == str(oh):
+
+        def _finish() -> None:
+            root.set("width", str(ow))
+            root.set("height", str(oh))
+            tree.write(str(svg_path), encoding="utf-8", xml_declaration=True)
+
+        vb = root.get("viewBox", "").replace(",", " ").split()
+        try:
+            vbw, vbh = float(vb[2]), float(vb[3])
+        except (IndexError, ValueError):
+            _finish()
             return
-        root.set("width", str(ow))
-        root.set("height", str(oh))
-        tree.write(str(svg_path), encoding="utf-8", xml_declaration=True)
+        if abs(vbw - ow) < 1e-6 and abs(vbh - oh) < 1e-6:
+            _finish()
+            return
+
+        # koordinat normalizasyonu: iz uzayı -> kaynak uzay
+        try:
+            import numpy as _np  # noqa: PLC0415
+            from svgpathtools import parse_path  # noqa: PLC0415
+            from svgpathtools.path import transform as _svgt_transform  # noqa: PLC0415
+        except Exception:  # noqa: BLE001 (opsiyonel bağımlılık yok: eski davranış)
+            _finish()
+            return
+        geo_tags = {"rect", "circle", "ellipse", "line", "polygon", "polyline"}
+        if any(el.tag.split("}")[-1] in geo_tags for el in root.iter()):
+            _finish()
+            return
+        sx, sy = ow / vbw, oh / vbh
+
+        def _round_d(d: str) -> str:
+            return _re.sub(
+                r"-?\d+\.\d+",
+                lambda m: f"{float(m.group()):.2f}".rstrip("0").rstrip("."),
+                d,
+            )
+
+        # 1. geçiş: hiçbir şeyi DEĞİŞTİRMEDEN tüm transform'ları doğrula —
+        # ortada bilinmeyen bir dönüşüm varsa yarı-normalize SVG yazılmamalı.
+        plan: list[tuple[Any, float, float, str]] = []
+        for el in root.iter():
+            if el.tag.split("}")[-1] != "path" or not el.get("d"):
+                continue
+            tx = ty = 0.0
+            tr = (el.get("transform") or "").strip()
+            if tr:
+                m = _re.fullmatch(r"translate\(\s*([-\d.eE]+)\s*[, ]?\s*([-\d.eE]+)?\s*\)", tr)
+                if not m:
+                    _finish()  # bilinmeyen dönüşüm: normalize etme, eski davranış
+                    return
+                tx, ty = float(m.group(1)), float(m.group(2) or 0.0)
+            plan.append((el, tx, ty, tr))
+        # 2. geçiş: uygula
+        for el, tx, ty, tr in plan:
+            mat = _np.array([[sx, 0, sx * tx], [0, sy, sy * ty], [0, 0, 1]], dtype=float)
+            p2 = _svgt_transform(parse_path(el.get("d")), mat)
+            el.set("d", _round_d(p2.d()))
+            if tr:
+                del el.attrib["transform"]
+        root.set("viewBox", f"0 0 {ow:g} {oh:g}")
+        _finish()
     except Exception as e:  # noqa: BLE001
         logger.debug("Kaynak boyut geri yüklemesi atlandı: %s", e)
 
@@ -1039,8 +1101,9 @@ def run_pipeline(
                 best = rescored if rescored is not None else aligned
                 selection_reason = f"{selection_reason}+component_align"
             refit_info = {**refit_info, "component_align": ca_rep}
-        # 9.8 Kaynak boyut sözleşmesi: kazananın width/height'ı orijinal görsel
-        # boyutuna çekilir (viewBox iz koordinatlarında kalır)
+        # 9.8 Kaynak koordinat sözleşmesi: kazanan SVG kaynak uzaya normalize
+        # edilir (koordinatlar ölçeklenir, translate düzleşir, viewBox =
+        # width = height = kaynak boyut; ayrıntı: _restore_source_dimensions)
         if best is not None:
             _restore_source_dimensions(Path(best["svg_path"]), analysis)
 
