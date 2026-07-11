@@ -37,11 +37,25 @@ os.environ.setdefault("VEKTORYUM_TRACE_CAP", "2200")
 
 FIXTURE = ENGINE_DIR / "regression" / "fixtures" / "lego_rmark.png"
 
-# Eşikler (ölçülmüş baseline'a göre; gevşetme = hatayı geçirme, yapma):
-MIN_PALETTE_AGREE = 0.995      # genel palet sınıf uyumu
-MIN_CLASS_IOU = 0.965          # her palet sınıfı için IoU tabanı
-MIN_SMALL_COMPONENT_IOU = 0.90 # küçük anlamlı bileşenlerin en kötüsü (® dahil)
-MAX_SVG_COMMANDS = 900         # karmaşıklık sınırsız büyümesin
+# Eşikler (ölçülmüş baseline'a göre; gevşetme = hatayı geçirme, yapma).
+# Değerler renderer (resvg) anti-alias davranışına bağlıdır: sert sınıf
+# ataması iki renk ortasındaki AA piksellerinde 1 birimlik render farkıyla
+# oynayabilir; eşikler bu yüzden ölçülen değerin hemen altına konur, üstüne
+# değil. Ölçülen güncel değerler (counter_merge + local_refine sonrası):
+# palet 0.99865, en kötü sınıf 0.99437, halka 0.9942, en kötü küçük 0.9701.
+MIN_PALETTE_AGREE = 0.9975     # genel palet sınıf uyumu
+MIN_CLASS_IOU = 0.985          # her palet sınıfı için IoU tabanı
+MIN_SMALL_COMPONENT_IOU = 0.965  # küçük anlamlı bileşenlerin en kötüsü (® R dahil)
+MIN_RING_IOU = 0.985           # halka-benzeri küçük bileşen (® halkası)
+MIN_FIDELITY = 97.9            # kazanan aday sadakat tabanı
+MAX_SVG_COMMANDS = 900         # karmaşıklık sınırsız büyümesin (poligon patlaması)
+# G bölgesi hedefleri (3840 kaynak uzayında; kullanıcı 1536 ölçeğinde
+# raporlar: 2.5x böl): p95 kenar sapması ve yerel palet uyumu
+G_REGION = (1625, 1125, 2625, 2650)  # fixture ölçüm bölgesi (yalnız test)
+MAX_G_P95_DEV = 2.0            # px @3840 (=0.8 px @1536)
+MAX_G_MAX_DEV = 9.0            # px @3840 — bilinen sınır: tepe cusp sliver'ı
+MIN_G_AGREE = 0.994
+MAX_FRAME_THICKNESS_DIFF = 0.5  # px, coverage-ağırlıklı alt-piksel ölçüm
 
 
 def _fail(errors: list[str], cond: bool, msg: str) -> None:
@@ -72,6 +86,8 @@ def main() -> int:
     if errors:
         print("FAIL:", errors)
         return 1
+    _fail(errors, float(best.get("fidelity_score") or 0.0) >= MIN_FIDELITY,
+          f"sadakat {best.get('fidelity_score')} < {MIN_FIDELITY}")
     # ÜRETİM YOLU: kullanıcıya giden dosya export katmanından geçer
     # (koordinat normalizasyonu pipeline içinde, fill-rule export'ta).
     svg_path = export_svg(Path(best["svg_path"]), job / "final.svg",
@@ -130,6 +146,82 @@ def main() -> int:
     ) if fills else True
     _fail(errors, not grays_only, f"tüm dolgular gri tonlu — kromatik kaynak için kabul edilemez: {fills}")
 
+    # --- D. Sayaç (counter) sözleşmesi: gerçek evenodd delik + arka plan
+    # bağımsızlığı. Halka benzeri küçük bileşen (®) kaynaktan otomatik bulunur
+    # (koordinat hardcode YOK); içindeki sayaç ayrı zemin-renkli örtme path'i
+    # olamaz — ebeveyne evenodd alt-yolu olarak gömülmeli ve altındaki katman
+    # yeniden boyanınca delikte eski renkte sabit leke kalmamalı.
+    src_arr = np.asarray(im)
+    lab_src = cv2.cvtColor(src_arr, cv2.COLOR_RGB2LAB).astype(np.float32)
+    dark_mask = (lab_src[:, :, 0] < 40).astype(np.uint8)
+    n_d, _lmap_d, stats_d, _ = cv2.connectedComponentsWithStats(dark_mask, 8)
+    ring_bbox = None
+    min_area_d = max(60, int(0.00005 * w * h))
+    for i in range(1, n_d):
+        x, y, ww, hh, area = stats_d[i]
+        if area < min_area_d or max(ww, hh) > 0.2 * max(w, h):
+            continue
+        if 0.8 < ww / max(1, hh) < 1.25 and area < 0.45 * ww * hh and ww > 60:
+            ring_bbox = (int(x), int(y), int(ww), int(hh))
+            break
+    if ring_bbox:
+        from svgpathtools import parse_path as _pp
+
+        rx, ry, rw2, rh2 = ring_bbox
+
+        def _is_dark_fill(f: str) -> bool:
+            v = int(f[1:], 16)
+            return (v >> 16) + ((v >> 8) & 255) + (v & 255) < 120
+
+        inner_paths = []
+        for m in re.finditer(r"<path[^>]*>", svg_txt):
+            tag = m.group(0)
+            dm = re.search(r'd="([^"]*)"', tag)
+            fm = re.search(r'fill="(#[0-9a-fA-F]{6})"', tag)
+            if not dm or not fm:
+                continue
+            try:
+                bx0, bx1, by0, by1 = _pp(dm.group(1)).bbox()
+            except Exception:  # noqa: BLE001
+                continue
+            if bx0 >= rx - 2 and bx1 <= rx + rw2 + 2 and by0 >= ry - 2 and by1 <= ry + rh2 + 2:
+                subs = len(re.findall(r"(?<![0-9a-zA-Z.,-])[Mm]", " " + dm.group(1)))
+                inner_paths.append({"tag": tag, "fill": fm.group(1).lower(), "subs": subs})
+        light = [p for p in inner_paths if not _is_dark_fill(p["fill"])]
+        _fail(errors, len(light) <= 1,
+              f"® içinde {len(light)} zemin-renkli path: sayaç hâlâ örtme (overlay), delik değil")
+        holes = [p for p in inner_paths
+                 if _is_dark_fill(p["fill"]) and p["subs"] >= 2 and "evenodd" in p["tag"]]
+        _fail(errors, len(holes) >= 1,
+              "® içinde evenodd delikli koyu path yok: R sayacı gerçek delik değil")
+        if len(light) == 1:
+            old_fill = light[0]["fill"]
+            txt2 = svg_txt.replace(
+                light[0]["tag"],
+                re.sub(r'fill="#[0-9a-fA-F]{6}"', 'fill="#00a651"', light[0]["tag"], count=1), 1)
+            bg_svg = job / "bg_independence.svg"
+            bg_svg.write_text(txt2)
+            rnd2 = render_svg_to_rgb(bg_svg, w, h)
+            # leke denetimi yeniden boyanan path'in GERÇEK dolgu maskesi
+            # içinde yapılır (solo render): bbox köşeleri meşru zemin rengi
+            # içerir (stacked modelde "disk" halkanın altına dek uzanır),
+            # bbox'a bakmak sahte pozitif üretir (ölçüldü: ~6.4k köşe pikseli)
+            ld = re.search(r'd="([^"]*)"', light[0]["tag"]).group(1)
+            solo = (f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" '
+                    f'viewBox="0 0 {w} {h}"><rect width="{w}" height="{h}" fill="#ffffff"/>'
+                    f'<path d="{ld}" fill="#000000"/></svg>')
+            solo_svg = job / "bg_solo_mask.svg"
+            solo_svg.write_text(solo)
+            rnd_solo = render_svg_to_rgb(solo_svg, w, h)
+            if rnd2 is not None and rnd_solo is not None:
+                mask = rnd_solo.astype(np.int32).sum(axis=2) < 200
+                v = int(old_fill[1:], 16)
+                stain_rgb = np.array([v >> 16, (v >> 8) & 255, v & 255])
+                is_old = np.abs(rnd2.astype(np.int32) - stain_rgb).sum(axis=2) < 90
+                stain = int((is_old & mask).sum())
+                _fail(errors, stain < 20,
+                      f"® deliğinde {stain}px eski renkte leke: sayaç arka plana bağımlı (gerçek delik değil)")
+
     # --- B. Palet + C. bileşen testleri (render karşılaştırması) ----------
     rnd = render_svg_to_rgb(svg_path, w, h)
     _fail(errors, rnd is not None, "SVG render edilemedi")
@@ -176,8 +268,73 @@ def main() -> int:
                 if iou < worst_small:
                     worst_small = iou
                     worst_info = {"bbox": [int(x), int(y), int(ww), int(hh)], "iou": round(iou, 4)}
+                # halka-benzeri bileşen (® halkası) için daha yüksek taban:
+                # analitik daire refit'i sonrası ölçülen 0.9942
+                if 0.8 < ww / max(1, hh) < 1.25 and area < 0.45 * ww * hh and ww > 60:
+                    _fail(errors, iou >= MIN_RING_IOU,
+                          f"halka bileşeni IoU {iou:.4f} < {MIN_RING_IOU} ({[int(x), int(y)]})")
         _fail(errors, worst_small >= MIN_SMALL_COMPONENT_IOU,
               f"en kötü küçük bileşen IoU {worst_small:.4f} < {MIN_SMALL_COMPONENT_IOU} ({worst_info})")
+
+        # --- E. G bölgesi yerel doğruluk (yüksek eğrilikli iç ayrıntılar) --
+        # Bölge koordinatı yalnız TESTTE kullanılır (üretimde harf tanıma yok).
+        gx0, gy0, gx1, gy1 = G_REGION
+        g_agree = float((co[gy0:gy1, gx0:gx1] == cr[gy0:gy1, gx0:gx1]).mean())
+        _fail(errors, g_agree >= MIN_G_AGREE,
+              f"G bölgesi palet uyumu {g_agree:.5f} < {MIN_G_AGREE}")
+        black_ci = int(np.argmin(centers[:, 0]))  # LAB L* en düşük merkez
+        g_src = (co[gy0:gy1, gx0:gx1] == black_ci).astype(np.uint8)
+        g_rnd = (cr[gy0:gy1, gx0:gx1] == black_ci).astype(np.uint8)
+        se = cv2.Canny(g_src * 255, 50, 150) > 0
+        re2 = cv2.Canny(g_rnd * 255, 50, 150) > 0
+        if se.any() and re2.any():
+            dt = cv2.distanceTransform((~re2).astype(np.uint8), cv2.DIST_L2, 5)
+            dt2 = cv2.distanceTransform((~se).astype(np.uint8), cv2.DIST_L2, 5)
+            devs = np.concatenate([dt[se], dt2[re2]])
+            g_p95, g_max = float(np.percentile(devs, 95)), float(devs.max())
+            _fail(errors, g_p95 <= MAX_G_P95_DEV,
+                  f"G p95 kenar sapması {g_p95:.2f}px > {MAX_G_P95_DEV}px")
+            _fail(errors, g_max <= MAX_G_MAX_DEV,
+                  f"G maks kenar sapması {g_max:.2f}px > {MAX_G_MAX_DEV}px")
+
+        # --- F. Çerçeve alt-piksel kalınlığı (varsa) -----------------------
+        # 4 kenara da dokunan koyu bileşen = çerçeve. Kalınlık coverage
+        # ağırlıklı ölçülür (ikili maske yarım pikseli göremez).
+        has_frame = any(
+            stats_d[i][0] == 0 and stats_d[i][1] == 0
+            and stats_d[i][0] + stats_d[i][2] == w and stats_d[i][1] + stats_d[i][3] == h
+            for i in range(1, n_d)
+        )
+        if has_frame:
+            def _cov_thickness(img: np.ndarray) -> dict[str, float]:
+                f32 = img.astype(np.float32)
+                # ikili koşudan bant uzunluğu tahmini (üst kenar, orta %50)
+                colsel = np.arange(w // 4, 3 * w // 4)
+                dark_run = int(np.mean([
+                    np.argmax(f32[:, c].sum(axis=1) > 240) or 100 for c in colsel[:64]
+                ]))
+                band = max(20, min(200, dark_run + 10))
+                probe = band + 10
+
+                def _edge(lines: np.ndarray) -> float:
+                    neigh = lines[:, band:probe].reshape(-1, 3).mean(axis=0)
+                    dv = neigh  # siyah(0,0,0) -> komşu renk ekseni
+                    tproj = np.clip((lines @ dv) / float(dv @ dv), 0, 1)
+                    return float((1.0 - tproj[:, :band]).sum(axis=1).mean())
+
+                rowsel = np.arange(h // 4, 3 * h // 4)
+                return {
+                    "top": _edge(f32[:probe, colsel].transpose(1, 0, 2)),
+                    "bottom": _edge(f32[::-1][:probe, colsel].transpose(1, 0, 2)),
+                    "left": _edge(f32[rowsel, :probe]),
+                    "right": _edge(f32[rowsel][:, ::-1][:, :probe]),
+                }
+            th_s, th_r = _cov_thickness(src), _cov_thickness(rnd)
+            for edge in ("top", "bottom", "left", "right"):
+                dthick = abs(th_s[edge] - th_r[edge])
+                _fail(errors, dthick <= MAX_FRAME_THICKNESS_DIFF,
+                      f"çerçeve {edge} kalınlık farkı {dthick:.3f}px > {MAX_FRAME_THICKNESS_DIFF}px "
+                      f"(kaynak {th_s[edge]:.2f}, render {th_r[edge]:.2f})")
 
     summary = {
         "best": best.get("name"), "fidelity": best.get("fidelity_score"),

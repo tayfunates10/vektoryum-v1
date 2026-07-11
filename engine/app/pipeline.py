@@ -866,9 +866,19 @@ def _restore_source_dimensions(svg_path: Path, analysis: dict[str, Any]) -> None
         except (IndexError, ValueError):
             _finish()
             return
-        if abs(vbw - ow) < 1e-6 and abs(vbh - oh) < 1e-6:
+        has_xf = any(
+            el.get("transform")
+            for el in root.iter()
+            if el.tag.split("}")[-1] == "path"
+        )
+        if abs(vbw - ow) < 1e-6 and abs(vbh - oh) < 1e-6 and not has_xf:
             _finish()
             return
+        # NOT: iz uzayı == kaynak boyut olsa bile path'lerde translate varsa
+        # düzleştirme yolu KOŞULMALI (sx=sy=1). Erken çıkış bu vakada
+        # transform'ları belgede bırakıyordu; sözleşme "transform yok" der ve
+        # sonraki aşamalar (counter_merge/local_refine) transform görünce
+        # kendilerini güvenli kapatır — canlı akış testinde yakalandı.
 
         # koordinat normalizasyonu: iz uzayı -> kaynak uzay
         try:
@@ -1106,6 +1116,74 @@ def run_pipeline(
         # width = height = kaynak boyut; ayrıntı: _restore_source_dimensions)
         if best is not None:
             _restore_source_dimensions(Path(best["svg_path"]), analysis)
+        # 9.85 Eğri koruyan sayaç birleştirme: zemin-renkli örtme path'leri
+        # gerçek evenodd deliklerine gömülür (geometri yeniden örneklenmez,
+        # komut sayısı artmaz). Ölçüm kapılı: render farkı toleransı aşarsa
+        # o birleştirme geri alınır. VEKTORYUM_COUNTER_MERGE=off kapatır.
+        if best is not None and os.environ.get(
+            "VEKTORYUM_COUNTER_MERGE", "on"
+        ).strip().lower() not in {"off", "0", "false"}:
+            try:
+                from app.counter_merge import merge_counters  # noqa: PLC0415
+                from app.fidelity import render_svg_to_rgb  # noqa: PLC0415
+
+                cm_w = int(analysis.get("width", 0) or 0)
+                cm_h = int(analysis.get("height", 0) or 0)
+                if cm_w > 0 and cm_h > 0:
+                    cm_rep = merge_counters(
+                        Path(best["svg_path"]), cm_w, cm_h, render_svg_to_rgb,
+                        source_rgb=np.asarray(image.convert("RGB")),
+                    )
+                    refit_info = {**refit_info, "counter_merge": cm_rep}
+            except Exception as e:  # noqa: BLE001
+                logger.debug("counter_merge atlandı: %s", e)
+                refit_info = {**refit_info, "counter_merge": {"status": "failed", "error": str(e)}}
+        # 9.87 Kritik küçük bileşen yerel refit'i: ® halkası gibi küçük ama
+        # anlamlı bileşenler kaynak coverage'ına alt-piksel oturtulur (daireler
+        # analitik, genel yollar çapa-kaydırma). Bileşen kırpımında kaynak
+        # uyumu iyileşmezse geri alınır. VEKTORYUM_LOCAL_REFINE=off kapatır.
+        if best is not None and os.environ.get(
+            "VEKTORYUM_LOCAL_REFINE", "on"
+        ).strip().lower() not in {"off", "0", "false"}:
+            try:
+                from app.fidelity import render_svg_to_rgb  # noqa: PLC0415
+                from app.local_refine import refine_critical_components  # noqa: PLC0415
+
+                lr_w = int(analysis.get("width", 0) or 0)
+                lr_h = int(analysis.get("height", 0) or 0)
+                if lr_w > 0 and lr_h > 0:
+                    lr_rep = refine_critical_components(
+                        Path(best["svg_path"]), np.asarray(image.convert("RGB")),
+                        lr_w, lr_h, render_svg_to_rgb,
+                    )
+                    refit_info = {**refit_info, "local_refine": lr_rep}
+            except Exception as e:  # noqa: BLE001
+                logger.debug("local_refine atlandı: %s", e)
+                refit_info = {**refit_info, "local_refine": {"status": "failed", "error": str(e)}}
+        # 9.88 Hata-güdümlü render-and-refine: kaynak-render sınıf uyuşmazlığı
+        # blobları (ör. G iç gövdesi sapmaları, ortak sınır sliver'ları)
+        # bulunur ve yalnız o bölgelerle kesişen path'lerin çapaları geniş
+        # pencereli alt-piksel snap ile kaynağa oturtulur. Toplam maddi hata
+        # azalmıyorsa veya bölge dışına hata taşıyorsa tur geri alınır.
+        # VEKTORYUM_RENDER_REFINE=off kapatır.
+        if best is not None and os.environ.get(
+            "VEKTORYUM_RENDER_REFINE", "on"
+        ).strip().lower() not in {"off", "0", "false"}:
+            try:
+                from app.fidelity import render_svg_to_rgb  # noqa: PLC0415
+                from app.local_refine import refine_error_regions  # noqa: PLC0415
+
+                er_w = int(analysis.get("width", 0) or 0)
+                er_h = int(analysis.get("height", 0) or 0)
+                if er_w > 0 and er_h > 0:
+                    er_rep = refine_error_regions(
+                        Path(best["svg_path"]), np.asarray(image.convert("RGB")),
+                        er_w, er_h, render_svg_to_rgb,
+                    )
+                    refit_info = {**refit_info, "error_refine": er_rep}
+            except Exception as e:  # noqa: BLE001
+                logger.debug("error_refine atlandı: %s", e)
+                refit_info = {**refit_info, "error_refine": {"status": "failed", "error": str(e)}}
 
     # 10. Yapı bütünlüğü denetimi (kırık/eksik çizgi, hayalet çizik): nihai
     # çıktıda orijinaldeki her kontur karşılanıyor mu? Foto benzeri sürekli-tonlu
