@@ -73,7 +73,7 @@ def main() -> int:
         print("FAIL:", errors)
         return 1
     # ÜRETİM YOLU: kullanıcıya giden dosya export katmanından geçer
-    # (clean_svg: bileşik path'lere açık fill-rule vb.) — test onu doğrular.
+    # (koordinat normalizasyonu pipeline içinde, fill-rule export'ta).
     svg_path = export_svg(Path(best["svg_path"]), job / "final.svg",
                           f"{res.get('mode_used')}:{best.get('name')}")
     svg_txt = svg_path.read_text()
@@ -83,8 +83,17 @@ def main() -> int:
     _fail(errors, bool(root.get("viewBox")), "viewBox yok")
     _fail(errors, root.get("width") == str(w) and root.get("height") == str(h),
           f"width/height kaynakla uyumsuz: {root.get('width')}x{root.get('height')} != {w}x{h}")
+    # KOORDİNAT SÖZLEŞMESİ: viewBox = kaynak uzay (2200/3840 ayrışması yok),
+    # transform düzleşmiş, koordinatlar sınır içinde (3841.001 tarzı taşma yok)
+    vb = (root.get("viewBox") or "").replace(",", " ").split()
+    _fail(errors, len(vb) == 4 and float(vb[2]) == w and float(vb[3]) == h,
+          f"viewBox kaynak uzayda değil: {root.get('viewBox')} != 0 0 {w} {h}")
+    _fail(errors, 'transform=' not in svg_txt, "düzleştirilmemiş transform kaldı")
     d_all = " ".join(re.findall(r'd="([^"]+)"', svg_txt))
     _fail(errors, "NaN" not in d_all and "Infinity" not in d_all, "path verisinde NaN/Infinity")
+    coords = [float(v) for v in re.findall(r"-?\d+\.?\d*", d_all)]
+    _fail(errors, min(coords) >= -1.5 and max(coords) <= max(w, h) + 1.5,
+          f"koordinatlar viewBox dışında: min={min(coords)} max={max(coords)}")
     cmds = len(re.findall(r"[MLCQAZHVSTmlcqazhvst]", d_all))
     _fail(errors, cmds <= MAX_SVG_COMMANDS, f"komut sayısı {cmds} > {MAX_SVG_COMMANDS}")
     for m in re.finditer(r"<path[^>]*>", svg_txt):
