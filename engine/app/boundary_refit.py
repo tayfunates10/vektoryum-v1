@@ -342,6 +342,16 @@ def _snap_subpath(
     if not closed:
         reg[0, 0] = reg[1, 1] = 1e3
         reg[-2, -2] = reg[-1, -1] = 1e3
+    # YAY uçları DONDURULUR: yay parametreleri (rx,ry) sabitken ucu kaydırmak,
+    # kiriş çapa yakınsa (shape_fitting'in daire çıktısı tam böyledir) merkez
+    # parametrizasyonunu kötü koşullu yapar — ~0.5px'lik uç kayması yayı
+    # √(2rε) kadar şişirir (LEGO ® vakası: 186px halka dikeyde 221px'e uzadı).
+    # Analitik oturtmadan gelen yay zaten alt-piksel doğrudur; piksel
+    # örneklemesiyle "iyileştirilmez".
+    for i, seg in enumerate(sp["segs"]):
+        if seg[0] == "A":
+            for ai in (_aidx(i), _aidx(i + 1)):
+                reg[2 * ai, 2 * ai] = reg[2 * ai + 1, 2 * ai + 1] = 1e3
     a_full = np.vstack([a, reg])
     b_full = np.concatenate([b, np.zeros(2 * n_anchor)])
     sol, *_ = np.linalg.lstsq(a_full, b_full, rcond=None)

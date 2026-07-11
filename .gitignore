@@ -29,7 +29,9 @@ Thumbs.db
 
 # Derin öğrenme model ağırlıkları (models/fetch_hed.py ile indirilir)
 engine/models/*.caffemodel
-engine/regression/
+# NOT: engine/regression/ BÜTÜNÜYLE ignore edilmez — manifest, baseline ve
+# fixture'lar regresyon güvencesinin parçasıdır (results/ ve output/ yukarıda
+# zaten dışlanır; HF deploy'u hf-deploy.yml kendi exclude listesiyle korur).
 
 # Node.js
 node_modules/

@@ -1018,6 +1018,27 @@ def run_pipeline(
                 best = rescored if rescored is not None else {**best, "svg_path": ec_dst}
                 selection_reason = f"{selection_reason}+edge_cleanup"
             refit_info = {**refit_info, "edge_cleanup": ec_rep}
+        # 9.75 Küçük bileşen hizalama refiti: izleme tavanı küçültmesi ve
+        # ölçek gidiş-dönüşü küçük ama anlamlı bileşenleri (ör. ® simgesi)
+        # birkaç piksel kaydırabilir; ince şekillerde bölgesel IoU çöker ama
+        # global skor bunu görmez. Ölçüm kapılıdır: sadakat + en kötü bileşen
+        # IoU'su iyileşmezse dosya değişmez.
+        if best is not None:
+            from app.component_align import apply_component_align  # noqa: PLC0415
+
+            ca_src = Path(best["svg_path"])
+            ca_dst = job_dir / f"{ca_src.stem}_align.svg"
+            try:
+                ca_rep = apply_component_align(ca_src, original_path, ca_dst)
+            except Exception as e:  # noqa: BLE001
+                logger.debug("component_align atlandı: %s", e)
+                ca_rep = {"applied": False, "error": str(e)}
+            if ca_rep.get("applied"):
+                aligned = {**best, "svg_path": ca_dst}
+                rescored = score_candidate(aligned, original_path, analysis, mode_used)
+                best = rescored if rescored is not None else aligned
+                selection_reason = f"{selection_reason}+component_align"
+            refit_info = {**refit_info, "component_align": ca_rep}
         # 9.8 Kaynak boyut sözleşmesi: kazananın width/height'ı orijinal görsel
         # boyutuna çekilir (viewBox iz koordinatlarında kalır)
         if best is not None:
