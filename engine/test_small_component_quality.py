@@ -93,6 +93,34 @@ def main() -> int:
         if dm and len(re.findall(r"(?<![0-9a-zA-Z.,-])[Mm]", " " + dm.group(1))) >= 2:
             _fail(errors, "fill-rule" in tag, "bileşik path'te açık fill-rule yok")
 
+    # --- RENK SÖZLEŞMESİ (grayscale-red regresyonu) -----------------------
+    # Kaynak kromatik + opak: çıktı siyah + fill-opacity katmanlarıyla renk
+    # TAKLİT EDEMEZ; gerçek dolgular ve opak zemin zorunludur.
+    _fail(errors, not re.search(r'fill-opacity="0?\.\d+"', svg_txt),
+          "SVG fill-opacity katmanlarıyla renk taklit ediyor (grayscale çıktı)")
+    fills = sorted({f.lower() for f in re.findall(r'fill="(#[0-9a-fA-F]{6})"', svg_txt)})
+    _fail(errors, len(fills) >= 4, f"en az 4 gerçek dolgu rengi bekleniyordu: {fills}")
+
+    def _near(hex_c: str, rgb: tuple[int, int, int], tol: int = 60) -> bool:
+        v = int(hex_c[1:], 16)
+        return abs((v >> 16) - rgb[0]) + abs(((v >> 8) & 255) - rgb[1]) + abs((v & 255) - rgb[2]) <= tol
+
+    # kaynağın baskın renkleri fixture'dan otomatik örneklenir (hardcode yok):
+    # geniş iç bölgelerden en sık 4 renk
+    small_img = np.asarray(im.resize((256, 256)))
+    px = small_img.reshape(-1, 3)
+    uniq, counts = np.unique(px // 24 * 24, axis=0, return_counts=True)
+    dominants = [tuple(int(c) for c in uniq[i]) for i in np.argsort(-counts)[:4]]
+    for drgb in dominants:
+        _fail(errors, any(_near(f, drgb, 90) for f in fills),
+              f"kaynak baskın rengi {drgb} için dolgu karşılığı yok: {fills}")
+    grays_only = all(
+        abs((int(f[1:], 16) >> 16) - ((int(f[1:], 16) >> 8) & 255)) < 12
+        and abs(((int(f[1:], 16) >> 8) & 255) - (int(f[1:], 16) & 255)) < 12
+        for f in fills
+    ) if fills else True
+    _fail(errors, not grays_only, f"tüm dolgular gri tonlu — kromatik kaynak için kabul edilemez: {fills}")
+
     # --- B. Palet + C. bileşen testleri (render karşılaştırması) ----------
     rnd = render_svg_to_rgb(svg_path, w, h)
     _fail(errors, rnd is not None, "SVG render edilemedi")
