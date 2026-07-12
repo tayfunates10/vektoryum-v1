@@ -218,6 +218,7 @@ def refine_critical_components(
     width: int,
     height: int,
     render_fn: Callable[[Path, int, int], np.ndarray | None],
+    cache: Any = None,
 ) -> dict[str, Any]:
     """Kritik küçük bileşenleri kaynak coverage'ına yerel olarak oturtur."""
     if not is_available():
@@ -258,12 +259,14 @@ def refine_critical_components(
     from app.palette_ops import classify_rgb  # noqa: PLC0415
 
     def classify(img: np.ndarray) -> np.ndarray:
+        if cache is not None:
+            return cache.classify(img, fills_rgb)
         return classify_rgb(img, fills_rgb)  # bant bazlı: bellek sınırlı, bit-birebir
 
     before_rgb = render_fn(svg_path, width, height)
     if before_rgb is None:
         return {"status": "skipped", "reason": "render backend yok"}
-    src_cls = classify(source_rgb)
+    src_cls = cache.classify_source(fills_rgb) if cache is not None else classify(source_rgb)
 
     # path bbox'ları (svgpathtools; yay bayrakları güvenli)
     path_els: list[ET.Element] = [el for el in root.iter()
@@ -610,6 +613,7 @@ def refine_error_regions(
     width: int,
     height: int,
     render_fn: Callable[[Path, int, int], np.ndarray | None],
+    cache: Any = None,
 ) -> dict[str, Any]:
     """Kaynak-render sınıf uyuşmazlığı bloblarını yerel çapa-kaydırma ile azaltır.
 
@@ -650,13 +654,15 @@ def refine_error_regions(
     from app.palette_ops import classify_rgb  # noqa: PLC0415
 
     def classify(img: np.ndarray) -> np.ndarray:
+        if cache is not None:
+            return cache.classify(img, fills_rgb)
         return classify_rgb(img, fills_rgb)  # bant bazlı: bellek sınırlı, bit-birebir
 
     def err_mask(rnd: np.ndarray) -> np.ndarray:
         e = (src_cls != classify(rnd)).astype(np.uint8)
         return cv2.morphologyEx(e, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
 
-    src_cls = classify(source_rgb)
+    src_cls = cache.classify_source(fills_rgb) if cache is not None else classify(source_rgb)
     cur = render_fn(svg_path, width, height)
     if cur is None:
         return {"status": "skipped", "reason": "render backend yok"}

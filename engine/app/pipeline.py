@@ -1116,6 +1116,27 @@ def run_pipeline(
         # width = height = kaynak boyut; ayrıntı: _restore_source_dimensions)
         if best is not None:
             _restore_source_dimensions(Path(best["svg_path"]), analysis)
+
+        # İstek-kapsamlı önbellek: 9.85–9.89 aşamaları aynı SVG'yi ve aynı
+        # sınıflandırmayı defalarca üretiyordu (ölçüldü). Önbellek TEK istek
+        # boyunca yaşar, sonunda serbest bırakılır; anahtar SVG içerik-hash'i
+        # (geometry_version değil) — stale/karışma imkânsız. Kaynak RGB bir
+        # kez hesaplanır. VEKTORYUM_REFINE_CACHE=off kapatır (aşamalar yine
+        # doğrudan render/sınıflandırma yapar).
+        refine_cache = None
+        src_rgb_arr = np.asarray(image.convert("RGB")) if best is not None else None
+        if best is not None and os.environ.get(
+            "VEKTORYUM_REFINE_CACHE", "on"
+        ).strip().lower() not in {"off", "0", "false"}:
+            try:
+                from app.refine_cache import RefinementCache  # noqa: PLC0415
+
+                refine_cache = RefinementCache(src_rgb_arr)
+            except Exception as e:  # noqa: BLE001
+                logger.debug("refine_cache kurulamadı: %s", e)
+                refine_cache = None
+        _render_fn = refine_cache.render if refine_cache is not None else None
+
         # 9.85 Eğri koruyan sayaç birleştirme: zemin-renkli örtme path'leri
         # gerçek evenodd deliklerine gömülür (geometri yeniden örneklenmez,
         # komut sayısı artmaz). Ölçüm kapılı: render farkı toleransı aşarsa
@@ -1131,8 +1152,9 @@ def run_pipeline(
                 cm_h = int(analysis.get("height", 0) or 0)
                 if cm_w > 0 and cm_h > 0:
                     cm_rep = merge_counters(
-                        Path(best["svg_path"]), cm_w, cm_h, render_svg_to_rgb,
-                        source_rgb=np.asarray(image.convert("RGB")),
+                        Path(best["svg_path"]), cm_w, cm_h,
+                        _render_fn or render_svg_to_rgb,
+                        source_rgb=src_rgb_arr, cache=refine_cache,
                     )
                     refit_info = {**refit_info, "counter_merge": cm_rep}
             except Exception as e:  # noqa: BLE001
@@ -1153,8 +1175,9 @@ def run_pipeline(
                 lr_h = int(analysis.get("height", 0) or 0)
                 if lr_w > 0 and lr_h > 0:
                     lr_rep = refine_critical_components(
-                        Path(best["svg_path"]), np.asarray(image.convert("RGB")),
-                        lr_w, lr_h, render_svg_to_rgb,
+                        Path(best["svg_path"]), src_rgb_arr,
+                        lr_w, lr_h, _render_fn or render_svg_to_rgb,
+                        cache=refine_cache,
                     )
                     refit_info = {**refit_info, "local_refine": lr_rep}
             except Exception as e:  # noqa: BLE001
@@ -1177,8 +1200,9 @@ def run_pipeline(
                 er_h = int(analysis.get("height", 0) or 0)
                 if er_w > 0 and er_h > 0:
                     er_rep = refine_error_regions(
-                        Path(best["svg_path"]), np.asarray(image.convert("RGB")),
-                        er_w, er_h, render_svg_to_rgb,
+                        Path(best["svg_path"]), src_rgb_arr,
+                        er_w, er_h, _render_fn or render_svg_to_rgb,
+                        cache=refine_cache,
                     )
                     refit_info = {**refit_info, "error_refine": er_rep}
             except Exception as e:  # noqa: BLE001
@@ -1201,8 +1225,9 @@ def run_pipeline(
                 cr_h = int(analysis.get("height", 0) or 0)
                 if cr_w > 0 and cr_h > 0:
                     cu_rep = refine_cusp_regions(
-                        Path(best["svg_path"]), np.asarray(image.convert("RGB")),
-                        cr_w, cr_h, render_svg_to_rgb,
+                        Path(best["svg_path"]), src_rgb_arr,
+                        cr_w, cr_h, _render_fn or render_svg_to_rgb,
+                        cache=refine_cache,
                     )
                     # rapor kompakt tutulur (aday listesi debug'da anlamlı)
                     refit_info = {**refit_info, "cusp_refine": {
@@ -1211,6 +1236,10 @@ def run_pipeline(
             except Exception as e:  # noqa: BLE001
                 logger.debug("cusp_refine atlandı: %s", e)
                 refit_info = {**refit_info, "cusp_refine": {"status": "failed", "error": str(e)}}
+        # önbellek istatistiği rapora eklenir, büyük diziler serbest bırakılır
+        if refine_cache is not None:
+            refit_info = {**refit_info, "refine_cache": refine_cache.stats()}
+            refine_cache.close()
 
     # 10. Yapı bütünlüğü denetimi (kırık/eksik çizgi, hayalet çizik): nihai
     # çıktıda orijinaldeki her kontur karşılanıyor mu? Foto benzeri sürekli-tonlu

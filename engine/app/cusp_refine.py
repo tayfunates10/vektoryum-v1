@@ -42,9 +42,14 @@ _MIN_BLOB = 12             # değerlendirilecek maddi hata blobu tabanı (px)
                            # alanla 7px derin kalabiliyor — ölçüldü; 3x3 açma
                            # AA çizgi gürültüsünü zaten eler)
 _MAX_BLOBS = 6             # tur başına işlenecek en çok blob
-_MAX_ROUNDS = 3            # kesin tur sınırı
-_MAX_PER_BLOB = 4          # blob başına toplam yeni çapa
-_MAX_TOTAL = 12            # görsel başına toplam yeni çapa
+_MAX_ROUNDS = 6            # kesin tur sınırı (önbellekle her tur ucuz; kama
+                           # tepesi gidişatı 35->16.8->7.2->5.8 <2px için
+                           # ~5-6 tur gerektiriyor — ölçüldü)
+_MAX_PER_BLOB = 4          # blob başına toplam MANTIKSAL çapa
+_MAX_TOTAL = 12            # görsel başına toplam MANTIKSAL çapa
+_MAX_RENDER_BUDGET = 40    # istek başına en çok deneme render'ı (süre koruması)
+_ANCHOR_DEDUP_TOL = 6.0    # kaynak-uzay: bu mesafedeki cusp aynı mantıksal
+                           # birimdir (yeni bütçe değil; birim yerinde ilerler)
 _MAX_ANCHOR_MOVE = 10.0    # cusp'a taşıma sınırı (px)
 _MIN_SEG_LEN = 6.0         # bundan kısa segment bölünmez (uç çapa taşınır)
 _PATH_MATCH_DIST = 40.0    # blob cusp'ına bu mesafedeki sınırlar aday
@@ -86,6 +91,22 @@ class CanonicalBoundary:
     start_node: tuple[float, float] = (0.0, 0.0)
     end_node: tuple[float, float] = (0.0, 0.0)
     confidence: float = 0.0
+
+
+@dataclass
+class LogicalBoundaryAnchor:
+    """Kaynak uzayda TEK cusp noktası. Ortak sınırın iki tarafına eklenen
+    eşleşmiş fiziksel çapalar (region A + region B) TEK mantıksal birimdir:
+    bütçeden bir kez düşer, komut sayısı gerçek fiziksel artışı yansıtır.
+    Aynı cusp'ın küçük koordinat farklarıyla tekrarı yeni birim OLUŞTURMAZ
+    (kaynak-uzay dedup); onun yerine mevcut birim yerinde ilerletilir."""
+
+    logical_id: str
+    source_point: tuple[float, float]
+    physical_insertions: int = 0
+    error_blob_ids: set = field(default_factory=set)
+    iteration_created: int = 0
+    accepted: bool = True
 
 try:
     from svgpathtools import CubicBezier, Line, parse_path
@@ -196,11 +217,21 @@ def refine_cusp_regions(
     height: int,
     render_fn: Callable[[Path, int, int], np.ndarray | None],
     max_total_anchors: int = _MAX_TOTAL,
+    cache: Any = None,
 ) -> dict[str, Any]:
     """Kalan hata bloblarındaki dar kama/cusp'ları segment bölerek kapatır."""
     if not is_available():
         return {"status": "skipped", "reason": "svgpathtools yok"}
-    from app.palette_ops import abs_diff_sum, classify_rgb  # noqa: PLC0415
+    from app.palette_ops import abs_diff_sum  # noqa: PLC0415
+    from app.palette_ops import classify_rgb as _raw_classify  # noqa: PLC0415
+
+    def classify_rgb(img: np.ndarray, fills: np.ndarray) -> np.ndarray:
+        # önbellek varsa render/kaynak sınıflandırması yeniden hesaplanmaz
+        if cache is not None:
+            if img is source_rgb:
+                return cache.classify_source(fills)
+            return cache.classify(img, fills)
+        return _raw_classify(img, fills)
 
     svg_path = Path(svg_path)
     try:
@@ -282,10 +313,20 @@ def refine_cusp_regions(
 
     candidates: list[CuspRefinementCandidate] = []
     boundaries: list[CanonicalBoundary] = []
+    logical_anchors: list[LogicalBoundaryAnchor] = []
     tmp = svg_path.with_suffix(".cusp.svg")
-    total_added = 0
+    total_added = 0          # MANTIKSAL çapa sayısı (bütçe birimi)
+    total_physical = 0       # gerçek fiziksel bölme sayısı (rapor)
+    render_budget = _MAX_RENDER_BUDGET
     best_err = err_before
     accepted_blobs = 0
+
+    def _find_logical(pt: complex) -> LogicalBoundaryAnchor | None:
+        """pt'ye _ANCHOR_DEDUP_TOL içinde kabul edilmiş mantıksal çapa (varsa)."""
+        for la in logical_anchors:
+            if abs(complex(la.source_point[0], la.source_point[1]) - pt) <= _ANCHOR_DEDUP_TOL:
+                return la
+        return None
 
     from app.local_refine import _snap_subpath_wide  # noqa: PLC0415
     from app.boundary_refit import (  # noqa: PLC0415
@@ -322,10 +363,10 @@ def refine_cusp_regions(
       # sonraki blob kapılarını haksız düşürmesin)
       out_before = int((e_now & (region_mask == 0)).sum())
       blobs = [b for b in blob_list(e_now) if (b[1], b[2], b[3], b[4]) not in failed_sigs]
-      if not blobs or total_added >= max_total_anchors:
+      if not blobs or total_added >= max_total_anchors or render_budget <= 0:
           break
       for bi, (_a, bx, by, bw, bh) in enumerate(blobs):
-        if total_added >= max_total_anchors:
+        if total_added >= max_total_anchors or render_budget <= 0:
             break
         x0, y0 = max(0, bx - _PAD), max(0, by - _PAD)
         x1, y1 = min(width, bx + bw + _PAD), min(height, by + bh + _PAD)
@@ -346,14 +387,16 @@ def refine_cusp_regions(
         if not top_pairs:
             continue
         budget_rec = _region_budget(x0, y0, x1, y1)
-        blob_budget = _MAX_PER_BLOB - budget_rec[4]
+        blob_budget = _MAX_PER_BLOB - budget_rec[4]  # MANTIKSAL bütçe
         if blob_budget <= 0:
-            continue  # bu bölgenin bütçesi önceki geçişlerde tükendi
+            continue  # bu bölgenin mantıksal bütçesi önceki geçişlerde tükendi
         backup_d = {i: path_els[i].get("d") for i in range(len(path_els))}
         parsed_backup = {i: [list(map(_copy_seg, s)) for s in parsed.get(i, [])]
                          for i in parsed}
         blob_changed: set[int] = set()
-        blob_added = 0
+        blob_added = 0            # fiziksel bölme (komut)
+        blob_logical = 0         # YENİ mantıksal çapa (bütçe)
+        new_logicals: list[LogicalBoundaryAnchor] = []
         node_refs: dict[str, list[tuple[int, int, int]]] = {"a": [], "b": []}
         cusp0 = None
         cls_a = cls_b = -1
@@ -377,11 +420,17 @@ def refine_cusp_regions(
             inside_dt = cv2.distanceTransform(miss.astype(np.uint8), cv2.DIST_L2, 5)
             edge_sep = float(2.0 * inside_dt.max())
             for px, py in deep_pts:
-                if blob_added >= blob_budget or total_added + blob_added >= max_total_anchors:
+                if blob_logical >= blob_budget or total_added + blob_logical >= max_total_anchors:
                     break
                 cusp = complex(px + x0 + 0.5, py + y0 + 0.5)
                 if cusp0 is None:
                     cusp0 = cusp
+                # KAYNAK-UZAY DEDUP: bu cusp mevcut bir mantıksal çapaya çok
+                # yakınsa YENİ birim değildir — birim yerinde ilerletilir
+                # (bütçe tekrar düşmez). Yalnız gerçekten yeni cusp bütçe yer.
+                existing = _find_logical(cusp)
+                if existing is None and blob_logical >= blob_budget:
+                    break
                 # her iki taraf path'i: fill'i A / B sınıfında, sınırı yakın
                 # olan EN ÜSTTEKİ path (belge sırası → determinist)
                 picked: dict[int, int] = {}
@@ -396,9 +445,8 @@ def refine_cusp_regions(
                         if abs(ppt - cusp) <= _PATH_MATCH_DIST:
                             picked[cls_want] = pi
                             break
+                cusp_physical = 0
                 for cls_want, pi in sorted(picked.items()):
-                    if blob_added >= blob_budget or total_added + blob_added >= max_total_anchors:
-                        break
                     subs = get_parsed(pi)
                     si, gi, t, ppt = _nearest_on_path(subs, cusp)
                     move = abs(ppt - cusp)
@@ -427,9 +475,24 @@ def refine_cusp_regions(
                     else:
                         cand.accepted = True
                         blob_added += 1
+                        cusp_physical += 1
                         blob_changed.add(pi)
                         node_refs["a" if cls_want == cls_a else "b"].append((pi, si, gi))
                     candidates.append(cand)
+                if cusp_physical > 0:
+                    if existing is not None:
+                        # mevcut mantıksal çapa yerinde ilerledi: bütçe düşmez,
+                        # fiziksel komut (varsa) ayrıca sayılır
+                        existing.physical_insertions += cusp_physical
+                        existing.error_blob_ids.add(blob_uid)
+                    else:
+                        blob_logical += 1
+                        new_logicals.append(LogicalBoundaryAnchor(
+                            logical_id=f"la_{len(logical_anchors)+len(new_logicals)}",
+                            source_point=(round(cusp.real, 2), round(cusp.imag, 2)),
+                            physical_insertions=cusp_physical,
+                            error_blob_ids={blob_uid}, iteration_created=_pass,
+                        ))
         if not blob_changed:
             continue
         md0 = _crop_max_dev(sc, rc)
@@ -451,6 +514,7 @@ def refine_cusp_regions(
             if moved_any:
                 path_els[pi].set("d", _serialize_subpaths_arc(sp_list))
         tree.write(str(tmp), encoding="utf-8", xml_declaration=True)
+        render_budget -= 1
         after = render_fn(tmp, width, height)
         ok = False
         err_new = best_err
@@ -493,8 +557,10 @@ def refine_cusp_regions(
         if ok:
             accepted_blobs += 1
             pass_accepted += 1
-            total_added += blob_added
-            budget_rec[4] += blob_added
+            total_added += blob_logical          # MANTIKSAL bütçe düşer
+            total_physical += blob_added
+            budget_rec[4] += blob_logical
+            logical_anchors.extend(new_logicals)  # kabul edilen birimler kalıcı
             best_err = err_new
             cur = after
             rnd_cls = classify_rgb(cur, fills_rgb)
@@ -529,9 +595,19 @@ def refine_cusp_regions(
     else:
         status = "no_change"
     return {
-        "status": status, "rounds": rounds_done, "anchors_added": total_added,
+        "status": status, "rounds": rounds_done,
+        "anchors_added": total_added,          # MANTIKSAL çapa sayısı
+        "physical_anchors": total_physical,    # gerçek fiziksel bölme sayısı
+        "logical_anchors": len(logical_anchors),
+        "renders_used": _MAX_RENDER_BUDGET - render_budget,
         "err_px_before": err_before, "err_px_after": best_err,
         "candidates": [asdict(c) for c in candidates],
+        "logical_anchor_list": [
+            {"logical_id": la.logical_id, "source_point": la.source_point,
+             "physical_insertions": la.physical_insertions,
+             "iteration_created": la.iteration_created}
+            for la in logical_anchors
+        ],
         "canonical_boundaries": [asdict(b) for b in boundaries],
     }
 
