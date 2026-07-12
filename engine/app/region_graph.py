@@ -60,6 +60,28 @@ class RegionJunction:
 
 
 @dataclass
+class ActiveBoundaryMatch:
+    """Aktif bir hata blob'unu kaynak grafik kenarına bağlar.
+
+    Çift taraflı senkron duvar refit'inin GİRDİSİ: blob'un iki tarafındaki
+    komşu bölgeleri, aralarındaki kanonik kenarı ve üçüncü-renk riskini
+    belirler. ``accepted=False`` ise (üçüncü renk / güven düşük / kenar yok)
+    çağıran ESKİ güvenli geometriyi korur.
+    """
+
+    graph_edge_id: str | None
+    region_a: str | None
+    region_b: str | None
+    color_a: int
+    color_b: int
+    junction_ids: list[str] = field(default_factory=list)
+    third_region_risk: bool = False
+    match_score: float = 0.0
+    accepted: bool = False
+    rejection_reason: str | None = None
+
+
+@dataclass
 class RegionGraph:
     nodes: list[RegionNode] = field(default_factory=list)
     edges: list[RegionAdjacencyEdge] = field(default_factory=list)
@@ -196,3 +218,62 @@ def match_regions_to_paths(
         if best_iou >= min_iou:
             result[node.region_id] = best_id
     return result
+
+
+def match_active_boundary(
+    graph: RegionGraph, blob_bbox: tuple[int, int, int, int],
+    min_side_frac: float = 0.15,
+) -> ActiveBoundaryMatch:
+    """Hata blob kutusunu kaynak grafik kenarına bağlar (çift-taraflı refit girdisi).
+
+    Blob kutusu çevresindeki bölgeleri sayar; en baskın iki farklı-renk bölge
+    ortak duvarı temsil eder. Bir junction'a (3+ bölge) düşüyorsa ya da baskın
+    iki bölge doğrudan komşu değilse (üçüncü renk araya girmiş) ``accepted=False``.
+    Determinist. ``blob_bbox`` = (x, y, w, h).
+    """
+    if graph.region_of is None:
+        return ActiveBoundaryMatch(None, None, None, -1, -1, accepted=False,
+                                   rejection_reason="region_of yok")
+    x, y, bw, bh = blob_bbox
+    pad = max(6, (bw + bh) // 4)
+    h, w = graph.region_of.shape
+    x0, y0 = max(0, x - pad), max(0, y - pad)
+    x1, y1 = min(w, x + bw + pad), min(h, y + bh + pad)
+    sub = graph.region_of[y0:y1, x0:x1]
+    ids, counts = np.unique(sub[sub >= 0], return_counts=True)
+    if len(ids) < 2:
+        return ActiveBoundaryMatch(None, None, None, -1, -1, accepted=False,
+                                   rejection_reason="yeterli bölge yok")
+    order = np.argsort(-counts)
+    total = float(counts.sum())
+    top = [int(ids[i]) for i in order if counts[i] >= min_side_frac * total][:3]
+    if len(top) < 2:
+        return ActiveBoundaryMatch(None, None, None, -1, -1, accepted=False,
+                                   rejection_reason="baskın iki bölge yok")
+    a_idx, b_idx = top[0], top[1]
+    node_a, node_b = graph.nodes[a_idx], graph.nodes[b_idx]
+    rid_a, rid_b = node_a.region_id, node_b.region_id
+    # bu iki bölge arasında gerçek adjacency kenarı var mı?
+    edge = None
+    for e in graph.edges:
+        if {e.region_a, e.region_b} == {rid_a, rid_b}:
+            edge = e
+            break
+    junctions = [j.junction_id for j in graph.junctions
+                 if rid_a in j.incident_regions or rid_b in j.incident_regions]
+    third_risk = (len(top) >= 3) or (edge is not None and edge.third_region_risk)
+    if edge is None:
+        return ActiveBoundaryMatch(
+            None, rid_a, rid_b, node_a.color_id, node_b.color_id,
+            junction_ids=junctions, third_region_risk=third_risk,
+            accepted=False, rejection_reason="doğrudan komşu değil (üçüncü renk?)")
+    if third_risk:
+        return ActiveBoundaryMatch(
+            edge.edge_id, rid_a, rid_b, node_a.color_id, node_b.color_id,
+            junction_ids=junctions, third_region_risk=True,
+            accepted=False, rejection_reason="üçüncü renk riski / junction")
+    score = float(min(counts[order[0]], counts[order[1]]) / total)
+    return ActiveBoundaryMatch(
+        edge.edge_id, rid_a, rid_b, node_a.color_id, node_b.color_id,
+        junction_ids=junctions, third_region_risk=False,
+        match_score=round(score, 3), accepted=True)
