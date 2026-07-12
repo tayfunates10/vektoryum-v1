@@ -199,22 +199,18 @@ def _region_geom(region_of: np.ndarray, rid: int, bbox: tuple) -> tuple[float, f
 # ---------------------------------------------------------------------------
 # Topoloji özeti (önce/sonra karşılaştırma)
 # ---------------------------------------------------------------------------
-def _topology_stats(labels: np.ndarray) -> dict[str, Any]:
-    region_of, info = _region_map(labels)
-    holes = 0
-    # delik sayısı: her renk için (bağlı bileşen) - (dış+delikli Euler) yerine
-    # basit ölçüt — her renk maskesinin Euler numarası ile bileşen-delik farkı
+def _region_count(labels: np.ndarray) -> int:
+    """Ucuz bölge sayısı (connectivity=4, per-color connectedComponents sayacı).
+
+    _region_map'in tam etiket haritasını kurmadan yalnız SAYAR (before/after
+    raporu için; pahalı yeniden haritalama ve holes_proxy taraması yapılmaz)."""
+    total = 0
     for cid in range(int(labels.max()) + 1):
         mask = (labels == cid).astype(np.uint8)
-        if not mask.any():
-            continue
-        n_cc, _ = cv2.connectedComponents(mask, connectivity=4)
-        # arka planın (0) delikleri = maskenin içindeki dış-bağlı olmayan boşluk
-        inv = 1 - mask
-        n_bg, _ = cv2.connectedComponents(inv.astype(np.uint8), connectivity=8)
-        holes += max(0, (n_bg - 1) - 0)  # kaba; karşılaştırma için tutarlı
-    return {"regions": len(info), "holes_proxy": holes,
-            "colors": int(labels.max()) + 1}
+        if mask.any():
+            n, _ = cv2.connectedComponents(mask, connectivity=4)
+            total += n - 1
+    return total
 
 
 # ---------------------------------------------------------------------------
@@ -345,8 +341,10 @@ def consolidate_regions(labels: np.ndarray, source_rgb: np.ndarray,
             if info[m][0] != anchor_color:
                 consolidated[region_of == m] = anchor_color
 
-    stats_before = _topology_stats(labels)
-    stats_after = _topology_stats(consolidated)
+    # before bölge sayısı zaten elde (info); after ucuz sayımla
+    stats_before = {"regions": len(info), "colors": int(labels.max()) + 1}
+    stats_after = {"regions": _region_count(consolidated),
+                   "colors": int(consolidated.max()) + 1}
     dh = hashlib.blake2b(consolidated.tobytes()
                          + fills.tobytes(), digest_size=16).hexdigest()
 
