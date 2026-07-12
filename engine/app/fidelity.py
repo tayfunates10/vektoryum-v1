@@ -301,9 +301,11 @@ def _component_class_report(
         _compact, _labels, centers = cv2.kmeans(
             sub, k, None, crit, 3, cv2.KMEANS_PP_CENTERS
         )
+        from app.palette_ops import classify_features  # noqa: PLC0415
+
         def _classify(lab: np.ndarray) -> np.ndarray:
-            d = np.linalg.norm(lab[:, :, None, :] - centers[None, None, :, :], axis=3)
-            return np.argmin(d, axis=2)
+            # bant bazlı: bellek sınırlı, bit-birebir (palette_ops)
+            return classify_features(lab, centers)
         cls_o = _classify(lab_o)
         cls_r = _classify(lab_r)
         # palet karakteri kontrolü: kuantalama artığı büyükse (foto) rapor üretme

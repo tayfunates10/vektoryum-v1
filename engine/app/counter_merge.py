@@ -288,9 +288,10 @@ def merge_counters(
         dtype=np.float32,
     )
 
+    from app.palette_ops import classify_rgb  # noqa: PLC0415
+
     def classify(img: np.ndarray) -> np.ndarray:
-        d = np.linalg.norm(img[:, :, None, :].astype(np.float32) - fills_rgb[None, None], axis=3)
-        return np.argmin(d, axis=2)
+        return classify_rgb(img, fills_rgb)  # bant bazlı: bellek sınırlı, bit-birebir
 
     cls_before = classify(before_rgb)
     src_cls = None
@@ -331,8 +332,9 @@ def merge_counters(
             # kullanılMAZ çünkü iki renk ORTASINDAKİ AA pikselleri 1 birimlik
             # render gürültüsüyle sınıf çevirir (ölçüldü: birebir aynı görüntüde
             # %1 "sınıf farkı") — o gürültü kalite sinyali değildir.
-            diff = np.abs(after_rgb.astype(np.int32) - before_rgb.astype(np.int32)).sum(axis=2)
-            material = diff > 30
+            from app.palette_ops import abs_diff_sum  # noqa: PLC0415
+
+            material = abs_diff_sum(after_rgb, before_rgb) > 30
             delta = float(material.mean())
             if delta > MAX_GLOBAL_DISAGREE:
                 reason = f"global maddi fark {delta:.6f} > {MAX_GLOBAL_DISAGREE}"
