@@ -53,11 +53,18 @@ class CanonicalBoundaryCurve:
     curve_id: str
     start_vertex_id: str
     end_vertex_id: str
-    polyline: list[Point]                    # kafes noktaları (HG-3'te Bézier)
+    polyline: list[Point]                    # kafes noktaları (crack staircase)
     adjacent_face_ids: tuple[str, str | None]
     is_exterior: bool = False
     third_region_risk: bool = False
     confidence: float = 1.0
+    # --- HG-3 alt-piksel canonical fit (twin'ler AYNI listeyi paylaşır) -------
+    fitted_segments: list[Any] = field(default_factory=list)  # [P0,C1,C2,P1] listesi
+    fit_error_max: float = 0.0
+    fit_error_p95: float = 0.0
+    command_count: int = 0
+    primitive_kind: str = ""                 # "" | line | cubic
+    fit_fallback: bool = False               # düşük güven → ham polyline
 
 
 @dataclass
