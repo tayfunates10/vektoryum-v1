@@ -124,6 +124,46 @@ def test_logical_anchor_accounting() -> None:
     f.unlink(missing_ok=True)
 
 
+def test_active_boundary_two_sided() -> None:
+    print("== Aktif sınır eşleme: iki komşu (kabul) ==")
+    from app.region_graph import build_region_graph, match_active_boundary
+
+    lab = np.zeros((120, 120), np.uint8)
+    lab[:, 60:] = 1
+    g = build_region_graph(lab, min_area=50)
+    # sınır çevresindeki bir hata blob kutusu
+    m = match_active_boundary(g, (55, 40, 12, 40))
+    check(m.accepted, f"iki komşu duvar kabul ({m.rejection_reason})")
+    check(m.graph_edge_id is not None, "graph kenarı bulundu")
+    check({m.color_a, m.color_b} == {0, 1}, "iki farklı renk tarafı")
+    check(not m.third_region_risk, "üçüncü renk riski yok")
+
+
+def test_active_boundary_third_region_reject() -> None:
+    print("== Aktif sınır eşleme: üçüncü renk reddi ==")
+    from app.region_graph import build_region_graph, match_active_boundary
+
+    lab = np.zeros((120, 120), np.uint8)
+    lab[:, 62:] = 1
+    lab[:, 58:62] = 2  # ince üçüncü şerit
+    g = build_region_graph(lab, min_area=50)
+    m = match_active_boundary(g, (50, 40, 20, 40))
+    check(not m.accepted, "üçüncü renk varken senkron refit reddedildi")
+    check(m.rejection_reason is not None, "ret gerekçesi verildi")
+
+
+def test_active_boundary_junction_reject() -> None:
+    print("== Aktif sınır eşleme: junction reddi ==")
+    from app.region_graph import build_region_graph, match_active_boundary
+
+    lab = np.zeros((120, 120), np.uint8)
+    lab[:, 60:] = 1
+    lab[60:, :] = 2  # üç bölge tek noktada (junction)
+    g = build_region_graph(lab, min_area=50)
+    m = match_active_boundary(g, (50, 50, 20, 20))  # junction çevresi
+    check(not m.accepted, f"junction'da senkron refit reddedildi ({m.rejection_reason})")
+
+
 def main() -> int:
     test_two_region_edge()
     test_disconnected_same_color()
@@ -131,6 +171,9 @@ def main() -> int:
     test_third_region_safety()
     test_graph_determinism()
     test_logical_anchor_accounting()
+    test_active_boundary_two_sided()
+    test_active_boundary_third_region_reject()
+    test_active_boundary_junction_reject()
     print("=" * 60)
     if FAILS:
         print(f"SONUC: {len(FAILS)} KONTROL BASARISIZ")
