@@ -43,18 +43,20 @@ FIXTURE = ENGINE_DIR / "regression" / "fixtures" / "lego_rmark.png"
 # oynayabilir; eşikler bu yüzden ölçülen değerin hemen altına konur, üstüne
 # değil. Ölçülen güncel değerler (counter_merge + local_refine sonrası):
 # palet 0.99865, en kötü sınıf 0.99437, halka 0.9942, en kötü küçük 0.9701.
-MIN_PALETTE_AGREE = 0.9975     # genel palet sınıf uyumu
-MIN_CLASS_IOU = 0.985          # her palet sınıfı için IoU tabanı
-MIN_SMALL_COMPONENT_IOU = 0.965  # küçük anlamlı bileşenlerin en kötüsü (® R dahil)
-MIN_RING_IOU = 0.985           # halka-benzeri küçük bileşen (® halkası)
+MIN_PALETTE_AGREE = 0.9975     # genel palet sınıf uyumu (ölçülen 0.99876)
+MIN_CLASS_IOU = 0.99           # her palet sınıfı IoU tabanı (ölçülen min 0.99436)
+MIN_SMALL_COMPONENT_IOU = 0.975  # en kötü küçük bileşen (ölçülen R 0.9802 — 4x SS)
+MIN_RING_IOU = 0.985           # halka-benzeri küçük bileşen (ölçülen 0.9942)
 MIN_FIDELITY = 97.9            # kazanan aday sadakat tabanı
 MAX_SVG_COMMANDS = 900         # karmaşıklık sınırsız büyümesin (poligon patlaması)
 # G bölgesi hedefleri (3840 kaynak uzayında; kullanıcı 1536 ölçeğinde
 # raporlar: 2.5x böl): p95 kenar sapması ve yerel palet uyumu
 G_REGION = (1625, 1125, 2625, 2650)  # fixture ölçüm bölgesi (yalnız test)
-MAX_G_P95_DEV = 2.0            # px @3840 (=0.8 px @1536)
-MAX_G_MAX_DEV = 9.0            # px @3840 — bilinen sınır: tepe cusp sliver'ı
-MIN_G_AGREE = 0.994
+MAX_G_P95_DEV = 1.5            # px @3840 (=0.6 px @1536; ölçülen 1.0)
+MAX_G_MAX_DEV = 9.0            # px @3840 — bilinen sınır: kama tepesi tek
+                               # noktası (çapa bütçesi 12/bölge 4 sınırlı;
+                               # ölçülen 7.8, gidişat 35->16.8->7.2 yakınsıyor)
+MIN_G_AGREE = 0.9955           # ölçülen 0.99648
 MAX_FRAME_THICKNESS_DIFF = 0.5  # px, coverage-ağırlıklı alt-piksel ölçüm
 
 
