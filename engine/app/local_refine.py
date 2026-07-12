@@ -172,8 +172,9 @@ def _circle_d(cx: float, cy: float, r: float, clockwise: bool) -> str:
 def _critical_clusters(src: np.ndarray, fills_rgb: np.ndarray,
                        width: int, height: int) -> list[tuple[int, int, int, int]]:
     """Kaynaktan kritik küçük bileşen kümelerinin bbox listesi (determinist)."""
-    dist = np.linalg.norm(src[:, :, None, :].astype(np.float32) - fills_rgb[None, None], axis=3)
-    cls = np.argmin(dist, axis=2)
+    from app.palette_ops import classify_rgb  # noqa: PLC0415
+
+    cls = classify_rgb(src, fills_rgb)  # bant bazlı: bellek sınırlı, bit-birebir
     canvas = float(width * height)
     boxes: list[tuple[int, int, int, int, int]] = []  # (alan, x0,y0,x1,y1)
     for ci in range(fills_rgb.shape[0]):
@@ -254,9 +255,10 @@ def refine_critical_components(
 
     ref = source_rgb.astype(np.float32)
 
+    from app.palette_ops import classify_rgb  # noqa: PLC0415
+
     def classify(img: np.ndarray) -> np.ndarray:
-        d = np.linalg.norm(img[:, :, None, :].astype(np.float32) - fills_rgb[None, None], axis=3)
-        return np.argmin(d, axis=2)
+        return classify_rgb(img, fills_rgb)  # bant bazlı: bellek sınırlı, bit-birebir
 
     before_rgb = render_fn(svg_path, width, height)
     if before_rgb is None:
@@ -331,8 +333,9 @@ def refine_critical_components(
             if after_rgb is None:
                 break
             # kırpım dışı maddi fark: sızıntı yok garantisi
-            diff = np.abs(after_rgb.astype(np.int32) - cur_render.astype(np.int32)).sum(axis=2)
-            outside = diff > 30
+            from app.palette_ops import abs_diff_sum  # noqa: PLC0415
+
+            outside = abs_diff_sum(after_rgb, cur_render) > 30
             outside[crop] = False
             agree1 = float((src_cls[crop] == classify(after_rgb)[crop]).mean())
             if outside.any() or agree1 < best_agree + _MIN_IMPROVE:
@@ -344,6 +347,53 @@ def refine_critical_components(
         for el in members:
             if el.get("d") != backup[id(el)]:
                 el.set("d", backup[id(el)])
+        # --- 4x/8x süperörnekleme kaçışı: 1x turlar doyduğunda kırpım hâlâ
+        # kusurluysa (uyum < 0.9995) kritik bileşen 4x yerel rasterde refit
+        # edilir; 8x yalnız 4x anlamlı kazanç veremediyse denenir. Tüm görsel
+        # asla büyütülmez; kapı 1x turlarla aynıdır. VEKTORYUM_SS_REFINE=off.
+        import os as _os  # noqa: PLC0415
+
+        ss_on = _os.environ.get("VEKTORYUM_SS_REFINE", "on").strip().lower() not in {
+            "off", "0", "false"}
+        if ss_on and best_agree < 0.9995:
+            gain_4x = 0.0
+            for scale in (4, 8):
+                if scale == 8 and gain_4x >= 2 * _MIN_IMPROVE:
+                    break  # 4x yeterli kazandı; 8x maliyetine gerek yok
+                ss_changed = False
+                for el in members:
+                    nd = _snap_scaled(el.get("d"), ref, (cx0, cy0, cx1, cy1), scale)
+                    if nd is not None and nd != el.get("d"):
+                        el.set("d", nd)
+                        ss_changed = True
+                if not ss_changed:
+                    continue
+                tree.write(str(tmp), encoding="utf-8", xml_declaration=True)
+                after_rgb = render_fn(tmp, width, height)
+                accept = False
+                if after_rgb is not None:
+                    from app.palette_ops import abs_diff_sum as _ads  # noqa: PLC0415
+
+                    outside = _ads(after_rgb, cur_render) > 30
+                    outside[crop] = False
+                    agree_s = float((src_cls[crop] == classify(after_rgb)[crop]).mean())
+                    # SS kapısı: kırpımda gerçek-pozitif kazanç yeter (1e-4 ≈
+                    # 200² kırpımda ~9 px); ölçüldü: 4x, R IoU'yu 0.9691 ->
+                    # 0.9723 taşırken uyum +0.00039 kazanıyor — _MIN_IMPROVE
+                    # (5e-4) bu gerçek kazancı kıl payı reddediyordu
+                    if not outside.any() and agree_s > best_agree + 1e-4:
+                        accept = True
+                if accept:
+                    if scale == 4:
+                        gain_4x = agree_s - best_agree
+                    best_agree = agree_s
+                    cur_render = after_rgb
+                    backup = {id(el): el.get("d") for el in members}
+                    comp_rep[f"ss{scale}x"] = round(agree_s, 5)
+                else:
+                    for el in members:
+                        if el.get("d") != backup[id(el)]:
+                            el.set("d", backup[id(el)])
         if best_agree > agree0 + 1e-9:
             comp_rep["applied"] = True
             total_changed += 1
@@ -361,6 +411,64 @@ def refine_critical_components(
             "improved": total_changed, "components": report_comps}
 
 
+def _snap_scaled(d: str, ref: np.ndarray,
+                 box: tuple[int, int, int, int], scale: int) -> str | None:
+    """Path'i kırpım uzayında x{scale} büyütüp dar pencereyle snap eder.
+
+    Kaynak kırpımı bikübik büyütülür (coverage modeli; palet etiketi İÇİN
+    kullanılmaz — sınıflandırma her zaman 1x kaynakta kalır). Kenar arama
+    penceresi ±1.6 büyütülmüş piksel = ±1.6/scale kaynak pikseli: 4x'te
+    0.4 px, 8x'te 0.2 px etkin hassasiyet. Sonuç kaynak uzayına float
+    hassasiyetle geri taşınır; yuvarlama canonical serileştirmede (0.01).
+    Daire alt-yollarına dokunulmaz (analitik yol zaten alt-piksel).
+    """
+    from app.boundary_refit import (  # noqa: PLC0415
+        _parse_subpaths_arc,
+        _serialize_subpaths_arc,
+        _snap_subpath,
+    )
+
+    x0, y0, x1, y1 = box
+    try:
+        p = parse_path(d)
+        # Z kapanışları svgpathtools .d()'de düşer; alt-yol bazında korunur
+        parts = []
+        for sub in p.continuous_subpaths():
+            s2 = sub.translated(complex(-x0, -y0)).scaled(scale)
+            parts.append(_round_scaled_d(s2.d(), 4) + (" Z" if sub.isclosed() else ""))
+        crop = ref[y0:y1, x0:x1].astype(np.uint8)
+        ref_s = cv2.resize(crop, None, fx=scale, fy=scale,
+                           interpolation=cv2.INTER_CUBIC).astype(np.float32)
+        subs = _parse_subpaths_arc(" ".join(parts))
+        if subs is None:
+            return None
+        moved = 0
+        for _ss_round in range(2):
+            for sp in subs:
+                sp_d = _serialize_subpaths_arc([sp])
+                if _is_circle_subpath(sp_d) is not None:
+                    continue  # daireler analitik yolda; SS snap uygulanmaz
+                moved += _snap_subpath(sp, ref_s, (1.0, 1.0), (1.0, 1.0))
+        if not moved:
+            return None
+        out_parts = []
+        for sp in subs:
+            sp_d = _serialize_subpaths_arc([sp])
+            closed = sp_d.rstrip().endswith(("Z", "z"))
+            b = parse_path(sp_d).scaled(1.0 / scale).translated(complex(x0, y0))
+            out_parts.append(
+                re.sub(r"-?\d+\.\d+",
+                       lambda m: f"{float(m.group()):.2f}".rstrip("0").rstrip("."),
+                       b.d()) + (" Z" if closed else ""))
+        return " ".join(out_parts)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _round_scaled_d(d: str, nd: int) -> str:
+    return re.sub(r"-?\d+\.\d+", lambda m: f"{float(m.group()):.{nd}f}", d)
+
+
 # ---------------------------------------------------------------------------
 # Hata-güdümlü render-and-refine (büyük bileşenlerdeki yerel sapmalar; ör. G)
 # ---------------------------------------------------------------------------
@@ -373,13 +481,21 @@ _WIDE_MIN_SHIFT = 0.05
 _WIDE_REG = 0.25
 
 
-def _snap_subpath_wide(sp: dict[str, Any], ref: np.ndarray) -> int:
+def _snap_subpath_wide(
+    sp: dict[str, Any], ref: np.ndarray,
+    region: tuple[float, float, float, float] | None = None,
+) -> int:
     """boundary_refit._snap_subpath'in GENİŞ pencereli türevi (kaynak uzay 1:1).
 
     İz-uzayı refit'i ±1.6 px pencereyle örnekler; 2-6 px'lik yerel sapmalarda
     (G iç gövdesi ölçümü) geçiş pencere DIŞINDA kalır ve hiçbir çapa desteği
     oluşmaz. Burada pencere ±4 px, kayma sınırı 2.5 px/turdur. Yay uçları yine
     donuktur (daireler analitik yolda düzeltilir).
+
+    ``region`` (x0,y0,x1,y1) verilirse örnekleme ve çapa hareketleri bu
+    kutuyla sınırlanır: kutu dışındaki çapalar YERİNDE kalır (cusp_refine'ın
+    blob-kapsamlı kullanımı; bölge dışı render değişimi seam korumasına
+    takılıyordu — ölçüldü).
     """
     from app.boundary_refit import _anchor_weights, _seg_point_tangent  # noqa: PLC0415
 
@@ -409,6 +525,10 @@ def _snap_subpath_wide(sp: dict[str, Any], ref: np.ndarray) -> int:
             pt, tg = _seg_point_tangent(p0, seg, u)
             norm = (tg[0] * tg[0] + tg[1] * tg[1]) ** 0.5
             if norm < 1e-9:
+                continue
+            if region is not None and not (
+                region[0] <= pt[0] <= region[2] and region[1] <= pt[1] <= region[3]
+            ):
                 continue
             nx, ny = -tg[1] / norm, tg[0] / norm
             t = _edge_cross(ref, pt[0] - 0.5, pt[1] - 0.5, nx, ny,
@@ -448,6 +568,10 @@ def _snap_subpath_wide(sp: dict[str, Any], ref: np.ndarray) -> int:
         dx, dy = d_px[k]
         if (dx * dx + dy * dy) ** 0.5 < _WIDE_MIN_SHIFT:
             continue
+        if region is not None:
+            ax, ay = pts[k]
+            if not (region[0] <= ax <= region[2] and region[1] <= ay <= region[3]):
+                continue  # bölge dışı çapa yerinde kalır
         deltas[k] = (float(dx), float(dy))
         moved += 1
     if dup_last and deltas[0] is not None:
@@ -523,9 +647,10 @@ def refine_error_regions(
     fills_rgb = np.array([[int(h[1:3], 16), int(h[3:5], 16), int(h[5:7], 16)]
                           for h in hex_fills], dtype=np.float32)
 
+    from app.palette_ops import classify_rgb  # noqa: PLC0415
+
     def classify(img: np.ndarray) -> np.ndarray:
-        d = np.linalg.norm(img[:, :, None, :].astype(np.float32) - fills_rgb[None, None], axis=3)
-        return np.argmin(d, axis=2)
+        return classify_rgb(img, fills_rgb)  # bant bazlı: bellek sınırlı, bit-birebir
 
     def err_mask(rnd: np.ndarray) -> np.ndarray:
         e = (src_cls != classify(rnd)).astype(np.uint8)
@@ -612,9 +737,27 @@ def refine_error_regions(
         err_new = int(e1.sum())
         out_new = int((e1 & (region_mask == 0)).sum())
         # kapılar: toplam maddi hata anlamlı azalmalı; bölge dışına yeni hata
-        # taşmamalı (komşu sınırlarda seam doğurma koruması)
+        # taşmamalı (komşu sınırlarda seam doğurma koruması); hiçbir bölgede
+        # MAKS sınır sapması derinleşmemeli (dar kama tepesinde snap piksel
+        # sayısını düşürürken sahte kenar açabiliyordu — ölçüldü: 7.8px çentik)
         if err_new > best_err - _ERR_MIN_BLOB or out_new > out_before + 8:
             break  # kazanç yok: tur sonunda geri alınır
+        after_cls = classify(after)
+        cur_cls = classify(cur)
+        deepened = False
+        for rx0, ry0, rx1, ry1 in regions:
+            from app.cusp_refine import _crop_max_dev  # noqa: PLC0415
+
+            m0 = _crop_max_dev(src_cls[ry0:ry1, rx0:rx1], cur_cls[ry0:ry1, rx0:rx1])
+            m1 = _crop_max_dev(src_cls[ry0:ry1, rx0:rx1], after_cls[ry0:ry1, rx0:rx1])
+            # yalnız MADDİ derinleşme veto eder (>0.5px artış VE >3px mutlak):
+            # AA ölçekli titreşimi veto etmek iyi turları topluca kesip genel
+            # sınıf IoU'sunu geriletiyordu (ölçüldü: sarı 0.9944 -> 0.9924)
+            if m1 > m0 + 0.5 and m1 > 3.0:
+                deepened = True
+                break
+        if deepened:
+            break  # tur sonunda geri alınır
         rounds_done += 1
         best_err = err_new
         cur = after

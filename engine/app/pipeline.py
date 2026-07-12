@@ -1184,6 +1184,33 @@ def run_pipeline(
             except Exception as e:  # noqa: BLE001
                 logger.debug("error_refine atlandı: %s", e)
                 refit_info = {**refit_info, "error_refine": {"status": "failed", "error": str(e)}}
+        # 9.89 Dar kama / cusp segment bölme: çapa taşımanın erişemediği
+        # bloblarda (kaynak cusp'ı iki çapa ARASINDA kalan uzun segmentler)
+        # segment De Casteljau ile tam bölünür ve yeni ortak çapa kaynak
+        # cusp'ına taşınır; kama iki komşu rengin ortak sınırıysa iki path
+        # de AYNI float koordinata bölünür (kanonik ortak düğüm, sliver
+        # kapanır). Bütçeli + ölçüm kapılı. VEKTORYUM_CUSP_REFINE=off kapatır.
+        if best is not None and os.environ.get(
+            "VEKTORYUM_CUSP_REFINE", "on"
+        ).strip().lower() not in {"off", "0", "false"}:
+            try:
+                from app.cusp_refine import refine_cusp_regions  # noqa: PLC0415
+                from app.fidelity import render_svg_to_rgb  # noqa: PLC0415
+
+                cr_w = int(analysis.get("width", 0) or 0)
+                cr_h = int(analysis.get("height", 0) or 0)
+                if cr_w > 0 and cr_h > 0:
+                    cu_rep = refine_cusp_regions(
+                        Path(best["svg_path"]), np.asarray(image.convert("RGB")),
+                        cr_w, cr_h, render_svg_to_rgb,
+                    )
+                    # rapor kompakt tutulur (aday listesi debug'da anlamlı)
+                    refit_info = {**refit_info, "cusp_refine": {
+                        k: v for k, v in cu_rep.items() if k != "candidates"
+                    } | {"candidate_count": len(cu_rep.get("candidates", []))}}
+            except Exception as e:  # noqa: BLE001
+                logger.debug("cusp_refine atlandı: %s", e)
+                refit_info = {**refit_info, "cusp_refine": {"status": "failed", "error": str(e)}}
 
     # 10. Yapı bütünlüğü denetimi (kırık/eksik çizgi, hayalet çizik): nihai
     # çıktıda orijinaldeki her kontur karşılanıyor mu? Foto benzeri sürekli-tonlu
