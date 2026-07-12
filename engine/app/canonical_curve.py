@@ -296,28 +296,33 @@ def fit_canonical_curves(graph: SharedBoundaryHalfEdgeGraph,
 
 
 def _fit_error(segs: list[BezierSegment], pts: list[Point]) -> tuple[float, float]:
-    """Fit edilmiş segmentlerden örnek noktalarına maks/p95 mesafe."""
+    """Fit edilmiş segmentlerden örnek noktalarına maks/p95 mesafe (vektörize).
+
+    Örnek noktaları ≤256'ya alt-örneklenir (uzun curve'de maliyet sınırlı) ve
+    segmentler ~1px aralıkla örneklenir; mesafe broadcast ile tek seferde. Sabit
+    12 örnek uzun segmentte sahte granülerlik "hatası" verirdi.
+    """
     if not segs or len(pts) < 3:
         return 0.0, 0.0
-    # segmentleri ~1px aralıkla örnekle → en yakın mesafe granülerlik artefaktsız
-    # (sabit 12 örnek uzun segmentte sahte "hata" verir: nokta iki örnek arasında).
     dense: list[Point] = []
     for s in segs:
         bez = [s.p0, s.c1, s.c2, s.p1]
         clen = math.hypot(bez[3][0] - bez[0][0], bez[3][1] - bez[0][1])
         m = min(256, max(12, int(round(clen))))
-        for k in range(m + 1):
-            t = k / m
-            mt = 1 - t
-            bx = (mt ** 3 * bez[0][0] + 3 * mt * mt * t * bez[1][0]
-                  + 3 * mt * t * t * bez[2][0] + t ** 3 * bez[3][0])
-            by = (mt ** 3 * bez[0][1] + 3 * mt * mt * t * bez[1][1]
-                  + 3 * mt * t * t * bez[2][1] + t ** 3 * bez[3][1])
-            dense.append((bx, by))
-    da = np.array(dense)
-    ds = []
-    for x, y in pts:
-        d = np.hypot(da[:, 0] - x, da[:, 1] - y).min()
-        ds.append(d)
-    ds = np.array(ds)
-    return float(ds.max()), float(np.percentile(ds, 95))
+        ts = np.linspace(0.0, 1.0, m + 1)
+        mt = 1 - ts
+        bx = (mt ** 3 * bez[0][0] + 3 * mt * mt * ts * bez[1][0]
+              + 3 * mt * ts * ts * bez[2][0] + ts ** 3 * bez[3][0])
+        by = (mt ** 3 * bez[0][1] + 3 * mt * mt * ts * bez[1][1]
+              + 3 * mt * ts * ts * bez[2][1] + ts ** 3 * bez[3][1])
+        dense.extend(zip(bx.tolist(), by.tolist()))
+    da = np.asarray(dense, dtype=np.float64)
+    ptn = np.asarray(pts, dtype=np.float64)
+    if len(ptn) > 256:                       # maliyet sınırı: düzgün alt-örnekle
+        idx = np.linspace(0, len(ptn) - 1, 256).astype(int)
+        ptn = ptn[idx]
+    # broadcast: her örnek noktasının en yakın dense mesafesi
+    dx = ptn[:, None, 0] - da[None, :, 0]
+    dy = ptn[:, None, 1] - da[None, :, 1]
+    dmin = np.sqrt(dx * dx + dy * dy).min(axis=1)
+    return float(dmin.max()), float(np.percentile(dmin, 95))
