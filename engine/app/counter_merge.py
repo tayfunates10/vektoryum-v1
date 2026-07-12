@@ -161,6 +161,7 @@ def merge_counters(
     render_fn: Callable[[Path, int, int], np.ndarray | None],
     source_rgb: np.ndarray | None = None,
     max_merges: int = 8,
+    cache: Any = None,
 ) -> dict[str, Any]:
     """Örtme sayaçlarını gerçek evenodd deliklerine çevirir (ölçüm kapılı).
 
@@ -291,6 +292,9 @@ def merge_counters(
     from app.palette_ops import classify_rgb  # noqa: PLC0415
 
     def classify(img: np.ndarray) -> np.ndarray:
+        # önbellek varsa render/kaynak sınıflandırması yeniden hesaplanmaz
+        if cache is not None:
+            return cache.classify(img, fills_rgb)
         return classify_rgb(img, fills_rgb)  # bant bazlı: bellek sınırlı, bit-birebir
 
     cls_before = classify(before_rgb)

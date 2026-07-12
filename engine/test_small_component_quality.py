@@ -53,9 +53,13 @@ MAX_SVG_COMMANDS = 900         # karmaşıklık sınırsız büyümesin (poligon
 # raporlar: 2.5x böl): p95 kenar sapması ve yerel palet uyumu
 G_REGION = (1625, 1125, 2625, 2650)  # fixture ölçüm bölgesi (yalnız test)
 MAX_G_P95_DEV = 1.5            # px @3840 (=0.6 px @1536; ölçülen 1.0)
-MAX_G_MAX_DEV = 9.0            # px @3840 — bilinen sınır: kama tepesi tek
-                               # noktası (çapa bütçesi 12/bölge 4 sınırlı;
-                               # ölçülen 7.8, gidişat 35->16.8->7.2 yakınsıyor)
+MAX_G_P99_DEV = 2.5            # px @3840 — robust maks kilidi (ölçülen 2.0);
+                               # dağılımın büyük gövdesi 2px altında
+MAX_G_MAX_DEV = 9.0            # px @3840 — bilinen sınır: tek keskin kama
+                               # tepesi (52px blob; tepe kaynağa 0.2px, keskin
+                               # V-çentiğin duvarı stacked boyamada bir pikselde
+                               # 7.8px kalıyor). Ham eşik gevşetilMEZ (r36=9.0);
+                               # p99≤2.5 gerçek iyileşmeyi ayrıca kilitler
 MIN_G_AGREE = 0.9955           # ölçülen 0.99648
 MAX_FRAME_THICKNESS_DIFF = 0.5  # px, coverage-ağırlıklı alt-piksel ölçüm
 
@@ -293,9 +297,16 @@ def main() -> int:
             dt = cv2.distanceTransform((~re2).astype(np.uint8), cv2.DIST_L2, 5)
             dt2 = cv2.distanceTransform((~se).astype(np.uint8), cv2.DIST_L2, 5)
             devs = np.concatenate([dt[se], dt2[re2]])
-            g_p95, g_max = float(np.percentile(devs, 95)), float(devs.max())
+            g_p95 = float(np.percentile(devs, 95))
+            g_p99 = float(np.percentile(devs, 99))
+            g_max = float(devs.max())
             _fail(errors, g_p95 <= MAX_G_P95_DEV,
                   f"G p95 kenar sapması {g_p95:.2f}px > {MAX_G_P95_DEV}px")
+            # robust maks (p99): dağılım kalitesini kilitler. Ham maks tekil
+            # keskin kama-tepesi pikselidir (52px blob, tepe kaynağa 0.2px);
+            # ham eşik gevşetilMEZ (r36'daki 9.0 korunur) — p99 ayrı kilit.
+            _fail(errors, g_p99 <= MAX_G_P99_DEV,
+                  f"G p99 kenar sapması {g_p99:.2f}px > {MAX_G_P99_DEV}px")
             _fail(errors, g_max <= MAX_G_MAX_DEV,
                   f"G maks kenar sapması {g_max:.2f}px > {MAX_G_MAX_DEV}px")
 
