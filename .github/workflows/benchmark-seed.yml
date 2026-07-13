@@ -16,7 +16,7 @@ concurrency:
 jobs:
   seed-benchmark:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     defaults:
       run:
         working-directory: engine
@@ -31,6 +31,8 @@ jobs:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: engine/requirements.txt
+      - name: Install system validators
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ghostscript libcairo2
       - name: Install Python dependencies
         run: python -m pip install -r requirements.txt pytest
       - name: Validate benchmark contracts
@@ -40,6 +42,8 @@ jobs:
           test_benchmark_seed_runner.py
           test_benchmark_compare.py
           test_benchmark_artifact_history.py
+          test_benchmark_pipeline_results.py
+          test_benchmark_pipeline_smoke.py
       - name: Download previous successful seed artifact
         shell: bash
         run: |
@@ -51,6 +55,8 @@ jobs:
           fi
       - name: Generate deterministic seed corpus and reports
         run: python -m benchmark.seed_runner --output benchmark_artifacts
+      - name: Run two-case real pipeline smoke benchmark
+        run: python -m benchmark.pipeline_smoke --output benchmark_artifacts/pipeline --engine-version "${GITHUB_SHA}"
       - name: Generate artifact history delta
         shell: bash
         run: |
@@ -60,7 +66,7 @@ jobs:
             args+=(--baseline baseline_artifact/seed_manifest.json)
           fi
           python -m benchmark.artifact_history "${args[@]}"
-      - name: Upload JSON HTML and fixtures
+      - name: Upload JSON HTML fixtures and real pipeline results
         uses: actions/upload-artifact@v4
         with:
           name: benchmark-v1-seed
