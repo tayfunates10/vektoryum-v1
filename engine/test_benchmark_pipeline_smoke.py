@@ -2,9 +2,10 @@ import json
 from pathlib import Path
 
 from benchmark import pipeline_smoke
+from benchmark.seed_runner import CATEGORIES
 
 
-def test_smoke_uses_two_deterministic_categories(tmp_path: Path, monkeypatch):
+def test_smoke_uses_all_deterministic_categories(tmp_path: Path, monkeypatch):
     seen = []
 
     def fake_run_case(case, **kwargs):
@@ -22,7 +23,7 @@ def test_smoke_uses_two_deterministic_categories(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr(pipeline_smoke, "run_case", fake_run_case)
     results = pipeline_smoke.run_smoke(tmp_path, engine_version="test")
-    assert seen == ["logos", "transparent"]
-    assert len(results) == 2
+    assert seen == list(CATEGORIES)
+    assert len(results) == len(CATEGORIES) == 8
     payload = json.loads((tmp_path / "pipeline_results.json").read_text())
-    assert payload["case_count"] == 2
+    assert payload["case_count"] == 8

@@ -19,10 +19,7 @@ def _results(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return results
 
 
-def evaluate_release_gate(
-    current_payload: dict[str, Any],
-    baseline_payload: dict[str, Any] | None,
-) -> dict[str, Any]:
+def evaluate_release_gate(current_payload: dict[str, Any], baseline_payload: dict[str, Any] | None) -> dict[str, Any]:
     current = _results(current_payload)
     unmeasured: list[dict[str, str]] = []
     for case in current:
@@ -50,6 +47,31 @@ def evaluate_release_gate(
             "delta": None,
         }
 
+    current_ids = {str(item.get("case_id", "")) for item in current}
+    baseline_ids = {str(item.get("case_id", "")) for item in baseline}
+    if "" in current_ids or "" in baseline_ids or len(current_ids) != len(current) or len(baseline_ids) != len(baseline):
+        raise ValueError("benchmark case ids must be non-empty and unique")
+    if baseline_ids != current_ids:
+        added = sorted(current_ids - baseline_ids)
+        removed = sorted(baseline_ids - current_ids)
+        if baseline_ids < current_ids:
+            return {
+                "schema_version": "benchmark-release-gate-v1",
+                "status": "bootstrap",
+                "reason": "case_set_expanded",
+                "unmeasured": [],
+                "delta": None,
+                "case_set": {"added": added, "removed": []},
+            }
+        return {
+            "schema_version": "benchmark-release-gate-v1",
+            "status": "fail",
+            "reason": "case_set_mismatch",
+            "unmeasured": [],
+            "delta": None,
+            "case_set": {"added": added, "removed": removed},
+        }
+
     delta = build_delta_report(baseline, current)
     return {
         "schema_version": "benchmark-release-gate-v1",
@@ -70,12 +92,8 @@ def main() -> int:
     parser.add_argument("--baseline", type=Path)
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
-
     current = json.loads(args.current.read_text(encoding="utf-8"))
-    baseline = None
-    if args.baseline is not None and args.baseline.exists():
-        baseline = json.loads(args.baseline.read_text(encoding="utf-8"))
-
+    baseline = json.loads(args.baseline.read_text(encoding="utf-8")) if args.baseline is not None and args.baseline.exists() else None
     report = evaluate_release_gate(current, baseline)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     write_gate_report(args.output, report)

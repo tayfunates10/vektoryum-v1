@@ -2,14 +2,17 @@ from benchmark.release_gate import evaluate_release_gate
 from benchmark.manifest import REQUIRED_METRICS
 
 
-def _payload(value: float = 1.0, *, missing: str | None = None):
-    metrics = {name: value for name in REQUIRED_METRICS}
-    if missing:
-        metrics[missing] = None
+def _payload(value: float = 1.0, *, missing: str | None = None, case_ids=("case-1",)):
+    results = []
+    for case_id in case_ids:
+        metrics = {name: value for name in REQUIRED_METRICS}
+        if missing:
+            metrics[missing] = None
+        results.append({"case_id": case_id, "engine_version": "v1", "metrics": metrics})
     return {
         "schema_version": "benchmark-results-v1",
-        "case_count": 1,
-        "results": [{"case_id": "case-1", "engine_version": "v1", "metrics": metrics}],
+        "case_count": len(results),
+        "results": results,
     }
 
 
@@ -39,3 +42,23 @@ def test_unmeasured_metric_fails_before_delta_comparison():
     report = evaluate_release_gate(_payload(missing="alpha_iou"), _payload())
     assert report["status"] == "fail"
     assert report["delta"] is None
+
+
+def test_measured_case_set_expansion_bootstraps_once():
+    report = evaluate_release_gate(
+        _payload(case_ids=("case-1", "case-2")),
+        _payload(case_ids=("case-1",)),
+    )
+    assert report["status"] == "bootstrap"
+    assert report["reason"] == "case_set_expanded"
+    assert report["case_set"] == {"added": ["case-2"], "removed": []}
+
+
+def test_case_removal_remains_fail_closed():
+    report = evaluate_release_gate(
+        _payload(case_ids=("case-1",)),
+        _payload(case_ids=("case-1", "case-2")),
+    )
+    assert report["status"] == "fail"
+    assert report["reason"] == "case_set_mismatch"
+    assert report["case_set"]["removed"] == ["case-2"]
