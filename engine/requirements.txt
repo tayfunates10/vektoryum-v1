@@ -3,6 +3,8 @@ fastapi
 uvicorn[standard]
 python-multipart
 pillow
+# SVG XML parse'ında DTD/entity/XXE fail-closed koruması.
+defusedxml
 # huggingface_hub: opsiyonel kalıcı depolama (app/store.py) — kullanıcılar +
 # geri-bildirim kaydını HF Dataset'e senkronlar (VEKTORYUM_DATASET + HF_TOKEN
 # ayarlıysa). Yoksa/ayarlı değilse sistem yerel-yalnız çalışır (çökme yok).

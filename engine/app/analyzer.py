@@ -681,6 +681,19 @@ def analyze_image_from_mem(image: Image.Image) -> dict[str, Any]:
     foreground_color_count = fg_stats["chromatic_color_count"]
     vivid_foreground_ratio = fg_stats["vivid_ratio"]
     rich_foreground = foreground_color_count >= 90       # gradyan-zengin renkli logo
+    # Global unique-ratio gradyan testi, büyük beyaz zeminli tek-nesne
+    # logolarda ön planın tonlarını toplam piksele böldüğü için false-negative
+    # verebilir. Temiz/uniform zeminde, çok düşük kenar yoğunluğuna rağmen ön
+    # planda 90+ kromatik ton bulunması düz paletle açıklanamaz: bu, yumuşak
+    # paint field (gradyan/gölge) sinyalidir. Foto/doku false-positive'leri
+    # uniform zemin + düşük edge kapılarıyla dışarıda kalır.
+    tonal_gradient_foreground = bool(
+        rich_foreground
+        and vivid_foreground_ratio >= 0.08
+        and bg_data["is_uniform_background"]
+        and edge_density <= 0.08
+    )
+    has_gradient = bool(has_gradient or tonal_gradient_foreground)
     # 28: vintage/distressed siyah-beyaz badge'lerin hafif sıcak tonu (~19-23
     # kromatik kova) 'renk' sayılmasın; gerçek renk aksanları (teal ~33, kahve ~38)
     # üstte kalsın. Düşük eşik monokrom badge'leri lineart'tan dışlayıp minimal_ai'de
@@ -731,6 +744,7 @@ def analyze_image_from_mem(image: Image.Image) -> dict[str, Any]:
 
     if bwr_low_color_signature:
         has_gradient = False
+        tonal_gradient_foreground = False
 
     geometry_flags = classify_logo_geometry(
         estimated_color_count=flat_color_count,
@@ -935,6 +949,7 @@ def analyze_image_from_mem(image: Image.Image) -> dict[str, Any]:
 
     if detected_type == "geometric_logo":
         has_gradient = False
+        tonal_gradient_foreground = False
         likely_color_logo = False
 
     return {
@@ -950,6 +965,7 @@ def analyze_image_from_mem(image: Image.Image) -> dict[str, Any]:
         "blur_score": blur_score,
         "edge_density": edge_density,
         "has_gradient": has_gradient,
+        "tonal_gradient_foreground": tonal_gradient_foreground,
         "quality_score": quality_score,
         "detected_type": detected_type,
         "recommended_mode": recommended_mode,

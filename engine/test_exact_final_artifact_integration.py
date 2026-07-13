@@ -1,145 +1,124 @@
-"""FAZ 1 — Exact final SVG TEK gerçeklik entegrasyonu (gerçek pipeline).
-
-Doğrulanan hata: main.py export sonrası basic_svg_quality_check kullanıyor;
-FinalArtifactEvaluator production'a bağlı değildi → API metriği (path/byte) stale,
-indirilen dosyayla eşleşmiyor (T5). Artık quality_report exact exported SVG'den
-türer; response final_svg_sha256 indirilen baytların SHA-256'sıdır; response
-path_count exact XML <path> sayısıdır.
-
-Özel zorunlu assertion'lar (şartname):
-1. Response final_svg_sha256 == indirilen byte SHA-256.
-2. Response path_count == exact XML <path> count.
-5. Ölçülemeyen zorunlu metrik varsa production_ready değil.
-
-Çalıştırma::  .venv/bin/python test_exact_final_artifact_integration.py  (~60 sn)
-"""
+"""Gerçek ASGI -> pipeline -> export -> evaluator -> download entegrasyonu."""
 from __future__ import annotations
 
-import asyncio
 import hashlib
-import io
-import json
-import re
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-import numpy as np
-from PIL import Image
+import pytest
+from fastapi.testclient import TestClient
 
 ENGINE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(ENGINE_DIR))
 sys.path.insert(0, str(ENGINE_DIR / "regression"))
 
-FAILS: list[str] = []
+
+@pytest.fixture
+def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
+    import app.main as main
+
+    monkeypatch.setattr(main, "JOBS_ROOT", tmp_path / "jobs")
+    monkeypatch.setattr(main, "DATA_ROOT", tmp_path / "data")
+    monkeypatch.setattr(main, "FEEDBACK_FILE", tmp_path / "data" / "feedback.jsonl")
+    monkeypatch.setattr(main, "USERS_FILE", tmp_path / "data" / "users.json")
+    monkeypatch.setattr(
+        main, "_require_user",
+        lambda _session: {"email": "integration@example.com", "name": "IT", "role": "user"},
+    )
+    test_client = TestClient(main.app)
+    test_client.cookies.set("session", "integration-session")
+    return test_client
 
 
-def check(cond: bool, msg: str) -> None:
-    print(("  [PASS] " if cond else "  [FAIL] ") + msg)
-    if not cond:
-        FAILS.append(msg)
+def _vectorize(client: TestClient, payload: bytes, mime: str, filename: str) -> dict:
+    response = client.post(
+        "/api/vectorize",
+        files={"file": (filename, payload, mime)},
+        data={"trace_mode": "auto", "shape_stacking": "stacked", "edge_cleanup": "on"},
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
 
 
-def _png_bytes(rgb: np.ndarray) -> bytes:
-    b = io.BytesIO()
-    Image.fromarray(rgb).save(b, "PNG")
-    return b.getvalue()
+def _xml_path_count(raw: bytes) -> int:
+    root = ET.fromstring(raw)
+    return sum(element.tag.rsplit("}", 1)[-1] == "path" for element in root.iter())
 
 
-def _run_endpoint(png: bytes, filename="t1.png"):
-    import app.main as M
-    from starlette.datastructures import Headers, UploadFile
-    M._require_user = lambda s: {"email": "it@t", "role": "user"}
-    up = UploadFile(filename=filename, file=io.BytesIO(png),
-                    headers=Headers({"content-type": "image/png"}))
-    resp = asyncio.run(M.vectorize_image(
-        file=up, trace_mode="auto", shape_stacking="stacked",
-        edge_cleanup="on", session="x"))
-    body = json.loads(bytes(resp.body))
-    return M, resp, body
+def _decision_signature(body: dict) -> list[tuple[str, str, tuple[str, ...]]]:
+    return [
+        (
+            str(stage["stage_id"]), str(stage["status"]),
+            tuple(str(code) for code in stage.get("reason_codes", [])),
+        )
+        for stage in (body.get("transform_journal") or {}).get("stages", [])
+    ]
 
 
-def _download_bytes(M, job_id: str, fmt: str) -> bytes | None:
-    try:
-        fr = asyncio.run(M.download_file(job_id, fmt))
-    except Exception:  # noqa: BLE001
-        return None
-    path = getattr(fr, "path", None)
-    return Path(path).read_bytes() if path and Path(path).exists() else None
-
-
-def test_sha_and_pathcount_match_exact() -> None:
-    print("== Exact final: sha256 zinciri + path_count == XML (stale değil) ==")
+def test_exact_sha_xml_metrics_and_real_download_body(client: TestClient) -> None:
+    import app.main as main
     from exact_corpus import t1_topology
-    fx = t1_topology(256)
-    M, resp, body = _run_endpoint(_png_bytes(fx.rgb))
-    check(getattr(resp, "status_code", 200) == 200, f"200 döndü ({getattr(resp,'status_code',200)})")
-    if getattr(resp, "status_code", 200) != 200:
-        return
-    job_id = body["job_id"]
-    fa = body.get("final_artifact", {})
-    qr = body.get("quality_report", {})
-    check(qr.get("source") == "final_artifact_evaluator", "quality_report evaluator'dan türedi")
-    resp_sha = body.get("final_svg_sha256")
-    check(bool(resp_sha), f"final_svg_sha256 response'ta var ({(resp_sha or '')[:8]})")
 
-    # 1) response sha == indirilen byte sha
-    dl = _download_bytes(M, job_id, "svg")
-    check(dl is not None, "svg indirilebildi")
-    if dl is not None:
-        dl_sha = hashlib.sha256(dl).hexdigest()
-        check(dl_sha == resp_sha, "response sha256 == indirilen SVG sha256 (KESİN dosya)")
+    fixture = t1_topology(256)
+    body = _vectorize(client, fixture.input_bytes, fixture.input_mime, "t1.png")
+    artifact = body["final_artifact"]
+    journal = body["transform_journal"]
+    response = client.get(body["download_links"]["svg"])
+    assert response.status_code == 200, response.text
+    downloaded = response.content
+    actual_sha = hashlib.sha256(downloaded).hexdigest()
 
-        # 2) response path_count == exact XML <path> count
-        xml_paths = len(re.findall(r"<path\b", dl.decode("utf-8", "ignore")))
-        rep_paths = (fa.get("exact_metrics") or {}).get("path_count")
-        check(rep_paths == xml_paths, f"path_count == XML ({rep_paths} vs {xml_paths})")
-        # XML gerçekten parse edilebilir + bitmap yok
-        try:
-            ET.fromstring(dl)
-            parse_ok = True
-        except Exception:  # noqa: BLE001
-            parse_ok = False
-        check(parse_ok, "exported SVG XML parse edilebilir")
-        check(b"<image" not in dl and b"data:image" not in dl, "gömülü bitmap yok")
+    assert body["quality_report"]["source"] == "final_artifact_evaluator"
+    assert body["final_svg_sha256"] == actual_sha
+    assert body["quality_report"]["final_svg_sha256"] == actual_sha
+    assert artifact["final_svg_sha256"] == actual_sha
+    assert artifact["quality_verdict"] == artifact["verdict"]
+    assert artifact["quality_failure_codes"] == artifact["hard_fail_codes"]
+    assert artifact["structural_safe"] is True
+    assert artifact["artifacts"]["svg"]["sha256"] == actual_sha
+    assert journal["chain_valid"] is True
+    assert journal["final_accepted_sha256"] == actual_sha
+    serializer_stage = next(
+        stage for stage in journal["stages"]
+        if stage["stage_id"] == "production_serializer"
+    )
+    assert body["refit_info"]["final_rescore"] == {
+        "status": "measured",
+        "fidelity_score": body["legacy_candidate_report"]["metrics"]["fidelity_score"],
+        # Pipeline'ın kesin artifact'ı serializer'ın byte-parent'ıdır;
+        # export sonrası exact hash yukarıda final evaluator ile doğrulanır.
+        "svg_sha256": serializer_stage["parent_sha256"],
+    }
+    stage_ids = [stage["stage_id"] for stage in journal["stages"]]
+    assert stage_ids.index("restore_source_dimensions") < stage_ids.index("component_align")
+    assert artifact["exact_metrics"]["path_count"] == _xml_path_count(downloaded)
+    assert b"<image" not in downloaded and b"data:image" not in downloaded
+    assert set(body["download_links"]) == set(artifact["downloadable_formats"])
+    assert not list((main.JOBS_ROOT / body["job_id"]).glob(".*.candidate.svg"))
 
-    # download link yalnız geçerli format için
-    dls = set(body.get("download_links", {}).keys())
-    valid = set(fa.get("valid_formats", []))
-    check(dls == valid, f"download_links == valid_formats ({sorted(dls)})")
 
-
-def test_verdict_is_honest() -> None:
-    print("== Verdict dürüst: production_ready|needs_review|failed; unmeasured→değil ==")
+def test_verdict_is_honest_and_legacy_score_is_isolated(client: TestClient) -> None:
     from exact_corpus import t1_topology
-    _M, resp, body = _run_endpoint(_png_bytes(t1_topology(256).rgb))
-    if getattr(resp, "status_code", 200) != 200:
-        check(False, "endpoint 200 değil")
-        return
-    fa = body["final_artifact"]
-    v = fa["verdict"]
-    check(v in ("production_ready", "needs_review", "failed"), f"geçerli verdict ({v})")
-    # ölçülemeyen zorunlu metrik varsa production_ready OLAMAZ
-    if fa.get("unmeasured_required"):
-        check(v != "production_ready", "unmeasured varsa production_ready değil")
-    else:
-        check(True, "unmeasured yok")
-    # legacy rapor ayrı tutuluyor, final kararı etkilemiyor
-    check("legacy_candidate_report" in body, "legacy_candidate_report ayrı")
+
+    body = _vectorize(client, t1_topology(256).input_bytes, "image/png", "t1.png")
+    artifact = body["final_artifact"]
+    assert artifact["verdict"] in {"production_ready", "needs_review", "failed"}
+    if artifact["unmeasured_required"]:
+        assert artifact["verdict"] != "production_ready"
+    assert "legacy_candidate_report" in body
+    assert body["quality_report"]["source"] == "final_artifact_evaluator"
 
 
-def main() -> int:
-    test_sha_and_pathcount_match_exact()
-    test_verdict_is_honest()
-    print("=" * 60)
-    if FAILS:
-        print(f"SONUC: {len(FAILS)} KONTROL BASARISIZ")
-        for m in FAILS:
-            print(" -", m)
-        return 1
-    print("SONUC: tum kontroller gecti")
-    return 0
+def test_two_independent_runs_are_byte_and_decision_deterministic(client: TestClient) -> None:
+    from exact_corpus import t1_topology
 
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+    fixture = t1_topology(192)
+    first = _vectorize(client, fixture.input_bytes, fixture.input_mime, "same.png")
+    second = _vectorize(client, fixture.input_bytes, fixture.input_mime, "same.png")
+    assert first["job_id"] != second["job_id"]
+    assert first["final_svg_sha256"] == second["final_svg_sha256"]
+    assert _decision_signature(first) == _decision_signature(second)
+    first_svg = client.get(first["download_links"]["svg"]).content
+    second_svg = client.get(second["download_links"]["svg"]).content
+    assert first_svg == second_svg

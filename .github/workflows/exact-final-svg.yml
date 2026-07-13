@@ -1,0 +1,101 @@
+name: Exact final SVG contract
+
+on:
+  pull_request:
+    paths:
+      - "engine/**"
+      - ".github/workflows/exact-final-svg.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: exact-final-svg-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: engine
+    env:
+      PYTHONHASHSEED: "0"
+      VEKTORYUM_WORKERS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: engine/requirements.txt
+      - name: Install system validators
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ghostscript libcairo2
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt pytest httpx
+      - name: Exact-byte, security, corpus, evaluator and journal gates
+        run: >-
+          python -m pytest -q
+          test_exact_final_contract.py
+          test_exact_corpus.py
+          test_transform_journal.py
+          test_final_artifact_metrics.py
+
+  pipeline-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: engine
+    env:
+      PYTHONHASHSEED: "0"
+      VEKTORYUM_WORKERS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: engine/requirements.txt
+      - name: Install system validators
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ghostscript libcairo2
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt pytest httpx
+      - name: Real pipeline, evaluator and HTTP download chain
+        run: >-
+          python -m pytest -q
+          test_exact_final_artifact_integration.py
+          test_exact_corpus_pipeline.py
+
+  hard-svg-regressions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    defaults:
+      run:
+        working-directory: engine
+    env:
+      PYTHONHASHSEED: "0"
+      VEKTORYUM_WORKERS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: engine/requirements.txt
+      - name: Install system validators
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ghostscript libcairo2
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt pytest httpx
+      - name: Artifact seam, halo, stroke and glyph corpus
+        run: python regression/artifact_probe.py
+      - name: Geometric and gradient paint-model regressions
+        run: >-
+          python test_visual_regression.py
+          --case class_reklam
+          --case gradient_logo
+          --require-baseline
+      - name: Native-resolution LEGO registered-mark regression
+        run: python test_small_component_quality.py

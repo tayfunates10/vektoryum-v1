@@ -24,6 +24,7 @@ import io
 import json
 import logging
 import os
+import re
 import secrets
 import tempfile
 import time
@@ -296,6 +297,20 @@ async def vectorize_image(
     # 7.5 Shape stacking dönüşümü (istenirse): stacked -> cut-outs. Kopya
     # üzerinde çalışılır; başarısız olursa stacked çıktı aynen kullanılır.
     export_source = Path(best["svg_path"])
+    from app.transform_journal import TransformJournal, merge_journal_reports  # noqa: PLC0415
+
+    journal_rgb, journal_alpha = _source_truth_arrays(image)
+    post_required: set[str] = set()
+    if journal_alpha is not None and bool((journal_alpha < 255).any()):
+        post_required.add("alpha_fidelity")
+    if analysis.get("has_gradient"):
+        post_required.add("gradient_fidelity")
+    post_journal = TransformJournal(
+        export_source,
+        journal_rgb,
+        image_class=_MODE_IMAGE_CLASS.get(mode_used, "clean_logo"),
+        required_metrics=post_required,
+    )
     stacking_report = {"mode": "stacked"}
     if shape_stacking == "cutouts":
         from shutil import copyfile
@@ -307,9 +322,25 @@ async def vectorize_image(
         result = convert_svg_to_cutouts(cut_svg)
         stacking_report = {"mode": "cutouts", **result}
         if result.get("status") in ("completed", "no_change"):
-            export_source = cut_svg
+            accepted_source, cut_stage = post_journal.consider_candidate(
+                "shape_stacking_cutouts", export_source, cut_svg,
+                transform_report=stacking_report,
+            )
+            export_source = accepted_source
+            if accepted_source != cut_svg:
+                stacking_report = {
+                    **stacking_report,
+                    "fallback": "stacked",
+                    "journal_status": cut_stage["status"],
+                    "journal_reasons": cut_stage["reason_codes"],
+                }
         else:
             stacking_report["fallback"] = "stacked"
+            post_journal.record_noop(
+                "shape_stacking_cutouts", export_source,
+                reason_codes=["cutout_transform_not_applied"],
+                transform_report=stacking_report,
+            )
 
     # 8. Export ("temizlenmiş" PNG dahil; boyut = orijinal görsel boyutu)
     best_geo = best.get("cleanup_report", {}).get("report", {})
@@ -321,7 +352,36 @@ async def vectorize_image(
         png_size=(int(analysis.get("width", 0)) or None, int(analysis.get("height", 0)) or None),
     )
 
-    # 9. LEGACY aday-içi rapor — YALNIZ bilgi; final kararı ETKİLEMEZ.
+    # Serializer da bir SVG mutasyonudur (namespace/metadata/fill-rule). Exact
+    # output candidate journal gate'ini geçmezse pre-serializer parent baytı
+    # final SVG'ye atomik geri yazılır ve türev formatlar yeniden üretim
+    # gerektirdiği için download listesinden çıkarılır.
+    svg_output = Path(outputs["svg"]) if outputs.get("svg") else None
+    if svg_output is not None and svg_output.is_file():
+        serializer_path, serializer_stage = post_journal.consider_candidate(
+            "production_serializer", export_source, svg_output,
+            transform_report={"candidate_id": f"{mode_used}:{best['name']}"},
+        )
+        if serializer_path != svg_output:
+            from app.transform_journal import _atomic_write_bytes  # noqa: PLC0415
+
+            _atomic_write_bytes(svg_output, export_source.read_bytes())
+            for derived in ("pdf", "eps", "dxf", "png"):
+                if derived in outputs:
+                    outputs.pop(derived, None)
+                    output_errors[derived] = (
+                        "production_serializer journal rollback; güvenli yeniden export gerekli"
+                    )
+            # Rollback sonrası final artifact artık parent hash'idir.
+            post_journal.final_accepted_sha256 = hashlib.sha256(
+                svg_output.read_bytes()
+            ).hexdigest()
+
+    transform_journal = merge_journal_reports(
+        pipe.get("transform_journal"), post_journal.to_dict(),
+    )
+
+    # 9. LEGACY aday-içi rapor — yalnız tanılama; final verdict'i etkilemez.
     legacy_candidate_report = basic_svg_quality_check(
         score_details=best.get("score_details", {}),
         mode=mode_used,
@@ -331,27 +391,54 @@ async def vectorize_image(
         structure_report=pipe.get("structure_report"),
     )
 
-    # 9.5 KESİN final artifact değerlendirmesi (TEK gerçeklik): kullanıcının
-    # indireceği exact SVG yargılanır (aday-içi skor değil). Ağır render →
-    # event loop'u bloke etmemek için threadpool. quality_report BUNDAN türer.
-    svg_out = outputs.get("svg")
+    # 9.5 Kullanıcının indireceği kesin artifact baytlarını değerlendir. Ağır
+    # render event loop'u bloke etmesin diye threadpool'da çalışır.
     final_art = await run_in_threadpool(
-        _evaluate_final, str(svg_out) if svg_out else None, image, mode_used,
-        outputs, str(job_dir))
+        _evaluate_final,
+        outputs,
+        image,
+        mode_used,
+        analysis,
+        job_dir,
+    )
+
+    # Journal'ın son kabul edilmiş baytı exact exported SVG ile aynı olmalı.
+    if transform_journal is not None:
+        journal_sha = transform_journal.get("final_accepted_sha256")
+        final_sha = final_art.get("final_svg_sha256")
+        journal_codes = list(transform_journal.get("chain_failure_codes") or [])
+        if journal_sha and final_sha and journal_sha != final_sha:
+            journal_codes.append("transform_journal_hash_mismatch")
+        if journal_codes:
+            final_art["verdict"] = "failed"
+            final_art["hard_fail_codes"] = list(dict.fromkeys(
+                final_art.get("hard_fail_codes", []) + journal_codes
+            ))
+            final_art["hard_fails"] = final_art.get("hard_fails", []) + [
+                "Transform journal SHA zinciri kesin final SVG ile uyuşmuyor"
+            ]
+            svg_art = (final_art.get("artifacts") or {}).get("svg") or {}
+            svg_art["structural_safe"] = False
+            for key in ("downloadable_formats", "valid_formats"):
+                if "svg" in final_art.get(key, []):
+                    final_art[key].remove("svg")
+            final_art["quality_verdict"] = final_art["verdict"]
+            final_art["quality_failure_codes"] = list(final_art["hard_fail_codes"])
+            final_art["structural_safe"] = False
 
     quality_report = {
-        "status": final_art["verdict"],                # production_ready|needs_review|failed
+        "status": final_art["verdict"],
         "final_svg_sha256": final_art["final_svg_sha256"],
-        "exact_metrics": final_art["exact_metrics"],   # XML'den ölçülen (stale değil)
+        "exact_metrics": final_art["exact_metrics"],
         "hard_fails": final_art["hard_fails"],
+        "hard_fail_codes": final_art["hard_fail_codes"],
         "warnings": final_art["hard_fails"] + final_art["soft_warnings"],
         "unmeasured_required": final_art["unmeasured_required"],
         "source": "final_artifact_evaluator",
     }
 
-    # Download YALNIZ yapısal olarak geçerli (var + boş değil) çıktı için.
-    download_links = {fmt: f"/api/download/{job_id}/{fmt}"
-                      for fmt in final_art.get("valid_formats", [])}
+    downloadable = final_art["downloadable_formats"]
+    download_links = {fmt: f"/api/download/{job_id}/{fmt}" for fmt in downloadable}
 
     final_report = {
         "job_id": job_id,
@@ -391,30 +478,22 @@ async def vectorize_image(
             ],
         },
         "quality_report": quality_report,
-        "final_artifact": {
-            "verdict": final_art["verdict"],
-            "final_svg_sha256": final_art["final_svg_sha256"],
-            "exact_metrics": final_art["exact_metrics"],
-            "hard_fails": final_art["hard_fails"],
-            "soft_warnings": final_art["soft_warnings"],
-            "unmeasured_required": final_art["unmeasured_required"],
-            "valid_formats": final_art.get("valid_formats", []),
-            "metrics": final_art.get("evaluator", {}).get("metrics")
-            if final_art.get("evaluator") else None,
-        },
+        "final_artifact": final_art,
         "final_svg_sha256": final_art["final_svg_sha256"],
         "legacy_candidate_report": legacy_candidate_report,
         "refine_info": pipe.get("refine_info"),
         "refit_info": pipe.get("refit_info"),
+        "transform_journal": transform_journal,
         "shape_stacking": stacking_report,
         "outputs": {fmt: Path(p).name for fmt, p in outputs.items()},
         "output_errors": output_errors,
         "download_links": download_links,
     }
 
-    # ATOMİK yayın: temp yaz + fsync + rename (yarım/bozuk report.json okunmasın)
-    _atomic_write_text(job_dir / "report.json",
-                       json.dumps(final_report, ensure_ascii=False, indent=2))
+    _atomic_write_text(
+        job_dir / "report.json",
+        json.dumps(final_report, ensure_ascii=False, indent=2),
+    )
 
     # KALICI geri-bildirim kaydı: admin paneli bunu okur, restart'ta kaybolmaz.
     _append_feedback({
@@ -432,16 +511,6 @@ async def vectorize_image(
     return JSONResponse(content=final_report)
 
 
-def _atomic_write_text(path: Path, text: str) -> None:
-    """Temp yaz + fsync + rename ile atomik yayın (yarım dosya görünmez)."""
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(text)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, path)
-
-
 _MODE_IMAGE_CLASS = {
     "logo_color": "clean_logo", "flat_logo": "clean_logo",
     "geometric_logo": "geometric", "minimal_ai": "clean_logo",
@@ -450,91 +519,177 @@ _MODE_IMAGE_CLASS = {
 }
 
 
-def _evaluate_final(svg_path_str: str | None, image, mode_used: str,
-                    outputs: dict[str, Any], job_dir_str: str) -> dict[str, Any]:
-    """KESİN exported SVG'yi FinalArtifactEvaluator ile değerlendirir (tek gerçeklik).
-
-    Aday-içi skoru değil KULLANICININ İNDİRECEĞİ dosyayı yargılar; exact XML'den
-    ölçülen path/node/gradient/byte + sha256 + verdict döner. Yapısal olarak
-    geçersiz/eksik çıktı için download üretilmez. Hata halinde needs_review
-    (asla sessiz production_ready). Ağır render içerir → threadpool'dan çağrılır.
-    """
-    import numpy as np  # noqa: PLC0415
-    from pathlib import Path as _P  # noqa: PLC0415
-
-    job_dir = _P(job_dir_str)
-    result: dict[str, Any] = {"verdict": "needs_review", "hard_fails": [],
-                              "soft_warnings": [], "unmeasured_required": [],
-                              "final_svg_sha256": None, "exact_metrics": {},
-                              "evaluator": None}
-
-    # geçerli (var + boş değil) çıktıları belirle → yalnız bunlara download
-    valid: dict[str, str] = {}
-    for fmt in ("svg", "pdf", "eps", "dxf", "png"):
-        p = outputs.get(fmt)
-        if not p:
-            continue
-        fp = _P(p) if _P(p).is_absolute() else (job_dir / _P(p).name)
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Aynı dizinde benzersiz temp + fsync + replace ile atomik snapshot."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent,
+            prefix=f".{path.name}.", suffix=".tmp", delete=False,
+        ) as handle:
+            tmp_path = Path(handle.name)
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+        tmp_path = None
+        # Rename'in crash-durability'si için directory metadata'sını da flush et.
         try:
-            if fp.exists() and fp.stat().st_size > 0:
-                valid[fmt] = fmt
-        except Exception:  # noqa: BLE001
+            directory_fd = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        except OSError:
             pass
-    result["valid_formats"] = sorted(valid)
+    finally:
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
-    if svg_path_str is None or "svg" not in valid:
-        result["hard_fails"].append("kesin SVG çıktısı yok/boş")
+
+def _source_truth_arrays(image: Image.Image) -> tuple[Any, Any | None]:
+    """Evaluator için beyaz-zemin RGB referansı ve korunacak alpha düzlemi."""
+    import numpy as np  # noqa: PLC0415
+
+    has_transparency = (
+        image.mode in ("RGBA", "LA", "PA")
+        or (image.mode == "P" and "transparency" in image.info)
+    )
+    if not has_transparency:
+        return np.asarray(image.convert("RGB")).copy(), None
+    rgba = np.asarray(image.convert("RGBA"))
+    alpha = rgba[:, :, 3].copy()
+    a = alpha.astype(np.float32)[:, :, None] / 255.0
+    rgb = np.clip(rgba[:, :, :3].astype(np.float32) * a + 255.0 * (1.0 - a), 0, 255)
+    return rgb.astype(np.uint8), alpha
+
+
+def _evaluate_final(outputs: dict[str, Any], image: Image.Image, mode_used: str,
+                    analysis: dict[str, Any], job_dir: Path) -> dict[str, Any]:
+    """Kesin exportları hash'ler, final SVG'yi yargılar ve formatları doğrular."""
+    from app.artifact_validation import (downloadable_formats,
+                                         resolve_job_artifact,
+                                         validate_export_artifacts)
+
+    result: dict[str, Any] = {
+        "schema_version": 2,
+        "verdict": "needs_review",
+        "quality_verdict": "needs_review",
+        "final_svg_sha256": None,
+        "exact_metrics": {},
+        "hard_fails": [],
+        "hard_fail_codes": [],
+        "quality_failure_codes": [],
+        "soft_warnings": [],
+        "soft_warning_codes": [],
+        "unmeasured_required": [],
+        "artifacts": {},
+        "downloadable_formats": [],
+        "valid_formats": [],  # geriye uyum: artık gerçekten doğrulanmış formatlar
+        "metrics": None,
+    }
+    source_rgb, source_alpha = _source_truth_arrays(image)
+    svg_path = resolve_job_artifact(outputs.get("svg"), job_dir)
+    evaluator = None
+    struct = None
+    structural_codes: list[str] = []
+
+    if svg_path is None or not svg_path.is_file() or svg_path.stat().st_size == 0:
         result["verdict"] = "failed"
-        return result
+        result["hard_fails"] = ["kesin SVG çıktısı yok/boş veya job dizini dışında"]
+        result["hard_fail_codes"] = ["final_svg_missing"]
+    else:
+        try:
+            from app.final_artifact_evaluator import evaluate_final_svg  # noqa: PLC0415
 
-    svg_path = _P(svg_path_str)
-    try:
-        data = svg_path.read_bytes()
-        import hashlib  # noqa: PLC0415
-        result["final_svg_sha256"] = hashlib.sha256(data).hexdigest()
-    except Exception as e:  # noqa: BLE001
-        result["hard_fails"].append(f"SVG okunamadı: {e}")
-        result["verdict"] = "failed"
-        return result
+            required_metrics: set[str] = set()
+            if analysis.get("has_gradient"):
+                required_metrics.add("gradient_fidelity")
+            evaluator = evaluate_final_svg(
+                svg_path,
+                source_rgb,
+                source_alpha=source_alpha,
+                image_class=_MODE_IMAGE_CLASS.get(mode_used, "clean_logo"),
+                required_metrics=required_metrics,
+            )
+            result.update({
+                "verdict": evaluator.verdict,
+                "final_svg_sha256": evaluator.sha256,
+                "hard_fails": evaluator.hard_fails,
+                "hard_fail_codes": evaluator.hard_fail_codes,
+                "soft_warnings": evaluator.soft_warnings,
+                "soft_warning_codes": evaluator.soft_warning_codes,
+                "unmeasured_required": evaluator.unmeasured_required,
+                "metrics": evaluator.metrics,
+                "byte_read_stable": evaluator.byte_read_stable,
+                "deterministic": evaluator.deterministic,
+            })
+            struct = evaluator.metrics.get("A_structure", {})
+            structural_codes = list(struct.get("structural_failure_codes", []))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("FinalArtifactEvaluator başarısız (fail-closed needs_review): %s", e)
+            result["unmeasured_required"] = ["final_artifact_evaluator"]
+            result["soft_warnings"] = ["Kesin SVG kalite ölçümü tamamlanamadı"]
+            result["soft_warning_codes"] = ["evaluator_error"]
 
-    # kaynak RGB + (varsa) alpha düzlemi
-    try:
-        if image.mode in ("RGBA", "LA", "PA") or (image.mode == "P" and "transparency" in image.info):
-            rgba = image.convert("RGBA")
-            arr = np.asarray(rgba)
-            source_rgb = arr[:, :, :3].copy()
-            source_alpha = arr[:, :, 3].copy()
-        else:
-            source_rgb = np.asarray(image.convert("RGB"))
-            source_alpha = None
-    except Exception as e:  # noqa: BLE001
-        result["unmeasured_required"].append(f"kaynak dönüştürülemedi: {e}")
-        return result
+    expected_png_size = (
+        int(analysis.get("width", 0) or 0),
+        int(analysis.get("height", 0) or 0),
+    )
+    if not all(expected_png_size):
+        expected_png_size = None
+    artifacts = validate_export_artifacts(
+        outputs,
+        job_dir,
+        svg_structure=struct,
+        svg_structural_codes=structural_codes,
+        expected_png_size=expected_png_size,
+    )
+    result["artifacts"] = artifacts
+    downloadable = downloadable_formats(artifacts)
+    result["downloadable_formats"] = downloadable
+    result["valid_formats"] = downloadable
 
-    try:
-        from app.final_artifact_evaluator import evaluate_final_svg  # noqa: PLC0415
-        rep = evaluate_final_svg(
-            svg_path, source_rgb, source_alpha=source_alpha,
-            image_class=_MODE_IMAGE_CLASS.get(mode_used, "clean_logo"))
-        result["verdict"] = rep.verdict
-        result["hard_fails"] = rep.hard_fails
-        result["soft_warnings"] = rep.soft_warnings
-        result["unmeasured_required"] = rep.unmeasured_required
-        result["final_svg_sha256"] = rep.sha256
-        struct = rep.metrics.get("A_structure", {})
-        edit = rep.metrics.get("H_editability", {})
+    svg_art = artifacts.get("svg", {})
+    if svg_art.get("sha256"):
+        if result["final_svg_sha256"] is None:
+            result["final_svg_sha256"] = svg_art["sha256"]
+        elif result["final_svg_sha256"] != svg_art["sha256"]:
+            result["verdict"] = "failed"
+            result["hard_fail_codes"] = list(dict.fromkeys(
+                result["hard_fail_codes"] + ["final_svg_hash_mismatch"]
+            ))
+            result["hard_fails"] = result["hard_fails"] + [
+                "Evaluator SHA ile artifact ham-byte SHA uyuşmuyor"
+            ]
+            svg_art["structural_safe"] = False
+            if "svg" in result["downloadable_formats"]:
+                result["downloadable_formats"].remove("svg")
+                result["valid_formats"].remove("svg")
+
+    if struct:
         result["exact_metrics"] = {
-            "path_count": struct.get("path_count"),
-            "node_count": struct.get("node_count"),
-            "gradient_count": struct.get("gradient_count"),
-            "byte_size": len(data),
-            "nodes_per_path": edit.get("nodes_per_path"),
+            key: struct.get(key) for key in (
+                "path_count", "node_count", "linear_gradient_count",
+                "radial_gradient_count", "mesh_gradient_count",
+                "gradient_definition_count", "gradient_reference_count",
+            )
         }
-        result["evaluator"] = rep.to_dict()
-    except Exception as e:  # noqa: BLE001 — evaluator asla isteği düşürmez
-        logger.warning("FinalArtifactEvaluator başarısız (needs_review): %s", e)
-        result["unmeasured_required"].append(f"evaluator hata: {e}")
-        result["verdict"] = "needs_review"
+        result["exact_metrics"]["gradient_count"] = struct.get("gradient_definition_count")
+        result["exact_metrics"]["byte_size"] = svg_art.get("byte_size")
+        result["exact_metrics"]["nodes_per_path"] = (
+            (evaluator.metrics.get("H_editability", {}) if evaluator else {})
+            .get("nodes_per_path")
+        )
+    result["quality_verdict"] = result["verdict"]
+    result["quality_failure_codes"] = list(result["hard_fail_codes"])
+    result["structural_safe"] = bool(
+        (result.get("artifacts", {}).get("svg") or {}).get("structural_safe")
+    )
     return result
 
 
@@ -560,25 +715,78 @@ def _merge_for_report(scored: list[dict[str, Any]], results: list[dict[str, Any]
 # /api/download/{job_id}/{file_type}
 # ---------------------------------------------------------------------------
 @app.get("/api/download/{job_id}/{file_type}", summary="Üretilen vektör dosyasını indir")
-async def download_file(job_id: str, file_type: str):
+async def download_file(
+    job_id: str,
+    file_type: str,
+    session: str | None = Cookie(default=None),
+):
+    user = _require_user(session)
     if file_type not in _MEDIA_TYPES:
         raise HTTPException(status_code=400, detail="Desteklenmeyen dosya formatı.")
 
-    # job_id güvenlik: sadece hex
-    if not job_id.isalnum():
+    if re.fullmatch(r"[0-9a-f]{32}", job_id) is None:
         raise HTTPException(status_code=400, detail="Geçersiz job_id.")
 
-    file_path = _job_dir(job_id) / f"{job_id}.{file_type}"
-    if not file_path.exists():
+    job_dir = _job_dir(job_id)
+    report_path = job_dir / "report.json"
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="İş raporu bulunamadı.") from None
+    except Exception:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "artifact_report_invalid", "message": "İş raporu doğrulanamadı."},
+        ) from None
+
+    owner_email = str((report.get("user") or {}).get("email") or "").lower()
+    caller_email = str(user.get("email") or "").lower()
+    if user.get("role") != "admin" and (not owner_email or owner_email != caller_email):
+        # Job varlığını başka kullanıcıya sızdırmayan tutarlı cevap.
+        raise HTTPException(status_code=404, detail="Dosya bulunamadı.")
+
+    final_artifact = report.get("final_artifact") or {}
+    downloadable = set(final_artifact.get("downloadable_formats") or [])
+    artifact = (final_artifact.get("artifacts") or {}).get(file_type) or {}
+    if file_type not in downloadable or not artifact.get("structural_safe"):
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "artifact_not_downloadable",
+                    "message": "Bu format yapısal doğrulamayı geçmedi."},
+        )
+
+    file_path = job_dir / f"{job_id}.{file_type}"
+    if not file_path.is_file():
         raise HTTPException(
             status_code=404,
             detail=f"'{file_type}' dosyası bu iş için üretilmedi (export başarısız olmuş olabilir).",
         )
 
-    return FileResponse(
-        file_path,
+    try:
+        response_bytes = file_path.read_bytes()
+        actual_sha = hashlib.sha256(response_bytes).hexdigest()
+    except OSError:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "artifact_read_failed", "message": "Artifact doğrulanamadı."},
+        ) from None
+    expected_sha = artifact.get("sha256")
+    if not expected_sha or not hmac.compare_digest(str(expected_sha), actual_sha):
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "artifact_hash_mismatch",
+                    "message": "Artifact rapordan sonra değişmiş; indirme engellendi."},
+        )
+
+    # Hash'lenen bayt dizisinin kendisini döndür: hash kontrolü ile FileResponse
+    # dosyayı daha sonra açarken oluşabilecek TOCTOU penceresi kalmaz.
+    return Response(
+        content=response_bytes,
         media_type=_MEDIA_TYPES[file_type],
-        filename=f"{job_id}.{file_type}",
+        headers={
+            "Content-Disposition": f'attachment; filename="{job_id}.{file_type}"',
+            "X-Content-Type-Options": "nosniff",
+        },
     )
 
 

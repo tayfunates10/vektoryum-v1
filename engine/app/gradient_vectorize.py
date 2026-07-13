@@ -74,13 +74,23 @@ def _edge_based_segments(rgb: np.ndarray) -> np.ndarray:
     _num, labels = cv2.connectedComponents(non_edge, connectivity=4)
     labels = labels.astype(np.int32)
 
-    # kenar bandını (etiket 0) komşu bölgelere yasla (iteratif dilate)
-    for _ in range(8):
-        zero = labels == 0
-        if not zero.any():
-            break
-        dil = cv2.dilate(labels.astype(np.float32), np.ones((3, 3), np.uint8))
-        labels = np.where(zero, dil.astype(np.int32), labels)
+    # Kenar bandını en yakın gerçek bölge TOHUMUNA yasla. Önceki ``dilate +
+    # max(label)`` yöntemi etiketi büyük olan tarafı her kenarda sistematik
+    # olarak 1px şişiriyordu (rounded-rect bbox 70..410 yerine 69..410);
+    # vektör ölçeklenince bu gerçek bir çerçeve/yarıçap hatasına dönüşüyordu.
+    # Distance-transform etiketi numerik öncelik kullanmaz ve iki taraftan eşit
+    # uzaklıkta geometrik Voronoi sınırı kurar.
+    edge_pixels = labels == 0
+    if edge_pixels.any() and (~edge_pixels).any():
+        _distance, nearest = cv2.distanceTransformWithLabels(
+            edge_pixels.astype(np.uint8),
+            cv2.DIST_L2,
+            5,
+            labelType=cv2.DIST_LABEL_PIXEL,
+        )
+        seed_to_region = np.zeros(int(nearest.max()) + 1, dtype=np.int32)
+        seed_to_region[nearest[~edge_pixels]] = labels[~edge_pixels]
+        labels[edge_pixels] = seed_to_region[nearest[edge_pixels]]
 
     return labels
 
@@ -146,9 +156,20 @@ def _fit_linear_gradient(
     x1, y1 = cx + dx * (t_min - t_c), cy + dy * (t_min - t_c)
     x2, y2 = cx + dx * (t_max - t_c), cy + dy * (t_max - t_c)
 
-    # eksen boyunca medyan renkten stop'lar
+    # Eksen uç renkleri: bölgenin tamamında doğrusal LSQ. Yalnız bin
+    # merkezlerine stop yazmak 0..ilk-merkez ve son-merkez..1 aralığında renk
+    # platosu oluşturuyordu. Gerçek 0/1 uç stopları bu banding'i kaldırır;
+    # ara medyan stoplar doğrusal olmayan yumuşak geçişleri korur.
+    line_a = np.stack([np.ones_like(t, dtype=np.float64), t.astype(np.float64)], axis=1)
+    line_coef, *_ = np.linalg.lstsq(line_a, colors.astype(np.float64), rcond=None)
+    endpoint_first = np.clip(line_coef[0] + line_coef[1] * t_min, 0, 255).astype(np.uint8)
+    endpoint_last = np.clip(line_coef[0] + line_coef[1] * t_max, 0, 255).astype(np.uint8)
+
+    # eksen boyunca medyan renkten ara stop'lar
     edges = np.linspace(t_min, t_max, _GRADIENT_STOPS + 1)
-    stops: list[tuple[float, tuple[int, int, int]]] = []
+    stops: list[tuple[float, tuple[int, int, int]]] = [
+        (0.0, tuple(int(v) for v in endpoint_first)),
+    ]
     for i in range(_GRADIENT_STOPS):
         sel = (t >= edges[i]) & (t <= edges[i + 1])
         if int(sel.sum()) < 3:
@@ -156,12 +177,13 @@ def _fit_linear_gradient(
         col = np.median(colors[sel], axis=0)
         offset = (0.5 * (edges[i] + edges[i + 1]) - t_min) / (t_max - t_min)
         stops.append((float(offset), (int(col[0]), int(col[1]), int(col[2]))))
+    stops.append((1.0, tuple(int(v) for v in endpoint_last)))
 
     if len(stops) < 2:
         return None
 
-    c_first = np.array(stops[0][1], dtype=np.float32)
-    c_last = np.array(stops[-1][1], dtype=np.float32)
+    c_first = endpoint_first.astype(np.float32)
+    c_last = endpoint_last.astype(np.float32)
     if float(np.linalg.norm(c_first - c_last)) < _GRADIENT_COLOR_DELTA:
         return None  # uçlar benzer -> düz bölge, gradyan değil
 
