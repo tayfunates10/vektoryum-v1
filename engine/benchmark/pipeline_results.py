@@ -11,8 +11,11 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+import numpy as np
 from PIL import Image
 
+from app.final_artifact_evaluator import evaluate_final_svg
+from app.source_truth import alpha_plane_metrics, render_svg_to_rgba
 from benchmark.manifest import BenchmarkCase, BenchmarkResult, REQUIRED_METRICS
 
 
@@ -51,6 +54,64 @@ def extract_metrics(
     return {name: metrics.get(name) for name in REQUIRED_METRICS}
 
 
+def _white_composite(rgba: Image.Image) -> np.ndarray:
+    background = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
+    background.alpha_composite(rgba)
+    return np.asarray(background.convert("RGB"), dtype=np.uint8).copy()
+
+
+def _exact_winner_metrics(
+    output: dict[str, Any],
+    source_rgba: Image.Image,
+    *,
+    elapsed_ms: float,
+    peak_rss_mb: float | None,
+) -> tuple[dict[str, float | int | None], str | None]:
+    best = output.get("best") or {}
+    raw_path = best.get("svg_path")
+    if not raw_path:
+        return extract_metrics(output, elapsed_ms=elapsed_ms, peak_rss_mb=peak_rss_mb), None
+
+    svg_path = Path(raw_path)
+    if not svg_path.is_file():
+        return extract_metrics(output, elapsed_ms=elapsed_ms, peak_rss_mb=peak_rss_mb), None
+
+    rgba = np.asarray(source_rgba, dtype=np.uint8).copy()
+    source_rgb = _white_composite(source_rgba)
+    source_alpha = rgba[:, :, 3]
+    report = evaluate_final_svg(
+        svg_path,
+        source_rgb,
+        source_alpha=source_alpha,
+        image_class="clean_logo",
+        required_metrics={"alpha_fidelity"},
+    )
+    exact = report.metrics
+    visual = exact.get("B_visual") or {}
+    color = exact.get("C_color") or {}
+    edge = exact.get("D_edge_geometry") or {}
+    editability = exact.get("H_editability") or {}
+    gradient_alpha = exact.get("G_gradient_alpha") or {}
+
+    rendered_rgba = render_svg_to_rgba(svg_path, source_rgba.width, source_rgba.height)
+    alpha_iou: float | None = gradient_alpha.get("alpha_iou")
+    if alpha_iou is None and rendered_rgba is not None:
+        alpha_iou = alpha_plane_metrics(source_alpha, rendered_rgba[:, :, 3])["alpha_iou"]
+
+    metrics: dict[str, float | int | None] = {
+        "fidelity": best.get("fidelity_score"),
+        "ssim": visual.get("ms_ssim") if visual.get("ms_ssim") is not None else visual.get("ssim"),
+        "edge_f1": edge.get("edge_f1_1px"),
+        "alpha_iou": alpha_iou,
+        "delta_e00": color.get("de00_mean"),
+        "path_count": editability.get("path_count"),
+        "svg_bytes": svg_path.stat().st_size,
+        "render_ms": round(float(elapsed_ms), 6),
+        "peak_rss_mb": None if peak_rss_mb is None else round(float(peak_rss_mb), 6),
+    }
+    return {name: metrics.get(name) for name in REQUIRED_METRICS}, report.sha256
+
+
 def run_case(
     case: BenchmarkCase,
     *,
@@ -76,12 +137,18 @@ def run_case(
         started = time.perf_counter()
         output = pipeline(image, source, trace_mode, job_dir)
         elapsed_ms = (time.perf_counter() - started) * 1000.0
+        metrics, exact_sha = _exact_winner_metrics(
+            output,
+            image,
+            elapsed_ms=elapsed_ms,
+            peak_rss_mb=peak_rss_mb,
+        )
 
-    artifact_sha = output.get("final_svg_sha256") or _get(output, "final_artifact", "final_svg_sha256")
+    artifact_sha = exact_sha or output.get("final_svg_sha256") or _get(output, "final_artifact", "final_svg_sha256")
     return BenchmarkResult(
         case_id=case.case_id,
         engine_version=engine_version,
-        metrics=extract_metrics(output, elapsed_ms=elapsed_ms, peak_rss_mb=peak_rss_mb),
+        metrics=metrics,
         artifact_sha256=artifact_sha,
     )
 
