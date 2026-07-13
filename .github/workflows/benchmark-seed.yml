@@ -58,6 +58,7 @@ jobs:
           test_benchmark_pipeline_smoke.py
           test_benchmark_release_gate.py
           test_benchmark_release_gate_cli.py
+          test_benchmark_quality_report.py
       - name: Download previous successful seed artifact
         shell: bash
         run: |
@@ -69,8 +70,13 @@ jobs:
           fi
       - name: Generate deterministic seed corpus and reports
         run: python -m benchmark.seed_runner --output benchmark_artifacts
-      - name: Run two-case real pipeline smoke benchmark
+      - name: Run eight-category real pipeline benchmark
         run: python -m benchmark.pipeline_smoke --output benchmark_artifacts/pipeline --engine-version "${GITHUB_SHA}"
+      - name: Generate category quality summary
+        run: >-
+          python -m benchmark.quality_report
+          --results benchmark_artifacts/pipeline/pipeline_results.json
+          --output benchmark_artifacts/pipeline
       - name: Generate artifact history delta
         shell: bash
         run: |
