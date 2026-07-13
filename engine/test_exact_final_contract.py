@@ -107,8 +107,15 @@ def test_alpha_and_photo_cannot_be_false_ready() -> None:
     alpha = np.tile(np.arange(16, dtype=np.uint8) * 17, (16, 1))
     alpha_rep = evaluate_final_svg_bytes(raw, src, source_alpha=alpha)
     photo_rep = evaluate_final_svg_bytes(raw, src, image_class="photo")
-    assert alpha_rep.verdict != "production_ready"
-    assert "alpha_fidelity" in alpha_rep.unmeasured_required
+    assert alpha_rep.verdict == "failed"
+    alpha_metrics = alpha_rep.metrics["G_gradient_alpha"]
+    assert alpha_metrics["source_has_alpha"] is True
+    assert alpha_metrics["alpha_fidelity_status"] == "failed"
+    assert "alpha_iou" in alpha_metrics and "alpha_mae" in alpha_metrics
+    assert set(alpha_rep.hard_fail_codes) & {
+        "alpha_iou_below_min", "alpha_mae_above_max",
+        "alpha_black_ssim_below_min", "alpha_checker_ssim_below_min",
+    }
     assert photo_rep.verdict != "production_ready"
     assert "photo_vector_fidelity" in photo_rep.unmeasured_required
 
@@ -125,9 +132,7 @@ def _write_job(root: Path, job_id: str, *, owner: str = "owner@example.com") -> 
         "user": {"email": owner},
         "final_artifact": {
             "downloadable_formats": ["svg"],
-            "artifacts": {
-                "svg": {"sha256": sha, "structural_safe": True},
-            },
+            "artifacts": {"svg": {"sha256": sha, "structural_safe": True}},
         },
     }
     (job_dir / "report.json").write_text(json.dumps(report), encoding="utf-8")
@@ -156,20 +161,15 @@ def test_download_gate_enforces_session_owner_format_and_hash(
     monkeypatch.setattr(main, "_require_user", require_user)
     client = TestClient(main.app)
     url = f"/api/download/{job_id}/svg"
-
     assert client.get(url).status_code == 401
     assert client.get(url, cookies={"session": "other"}).status_code == 404
     owner = client.get(url, cookies={"session": "owner"})
     assert owner.status_code == 200
     assert hashlib.sha256(owner.content).hexdigest() == sha
     assert client.get(url, cookies={"session": "admin"}).status_code == 200
-
-    # Rapor linkini gizlemek değil, route seviyesinde format gate.
     pdf = client.get(f"/api/download/{job_id}/pdf", cookies={"session": "owner"})
     assert pdf.status_code == 409
     assert pdf.json()["detail"]["code"] == "artifact_not_downloadable"
-
-    # Değerlendirme sonrası byte mutasyonu hash zincirini kırar ve indirmez.
     svg_path.write_bytes(svg_path.read_bytes() + b"\n")
     changed = client.get(url, cookies={"session": "owner"})
     assert changed.status_code == 409
@@ -182,10 +182,7 @@ def test_download_gate_fails_closed_on_missing_or_bad_report(
     import app.main as main
 
     monkeypatch.setattr(main, "JOBS_ROOT", tmp_path)
-    monkeypatch.setattr(
-        main, "_require_user",
-        lambda _session: {"email": "owner@example.com", "role": "user"},
-    )
+    monkeypatch.setattr(main, "_require_user", lambda _session: {"email": "owner@example.com", "role": "user"})
     client = TestClient(main.app)
     job_id = "b" * 32
     assert client.get(f"/api/download/{job_id}/svg", cookies={"session": "owner"}).status_code == 404
