@@ -41,8 +41,32 @@ def _has_transparency(img: Image.Image) -> bool:
     return img.mode in ("RGBA", "LA", "PA") or (img.mode == "P" and "transparency" in img.info)
 
 
-def _normalized_rgba_sha(img: Image.Image) -> str:
+def _canonicalize_transparent_rgb(img: Image.Image) -> tuple[Image.Image, bool]:
+    """Zero hidden RGB where alpha is exactly zero.
+
+    Fully transparent RGB values are visually undefined, but keeping arbitrary
+    encoder residue makes normalized hashes and later color statistics depend on
+    invisible data. Canonicalization makes equivalent transparent inputs share
+    one source truth without touching partially transparent edge colors.
+    """
+    if "A" not in img.getbands():
+        return img, False
+
     rgba = img.convert("RGBA")
+    alpha = rgba.getchannel("A")
+    transparent = alpha.point(lambda value: 255 if value == 0 else 0, mode="L")
+    if transparent.getbbox() is None:
+        return rgba, img.mode != "RGBA"
+
+    canonical = rgba.copy()
+    zero_rgb = Image.new("RGB", rgba.size, (0, 0, 0))
+    canonical.paste(zero_rgb, mask=transparent)
+    canonical.putalpha(alpha)
+    return canonical, True
+
+
+def _normalized_rgba_sha(img: Image.Image) -> str:
+    rgba, _changed = _canonicalize_transparent_rgb(img.convert("RGBA"))
     payload = rgba.width.to_bytes(8, "big") + rgba.height.to_bytes(8, "big") + rgba.tobytes()
     return hashlib.sha256(payload).hexdigest()
 
@@ -157,6 +181,12 @@ def validate_and_load(
         img = img.convert("RGB")
         color_changed = True
 
+    transparent_rgb_changed = False
+    if source_has_alpha:
+        img, transparent_rgb_changed = _canonicalize_transparent_rgb(img)
+        if transparent_rgb_changed:
+            warnings.append("transparent_rgb_canonicalized")
+
     raw_sha = hashlib.sha256(contents).hexdigest()
     normalized_rgba_sha = _normalized_rgba_sha(img)
     return LoadedImage(
@@ -166,7 +196,7 @@ def validate_and_load(
         sha256=raw_sha,
         width=img.width,
         height=img.height,
-        normalized=bool(exif_changed or color_changed),
+        normalized=bool(exif_changed or color_changed or transparent_rgb_changed),
         safe_suffix=_SAFE_SUFFIX.get(fmt, ".png"),
         normalized_rgba_sha256=normalized_rgba_sha,
         color_profile_status=profile_status,
