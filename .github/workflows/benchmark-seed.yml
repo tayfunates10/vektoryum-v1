@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: benchmark-v1-seed
@@ -22,6 +23,7 @@ jobs:
     env:
       PYTHONHASHSEED: "0"
       VEKTORYUM_WORKERS: "1"
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -32,13 +34,36 @@ jobs:
       - name: Install Python dependencies
         run: python -m pip install -r requirements.txt pytest
       - name: Validate benchmark contracts
-        run: python -m pytest -q test_benchmark_manifest.py test_benchmark_seed_runner.py
+        run: >-
+          python -m pytest -q
+          test_benchmark_manifest.py
+          test_benchmark_seed_runner.py
+          test_benchmark_compare.py
+          test_benchmark_artifact_history.py
+      - name: Download previous successful seed artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          previous_run_id="$(gh run list --workflow benchmark-seed.yml --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
+          if [ -n "$previous_run_id" ]; then
+            mkdir -p baseline_artifact
+            gh run download "$previous_run_id" --name benchmark-v1-seed --dir baseline_artifact || true
+          fi
       - name: Generate deterministic seed corpus and reports
         run: python -m benchmark.seed_runner --output benchmark_artifacts
+      - name: Generate artifact history delta
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(--current benchmark_artifacts/seed_manifest.json --output benchmark_artifacts)
+          if [ -f baseline_artifact/seed_manifest.json ]; then
+            args+=(--baseline baseline_artifact/seed_manifest.json)
+          fi
+          python -m benchmark.artifact_history "${args[@]}"
       - name: Upload JSON HTML and fixtures
         uses: actions/upload-artifact@v4
         with:
-          name: benchmark-v1-seed-${{ github.run_number }}
+          name: benchmark-v1-seed
           path: engine/benchmark_artifacts
           if-no-files-found: error
           retention-days: 30
