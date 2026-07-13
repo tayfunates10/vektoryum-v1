@@ -1,6 +1,7 @@
 """Fail-closed release gate for benchmark result artifacts."""
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 from typing import Any
@@ -61,3 +62,26 @@ def evaluate_release_gate(
 
 def write_gate_report(path: Path, report: dict[str, Any]) -> None:
     path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--current", required=True, type=Path)
+    parser.add_argument("--baseline", type=Path)
+    parser.add_argument("--output", required=True, type=Path)
+    args = parser.parse_args()
+
+    current = json.loads(args.current.read_text(encoding="utf-8"))
+    baseline = None
+    if args.baseline is not None and args.baseline.exists():
+        baseline = json.loads(args.baseline.read_text(encoding="utf-8"))
+
+    report = evaluate_release_gate(current, baseline)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    write_gate_report(args.output, report)
+    print(json.dumps(report, sort_keys=True))
+    return 0 if report["status"] in {"pass", "bootstrap"} else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -71,7 +71,7 @@ jobs:
       - name: Benchmark v1 scheduled pipeline smoke contract
         run: python -m pytest -q test_benchmark_pipeline_smoke.py
       - name: Benchmark v1 fail-closed release gate
-        run: python -m pytest -q test_benchmark_release_gate.py
+        run: python -m pytest -q test_benchmark_release_gate.py test_benchmark_release_gate_cli.py
 
   pipeline-integration:
     runs-on: ubuntu-latest

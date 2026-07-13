@@ -44,6 +44,8 @@ jobs:
           test_benchmark_artifact_history.py
           test_benchmark_pipeline_results.py
           test_benchmark_pipeline_smoke.py
+          test_benchmark_release_gate.py
+          test_benchmark_release_gate_cli.py
       - name: Download previous successful seed artifact
         shell: bash
         run: |
@@ -66,6 +68,15 @@ jobs:
             args+=(--baseline baseline_artifact/seed_manifest.json)
           fi
           python -m benchmark.artifact_history "${args[@]}"
+      - name: Evaluate fail-closed pipeline release gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(--current benchmark_artifacts/pipeline/pipeline_results.json --output benchmark_artifacts/pipeline/release_gate.json)
+          if [ -f baseline_artifact/pipeline/pipeline_results.json ]; then
+            args+=(--baseline baseline_artifact/pipeline/pipeline_results.json)
+          fi
+          python -m benchmark.release_gate "${args[@]}"
       - name: Upload JSON HTML fixtures and real pipeline results
         uses: actions/upload-artifact@v4
         with:
