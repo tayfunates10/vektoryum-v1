@@ -59,3 +59,50 @@ def test_icc_conversion_preserves_alpha_plane() -> None:
     assert loaded.has_alpha is True
     assert loaded.image.mode == "RGBA"
     assert list(loaded.image.getchannel("A").getdata()) == list(image.getchannel("A").getdata())
+
+
+def _png_bytes(image: Image.Image) -> bytes:
+    payload = io.BytesIO()
+    image.save(payload, "PNG")
+    return payload.getvalue()
+
+
+def test_fully_transparent_rgb_is_canonicalized_without_touching_soft_edges() -> None:
+    from app.input_guard import validate_and_load
+
+    image = Image.new("RGBA", (3, 1))
+    image.putdata([
+        (255, 0, 200, 0),
+        (20, 160, 240, 128),
+        (227, 0, 11, 255),
+    ])
+    loaded = validate_and_load(_png_bytes(image))
+
+    assert loaded.image.getpixel((0, 0)) == (0, 0, 0, 0)
+    assert loaded.image.getpixel((1, 0)) == (20, 160, 240, 128)
+    assert loaded.image.getpixel((2, 0)) == (227, 0, 11, 255)
+    assert "transparent_rgb_canonicalized" in loaded.normalization_warnings
+    assert loaded.normalized is True
+
+
+def test_invisible_rgb_variants_share_one_normalized_source_hash() -> None:
+    from app.input_guard import validate_and_load
+
+    first = Image.new("RGBA", (4, 2), (0, 0, 0, 0))
+    second = Image.new("RGBA", (4, 2), (173, 91, 244, 0))
+    first.putpixel((1, 1), (40, 120, 220, 128))
+    second.putpixel((1, 1), (40, 120, 220, 128))
+
+    a = validate_and_load(_png_bytes(first))
+    b = validate_and_load(_png_bytes(second))
+
+    assert a.sha256 != b.sha256
+    assert a.normalized_rgba_sha256 == b.normalized_rgba_sha256
+    assert a.image.tobytes() == b.image.tobytes()
+
+
+def test_opaque_rgb_input_is_not_reported_as_transparent_canonicalization() -> None:
+    from app.input_guard import validate_and_load
+
+    loaded = validate_and_load(_png_bytes(Image.new("RGB", (5, 5), (10, 20, 30))))
+    assert "transparent_rgb_canonicalized" not in loaded.normalization_warnings
