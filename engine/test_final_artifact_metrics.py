@@ -19,14 +19,13 @@ import numpy as np
 ENGINE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(ENGINE_DIR))
 
-FAILS: list[str] = []
 PAL2 = np.array([[255, 255, 255], [227, 0, 11]], np.uint8)
 
 
 def check(cond: bool, msg: str) -> None:
     print(("  [PASS] " if cond else "  [FAIL] ") + msg)
     if not cond:
-        FAILS.append(msg)
+        raise AssertionError(msg)
 
 
 def _svg(body: str, w=200, h=200) -> str:
@@ -87,7 +86,7 @@ def test_embedded_raster_veto() -> None:
     rep = _eval(_svg('<rect width="200" height="200" fill="#ffffff"/>'
                      '<rect x="40" y="40" width="120" height="120" fill="#e3000b"/>'
                      '<image href="data:image/png;base64,iVBORw0KGgo=" width="1" height="1"/>'), src)
-    check(rep.verdict == "fail", f"gömülü raster fail ({rep.verdict})")
+    check(rep.verdict == "failed", f"gömülü raster failed ({rep.verdict})")
     check(any("raster" in f for f in rep.hard_fails), "raster hard-fail gerekçesi")
 
 
@@ -97,7 +96,7 @@ def test_script_veto() -> None:
     rep = _eval(_svg('<rect width="200" height="200" fill="#ffffff"/>'
                      '<rect x="40" y="40" width="120" height="120" fill="#e3000b"/>'
                      '<script>alert(1)</script>'), src)
-    check(rep.verdict == "fail", f"script fail ({rep.verdict})")
+    check(rep.verdict == "failed", f"script failed ({rep.verdict})")
 
 
 def test_nonfinite_veto() -> None:
@@ -105,7 +104,7 @@ def test_nonfinite_veto() -> None:
     src = _square_src()
     rep = _eval(_svg('<rect width="200" height="200" fill="#ffffff"/>'
                      '<path d="M40 40 L NaN 40 L160 160 Z" fill="#e3000b"/>'), src)
-    check(rep.verdict == "fail", f"NaN fail ({rep.verdict})")
+    check(rep.verdict == "failed", f"NaN failed ({rep.verdict})")
     check(any("finite" in f.lower() or "nan" in f.lower() for f in rep.hard_fails),
           "non-finite gerekçesi")
 
@@ -117,7 +116,7 @@ def test_topology_mismatch_veto() -> None:
     rep = _eval(_svg('<rect width="200" height="200" fill="#ffffff"/>'
                      '<rect x="40" y="40" width="120" height="120" fill="#e3000b"/>'), src,
                 image_class="clean_logo")
-    check(rep.verdict == "fail", f"delik kaybı fail ({rep.verdict})")
+    check(rep.verdict == "failed", f"delik kaybı failed ({rep.verdict})")
     check(rep.metrics["E_topology"]["hole_delta"] >= 1, "delik farkı tespit edildi")
     check(any("delik" in f or "topoloji" in f for f in rep.hard_fails), "topoloji gerekçesi")
 
@@ -158,7 +157,8 @@ def test_deterministic_hash() -> None:
     r1 = evaluate_final_svg(p, src, palette_rgb=PAL2)
     r2 = evaluate_final_svg(p, src, palette_rgb=PAL2)
     check(r1.sha256 == r2.sha256, "iki değerlendirme aynı sha256")
-    check(r1.deterministic, "byte-kararlı işaretlendi")
+    check(r1.byte_read_stable, "tek artifact okuması byte-kararlı")
+    check(r1.deterministic is None, "iki bağımsız pipeline olmadan deterministic iddiası yok")
     import hashlib
     check(r1.sha256 == hashlib.sha256(p.read_bytes()).hexdigest(),
           "sha256 KESİN dosya baytlarının (stale değil)")
@@ -201,7 +201,7 @@ def test_seam_gap_veto() -> None:
                      '<rect x="103" y="40" width="57" height="120" fill="#e3000b"/>'), src)
     sr = rep.metrics["G_gradient_alpha"]["seam_ratio"]
     check(sr > 0.002, f"seam oranı tespit edildi ({sr:.4f})")
-    check(rep.verdict == "fail", f"ağır seam fail ({rep.verdict})")
+    check(rep.verdict == "failed", f"ağır seam failed ({rep.verdict})")
 
 
 def main() -> int:
@@ -217,11 +217,6 @@ def main() -> int:
     test_highres_semantic_topology_no_false_veto()
     test_seam_gap_veto()
     print("=" * 60)
-    if FAILS:
-        print(f"SONUC: {len(FAILS)} KONTROL BASARISIZ")
-        for m in FAILS:
-            print(" -", m)
-        return 1
     print("SONUC: tum kontroller gecti")
     return 0
 

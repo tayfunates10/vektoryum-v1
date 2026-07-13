@@ -53,6 +53,13 @@ CANONICAL_BWR = [(0, 0, 0), (255, 255, 255), (255, 0, 0)]
 # Geometrik şekil oturtma (line+arc fitting) uygulanan profiller
 REGULARIZE_MODES = {"geometric_logo", "minimal_ai", "flat_logo", "single_color"}
 
+_JOURNAL_IMAGE_CLASS = {
+    "logo_color": "clean_logo", "flat_logo": "clean_logo",
+    "geometric_logo": "geometric", "minimal_ai": "clean_logo",
+    "single_color": "geometric", "lineart": "lineart", "centerline": "lineart",
+    "photo_poster": "photo",
+}
+
 
 # ---------------------------------------------------------------------------
 # Mod uyarıları
@@ -286,6 +293,21 @@ def _adapt_spec_for_thin_strokes(spec: dict[str, Any], preprocessed_path: Path) 
     return {**spec, "vtracer_params": {**params, "filter_speckle": 0}}
 
 
+def _journal_source_rgb(image_path: Path) -> np.ndarray:
+    """Stage gate referansını güvenli biçimde beyaz zemine kompoze eder."""
+    with Image.open(image_path) as source:
+        if source.mode in ("RGBA", "LA", "PA") or (
+            source.mode == "P" and "transparency" in source.info
+        ):
+            rgba = np.asarray(source.convert("RGBA"), dtype=np.uint8)
+            alpha = rgba[:, :, 3:4].astype(np.float32) / 255.0
+            return np.clip(
+                rgba[:, :, :3].astype(np.float32) * alpha + 255.0 * (1.0 - alpha),
+                0, 255,
+            ).astype(np.uint8)
+        return np.asarray(source.convert("RGB"), dtype=np.uint8).copy()
+
+
 # ---------------------------------------------------------------------------
 # Tek aday üretimi + skorlama (ana döngü ve refinement ortak kullanır)
 # ---------------------------------------------------------------------------
@@ -309,9 +331,38 @@ def produce_candidate(
     try:
         spec = _adapt_spec_for_thin_strokes(spec, preprocessed_path)
         run_candidate(engine, preprocessed_path, svg_path, spec, original_path=original_path)
+        from app.transform_journal import TransformJournal  # noqa: PLC0415
+
+        candidate_source_rgb = _journal_source_rgb(preprocessed_path)
+        candidate_journal = TransformJournal(
+            svg_path, candidate_source_rgb,
+            image_class=_JOURNAL_IMAGE_CLASS.get(mode, "clean_logo"),
+            max_side=256,
+        )
+        # VTracer bazı çıktılarda yalnız width/height + translate üretir;
+        # viewBox yokken sonraki mutator'ları yapısal olarak ölçmek mümkün
+        # değildir. İlk transaction bu engine artifact'ını trace raster'ının
+        # koordinat uzayına normalize eder; başarısızsa raw parent korunur.
+        candidate_journal.run_in_place(
+            "establish_coordinate_contract", svg_path,
+            lambda path: _restore_source_dimensions(
+                path,
+                {"width": candidate_source_rgb.shape[1],
+                 "height": candidate_source_rgb.shape[0]},
+            ),
+        )
         cleanup_report: dict[str, Any] = {}
         if spec.get("cleanup"):
-            cleanup_report = cleanup_svg_geometry(svg_path, mode=mode, aggressiveness=spec["cleanup"])
+            _ok, cleanup_value, cleanup_stage = candidate_journal.run_in_place(
+                "geometry_cleanup", svg_path,
+                lambda path: cleanup_svg_geometry(
+                    path, mode=mode, aggressiveness=spec["cleanup"],
+                ),
+            )
+            cleanup_report = cleanup_value or {
+                "status": cleanup_stage["status"],
+                "journal_reasons": cleanup_stage["reason_codes"],
+            }
         # palet konsolidasyonu: kenar ara-ton renklerini en baskın renklere indir.
         # Gradyan adayında ATLA — gradyan stop'larını/url() fill'lerini bozar.
         # FOTO-YOĞUN izleme çıktısında da ATLA (fidelity-led modlar, >700 path):
@@ -331,20 +382,32 @@ def produce_candidate(
                 # RGB adımlıdır; varsayılan merge_tol=12 bunları birbirine
                 # yapıştırıp detayı düzleştirir -> daha sıkı tolerans
                 merge_tol = 6.0 if (mode == "logo_color" and cap >= 40) else 12.0
-                consolidate_svg_palette(svg_path, max_colors=cap, canonical=canonical, merge_tol=merge_tol)
+                candidate_journal.run_in_place(
+                    "palette_consolidation", svg_path,
+                    lambda path: consolidate_svg_palette(
+                        path, max_colors=cap, canonical=canonical, merge_tol=merge_tol,
+                    ),
+                )
         # geometrik idealleştirme: düz çizgi + tam dairesel yay oturtma
         # (bütünsel şekil oturtma dahil — regularize önce tam şekli dener)
         if mode in REGULARIZE_MODES:
             try:
-                regularize_svg_geometry(svg_path)
+                candidate_journal.run_in_place(
+                    "geometry_regularization", svg_path, regularize_svg_geometry,
+                )
             except Exception as reg_err:  # noqa: BLE001
                 logger.debug("regularize atlandı (%s): %s", name, reg_err)
-        elif engine == "vtracer":
+        elif engine in {"vtracer", "gradient"}:
             # renkli modlarda yalnız BÜTÜNSEL şekil oturtma: organik path'lere
             # dokunulmaz, gerçekten daire/elips/dikdörtgen olan alt yollar
-            # ideal parametrik şekle döner (çift yönlü sapma toleransı sıkı)
+            # ideal parametrik şekle döner (çift yönlü sapma toleransı sıkı).
+            # Gradient motoru konturu polygon olarak çıkarır; fill url(#...)
+            # korunurken roundrect/circle sınırını analitik eğriye oturtmak
+            # görünür köşe kırıklarını giderir.
             try:
-                fit_whole_shapes_svg(svg_path)
+                candidate_journal.run_in_place(
+                    "whole_shape_fitting", svg_path, fit_whole_shapes_svg,
+                )
             except Exception as ws_err:  # noqa: BLE001
                 logger.debug("whole-shape fitting atlandı (%s): %s", name, ws_err)
         # eğri pürüzsüzleştirme (tangent matching): spline eklemlerindeki küçük
@@ -352,7 +415,9 @@ def produce_candidate(
         # Gradyan adayı atlanır (tek path, el-yapımı geometri).
         if engine == "vtracer":
             try:
-                fair_svg_curves(svg_path)
+                candidate_journal.run_in_place(
+                    "curve_fairing", svg_path, fair_svg_curves,
+                )
             except Exception as fair_err:  # noqa: BLE001
                 logger.debug("curve fairing atlandı (%s): %s", name, fair_err)
         return {
@@ -360,6 +425,7 @@ def produce_candidate(
             "svg_path": svg_path,
             "engine": spec["engine"],
             "cleanup_report": cleanup_report,
+            "candidate_transform_journal": candidate_journal.to_dict(),
             "success": True,
             "error": None,
         }
@@ -746,11 +812,47 @@ def _refit_one(
     if not rep.get("changed"):
         return None
 
+    from app.transform_journal import TransformJournal, merge_journal_reports  # noqa: PLC0415
+
+    required_metrics: set[str] = set()
+    try:
+        with Image.open(original_path) as original_image:
+            if original_image.mode in ("RGBA", "LA", "PA") or (
+                original_image.mode == "P" and "transparency" in original_image.info
+            ):
+                required_metrics.add("alpha_fidelity")
+    except Exception:  # noqa: BLE001
+        # Source okunamıyorsa aşağıdaki journal ölçümü zaten fail-closed olur.
+        pass
+    if analysis.get("has_gradient"):
+        required_metrics.add("gradient_fidelity")
+    try:
+        refit_journal = TransformJournal(
+            src, _journal_source_rgb(original_path),
+            image_class=_JOURNAL_IMAGE_CLASS.get(mode, "clean_logo"),
+            required_metrics=required_metrics,
+        )
+        accepted_path, refit_stage = refit_journal.consider_candidate(
+            "color_refit", src, dst, transform_report=rep,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.debug("color refit journal kurulamadı (%s): %s", cand["name"], e)
+        return None
+    if accepted_path != dst:
+        logger.debug(
+            "color refit journal tarafından geri alındı (%s): %s",
+            cand["name"], refit_stage["reason_codes"],
+        )
+        return None
+
     res = {
         "name": f"{cand['name']}_refit",
         "svg_path": dst,
         "engine": cand.get("engine"),
         "cleanup_report": cand.get("cleanup_report", {}),
+        "candidate_transform_journal": merge_journal_reports(
+            cand.get("candidate_transform_journal"), refit_journal.to_dict(),
+        ),
         "success": True,
         "error": None,
     }
@@ -1053,6 +1155,7 @@ def run_pipeline(
     selection_reason = "no_candidate"
     refine_info: dict[str, Any] = {"applied": False}
     refit_info: dict[str, Any] = {"applied": False}
+    transform_journal = None
     if scored:
         # 6. + 7. Seçim (fidelity-led; refinement'ı tohumlar)
         best, raw_best, selection_reason = select_best(scored, mode_used)
@@ -1103,16 +1206,77 @@ def run_pipeline(
                 refit_info = {"applied": True, **rep, "candidate": sc["name"]}
                 if not selection_reason.endswith("+color_refit"):
                     selection_reason = f"{selection_reason}+color_refit"
+        # Seçilmiş artifact'tan sonraki bütün production mutasyonları artık
+        # ham-byte transaction journal'ı üzerinden kabul/rollback edilir.
+        from app.transform_journal import TransformJournal  # noqa: PLC0415
+
+        if image.mode in ("RGBA", "LA", "PA") or (
+            image.mode == "P" and "transparency" in image.info
+        ):
+            rgba = np.asarray(image.convert("RGBA"))
+            alpha = rgba[:, :, 3].astype(np.float32)[:, :, None] / 255.0
+            journal_source_rgb = np.clip(
+                rgba[:, :, :3].astype(np.float32) * alpha + 255.0 * (1.0 - alpha),
+                0, 255,
+            ).astype(np.uint8)
+            journal_required = {"alpha_fidelity"}
+        else:
+            journal_source_rgb = np.asarray(image.convert("RGB"))
+            journal_required = set()
+        if analysis.get("has_gradient"):
+            journal_required.add("gradient_fidelity")
+        journal = TransformJournal(
+            Path(best["svg_path"]), journal_source_rgb,
+            image_class=_JOURNAL_IMAGE_CLASS.get(mode_used, "clean_logo"),
+            required_metrics=journal_required,
+        )
+        selected_candidate_history = best.get("candidate_transform_journal")
+
+        # Kaynak koordinat sözleşmesi bütün opsiyonel refit'lerden ÖNCE
+        # kurulur. Böylece viewBox/transform bağımlı aşamalar geçerli source
+        # uzayında çalışır ve pahalı bir refit sonraki zorunlu normalizasyonu
+        # bütçe nedeniyle aç bırakamaz.
+        _accepted, restore_rep, restore_stage = journal.run_in_place(
+            "restore_source_dimensions",
+            Path(best["svg_path"]),
+            lambda path: (_restore_source_dimensions(path, analysis)
+                          or {"attempted": True}),
+        )
+        refit_info = {**refit_info, "restore_source_dimensions": {
+            **(restore_rep or {}),
+            "journal_status": restore_stage["status"],
+            "journal_reasons": restore_stage["reason_codes"],
+        }}
+
         # 9.6 Sınır refit'i (alt-piksel kenar oturtma): kazananın çapaları
         # orijinaldeki AA rampasının kodladığı gerçek kenar konumlarına LSQ ile
         # çekilir (ölçüm korumalı). Renk refit'ten kalan kaybın ana bileşeni
         # yerel yarım-piksel sınır sapmasıdır (faz-korelasyon ölçümü global
         # kaymayı ekarte etti).
-        best, bnd_info = _apply_boundary_refit(
-            best, mode_used, analysis, original_path, job_dir, scored
+        pre_bnd_best = best
+        bnd_candidate, bnd_info = _apply_boundary_refit(
+            pre_bnd_best, mode_used, analysis, original_path, job_dir, scored
         )
-        if bnd_info.get("applied"):
-            selection_reason = f"{selection_reason}+boundary_refit"
+        if bnd_candidate is not pre_bnd_best and Path(bnd_candidate["svg_path"]) != Path(pre_bnd_best["svg_path"]):
+            accepted_path, bnd_stage = journal.consider_candidate(
+                "boundary_refit", Path(pre_bnd_best["svg_path"]),
+                Path(bnd_candidate["svg_path"]), transform_report=bnd_info,
+            )
+            if accepted_path == Path(bnd_candidate["svg_path"]):
+                best = bnd_candidate
+                selection_reason = f"{selection_reason}+boundary_refit"
+            else:
+                best = pre_bnd_best
+                bnd_info = {**bnd_info, "applied": False,
+                            "journal_status": bnd_stage["status"],
+                            "journal_reasons": bnd_stage["reason_codes"]}
+        else:
+            best = pre_bnd_best
+            journal.record_noop(
+                "boundary_refit", Path(pre_bnd_best["svg_path"]),
+                reason_codes=["boundary_refit_not_applied"],
+                transform_report=bnd_info,
+            )
         refit_info = {**refit_info, "boundary": bnd_info}
         # 9.7 Kenar temizleme (VARSAYILAN AÇIK): kontur yumuşatma + Schneider
         # eğri basitleştirme + ada-yutma. Her adım ÖLÇÜM KORUMALI (tolerans
@@ -1141,10 +1305,25 @@ def run_pipeline(
                 # istatistikleri (path/düğüm sayısı) temiz dosyadan günceller.
                 cleaned = {**best, "svg_path": ec_dst}
                 rescored = score_candidate(cleaned, original_path, analysis, mode_used)
-                best = rescored if rescored is not None else {**best, "svg_path": ec_dst}
-                selection_reason = f"{selection_reason}+edge_cleanup"
+                edge_candidate = rescored if rescored is not None else cleaned
+                accepted_path, ec_stage = journal.consider_candidate(
+                    "edge_cleanup", src_svg, ec_dst, transform_report=ec_rep,
+                )
+                if accepted_path == ec_dst:
+                    best = edge_candidate
+                    selection_reason = f"{selection_reason}+edge_cleanup"
+                else:
+                    ec_rep = {**ec_rep, "applied": False,
+                              "journal_status": ec_stage["status"],
+                              "journal_reasons": ec_stage["reason_codes"]}
+            else:
+                journal.record_noop(
+                    "edge_cleanup", src_svg,
+                    reason_codes=["edge_cleanup_not_applied"],
+                    transform_report=ec_rep,
+                )
             refit_info = {**refit_info, "edge_cleanup": ec_rep}
-        # 9.75 Küçük bileşen hizalama refiti: izleme tavanı küçültmesi ve
+        # 9.8 Küçük bileşen hizalama refiti: izleme tavanı küçültmesi ve
         # ölçek gidiş-dönüşü küçük ama anlamlı bileşenleri (ör. ® simgesi)
         # birkaç piksel kaydırabilir; ince şekillerde bölgesel IoU çöker ama
         # global skor bunu görmez. Ölçüm kapılıdır: sadakat + en kötü bileşen
@@ -1162,15 +1341,28 @@ def run_pipeline(
             if ca_rep.get("applied"):
                 aligned = {**best, "svg_path": ca_dst}
                 rescored = score_candidate(aligned, original_path, analysis, mode_used)
-                best = rescored if rescored is not None else aligned
-                selection_reason = f"{selection_reason}+component_align"
+                align_candidate = rescored if rescored is not None else aligned
+                accepted_path, ca_stage = journal.consider_candidate(
+                    "component_align", ca_src, ca_dst, transform_report=ca_rep,
+                )
+                if accepted_path == ca_dst:
+                    best = align_candidate
+                    selection_reason = f"{selection_reason}+component_align"
+                else:
+                    ca_rep = {**ca_rep, "applied": False,
+                              "journal_status": ca_stage["status"],
+                              "journal_reasons": ca_stage["reason_codes"]}
+            else:
+                skip_code = (
+                    "viewbox_missing_precondition"
+                    if ca_rep.get("reason") == "viewBox_yok"
+                    else "component_align_not_applied"
+                )
+                journal.record_noop(
+                    "component_align", ca_src,
+                    reason_codes=[skip_code], transform_report=ca_rep,
+                )
             refit_info = {**refit_info, "component_align": ca_rep}
-        # 9.8 Kaynak koordinat sözleşmesi: kazanan SVG kaynak uzaya normalize
-        # edilir (koordinatlar ölçeklenir, translate düzleşir, viewBox =
-        # width = height = kaynak boyut; ayrıntı: _restore_source_dimensions)
-        if best is not None:
-            _restore_source_dimensions(Path(best["svg_path"]), analysis)
-
         # İstek-kapsamlı önbellek: 9.85–9.89 aşamaları aynı SVG'yi ve aynı
         # sınıflandırmayı defalarca üretiyordu (ölçüldü). Önbellek TEK istek
         # boyunca yaşar, sonunda serbest bırakılır; anahtar SVG içerik-hash'i
@@ -1178,7 +1370,7 @@ def run_pipeline(
         # kez hesaplanır. VEKTORYUM_REFINE_CACHE=off kapatır (aşamalar yine
         # doğrudan render/sınıflandırma yapar).
         refine_cache = None
-        src_rgb_arr = np.asarray(image.convert("RGB")) if best is not None else None
+        src_rgb_arr = journal_source_rgb if best is not None else None
         if best is not None and os.environ.get(
             "VEKTORYUM_REFINE_CACHE", "on"
         ).strip().lower() not in {"off", "0", "false"}:
@@ -1205,12 +1397,19 @@ def run_pipeline(
                 cm_w = int(analysis.get("width", 0) or 0)
                 cm_h = int(analysis.get("height", 0) or 0)
                 if cm_w > 0 and cm_h > 0:
-                    cm_rep = merge_counters(
-                        Path(best["svg_path"]), cm_w, cm_h,
-                        _render_fn or render_svg_to_rgb,
-                        source_rgb=src_rgb_arr, cache=refine_cache,
+                    _cm_ok, cm_rep, cm_stage = journal.run_in_place(
+                        "counter_merge",
+                        Path(best["svg_path"]),
+                        lambda path: merge_counters(
+                            path, cm_w, cm_h, _render_fn or render_svg_to_rgb,
+                            source_rgb=src_rgb_arr, cache=refine_cache,
+                        ),
                     )
-                    refit_info = {**refit_info, "counter_merge": cm_rep}
+                    refit_info = {**refit_info, "counter_merge": {
+                        **(cm_rep or {}),
+                        "journal_status": cm_stage["status"],
+                        "journal_reasons": cm_stage["reason_codes"],
+                    }}
             except Exception as e:  # noqa: BLE001
                 logger.debug("counter_merge atlandı: %s", e)
                 refit_info = {**refit_info, "counter_merge": {"status": "failed", "error": str(e)}}
@@ -1228,12 +1427,19 @@ def run_pipeline(
                 lr_w = int(analysis.get("width", 0) or 0)
                 lr_h = int(analysis.get("height", 0) or 0)
                 if lr_w > 0 and lr_h > 0:
-                    lr_rep = refine_critical_components(
-                        Path(best["svg_path"]), src_rgb_arr,
-                        lr_w, lr_h, _render_fn or render_svg_to_rgb,
-                        cache=refine_cache,
+                    _lr_ok, lr_rep, lr_stage = journal.run_in_place(
+                        "local_refine",
+                        Path(best["svg_path"]),
+                        lambda path: refine_critical_components(
+                            path, src_rgb_arr, lr_w, lr_h,
+                            _render_fn or render_svg_to_rgb, cache=refine_cache,
+                        ),
                     )
-                    refit_info = {**refit_info, "local_refine": lr_rep}
+                    refit_info = {**refit_info, "local_refine": {
+                        **(lr_rep or {}),
+                        "journal_status": lr_stage["status"],
+                        "journal_reasons": lr_stage["reason_codes"],
+                    }}
             except Exception as e:  # noqa: BLE001
                 logger.debug("local_refine atlandı: %s", e)
                 refit_info = {**refit_info, "local_refine": {"status": "failed", "error": str(e)}}
@@ -1253,12 +1459,19 @@ def run_pipeline(
                 er_w = int(analysis.get("width", 0) or 0)
                 er_h = int(analysis.get("height", 0) or 0)
                 if er_w > 0 and er_h > 0:
-                    er_rep = refine_error_regions(
-                        Path(best["svg_path"]), src_rgb_arr,
-                        er_w, er_h, _render_fn or render_svg_to_rgb,
-                        cache=refine_cache,
+                    _er_ok, er_rep, er_stage = journal.run_in_place(
+                        "error_refine",
+                        Path(best["svg_path"]),
+                        lambda path: refine_error_regions(
+                            path, src_rgb_arr, er_w, er_h,
+                            _render_fn or render_svg_to_rgb, cache=refine_cache,
+                        ),
                     )
-                    refit_info = {**refit_info, "error_refine": er_rep}
+                    refit_info = {**refit_info, "error_refine": {
+                        **(er_rep or {}),
+                        "journal_status": er_stage["status"],
+                        "journal_reasons": er_stage["reason_codes"],
+                    }}
             except Exception as e:  # noqa: BLE001
                 logger.debug("error_refine atlandı: %s", e)
                 refit_info = {**refit_info, "error_refine": {"status": "failed", "error": str(e)}}
@@ -1278,15 +1491,23 @@ def run_pipeline(
                 cr_w = int(analysis.get("width", 0) or 0)
                 cr_h = int(analysis.get("height", 0) or 0)
                 if cr_w > 0 and cr_h > 0:
-                    cu_rep = refine_cusp_regions(
-                        Path(best["svg_path"]), src_rgb_arr,
-                        cr_w, cr_h, _render_fn or render_svg_to_rgb,
-                        cache=refine_cache,
+                    def _cusp_transform(path: Path) -> dict[str, Any]:
+                        report = refine_cusp_regions(
+                            path, src_rgb_arr, cr_w, cr_h,
+                            _render_fn or render_svg_to_rgb, cache=refine_cache,
+                        )
+                        return {
+                            k: v for k, v in report.items() if k != "candidates"
+                        } | {"candidate_count": len(report.get("candidates", []))}
+
+                    _cu_ok, cu_rep, cu_stage = journal.run_in_place(
+                        "cusp_refine", Path(best["svg_path"]), _cusp_transform,
                     )
-                    # rapor kompakt tutulur (aday listesi debug'da anlamlı)
                     refit_info = {**refit_info, "cusp_refine": {
-                        k: v for k, v in cu_rep.items() if k != "candidates"
-                    } | {"candidate_count": len(cu_rep.get("candidates", []))}}
+                        **(cu_rep or {}),
+                        "journal_status": cu_stage["status"],
+                        "journal_reasons": cu_stage["reason_codes"],
+                    }}
             except Exception as e:  # noqa: BLE001
                 logger.debug("cusp_refine atlandı: %s", e)
                 refit_info = {**refit_info, "cusp_refine": {"status": "failed", "error": str(e)}}
@@ -1294,6 +1515,45 @@ def run_pipeline(
         if refine_cache is not None:
             refit_info = {**refit_info, "refine_cache": refine_cache.stats()}
             refine_cache.close()
+        from app.transform_journal import merge_journal_reports  # noqa: PLC0415
+
+        transform_journal = merge_journal_reports(
+            selected_candidate_history, journal.to_dict(),
+        )
+
+        # Aşağıdaki in-place aşamalar (counter/local/error/cusp) aynı dosyanın
+        # baytlarını değiştirebilir. Aday seçimi sırasında hesaplanan skor bu
+        # noktada artık kanonik artifact'a ait değildir. Kesin final SVG'yi
+        # yeniden skorla; API/quality katmanına stale candidate metriği taşıma.
+        # Skorlama ölçülemezse eski değeri koruyup başarılı gibi davranmak
+        # yerine fail-closed, açıkça ölçülemeyen bir best kaydı üret.
+        try:
+            final_scored = score_candidate(best, original_path, analysis, mode_used)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Kesin final SVG yeniden skorlanamadı: %s", e)
+            final_scored = None
+            final_rescore_error = type(e).__name__
+        else:
+            final_rescore_error = None
+        if final_scored is not None and final_scored.get("rendered_ok"):
+            best = final_scored
+            refit_info = {**refit_info, "final_rescore": {
+                "status": "measured",
+                "fidelity_score": best.get("fidelity_score"),
+                "svg_sha256": journal.final_accepted_sha256,
+            }}
+        else:
+            best = {
+                **best,
+                "rendered_ok": False,
+                "fidelity_score": None,
+                "final_rescore_error": final_rescore_error or "measurement_unavailable",
+            }
+            refit_info = {**refit_info, "final_rescore": {
+                "status": "unmeasured",
+                "error": best["final_rescore_error"],
+                "svg_sha256": journal.final_accepted_sha256,
+            }}
 
     # 10. Yapı bütünlüğü denetimi (kırık/eksik çizgi, hayalet çizik): nihai
     # çıktıda orijinaldeki her kontur karşılanıyor mu? Foto benzeri sürekli-tonlu
@@ -1307,6 +1567,16 @@ def run_pipeline(
     ):
         structure_report = score_structure_integrity(best["svg_path"], original_path)
 
+    # NamedTemporaryFile adayları normalde journal ``finally`` bloğunda
+    # silinir. Yine de optional/native mutator'ların erken dönüşlerine karşı
+    # job sınırında defense-in-depth temizliği yap: iş dizini istek-özel ve
+    # response'a girmeyen yalnız bu kesin pattern hedeflenir.
+    for transaction_tmp in Path(job_dir).glob(".*.candidate.svg"):
+        try:
+            transaction_tmp.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("Transform geçici dosyası temizlenemedi: %s", transaction_tmp)
+
     return {
         "analysis": analysis,
         "mode_used": mode_used,
@@ -1319,5 +1589,6 @@ def run_pipeline(
         "selection_reason": selection_reason,
         "refine_info": refine_info,
         "refit_info": refit_info,
+        "transform_journal": transform_journal,
         "structure_report": structure_report,
     }
