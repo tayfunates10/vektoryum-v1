@@ -81,7 +81,7 @@ def generate_seed_corpus(output_dir: Path) -> list[BenchmarkCase]:
                 tags=("synthetic", "seed-v1"),
             )
         )
-    validate_manifest(cases, corpus_root=output_dir)
+    validate_manifest(cases, root=output_dir)
     return cases
 
 
