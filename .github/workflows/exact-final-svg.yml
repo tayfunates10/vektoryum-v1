@@ -35,13 +35,16 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ghostscript libcairo2
       - name: Install Python dependencies
         run: python -m pip install -r requirements.txt pytest httpx
-      - name: Exact-byte, security, corpus, evaluator and journal gates
+      - name: Exact-byte, security, corpus, evaluator, alpha and journal gates
         run: >-
           python -m pytest -q
           test_exact_final_contract.py
           test_exact_corpus.py
           test_transform_journal.py
           test_final_artifact_metrics.py
+          test_source_truth.py
+          test_alpha_multibackground_fidelity.py
+          test_input_color_management.py
 
   pipeline-integration:
     runs-on: ubuntu-latest
