@@ -321,8 +321,8 @@ async def vectorize_image(
         png_size=(int(analysis.get("width", 0)) or None, int(analysis.get("height", 0)) or None),
     )
 
-    # 9. Kalite raporu (yapı bütünlüğü dahil: kırık/eksik çizgi denetimi)
-    quality_report = basic_svg_quality_check(
+    # 9. LEGACY aday-içi rapor — YALNIZ bilgi; final kararı ETKİLEMEZ.
+    legacy_candidate_report = basic_svg_quality_check(
         score_details=best.get("score_details", {}),
         mode=mode_used,
         geometry_report=best_geo,
@@ -331,7 +331,27 @@ async def vectorize_image(
         structure_report=pipe.get("structure_report"),
     )
 
-    download_links = {fmt: f"/api/download/{job_id}/{fmt}" for fmt in ("svg", "pdf", "eps", "dxf", "png")}
+    # 9.5 KESİN final artifact değerlendirmesi (TEK gerçeklik): kullanıcının
+    # indireceği exact SVG yargılanır (aday-içi skor değil). Ağır render →
+    # event loop'u bloke etmemek için threadpool. quality_report BUNDAN türer.
+    svg_out = outputs.get("svg")
+    final_art = await run_in_threadpool(
+        _evaluate_final, str(svg_out) if svg_out else None, image, mode_used,
+        outputs, str(job_dir))
+
+    quality_report = {
+        "status": final_art["verdict"],                # production_ready|needs_review|failed
+        "final_svg_sha256": final_art["final_svg_sha256"],
+        "exact_metrics": final_art["exact_metrics"],   # XML'den ölçülen (stale değil)
+        "hard_fails": final_art["hard_fails"],
+        "warnings": final_art["hard_fails"] + final_art["soft_warnings"],
+        "unmeasured_required": final_art["unmeasured_required"],
+        "source": "final_artifact_evaluator",
+    }
+
+    # Download YALNIZ yapısal olarak geçerli (var + boş değil) çıktı için.
+    download_links = {fmt: f"/api/download/{job_id}/{fmt}"
+                      for fmt in final_art.get("valid_formats", [])}
 
     final_report = {
         "job_id": job_id,
@@ -371,6 +391,19 @@ async def vectorize_image(
             ],
         },
         "quality_report": quality_report,
+        "final_artifact": {
+            "verdict": final_art["verdict"],
+            "final_svg_sha256": final_art["final_svg_sha256"],
+            "exact_metrics": final_art["exact_metrics"],
+            "hard_fails": final_art["hard_fails"],
+            "soft_warnings": final_art["soft_warnings"],
+            "unmeasured_required": final_art["unmeasured_required"],
+            "valid_formats": final_art.get("valid_formats", []),
+            "metrics": final_art.get("evaluator", {}).get("metrics")
+            if final_art.get("evaluator") else None,
+        },
+        "final_svg_sha256": final_art["final_svg_sha256"],
+        "legacy_candidate_report": legacy_candidate_report,
         "refine_info": pipe.get("refine_info"),
         "refit_info": pipe.get("refit_info"),
         "shape_stacking": stacking_report,
@@ -379,7 +412,9 @@ async def vectorize_image(
         "download_links": download_links,
     }
 
-    (job_dir / "report.json").write_text(json.dumps(final_report, ensure_ascii=False, indent=2), encoding="utf-8")
+    # ATOMİK yayın: temp yaz + fsync + rename (yarım/bozuk report.json okunmasın)
+    _atomic_write_text(job_dir / "report.json",
+                       json.dumps(final_report, ensure_ascii=False, indent=2))
 
     # KALICI geri-bildirim kaydı: admin paneli bunu okur, restart'ta kaybolmaz.
     _append_feedback({
@@ -395,6 +430,112 @@ async def vectorize_image(
         "download_links": download_links,
     })
     return JSONResponse(content=final_report)
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Temp yaz + fsync + rename ile atomik yayın (yarım dosya görünmez)."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
+_MODE_IMAGE_CLASS = {
+    "logo_color": "clean_logo", "flat_logo": "clean_logo",
+    "geometric_logo": "geometric", "minimal_ai": "clean_logo",
+    "single_color": "geometric", "lineart": "lineart", "centerline": "lineart",
+    "photo_poster": "photo",
+}
+
+
+def _evaluate_final(svg_path_str: str | None, image, mode_used: str,
+                    outputs: dict[str, Any], job_dir_str: str) -> dict[str, Any]:
+    """KESİN exported SVG'yi FinalArtifactEvaluator ile değerlendirir (tek gerçeklik).
+
+    Aday-içi skoru değil KULLANICININ İNDİRECEĞİ dosyayı yargılar; exact XML'den
+    ölçülen path/node/gradient/byte + sha256 + verdict döner. Yapısal olarak
+    geçersiz/eksik çıktı için download üretilmez. Hata halinde needs_review
+    (asla sessiz production_ready). Ağır render içerir → threadpool'dan çağrılır.
+    """
+    import numpy as np  # noqa: PLC0415
+    from pathlib import Path as _P  # noqa: PLC0415
+
+    job_dir = _P(job_dir_str)
+    result: dict[str, Any] = {"verdict": "needs_review", "hard_fails": [],
+                              "soft_warnings": [], "unmeasured_required": [],
+                              "final_svg_sha256": None, "exact_metrics": {},
+                              "evaluator": None}
+
+    # geçerli (var + boş değil) çıktıları belirle → yalnız bunlara download
+    valid: dict[str, str] = {}
+    for fmt in ("svg", "pdf", "eps", "dxf", "png"):
+        p = outputs.get(fmt)
+        if not p:
+            continue
+        fp = _P(p) if _P(p).is_absolute() else (job_dir / _P(p).name)
+        try:
+            if fp.exists() and fp.stat().st_size > 0:
+                valid[fmt] = fmt
+        except Exception:  # noqa: BLE001
+            pass
+    result["valid_formats"] = sorted(valid)
+
+    if svg_path_str is None or "svg" not in valid:
+        result["hard_fails"].append("kesin SVG çıktısı yok/boş")
+        result["verdict"] = "failed"
+        return result
+
+    svg_path = _P(svg_path_str)
+    try:
+        data = svg_path.read_bytes()
+        import hashlib  # noqa: PLC0415
+        result["final_svg_sha256"] = hashlib.sha256(data).hexdigest()
+    except Exception as e:  # noqa: BLE001
+        result["hard_fails"].append(f"SVG okunamadı: {e}")
+        result["verdict"] = "failed"
+        return result
+
+    # kaynak RGB + (varsa) alpha düzlemi
+    try:
+        if image.mode in ("RGBA", "LA", "PA") or (image.mode == "P" and "transparency" in image.info):
+            rgba = image.convert("RGBA")
+            arr = np.asarray(rgba)
+            source_rgb = arr[:, :, :3].copy()
+            source_alpha = arr[:, :, 3].copy()
+        else:
+            source_rgb = np.asarray(image.convert("RGB"))
+            source_alpha = None
+    except Exception as e:  # noqa: BLE001
+        result["unmeasured_required"].append(f"kaynak dönüştürülemedi: {e}")
+        return result
+
+    try:
+        from app.final_artifact_evaluator import evaluate_final_svg  # noqa: PLC0415
+        rep = evaluate_final_svg(
+            svg_path, source_rgb, source_alpha=source_alpha,
+            image_class=_MODE_IMAGE_CLASS.get(mode_used, "clean_logo"))
+        result["verdict"] = rep.verdict
+        result["hard_fails"] = rep.hard_fails
+        result["soft_warnings"] = rep.soft_warnings
+        result["unmeasured_required"] = rep.unmeasured_required
+        result["final_svg_sha256"] = rep.sha256
+        struct = rep.metrics.get("A_structure", {})
+        edit = rep.metrics.get("H_editability", {})
+        result["exact_metrics"] = {
+            "path_count": struct.get("path_count"),
+            "node_count": struct.get("node_count"),
+            "gradient_count": struct.get("gradient_count"),
+            "byte_size": len(data),
+            "nodes_per_path": edit.get("nodes_per_path"),
+        }
+        result["evaluator"] = rep.to_dict()
+    except Exception as e:  # noqa: BLE001 — evaluator asla isteği düşürmez
+        logger.warning("FinalArtifactEvaluator başarısız (needs_review): %s", e)
+        result["unmeasured_required"].append(f"evaluator hata: {e}")
+        result["verdict"] = "needs_review"
+    return result
 
 
 def _merge_for_report(scored: list[dict[str, Any]], results: list[dict[str, Any]]) -> list[dict[str, Any]]:
