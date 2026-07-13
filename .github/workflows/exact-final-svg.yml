@@ -53,6 +53,8 @@ jobs:
         run: python -m pytest -q test_multi_hypothesis.py
       - name: FAZ 4 shadow telemetry immutability contract
         run: python -m pytest -q test_shadow_telemetry.py
+      - name: FAZ 4 shadow runtime feature-flag contract
+        run: python -m pytest -q test_shadow_runtime.py
 
   pipeline-integration:
     runs-on: ubuntu-latest
