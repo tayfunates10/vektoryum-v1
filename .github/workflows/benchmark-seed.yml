@@ -90,6 +90,7 @@ jobs:
           fi
           python -m benchmark.release_gate "${args[@]}"
       - name: Upload JSON HTML fixtures and real pipeline results
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: benchmark-v1-seed
