@@ -503,19 +503,73 @@ def _produce_and_score_job(args: tuple) -> tuple[dict[str, Any], dict[str, Any] 
     return res, sc
 
 
+class WorkerFailure(RuntimeError):
+    """Paralel aday havuzu başarısız/zaman aşımı — KONTROLLÜ hata.
+
+    Kritik: parallel deneme başarısız olduysa aynı ağır işleri INLINE SIRALI
+    yeniden ÇALIŞTIRMAYIZ. Eski davranış (timeout/BrokenPool sonrası tüm işleri
+    sıralı tekrar) çift CPU-ağır iş + event-loop kilidi + /api/health zaman aşımı
+    doğuruyordu. Çağıran bunu temiz bir 503'e çevirir; havuz sıfırlanmış olur."""
+
+
+def _job_timeout() -> float:
+    """Paralel aday map zaman aşımı (sn). VEKTORYUM_JOB_TIMEOUT ile ayarlanır."""
+    env = os.environ.get("VEKTORYUM_JOB_TIMEOUT", "").strip()
+    if env:
+        try:
+            return max(30.0, float(env))
+        except ValueError:
+            pass
+    return 600.0
+
+
+def _reset_pool(kill: bool = True) -> None:
+    """Kırık/asılı havuzu kapatır ve tekilliği temizler (sonraki istek TAZE kurar).
+
+    ``kill``: ProcessPool timeout NATIVE çocuk işi öldürmez (asılı vtracer/BLAS
+    CPU yakmaya devam eder). Çocuk süreçleri açıkça terminate ederiz."""
+    global _POOL
+    pool = _POOL
+    _POOL = None
+    if pool is None:
+        return
+    if kill:
+        try:
+            for p in list(getattr(pool, "_processes", {}).values()):
+                try:
+                    p.terminate()
+                except Exception:  # noqa: BLE001
+                    pass
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        pool.shutdown(wait=False, cancel_futures=True)
+    except TypeError:                       # eski Python: cancel_futures yok
+        try:
+            pool.shutdown(wait=False)
+        except Exception:  # noqa: BLE001
+            pass
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _run_jobs(jobs: list[tuple]) -> list[tuple[dict[str, Any], dict[str, Any] | None]]:
-    """İş listesini paralel (ya da tek işçide sıralı) çalıştırır."""
+    """İş listesini paralel çalıştırır; havuz yoksa tek işçide sıralı.
+
+    Paralel deneme başarısız/zaman aşımıysa havuzu (çocukları öldürerek) sıfırlar
+    ve ``WorkerFailure`` üretir — aynı işleri inline sıralı yeniden ÇALIŞTIRMAZ."""
     if len(jobs) <= 1 or _pool_size() <= 1:
         return [_produce_and_score_job(j) for j in jobs]
     pool = _get_pool()
-    if pool is None:
+    if pool is None:                        # havuz hiç kurulamadı → sıralı (çift-iş değil)
         return [_produce_and_score_job(j) for j in jobs]
     try:
-        # timeout: tek iş makul sürede bitmeli; asılı işçi tüm isteği kilitlemesin
-        return list(pool.map(_produce_and_score_job, jobs, timeout=600))
+        return list(pool.map(_produce_and_score_job, jobs, timeout=_job_timeout()))
     except Exception as e:  # noqa: BLE001
-        logger.warning("Paralel aday üretimi başarısız, sıralıya düşülüyor: %s", e)
-        return [_produce_and_score_job(j) for j in jobs]
+        logger.warning("Paralel aday üretimi başarısız (%s) — havuz sıfırlanıyor; "
+                       "inline sıralı yeniden çalıştırma YAPILMIYOR", e)
+        _reset_pool(kill=True)
+        raise WorkerFailure(str(e)) from e
 
 
 # ---------------------------------------------------------------------------

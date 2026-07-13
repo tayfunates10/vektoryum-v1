@@ -32,11 +32,12 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import Cookie, FastAPI, File, Form, HTTPException, Response, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from PIL import Image
 
 from app.exporters import export_all
-from app.pipeline import run_pipeline
+from app.pipeline import WorkerFailure, run_pipeline
 from app.quality import basic_svg_quality_check
 
 logging.basicConfig(level=logging.INFO)
@@ -237,8 +238,24 @@ async def vectorize_image(
         logger.info("Girdi %s'e küçültüldü (VEKTORYUM_MAX_INPUT_SIDE=%d)", image.size, max_side)
 
     # 1-7. Çekirdek pipeline (analiz → ön işleme → aday → temizleme → skor → seçim)
+    # CPU-AĞIR iş event loop'u BLOKE ETMESİN: threadpool'a taşınır; böylece ağır
+    # bir istek işlenirken /livez ve /api/auth/me yanıt vermeye devam eder (canlı
+    # hata: 900² dizisinden sonra /api/health 30 sn'de yanıt vermiyordu). Gerçek
+    # CPU işi zaten alt-süreç havuzunda; parent-thread'i loop'tan ayırmak yeterli.
     try:
-        pipe = run_pipeline(image, original_path, trace_mode, job_dir, edge_cleanup=edge_cleanup_on)
+        pipe = await run_in_threadpool(
+            run_pipeline, image, original_path, trace_mode, job_dir,
+            edge_cleanup=edge_cleanup_on,
+        )
+    except WorkerFailure as e:
+        # Paralel aday havuzu başarısız/zaman aşımı — KONTROLLÜ (inline rerun yok).
+        logger.error("Worker havuzu hatası: %s", e)
+        return JSONResponse(
+            status_code=503,
+            content={"error": "İşleme kapasitesi geçici olarak yetersiz, tekrar deneyin.",
+                     "code": "worker_failure", "job_id": job_id},
+            headers={"Retry-After": "10"},
+        )
     except Exception as e:  # noqa: BLE001
         logger.error("Pipeline hatası: %s", e)
         raise HTTPException(status_code=500, detail=f"İşlem başarısız: {e}")
@@ -526,9 +543,48 @@ async def admin_page(session: str | None = Cookie(default=None)):
     _require_admin(session)
     return HTMLResponse('<!doctype html><html lang="tr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Vektoryum Admin</title><style>body{margin:0;background:#0b1020;color:#eaf0ff;font:14px system-ui}.wrap{max-width:1180px;margin:auto;padding:28px}.top{display:flex;justify-content:space-between;align-items:center}.card{background:linear-gradient(180deg,#111a35,#0e1530);border:1px solid rgba(255,255,255,.12);border-radius:16px;padding:16px;margin:14px 0}.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.badge{padding:5px 10px;border-radius:999px;background:rgba(75,141,255,.16);color:#8db6ff;font-weight:700}.warn{color:#fbbf24}.ok{color:#34d399}a{color:#9cc2ff}.muted{color:#93a1c4}.btn{border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.06);color:#fff;border-radius:10px;padding:9px 12px;cursor:pointer}.downloads{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}pre{white-space:pre-wrap;color:#cbd5ff}@media(max-width:800px){.grid{grid-template-columns:1fr}}</style></head><body><div class="wrap"><div class="top"><div><h1>Vektoryum Admin Paneli</h1><p class="muted">Beta çıktıları, kalite raporları ve otomatik hata inceleme kuyruğu.</p></div><button class="btn" onclick="logout()">Çıkış</button></div><div id="jobs"></div></div><script>async function logout(){await fetch(\'/api/auth/logout\',{method:\'POST\'});location.href=\'/\'}function row(j){const st=j.status===\'production_ready\'?\'ok\':\'warn\';const d=j.downloads||{};return `<div class="card"><div class="grid"><div><b>İş:</b> ${j.job_id}<br><b>Kullanıcı:</b> ${(j.user&&j.user.email)||\'-\'}<br><b>Mod:</b> ${j.mode_used||\'-\'} · <b>Aday:</b> ${j.best_candidate||\'-\'}<br><b>Seçim:</b> ${j.selection_reason||\'-\'}</div><div><span class="badge ${st}">${j.status||\'bilinmiyor\'}</span><p><b>Skor:</b> ${j.fidelity==null?\'-\':j.fidelity}</p><p class="muted">Uyarılar: ${(j.warnings||[]).join(\' · \')||\'-\'}</p></div></div><div class="downloads">${Object.entries(d).map(([k,v])=>`<a href="${v}" target="_blank">${k.toUpperCase()}</a>`).join(\'\')}</div><pre>Otomatik analiz önerisi: renk farkı, kenar uyumsuzluğu, eksik/fazla detay ve kalite uyarıları bu iş raporundan incelenir.</pre></div>`}async function load(){const r=await fetch(\'/api/admin/jobs\');if(!r.ok){location.href=\'/\';return}const data=await r.json();document.getElementById(\'jobs\').innerHTML=(data.jobs||[]).map(row).join(\'\')||\'<div class="card">Henüz iş yok.</div>\'}load()</script></body></html>')
 
+@app.get("/livez", summary="Liveness (event loop yaşıyor mu)")
+async def livez() -> dict[str, Any]:
+    """HIZLI liveness: yalnız API event loop/process yaşadığını gösterir.
+
+    Ağır bir vektörleştirme işlenirken bile (iş threadpool + alt-süreç havuzunda)
+    bu uç anında yanıt vermelidir. Ağır I/O/DB kontrolü YAPMAZ."""
+    return {"status": "alive", "service": "vektoryum-api"}
+
+
+def _readiness() -> tuple[bool, dict[str, Any]]:
+    """DB/disk yerine bu sürümde: yazılabilir artifact alanı + temel kontrol."""
+    checks: dict[str, Any] = {}
+    ok = True
+    try:
+        JOBS_ROOT.mkdir(parents=True, exist_ok=True)
+        probe = JOBS_ROOT / ".readyz_probe"
+        probe.write_text("ok")
+        probe.unlink(missing_ok=True)
+        checks["artifact_writable"] = True
+    except Exception as e:  # noqa: BLE001
+        checks["artifact_writable"] = False
+        checks["artifact_error"] = str(e)
+        ok = False
+    return ok, checks
+
+
+@app.get("/readyz", summary="Readiness (istek almaya hazır mı)")
+async def readyz() -> JSONResponse:
+    """Yazılabilir artifact alanı vb. hazır değilse 503 döner."""
+    ok, checks = await run_in_threadpool(_readiness)
+    return JSONResponse(status_code=200 if ok else 503,
+                        content={"status": "ready" if ok else "not_ready", "checks": checks})
+
+
 @app.get("/api/health", summary="Sağlık kontrolü")
-async def health() -> dict[str, Any]:
-    return {"status": "ok", "service": "vektoryum-api", "modes": ALLOWED_MODES}
+async def health() -> JSONResponse:
+    """Geriye uyum: readiness sonucuna bağlı (hazır değilse 503)."""
+    ok, checks = await run_in_threadpool(_readiness)
+    return JSONResponse(
+        status_code=200 if ok else 503,
+        content={"status": "ok" if ok else "degraded", "service": "vektoryum-api",
+                 "modes": ALLOWED_MODES, "checks": checks})
 
 
 if __name__ == "__main__":
