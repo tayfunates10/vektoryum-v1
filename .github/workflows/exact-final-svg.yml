@@ -49,6 +49,8 @@ jobs:
         run: python -m pytest -q test_alpha_multibackground_fidelity.py
       - name: ICC and CMYK color-management gates
         run: python -m pytest -q test_input_color_management.py
+      - name: FAZ 4 multi-hypothesis shadow contract
+        run: python -m pytest -q test_multi_hypothesis.py
 
   pipeline-integration:
     runs-on: ubuntu-latest
