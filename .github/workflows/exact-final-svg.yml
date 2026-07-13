@@ -5,6 +5,7 @@ on:
     paths:
       - "engine/**"
       - ".github/workflows/exact-final-svg.yml"
+      - ".github/workflows/benchmark-seed.yml"
       - "Dockerfile"
   workflow_dispatch:
 
