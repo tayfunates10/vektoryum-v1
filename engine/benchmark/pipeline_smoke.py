@@ -1,4 +1,4 @@
-"""Run a tiny deterministic real-pipeline benchmark subset."""
+"""Run the deterministic eight-category real-pipeline benchmark seed set."""
 from __future__ import annotations
 
 import argparse
@@ -8,9 +8,9 @@ from pathlib import Path
 
 from app.pipeline_entry import run_pipeline
 from benchmark.pipeline_results import run_case, write_results
-from benchmark.seed_runner import generate_seed_corpus
+from benchmark.seed_runner import CATEGORIES, generate_seed_corpus
 
-SMOKE_CATEGORIES = {"logos", "transparent"}
+BENCHMARK_CATEGORIES = frozenset(CATEGORIES)
 
 
 def _peak_rss_mb() -> float:
@@ -22,7 +22,11 @@ def run_smoke(output_dir: Path, *, engine_version: str) -> list:
     output_dir.mkdir(parents=True, exist_ok=True)
     corpus_root = output_dir / "corpus"
     work_root = output_dir / "jobs"
-    cases = [case for case in generate_seed_corpus(corpus_root) if case.category in SMOKE_CATEGORIES]
+    cases = [
+        case
+        for case in generate_seed_corpus(corpus_root)
+        if case.category in BENCHMARK_CATEGORIES
+    ]
     results = []
     for case in cases:
         results.append(
