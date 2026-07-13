@@ -66,6 +66,8 @@ jobs:
         run: python -m pytest -q test_benchmark_compare.py
       - name: Benchmark v1 artifact history contract
         run: python -m pytest -q test_benchmark_artifact_history.py
+      - name: Benchmark v1 real pipeline result adapter
+        run: python -m pytest -q test_benchmark_pipeline_results.py
 
   pipeline-integration:
     runs-on: ubuntu-latest
