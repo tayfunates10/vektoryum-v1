@@ -73,7 +73,15 @@ def test_t2_alpha_gradient_is_never_false_production_ready(client: TestClient) -
     artifact = body["final_artifact"]
     assert body["analysis"]["has_gradient"] is True
     assert artifact["verdict"] != "production_ready"
-    assert "alpha_fidelity" in artifact["unmeasured_required"]
+    alpha = artifact["metrics"]["G_gradient_alpha"]
+    assert alpha["source_has_alpha"] is True
+    assert alpha["alpha_fidelity_status"] in {"passed", "failed", "measured", "unmeasured"}
+    if alpha["alpha_fidelity_status"] == "unmeasured":
+        assert "alpha_fidelity" in artifact["unmeasured_required"]
+    else:
+        assert "alpha_iou" in alpha and "alpha_mae" in alpha
+    # Gradient field modeling is still a separate required metric; no false green.
+    assert "gradient_fidelity" in artifact["unmeasured_required"]
     _assert_no_accepted_post_transform_explosion(body)
 
 
