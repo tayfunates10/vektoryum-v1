@@ -37,8 +37,10 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from PIL import Image
 
 from app.exporters import export_all
+from app.input_guard import InputError, validate_and_load
 from app.pipeline import WorkerFailure, run_pipeline
 from app.quality import basic_svg_quality_check
+from app.settings import get_settings
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -196,25 +198,29 @@ async def vectorize_image(
         raise HTTPException(status_code=400, detail=f"Geçersiz trace_mode. İzin verilenler: {ALLOWED_MODES}")
     if shape_stacking not in ("stacked", "cutouts"):
         raise HTTPException(status_code=400, detail="Geçersiz shape_stacking. İzin verilenler: ['stacked', 'cutouts']")
-    if not file.content_type or not file.content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail="Desteklenmeyen dosya türü.")
-
+    # GÜVENLİ ALIM: magic/format (istemci Content-Type'a güvenilmez), byte/piksel
+    # sınırı, decompression bomb, animated reddi, EXIF transpose, ICC/CMYK->sRGB.
+    contents = await file.read()
     try:
-        contents = await file.read()
-        image = Image.open(io.BytesIO(contents))
-        image.load()
-    except Exception as e:  # noqa: BLE001
-        logger.error("Görsel okuma hatası: %s", e)
-        raise HTTPException(status_code=400, detail="Görsel dosyası bozuk veya okunamıyor.")
+        loaded = validate_and_load(contents, file.filename)
+    except InputError as e:
+        return JSONResponse(status_code=e.status,
+                            content={"error": e.message, "code": e.code})
+    image = loaded.image
 
     # iş klasörü
     job_id = uuid.uuid4().hex
     job_dir = _job_dir(job_id)
     job_dir.mkdir(parents=True, exist_ok=True)
 
-    suffix = Path(file.filename or "upload.png").suffix or ".png"
-    original_path = job_dir / f"original{suffix}"
-    original_path.write_bytes(contents)
+    # Kullanıcı filename'i YOL olarak KULLANILMAZ; sunucu-verilen güvenli uzantı.
+    original_path = job_dir / f"original{loaded.safe_suffix}"
+    if loaded.normalized:
+        # EXIF/ICC normalizasyonu pikselleri değiştirdi → normalize görüntüyü yaz
+        save_img = image if image.mode in ("RGB", "L", "RGBA") else image.convert("RGB")
+        save_img.save(original_path)
+    else:
+        original_path.write_bytes(contents)   # değişmeyen kaynak → ham baytlar
 
     # Bellek-kısıtlı barındırma (ör. Render free 512MB) için OPSİYONEL girdi
     # küçültme: VEKTORYUM_MAX_INPUT_SIDE ayarlıysa ve en uzun kenar bunu aşıyorsa
