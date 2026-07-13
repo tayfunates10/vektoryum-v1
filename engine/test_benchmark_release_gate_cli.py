@@ -62,4 +62,7 @@ def test_cli_fails_for_unmeasured_metric(tmp_path: Path) -> None:
         cwd=Path(__file__).parent,
     )
     assert result.returncode == 1
-    assert json.loads(output.read_text(encoding="utf-8"))["status"] == "fail"
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert report["status"] == "fail"
+    assert report["reason"] == "unmeasured_required_metrics"
+    assert report["unmeasured"] == [{"case_id": "case-1", "metric": "ssim"}]

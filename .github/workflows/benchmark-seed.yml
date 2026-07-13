@@ -4,6 +4,11 @@ on:
   workflow_dispatch:
   schedule:
     - cron: "17 2 * * 1"
+  pull_request:
+    paths:
+      - ".github/workflows/benchmark-seed.yml"
+      - "engine/benchmark/**"
+      - "engine/app/**"
   push:
     branches:
       - main
@@ -17,7 +22,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: benchmark-v1-seed
+  group: benchmark-v1-seed-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -85,6 +90,7 @@ jobs:
           fi
           python -m benchmark.release_gate "${args[@]}"
       - name: Upload JSON HTML fixtures and real pipeline results
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: benchmark-v1-seed
