@@ -66,4 +66,6 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3 \
   CMD python -c "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:'+os.environ.get('PORT','7860')+'/livez',timeout=3)" || exit 1
 
 # `exec` ile uvicorn PID 1 olur -> SIGTERM temiz kapanış.
-CMD ["sh", "-c", "exec python -m uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-7860}"]
+# runtime_main mevcut FastAPI uygulamasını aynen kullanır; yalnız run_pipeline
+# referansını feature-flag kontrollü shadow-aware façade ile değiştirir.
+CMD ["sh", "-c", "exec python -m uvicorn app.runtime_main:app --host 0.0.0.0 --port ${PORT:-7860}"]
