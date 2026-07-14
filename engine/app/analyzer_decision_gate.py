@@ -10,6 +10,7 @@ gate unchanged.
 from __future__ import annotations
 
 import hmac
+from contextvars import ContextVar
 from copy import deepcopy
 from typing import Any
 
@@ -29,6 +30,28 @@ AUTO_DECISION_SCHEMA_VERSION = "analyzer-auto-decision-v1"
 MIN_AUTO_CONFIDENCE = 0.50
 MIN_AUTO_MARGIN = 0.05
 REVIEW_FALLBACK_MODE = "logo_color"
+_PRECOMPUTED_ANALYSIS: ContextVar[dict[str, Any] | None] = ContextVar(
+    "vektoryum_precomputed_analysis",
+    default=None,
+)
+
+
+def bind_precomputed_analysis(analysis: dict[str, Any]) -> Any:
+    """Bind one analyzer report to the current request context."""
+    return _PRECOMPUTED_ANALYSIS.set(deepcopy(analysis))
+
+
+def consume_precomputed_analysis() -> dict[str, Any] | None:
+    """Consume the request-scoped report once; concurrent contexts stay isolated."""
+    analysis = _PRECOMPUTED_ANALYSIS.get()
+    if analysis is None:
+        return None
+    _PRECOMPUTED_ANALYSIS.set(None)
+    return deepcopy(analysis)
+
+
+def reset_precomputed_analysis(token: Any) -> None:
+    _PRECOMPUTED_ANALYSIS.reset(token)
 
 
 def _same_digest(left: Any, right: Any) -> bool:
@@ -216,6 +239,9 @@ __all__ = [
     "MIN_AUTO_MARGIN",
     "REVIEW_FALLBACK_MODE",
     "apply_auto_decision_to_final_artifact",
+    "bind_precomputed_analysis",
+    "consume_precomputed_analysis",
     "decide_trace_mode",
+    "reset_precomputed_analysis",
     "verify_stored_contract",
 ]
