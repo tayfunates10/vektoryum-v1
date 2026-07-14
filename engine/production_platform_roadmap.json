@@ -1,0 +1,10 @@
+{
+  "schema_version": "production-platform-closure-v1",
+  "goal": "Complete production platform readiness through four merge-gated phases.",
+  "phases": [
+    {"id": "PPC-1", "status": "complete"},
+    {"id": "PPC-2", "status": "pending"},
+    {"id": "PPC-3", "status": "pending"},
+    {"id": "PPC-4", "status": "pending"}
+  ]
+}
