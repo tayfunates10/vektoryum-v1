@@ -1,0 +1,41 @@
+name: Canonical pipeline report contract
+
+on:
+  pull_request:
+    paths:
+      - "engine/app/pipeline_entry.py"
+      - "engine/app/pipeline_canonical_report.py"
+      - "engine/app/canonical_svg_candidate.py"
+      - "engine/test_pipeline_entry.py"
+      - "engine/test_pipeline_canonical_report.py"
+      - ".github/workflows/canonical-pipeline-report.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: canonical-pipeline-report-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: engine
+    env:
+      PYTHONHASHSEED: "0"
+      VEKTORYUM_WORKERS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: engine/requirements.txt
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt pytest
+      - name: Canonical pipeline attachment contracts
+        run: python -m pytest -q test_pipeline_canonical_report.py test_pipeline_entry.py
