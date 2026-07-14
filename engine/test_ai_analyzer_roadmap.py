@@ -6,11 +6,19 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+from analyzer_release_contract import (
+    AUTO_MODES as RELEASE_AUTO_MODES,
+    CASE_KINDS,
+    REPEAT_COUNT,
+    THRESHOLDS,
+)
 from app.main import ALLOWED_MODES
 import app.analyzer as analyzer
 
 ENGINE_DIR = Path(__file__).resolve().parent
+REPO_DIR = ENGINE_DIR.parent
 ROADMAP_PATH = ENGINE_DIR / "ai_analyzer_roadmap.json"
+ANALYZER_RELEASE_WORKFLOW = REPO_DIR / ".github" / "workflows" / "ai-analyzer-release.yml"
 EXPECTED_PHASES = ["AA-1", "AA-2", "AA-3", "AA-4"]
 EXPECTED_AUTO_MODES = {
     "geometric_logo",
@@ -87,12 +95,7 @@ def test_phase_order_and_status() -> None:
     assert data["schema_version"] == "ai-analyzer-closure-v1"
     phases = data["phases"]
     assert [phase["id"] for phase in phases] == EXPECTED_PHASES
-    assert [phase["status"] for phase in phases] == [
-        "complete",
-        "complete",
-        "complete",
-        "pending",
-    ]
+    assert [phase["status"] for phase in phases] == ["complete"] * len(EXPECTED_PHASES)
     assert len({phase["id"] for phase in phases}) == len(phases)
     assert all(len(phase["acceptance_criteria"]) >= 4 for phase in phases)
 
@@ -117,21 +120,37 @@ def test_limitation_status_matches_phase() -> None:
     assert {item["id"] for item in limitations} == EXPECTED_LIMITATIONS
     assert len(limitations) == len({item["id"] for item in limitations})
     for item in limitations:
-        assert item["status"] in {"open", "closed"}
+        assert item["status"] == "closed"
         assert item["closure_phase"] in phases
+        assert phases[item["closure_phase"]]["status"] == "complete"
         assert (ENGINE_DIR / item["evidence"]).is_file()
-        expected = "pending" if item["status"] == "open" else "complete"
-        assert phases[item["closure_phase"]]["status"] == expected
 
 
 def test_completed_evidence_files() -> None:
     completed = [phase for phase in _roadmap()["phases"] if phase["status"] == "complete"]
-    assert [phase["id"] for phase in completed] == ["AA-1", "AA-2", "AA-3"]
+    assert [phase["id"] for phase in completed] == EXPECTED_PHASES
     for phase in completed:
         assert "test_ai_analyzer_roadmap.py" in phase["evidence"]
         assert len(phase["evidence"]) >= 4
         for relative in phase["evidence"]:
             assert (ENGINE_DIR / relative).is_file()
+
+
+def test_aa4_release_contract_is_mandatory_and_strict() -> None:
+    assert set(RELEASE_AUTO_MODES) == EXPECTED_AUTO_MODES
+    assert set(CASE_KINDS) == {"in_domain", "boundary"}
+    assert REPEAT_COUNT == 3
+    assert THRESHOLDS["accepted_wrong_mode_max"] == 0
+    assert THRESHOLDS["determinism_failures_max"] == 0
+    assert THRESHOLDS["invalid_contracts_max"] == 0
+    assert THRESHOLDS["per_mode_recommendation_precision_min"] == 1.0
+    assert THRESHOLDS["per_mode_correct_recommendations_min"] == 1
+    assert THRESHOLDS["accepted_precision_min"] == 1.0
+    workflow = ANALYZER_RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    assert "test_analyzer_release_contract.py" in workflow
+    assert "test_analyzer_release_runner.py" in workflow
+    assert "analyzer_release_runner.py --output analyzer_release_artifacts" in workflow
+    assert "if: always()" in workflow
 
 
 def test_public_fields_and_seed_decisions(monkeypatch) -> None:

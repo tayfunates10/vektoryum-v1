@@ -7,6 +7,7 @@ on:
       - ".github/workflows/exact-final-svg.yml"
       - ".github/workflows/benchmark-seed.yml"
       - ".github/workflows/core-all-mode-release.yml"
+      - ".github/workflows/ai-analyzer-release.yml"
       - "Dockerfile"
   workflow_dispatch:
 
@@ -84,12 +85,14 @@ jobs:
           test_core_release_contract.py
           test_core_release_runner.py
           test_core_vector_engine_roadmap.py
-      - name: AI analyzer roadmap confidence and auto decision contracts
+      - name: AI analyzer roadmap and release unit contracts
         run: >-
           python -m pytest -q
           test_ai_analyzer_roadmap.py
           test_analyzer_contracts.py
           test_analyzer_decision_gate.py
+          test_analyzer_release_contract.py
+          test_analyzer_release_runner.py
 
   pipeline-integration:
     runs-on: ubuntu-latest
