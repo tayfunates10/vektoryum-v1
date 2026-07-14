@@ -40,6 +40,13 @@ def _required_metrics(case_id: str) -> set[str]:
     return required
 
 
+def _case_ids(results: list[dict[str, Any]]) -> set[str]:
+    ids = {str(item.get("case_id", "")) for item in results}
+    if "" in ids or len(ids) != len(results):
+        raise ValueError("benchmark case ids must be non-empty and unique")
+    return ids
+
+
 def _only_render_time_regressed(delta: dict[str, Any]) -> bool:
     regressions = [
         metric["metric"]
@@ -55,12 +62,10 @@ def _normalize_common_mode_timing(
     current: list[dict[str, Any]],
     raw_delta: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
-    """Remove bounded hosted-runner slowdown shared by almost the whole corpus.
+    """Remove bounded hosted-runner slowdown for non-PR/scheduled comparisons.
 
-    A single case or mixed metric regression is never normalized. At least six
-    cases and 75% of the corpus must exceed the original 10% timing signal in
-    the same direction. The median slowdown is capped at 1.50x; larger shifts
-    remain fail-closed. Raw ratios are retained in the report for audit.
+    PR runs should supply a same-run base-SHA timing baseline instead. This
+    historical fallback remains fail-closed above a 1.50x median shift.
     """
     if not _only_render_time_regressed(raw_delta):
         return current, None
@@ -87,8 +92,7 @@ def _normalize_common_mode_timing(
 
     normalized = deepcopy(current)
     for item in normalized:
-        metrics = item["metrics"]
-        metrics["render_ms"] = float(metrics["render_ms"]) / factor
+        item["metrics"]["render_ms"] = float(item["metrics"]["render_ms"]) / factor
     return normalized, {
         "schema_version": "benchmark-timing-normalization-v1",
         "applied": True,
@@ -103,7 +107,65 @@ def _normalize_common_mode_timing(
     }
 
 
-def evaluate_release_gate(current_payload: dict[str, Any], baseline_payload: dict[str, Any] | None) -> dict[str, Any]:
+def _apply_same_runner_timing_baseline(
+    historical_baseline: list[dict[str, Any]],
+    timing_payload: dict[str, Any],
+    current_payload: dict[str, Any],
+    current_ids: set[str],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Replace only historical render times with base-SHA times from this runner."""
+    timing_results = _results(timing_payload)
+    timing_ids = _case_ids(timing_results)
+    if timing_ids != current_ids:
+        raise ValueError("same-run timing baseline case set mismatch")
+    if timing_payload.get("measurement_method") != current_payload.get("measurement_method"):
+        raise ValueError("same-run timing baseline measurement method mismatch")
+
+    timing_by_id = {str(item["case_id"]): item for item in timing_results}
+    combined = deepcopy(historical_baseline)
+    ratios_ready = 0
+    for item in combined:
+        case_id = str(item["case_id"])
+        value = (timing_by_id[case_id].get("metrics") or {}).get("render_ms")
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or float(value) <= 0:
+            raise ValueError(f"same-run timing baseline is unmeasured: {case_id}")
+        item["metrics"]["render_ms"] = float(value)
+        ratios_ready += 1
+    return combined, {
+        "schema_version": "benchmark-same-run-timing-baseline-v1",
+        "source": "pull_request_base_sha_same_runner",
+        "case_count": ratios_ready,
+        "measurement_method": timing_payload.get("measurement_method"),
+    }
+
+
+def _report(
+    *,
+    status: str,
+    reason: str,
+    unmeasured: list[dict[str, str]],
+    delta: dict[str, Any] | None,
+    timing_normalization: dict[str, Any] | None = None,
+    timing_baseline: dict[str, Any] | None = None,
+    **extra: Any,
+) -> dict[str, Any]:
+    return {
+        "schema_version": "benchmark-release-gate-v1",
+        "status": status,
+        "reason": reason,
+        "unmeasured": unmeasured,
+        "delta": delta,
+        "timing_normalization": timing_normalization,
+        "timing_baseline": timing_baseline,
+        **extra,
+    }
+
+
+def evaluate_release_gate(
+    current_payload: dict[str, Any],
+    baseline_payload: dict[str, Any] | None,
+    timing_baseline_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     current = _results(current_payload)
     unmeasured: list[dict[str, str]] = []
     for case in current:
@@ -114,77 +176,79 @@ def evaluate_release_gate(current_payload: dict[str, Any], baseline_payload: dic
                 unmeasured.append({"case_id": case_id, "metric": metric})
 
     if baseline_payload is None:
-        return {
-            "schema_version": "benchmark-release-gate-v1",
-            "status": "bootstrap" if not unmeasured else "fail",
-            "reason": "baseline_missing" if not unmeasured else "unmeasured_required_metrics",
-            "unmeasured": unmeasured,
-            "delta": None,
-            "timing_normalization": None,
-        }
+        return _report(
+            status="bootstrap" if not unmeasured else "fail",
+            reason="baseline_missing" if not unmeasured else "unmeasured_required_metrics",
+            unmeasured=unmeasured,
+            delta=None,
+        )
 
     baseline = _results(baseline_payload)
     if unmeasured:
-        return {
-            "schema_version": "benchmark-release-gate-v1",
-            "status": "fail",
-            "reason": "unmeasured_required_metrics",
-            "unmeasured": unmeasured,
-            "delta": None,
-            "timing_normalization": None,
-        }
+        return _report(
+            status="fail",
+            reason="unmeasured_required_metrics",
+            unmeasured=unmeasured,
+            delta=None,
+        )
 
-    current_ids = {str(item.get("case_id", "")) for item in current}
-    baseline_ids = {str(item.get("case_id", "")) for item in baseline}
-    if "" in current_ids or "" in baseline_ids or len(current_ids) != len(current) or len(baseline_ids) != len(baseline):
-        raise ValueError("benchmark case ids must be non-empty and unique")
+    current_ids = _case_ids(current)
+    baseline_ids = _case_ids(baseline)
     if baseline_ids != current_ids:
         added = sorted(current_ids - baseline_ids)
         removed = sorted(baseline_ids - current_ids)
         if baseline_ids < current_ids:
-            return {
-                "schema_version": "benchmark-release-gate-v1",
-                "status": "bootstrap",
-                "reason": "case_set_expanded",
-                "unmeasured": [],
-                "delta": None,
-                "timing_normalization": None,
-                "case_set": {"added": added, "removed": []},
-            }
-        return {
-            "schema_version": "benchmark-release-gate-v1",
-            "status": "fail",
-            "reason": "case_set_mismatch",
-            "unmeasured": [],
-            "delta": None,
-            "timing_normalization": None,
-            "case_set": {"added": added, "removed": removed},
-        }
+            return _report(
+                status="bootstrap",
+                reason="case_set_expanded",
+                unmeasured=[],
+                delta=None,
+                case_set={"added": added, "removed": []},
+            )
+        return _report(
+            status="fail",
+            reason="case_set_mismatch",
+            unmeasured=[],
+            delta=None,
+            case_set={"added": added, "removed": removed},
+        )
 
     current_method = current_payload.get("measurement_method")
     baseline_method = baseline_payload.get("measurement_method")
     if current_method != baseline_method:
         if not isinstance(current_method, dict) or not str(current_method.get("version", "")).strip():
-            return {
-                "schema_version": "benchmark-release-gate-v1",
-                "status": "fail",
-                "reason": "invalid_measurement_method",
-                "unmeasured": [],
-                "delta": None,
-                "timing_normalization": None,
-            }
-        return {
-            "schema_version": "benchmark-release-gate-v1",
-            "status": "bootstrap",
-            "reason": "measurement_method_changed",
-            "unmeasured": [],
-            "delta": None,
-            "timing_normalization": None,
-            "measurement_method": {
-                "baseline": baseline_method,
-                "current": current_method,
-            },
-        }
+            return _report(
+                status="fail",
+                reason="invalid_measurement_method",
+                unmeasured=[],
+                delta=None,
+            )
+        return _report(
+            status="bootstrap",
+            reason="measurement_method_changed",
+            unmeasured=[],
+            delta=None,
+            measurement_method={"baseline": baseline_method, "current": current_method},
+        )
+
+    comparison_baseline = baseline
+    timing_baseline: dict[str, Any] | None = None
+    if timing_baseline_payload is not None:
+        try:
+            comparison_baseline, timing_baseline = _apply_same_runner_timing_baseline(
+                baseline,
+                timing_baseline_payload,
+                current_payload,
+                current_ids,
+            )
+        except ValueError as exc:
+            return _report(
+                status="fail",
+                reason="invalid_same_runner_timing_baseline",
+                unmeasured=[],
+                delta=None,
+                timing_baseline={"error": str(exc)},
+            )
 
     exclusions = {
         case_id: {"alpha_iou"}
@@ -192,19 +256,23 @@ def evaluate_release_gate(current_payload: dict[str, Any], baseline_payload: dic
         if _category(case_id) not in _ALPHA_RELEVANT_CATEGORIES
     }
     raw_delta = build_delta_report(
-        baseline,
+        comparison_baseline,
         current,
         excluded_metrics_by_case=exclusions,
         tolerances=_RELEASE_TOLERANCES,
     )
-    compared_current, timing_normalization = _normalize_common_mode_timing(
-        baseline,
-        current,
-        raw_delta,
-    )
+
+    timing_normalization = None
+    compared_current = current
+    if timing_baseline is None:
+        compared_current, timing_normalization = _normalize_common_mode_timing(
+            comparison_baseline,
+            current,
+            raw_delta,
+        )
     delta = (
         build_delta_report(
-            baseline,
+            comparison_baseline,
             compared_current,
             excluded_metrics_by_case=exclusions,
             tolerances=_RELEASE_TOLERANCES,
@@ -212,14 +280,14 @@ def evaluate_release_gate(current_payload: dict[str, Any], baseline_payload: dic
         if timing_normalization is not None
         else raw_delta
     )
-    return {
-        "schema_version": "benchmark-release-gate-v1",
-        "status": "pass" if delta["status"] == "pass" else "fail",
-        "reason": "within_tolerance" if delta["status"] == "pass" else "metric_regression",
-        "unmeasured": [],
-        "delta": delta,
-        "timing_normalization": timing_normalization,
-    }
+    return _report(
+        status="pass" if delta["status"] == "pass" else "fail",
+        reason="within_tolerance" if delta["status"] == "pass" else "metric_regression",
+        unmeasured=[],
+        delta=delta,
+        timing_normalization=timing_normalization,
+        timing_baseline=timing_baseline,
+    )
 
 
 def write_gate_report(path: Path, report: dict[str, Any]) -> None:
@@ -230,11 +298,21 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--current", required=True, type=Path)
     parser.add_argument("--baseline", type=Path)
+    parser.add_argument("--timing-baseline", type=Path)
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
     current = json.loads(args.current.read_text(encoding="utf-8"))
-    baseline = json.loads(args.baseline.read_text(encoding="utf-8")) if args.baseline is not None and args.baseline.exists() else None
-    report = evaluate_release_gate(current, baseline)
+    baseline = (
+        json.loads(args.baseline.read_text(encoding="utf-8"))
+        if args.baseline is not None and args.baseline.exists()
+        else None
+    )
+    timing_baseline = (
+        json.loads(args.timing_baseline.read_text(encoding="utf-8"))
+        if args.timing_baseline is not None and args.timing_baseline.exists()
+        else None
+    )
+    report = evaluate_release_gate(current, baseline, timing_baseline)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     write_gate_report(args.output, report)
     print(json.dumps(report, sort_keys=True))
