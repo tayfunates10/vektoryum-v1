@@ -43,6 +43,7 @@
     "recommended_mode",
     "execution_mode",
     "abstained",
+    "fallback_applied",
     "reason_codes",
     "confidence",
     "runner_up_mode",
