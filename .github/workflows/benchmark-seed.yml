@@ -28,7 +28,7 @@ concurrency:
 jobs:
   seed-benchmark:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 50
     defaults:
       run:
         working-directory: engine
@@ -38,6 +38,8 @@ jobs:
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -60,6 +62,29 @@ jobs:
           test_benchmark_release_gate.py
           test_benchmark_release_gate_cli.py
           test_benchmark_quality_report.py
+      - name: Generate same-run PR base timing baseline
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          base_worktree="${RUNNER_TEMP}/vektoryum-benchmark-base"
+          base_artifacts="${RUNNER_TEMP}/vektoryum-benchmark-base-artifacts"
+          rm -rf "$base_worktree" "$base_artifacts"
+          git worktree add --detach "$base_worktree" "${{ github.event.pull_request.base.sha }}"
+          cleanup() {
+            git worktree remove --force "$base_worktree" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          (
+            cd "$base_worktree/engine"
+            python -m benchmark.seed_runner --output "$base_artifacts"
+            python -m benchmark.pipeline_smoke \
+              --output "$base_artifacts/pipeline" \
+              --engine-version "${{ github.event.pull_request.base.sha }}"
+          )
+          mkdir -p same_runner_baseline
+          cp "$base_artifacts/pipeline/pipeline_results.json" \
+             same_runner_baseline/pipeline_results.json
       - name: Download previous successful seed artifact
         shell: bash
         run: |
@@ -94,6 +119,9 @@ jobs:
           args=(--current benchmark_artifacts/pipeline/pipeline_results.json --output benchmark_artifacts/pipeline/release_gate.json)
           if [ -f baseline_artifact/pipeline/pipeline_results.json ]; then
             args+=(--baseline baseline_artifact/pipeline/pipeline_results.json)
+          fi
+          if [ -f same_runner_baseline/pipeline_results.json ]; then
+            args+=(--timing-baseline same_runner_baseline/pipeline_results.json)
           fi
           python -m benchmark.release_gate "${args[@]}"
       - name: Upload JSON HTML fixtures and real pipeline results

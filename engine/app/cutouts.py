@@ -1,36 +1,36 @@
-"""Shape stacking dönüşümü: stacked -> cut-outs.
+"""Shape stacking conversion: stacked -> safe cut-outs.
 
-VTracer çıktısı KATMANLIDIR (stacked): şekiller belge sırasıyla üst üste
-boyanır; alttaki şeklin görünmeyen bölümü de path'inde durur. CUT-OUTS
-gösteriminde her path yalnız GÖRÜNEN bölgesini içerir: üstündeki şekillerin
-birleşimi kendisinden çıkarılır. Böylece bir bileşeni seçip taşımak, altında
-başka şekil kalmadan mümkün olur (düzenlenebilirlik).
-
-Uygulama notları:
-* Boolean işlemler ``pyclipper`` ile tamsayı uzayında yapılır (ölçek 100 =
-  0.01px hassasiyet). Eğriler yoğun örneklemeyle (adım ~0.8px) poligonlara
-  düzleştirilir — cut-outs geometrisi kesim sınırları içerdiğinden dosya
-  büyür; bu, gösterimin doğası gereğidir.
-* DİKİŞ ÖNLEME: üstteki birleşim çıkarılmadan önce ~0.25px İÇERİ ofsetlenir;
-  parçalar bu kadar binişir ve render anti-alias'ında kılcal zemin sızması
-  (seam) oluşmaz.
-* ``pyclipper`` yoksa dönüşüm ``skipped`` döner; stacked çıktı aynen kalır
-  (çökme yok, zorunlu bağımlılık değil).
+The pyclipper implementation remains available for already-polygonal, closed,
+fill-only paths. The public production entry point never samples Bezier or arc
+geometry. A finite path-level translate on a polygon is normalized analytically;
+all other transforms, unsupported geometry, missing dependencies or invalid
+post-transform topology leave the exact stacked bytes unchanged.
 """
-
 from __future__ import annotations
 
+from hashlib import sha256
 import logging
-import xml.etree.ElementTree as ET
+import os
 from pathlib import Path
+import re
+import tempfile
 from typing import Any
+import xml.etree.ElementTree as ET
+
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
 SVG_NS = "http://www.w3.org/2000/svg"
-_SCALE = 100.0          # tamsayı uzay ölçeği (0.01px)
-_OVERLAP_PX = 0.25      # dikiş önleme binişi
-_FLATTEN_STEP = 0.8     # eğri düzleştirme adımı (px)
+_SCALE = 100.0
+_OVERLAP_PX = 0.25
+_FLATTEN_STEP = 0.8
+_LINEAR_COMMANDS = frozenset("MLHVZmlhvz")
+_NUMBER = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?"
+_TRANSLATE_RE = re.compile(
+    rf"translate\(\s*({_NUMBER})(?:\s*[, ]\s*({_NUMBER}))?\s*\)",
+    re.IGNORECASE,
+)
 
 try:
     import pyclipper
@@ -39,46 +39,42 @@ except ImportError:  # pragma: no cover
 
 try:
     from svgpathtools import parse_path
+    from svgpathtools.path import transform as transform_path
 except ImportError:  # pragma: no cover
     parse_path = None
+    transform_path = None
 
 
 def is_available() -> bool:
-    return pyclipper is not None and parse_path is not None
+    return pyclipper is not None and parse_path is not None and transform_path is not None
 
 
 def _flatten_to_rings(
     d: str, xf: tuple[float, float, float, float, float, float] | None = None
 ) -> list[list[tuple[int, int]]] | None:
-    """d-string'in KAPALI alt yollarını tamsayı halkalarına düzleştirir.
-
-    ``xf`` verilirse (a,b,c,d,e,f) affine dönüşümü uygulanır: path'ler farklı
-    ``transform`` taşıyabilir; boolean işlemler TEK kullanıcı uzayında yapılmalı
-    (yerel koordinat karışımı yanlış bölge çıkarıyordu — gerçek bir hataydı).
-    """
+    """Flatten already-linear closed paths for the private boolean backend."""
     try:
         rings: list[list[tuple[int, int]]] = []
         for sub in parse_path(d).continuous_subpaths():
             try:
                 if not sub.isclosed():
-                    return None  # açık alt yol: bu path dönüştürülmez
+                    return None
                 length = sub.length()
             except Exception:  # noqa: BLE001
                 return None
             n = int(max(8, min(4000, (length or 8) / _FLATTEN_STEP)))
             ring = []
             for i in range(n):
-                p = sub.point(i / n)
-                x, y = p.real, p.imag
+                point = sub.point(i / n)
+                x, y = point.real, point.imag
                 if xf is not None:
                     a, b, c, dd, e, f = xf
                     x, y = a * x + c * y + e, b * x + dd * y + f
                 ring.append((int(round(x * _SCALE)), int(round(y * _SCALE))))
-            # ardışık tekrarları at
             dedup = [ring[0]]
-            for q in ring[1:]:
-                if q != dedup[-1]:
-                    dedup.append(q)
+            for point in ring[1:]:
+                if point != dedup[-1]:
+                    dedup.append(point)
             if len(dedup) >= 3:
                 rings.append(dedup)
         return rings if rings else None
@@ -89,49 +85,51 @@ def _flatten_to_rings(
 def _rings_to_d(rings: list[list[tuple[int, int]]]) -> str:
     parts: list[str] = []
     for ring in rings:
-        pts = [(x / _SCALE, y / _SCALE) for x, y in ring]
-        parts.append(f"M {pts[0][0]:.2f} {pts[0][1]:.2f}")
-        parts.extend(f"L {x:.2f} {y:.2f}" for x, y in pts[1:])
+        points = [(x / _SCALE, y / _SCALE) for x, y in ring]
+        parts.append(f"M {points[0][0]:.2f} {points[0][1]:.2f}")
+        parts.extend(f"L {x:.2f} {y:.2f}" for x, y in points[1:])
         parts.append("Z")
     return " ".join(parts)
 
 
 def _union(subject: list, clip: list) -> list:
     if not subject:
-        return [list(r) for r in clip]
+        return [list(ring) for ring in clip]
     if not clip:
         return subject
-    pc = pyclipper.Pyclipper()
-    pc.AddPaths(subject, pyclipper.PT_SUBJECT, True)
-    pc.AddPaths(clip, pyclipper.PT_CLIP, True)
-    return pc.Execute(pyclipper.CT_UNION, pyclipper.PFT_NONZERO, pyclipper.PFT_NONZERO)
+    operation = pyclipper.Pyclipper()
+    operation.AddPaths(subject, pyclipper.PT_SUBJECT, True)
+    operation.AddPaths(clip, pyclipper.PT_CLIP, True)
+    return operation.Execute(
+        pyclipper.CT_UNION,
+        pyclipper.PFT_NONZERO,
+        pyclipper.PFT_NONZERO,
+    )
 
 
 def _difference(subject: list, clip: list) -> list:
     if not clip:
         return subject
-    pc = pyclipper.Pyclipper()
-    pc.AddPaths(subject, pyclipper.PT_SUBJECT, True)
-    pc.AddPaths(clip, pyclipper.PT_CLIP, True)
-    return pc.Execute(pyclipper.CT_DIFFERENCE, pyclipper.PFT_EVENODD, pyclipper.PFT_NONZERO)
+    operation = pyclipper.Pyclipper()
+    operation.AddPaths(subject, pyclipper.PT_SUBJECT, True)
+    operation.AddPaths(clip, pyclipper.PT_CLIP, True)
+    return operation.Execute(
+        pyclipper.CT_DIFFERENCE,
+        pyclipper.PFT_EVENODD,
+        pyclipper.PFT_NONZERO,
+    )
 
 
 def _inset(rings: list, delta_px: float) -> list:
-    """Halkaları içeri ofsetler (dikiş önleme binişi için)."""
     if not rings:
         return rings
-    po = pyclipper.PyclipperOffset()
-    po.AddPaths(rings, pyclipper.JT_MITER, pyclipper.ET_CLOSEDPOLYGON)
-    return po.Execute(-delta_px * _SCALE)
+    offset = pyclipper.PyclipperOffset()
+    offset.AddPaths(rings, pyclipper.JT_MITER, pyclipper.ET_CLOSEDPOLYGON)
+    return offset.Execute(-delta_px * _SCALE)
 
 
-def convert_svg_to_cutouts(svg_path: Path) -> dict[str, Any]:
-    """Stacked SVG'yi yerinde cut-outs gösterimine çevirir.
-
-    Her path'ten, belge sırasında ÜSTÜNDE kalan path'lerin (hafif içeri
-    ofsetli) birleşimi çıkarılır. Tamamen örtülen path'ler silinir. Eğri
-    içermeyen görünüm birebir korunur (0.01px hassasiyet + 0.25px biniş).
-    """
+def _convert_svg_to_cutouts_polygonal(svg_path: Path) -> dict[str, Any]:
+    """Private boolean implementation; caller has already rejected curves."""
     if not is_available():
         return {"status": "skipped", "error": "pyclipper/svgpathtools yok"}
     svg_path = Path(svg_path)
@@ -139,28 +137,21 @@ def convert_svg_to_cutouts(svg_path: Path) -> dict[str, Any]:
         ET.register_namespace("", SVG_NS)
         tree = ET.parse(str(svg_path))
         root = tree.getroot()
-    except Exception as e:  # noqa: BLE001
-        return {"status": "failed", "error": str(e)}
+    except Exception as exc:  # noqa: BLE001
+        return {"status": "failed", "error": str(exc)}
 
-    # path öğelerini (ebeveynleriyle) belge sırasında topla; transform'lar
-    # kullanıcı uzayına uygulanır ki tüm halkalar aynı koordinat uzayında olsun
-    from app.exporters import _parse_transform
-
-    items: list[tuple[Any, Any, list | None]] = []  # (parent, el, rings)
+    items: list[tuple[Any, Any, list | None]] = []
     for parent in root.iter():
-        # ebeveyn (grup) transform'u kaldırılamaz (kardeşleri etkiler); böyle
-        # path'ler dönüştürülmez, stacked kalır ve birleşime katılmaz
-        parent_has_xf = parent.get("transform") is not None
-        for el in list(parent):
-            if el.tag.split("}")[-1] != "path":
+        parent_has_transform = parent.get("transform") is not None
+        for element in list(parent):
+            if element.tag.split("}")[-1] != "path":
                 continue
-            d = el.get("d")
-            if parent_has_xf:
-                items.append((parent, el, None))
+            d = element.get("d")
+            if parent_has_transform:
+                items.append((parent, element, None))
                 continue
-            xf = _parse_transform(el.get("transform")) if el.get("transform") else None
-            rings = _flatten_to_rings(d, xf) if d else None
-            items.append((parent, el, rings))
+            rings = _flatten_to_rings(d) if d else None
+            items.append((parent, element, rings))
     if len(items) < 2:
         return {"status": "no_change", "paths": len(items)}
 
@@ -168,31 +159,154 @@ def convert_svg_to_cutouts(svg_path: Path) -> dict[str, Any]:
         upper_union: list = []
         removed = 0
         changed = 0
-        # üstten (belgede son) alta doğru
-        for parent, el, rings in reversed(items):
+        for parent, element, rings in reversed(items):
             if rings is None:
-                continue  # dönüştürülemeyen path aynen kalır; birleşime katılmaz
+                continue
             visible = _difference(rings, _inset(upper_union, _OVERLAP_PX))
             if not visible:
-                parent.remove(el)
+                parent.remove(element)
                 removed += 1
             else:
                 new_d = _rings_to_d(visible)
                 if new_d:
-                    el.set("d", new_d)
-                    el.set("fill-rule", "evenodd")
-                    # yeni d KULLANICI uzayında: transform kaldırılmalı,
-                    # yoksa çift uygulanır
-                    if el.get("transform") is not None:
-                        del el.attrib["transform"]
+                    element.set("d", new_d)
+                    element.set("fill-rule", "evenodd")
                     changed += 1
             upper_union = _union(upper_union, rings)
-    except Exception as e:  # noqa: BLE001
-        logger.warning("Cut-outs dönüşümü başarısız, stacked korunuyor: %s", e)
-        return {"status": "failed", "error": str(e)}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Cut-outs dönüşümü başarısız, stacked korunuyor: %s", exc)
+        return {"status": "failed", "error": str(exc)}
 
     try:
         tree.write(str(svg_path), encoding="utf-8", xml_declaration=True)
-    except Exception as e:  # noqa: BLE001
-        return {"status": "failed", "error": str(e)}
+    except Exception as exc:  # noqa: BLE001
+        return {"status": "failed", "error": str(exc)}
     return {"status": "completed", "paths_changed": changed, "paths_removed": removed}
+
+
+def _normalize_polygon_translates(source: Path, destination: Path) -> bool | None:
+    """Normalize only finite path-level translate transforms.
+
+    Returns ``True`` when a normalized copy was written, ``False`` when no
+    transforms exist, and ``None`` for unsupported/group/curved transforms.
+    """
+    try:
+        ET.register_namespace("", SVG_NS)
+        tree = ET.parse(str(source))
+        root = tree.getroot()
+    except Exception:  # noqa: BLE001
+        return None
+
+    changed = False
+    for element in root.iter():
+        transform = (element.get("transform") or "").strip()
+        if not transform:
+            continue
+        if element.tag.split("}")[-1] != "path":
+            return None
+        match = _TRANSLATE_RE.fullmatch(transform)
+        d = element.get("d") or ""
+        commands = re.findall(r"[A-Za-z]", d)
+        if match is None or not commands or any(command not in _LINEAR_COMMANDS for command in commands):
+            return None
+        tx = float(match.group(1))
+        ty = float(match.group(2) or 0.0)
+        if not np.isfinite([tx, ty]).all():
+            return None
+        try:
+            matrix = np.array([[1.0, 0.0, tx], [0.0, 1.0, ty], [0.0, 0.0, 1.0]])
+            normalized = transform_path(parse_path(d), matrix)
+            serialized_subpaths: list[str] = []
+            for subpath in normalized.continuous_subpaths():
+                serialized = subpath.d().strip()
+                if subpath.isclosed() and not re.search(r"[Zz]\s*$", serialized):
+                    serialized = f"{serialized} Z"
+                serialized_subpaths.append(serialized)
+            if not serialized_subpaths:
+                return None
+        except Exception:  # noqa: BLE001
+            return None
+        element.set("d", " ".join(serialized_subpaths))
+        del element.attrib["transform"]
+        changed = True
+
+    if not changed:
+        return False
+    tree.write(str(destination), encoding="utf-8", xml_declaration=True)
+    return True
+
+
+def convert_svg_to_cutouts(svg_path: Path) -> dict[str, Any]:
+    """Production cutout entry point with exact-byte stacked fallback."""
+    from app.safe_cutouts import build_safe_cutout_candidate  # noqa: PLC0415
+    from app.transform_journal import _atomic_write_bytes  # noqa: PLC0415
+
+    svg_path = Path(svg_path)
+    original_bytes = svg_path.read_bytes()
+    original_sha256 = sha256(original_bytes).hexdigest()
+    candidate_path = svg_path.with_name(f".{svg_path.name}.curve-safe.candidate.svg")
+    normalized_path: Path | None = None
+    candidate_path.unlink(missing_ok=True)
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=svg_path.parent,
+            prefix=f".{svg_path.name}.",
+            suffix=".translated.svg",
+            delete=False,
+        ) as handle:
+            possible_normalized = Path(handle.name)
+        normalized = _normalize_polygon_translates(svg_path, possible_normalized)
+        if normalized is True:
+            normalized_path = possible_normalized
+            gate_source = normalized_path
+        else:
+            possible_normalized.unlink(missing_ok=True)
+            gate_source = svg_path
+
+        report = build_safe_cutout_candidate(
+            gate_source,
+            candidate_path,
+            _convert_svg_to_cutouts_polygonal,
+        )
+        report = {
+            **report,
+            "input_source_sha256": original_sha256,
+            "translate_normalized": normalized is True,
+        }
+        if report.get("status") not in {"completed", "no_change"}:
+            if sha256(svg_path.read_bytes()).hexdigest() != original_sha256:
+                _atomic_write_bytes(svg_path, original_bytes)
+            return report
+
+        expected_sha256 = str(report.get("published_sha256") or "")
+        try:
+            os.replace(candidate_path, svg_path)
+        except OSError as exc:
+            _atomic_write_bytes(svg_path, original_bytes)
+            return {
+                **report,
+                "status": "failed",
+                "reason": "atomic_publish_failed",
+                "reason_codes": ["atomic_publish_failed"],
+                "error": str(exc),
+                "fallback": "stacked",
+            }
+
+        actual_sha256 = sha256(svg_path.read_bytes()).hexdigest()
+        if not expected_sha256 or actual_sha256 != expected_sha256:
+            _atomic_write_bytes(svg_path, original_bytes)
+            return {
+                **report,
+                "status": "failed",
+                "reason": "published_digest_mismatch",
+                "reason_codes": ["published_digest_mismatch"],
+                "fallback": "stacked",
+            }
+        return {**report, "final_sha256": actual_sha256}
+    finally:
+        candidate_path.unlink(missing_ok=True)
+        if normalized_path is not None:
+            normalized_path.unlink(missing_ok=True)
+
+
+__all__ = ["convert_svg_to_cutouts", "is_available"]

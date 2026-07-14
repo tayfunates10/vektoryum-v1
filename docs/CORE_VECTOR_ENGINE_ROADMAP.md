@@ -19,7 +19,7 @@ Durum: **complete**
 
 ## CVE-2 — Deterministic centerline fallback closure
 
-Durum: **complete in this PR**
+Durum: **complete**
 
 - `opencv_skeleton` public engine adı korunur, ancak fallback artık skeleton
   konturunu değil skeleton grafını izler.
@@ -37,14 +37,20 @@ Durum: **complete in this PR**
 
 ## CVE-3 — Curve-preserving cutout and topology closure
 
-Durum: **pending**
+Durum: **complete in this PR**
 
-Mevcut `shape_stacking=cutouts` yolu pyclipper için eğrileri poligona
-örnekleyebiliyor. Production API'de Bézier/yay geometri artık
-polygon-flattening yoluna sokulmayacak. Promotion-ready canonical yüz belgesi
-veya eğri-koruyan counter modeli kullanılamıyorsa stacked çıktı aynen korunacak.
-Kısmi mutation yayımlanmayacak; seam/halo ve komut büyümesi sözleşmeleri CI ile
-kilitlenecektir.
+- Public `shape_stacking=cutouts` girişi artık strict polygonal source contract
+  ile korunur.
+- Bézier/yay komutları, transform, stroke, açık path, unsupported primitive veya
+  doğrulanamayan fill modeli görülürse boolean motor hiç çalışmaz ve exact
+  stacked baytları korunur.
+- Yalnız kapalı `M/L/H/V/Z` fill path'leri private pyclipper motoruna geçebilir.
+- Converter ikinci bir candidate dosyada çalışır; XML, sonlu koordinat, path
+  coverage, command-growth ve digest kontrolleri geçmeden atomik publish yoktur.
+- Dependency yokluğu, converter exception ve kısmi yazma stacked çıktıyı
+  değiştiremez.
+- Adjacent-color fixture için `seam_ratio <= 0.002`, `halo_ratio <= 0.02` ve
+  bounded command growth CI'da zorunludur.
 
 ## CVE-4 — All-mode artifact and corpus release closure
 

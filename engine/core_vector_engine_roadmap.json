@@ -40,8 +40,8 @@
     },
     {
       "id": "polygon_flattening_cutouts",
-      "status": "open",
-      "evidence": "app/cutouts.py",
+      "status": "closed",
+      "evidence": "app/safe_cutouts.py",
       "closure_phase": "CVE-3"
     },
     {
@@ -99,7 +99,7 @@
     {
       "id": "CVE-3",
       "title": "Curve-preserving cutout and topology closure",
-      "status": "pending",
+      "status": "complete",
       "acceptance_criteria": [
         "The production API never polygon-flattens Bezier or arc geometry for shape_stacking=cutouts.",
         "A promotion-ready canonical non-overlapping face document or a curve-preserving counter representation is used; otherwise the request fails closed to stacked output.",
@@ -108,6 +108,10 @@
         "Curved counters, nested holes, adjacent colors, unsupported transforms and dependency-unavailable regressions pass."
       ],
       "evidence": [
+        "core_vector_engine_roadmap.json",
+        "test_core_vector_engine_roadmap.py",
+        "test_safe_cutouts.py",
+        "app/safe_cutouts.py",
         "app/cutouts.py",
         "app/counter_merge.py",
         "app/production_export_integration.py"
