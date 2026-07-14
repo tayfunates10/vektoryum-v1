@@ -40,6 +40,17 @@ def test_open_filled_cycle_is_rejected_but_open_stroke_is_allowed(tmp_path) -> N
     assert _has_open_required_cycle(stroke) is False
 
 
+def test_geometrically_closed_fill_does_not_require_literal_z(tmp_path) -> None:
+    svg = tmp_path / "closed-without-z.svg"
+    svg.write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">'
+        '<path fill="#000" d="M 1 1 L 9 1 L 9 9 L 1 9 L 1 1"/>'
+        "</svg>",
+        encoding="utf-8",
+    )
+    assert _has_open_required_cycle(svg) is False
+
+
 def test_score_snapshot_must_match_the_exact_svg(tmp_path) -> None:
     svg = tmp_path / "artifact.svg"
     svg.write_text(
