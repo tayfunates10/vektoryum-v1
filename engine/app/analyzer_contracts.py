@@ -55,6 +55,13 @@ FEATURE_SCHEMA: dict[str, dict[str, Any]] = {
     "edge_coherence": {"kind": "number", "unit": "ratio", "minimum": 0.0, "maximum": 1.0, "required": False, "optional_signal": "hed"},
 }
 
+_SUPPORT_EVIDENCE_DEFAULTS: dict[str, Any] = {
+    "estimated_color_count": None,
+    "blur_score": 100.0,
+    "semantic_edge_density": None,
+    "edge_coherence": None,
+}
+
 _CALIBRATION_BINS = (
     (-1.0, 0.05),
     (0.05, 0.20),
@@ -223,9 +230,20 @@ def _margin_for_selected(scores: dict[str, float], selected: str) -> tuple[str, 
 
 def _bin_index(margin: float) -> int:
     for index, (lower, upper) in enumerate(_CALIBRATION_BINS):
-        if lower <= margin <= upper if index == 0 else lower < margin <= upper:
+        inside = lower <= margin <= upper if index == 0 else lower < margin <= upper
+        if inside:
             return index
     return len(_CALIBRATION_BINS) - 1 if margin > 1.0 else 0
+
+
+def _normalized_evidence_features(raw: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(raw)
+    normalized.setdefault("estimated_color_count", normalized.get("flat_color_count"))
+    for name, value in _SUPPORT_EVIDENCE_DEFAULTS.items():
+        if name == "estimated_color_count":
+            continue
+        normalized.setdefault(name, value)
+    return normalized
 
 
 @lru_cache(maxsize=1)
@@ -250,10 +268,9 @@ def load_calibration_evidence() -> dict[str, Any]:
             raise ValueError(f"unsupported analyzer calibration label: {label}")
         if not isinstance(features, dict):
             raise ValueError(f"missing analyzer calibration features: {case_id}")
-        evidence_snapshot = dict(features)
-        evidence_snapshot.setdefault("semantic_edge_density", None)
-        evidence_snapshot.setdefault("edge_coherence", None)
-        snapshot, errors, _signals = validate_feature_snapshot(evidence_snapshot)
+        snapshot, errors, _signals = validate_feature_snapshot(
+            _normalized_evidence_features(features)
+        )
         if snapshot is None or errors:
             raise ValueError(f"invalid analyzer calibration features: {case_id}: {errors}")
     return payload
@@ -267,9 +284,7 @@ def calibration_summary() -> dict[str, Any]:
         for lower, upper in _CALIBRATION_BINS
     ]
     for case in payload["cases"]:
-        features = dict(case["features"])
-        features.setdefault("semantic_edge_density", None)
-        features.setdefault("edge_coherence", None)
+        features = _normalized_evidence_features(case["features"])
         scores = mode_support_scores(features)
         ranked = _ranked(scores)
         predicted = ranked[0][0]
@@ -318,6 +333,7 @@ def build_analyzer_contract(analysis: dict[str, Any], image: Image.Image) -> dic
         errors.append("detected_type_recommendation_mismatch")
 
     source_digest = decoded_pixel_sha256(image)
+    summary = calibration_summary()
     base = {
         "schema_version": CONTRACT_SCHEMA_VERSION,
         "feature_schema_version": FEATURE_SCHEMA_VERSION,
@@ -335,8 +351,8 @@ def build_analyzer_contract(analysis: dict[str, Any], image: Image.Image) -> dic
         "support_contradiction": None,
         "optional_signals": optional_signals,
         "calibration": {
-            "evidence_case_count": calibration_summary()["evidence_case_count"],
-            "evidence_sha256": calibration_summary()["evidence_sha256"],
+            "evidence_case_count": summary["evidence_case_count"],
+            "evidence_sha256": summary["evidence_sha256"],
             "selected_bin": None,
         },
     }
@@ -376,8 +392,8 @@ def build_analyzer_contract(analysis: dict[str, Any], image: Image.Image) -> dic
             "support_scores": scores,
             "support_contradiction": margin < 0,
             "calibration": {
-                "evidence_case_count": calibration_summary()["evidence_case_count"],
-                "evidence_sha256": calibration_summary()["evidence_sha256"],
+                "evidence_case_count": summary["evidence_case_count"],
+                "evidence_sha256": summary["evidence_sha256"],
                 "selected_bin": selected_bin,
             },
         }
