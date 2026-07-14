@@ -1,0 +1,130 @@
+{
+  "schema_version": "core-vector-engine-closure-v1",
+  "goal": "Close the production vector engine with explicit capability, topology, fallback and release contracts.",
+  "scope": {
+    "included": [
+      "candidate engine availability and deterministic fallback",
+      "centerline vector generation",
+      "shape topology and cutout behavior",
+      "final artifact and corpus release gates"
+    ],
+    "excluded": [
+      "image classification and automatic mode confidence; tracked by the AI analyzer roadmap",
+      "SaaS billing, authentication and user-interface work"
+    ]
+  },
+  "production_modes": [
+    "geometric_logo",
+    "minimal_ai",
+    "logo_color",
+    "flat_logo",
+    "single_color",
+    "lineart",
+    "centerline",
+    "photo_poster"
+  ],
+  "known_engines": [
+    "vtracer",
+    "opencv_contour",
+    "gradient",
+    "potrace",
+    "autotrace",
+    "opencv_skeleton"
+  ],
+  "known_limitations": [
+    {
+      "id": "centerline_placeholder",
+      "status": "open",
+      "evidence": "app/vector_engines.py",
+      "closure_phase": "CVE-2"
+    },
+    {
+      "id": "polygon_flattening_cutouts",
+      "status": "open",
+      "evidence": "app/cutouts.py",
+      "closure_phase": "CVE-3"
+    },
+    {
+      "id": "photo_fidelity_ceiling",
+      "status": "accepted_product_limit",
+      "evidence": "app/quality.py",
+      "closure_phase": "CVE-4"
+    },
+    {
+      "id": "optional_render_backends",
+      "status": "accepted_with_fail_closed_fallback",
+      "evidence": "app/fidelity.py",
+      "closure_phase": "CVE-4"
+    }
+  ],
+  "phases": [
+    {
+      "id": "CVE-1",
+      "title": "Finite capability and closure contract",
+      "status": "complete",
+      "acceptance_criteria": [
+        "A finite, machine-readable four-phase roadmap is committed and schema-validated.",
+        "Every production mode has a non-empty candidate plan and at least one non-optional candidate.",
+        "Every configured candidate references a known engine and every current limitation has exactly one closure phase.",
+        "Completed-phase evidence paths exist and production behavior remains unchanged."
+      ],
+      "evidence": [
+        "core_vector_engine_roadmap.json",
+        "test_core_vector_engine_roadmap.py",
+        "app/vector_engines.py",
+        "app/quality.py"
+      ]
+    },
+    {
+      "id": "CVE-2",
+      "title": "Deterministic centerline fallback closure",
+      "status": "pending",
+      "acceptance_criteria": [
+        "The OpenCV fallback traces a deterministic skeleton graph into open centerline paths instead of contouring the skeleton outline.",
+        "Short spurs are pruned by the configured minimum branch length while endpoints and multi-way junctions remain connected.",
+        "The candidate report identifies the fallback backend and exposes measurable topology/confidence data.",
+        "Fallback output cannot be marked production_ready when topology measurement is unavailable or violates the centerline contract.",
+        "Line, polyline, T-junction, cross-junction, loop, spur-pruning and repeat-digest regression fixtures pass."
+      ],
+      "evidence": [
+        "app/vector_engines.py",
+        "app/quality.py"
+      ]
+    },
+    {
+      "id": "CVE-3",
+      "title": "Curve-preserving cutout and topology closure",
+      "status": "pending",
+      "acceptance_criteria": [
+        "The production API never polygon-flattens Bezier or arc geometry for shape_stacking=cutouts.",
+        "A promotion-ready canonical non-overlapping face document or a curve-preserving counter representation is used; otherwise the request fails closed to stacked output.",
+        "No partial topology mutation is published and transform, digest and face/path coverage invariants are rechecked before export.",
+        "Visual regression satisfies seam_ratio <= 0.002 and halo_ratio <= 0.02 without unbounded command inflation.",
+        "Curved counters, nested holes, adjacent colors, unsupported transforms and dependency-unavailable regressions pass."
+      ],
+      "evidence": [
+        "app/cutouts.py",
+        "app/counter_merge.py",
+        "app/production_export_integration.py"
+      ]
+    },
+    {
+      "id": "CVE-4",
+      "title": "All-mode artifact and corpus release closure",
+      "status": "pending",
+      "acceptance_criteria": [
+        "Every explicit production mode has a representative deterministic three-run corpus result or an explicit fail-closed unavailable/needs_review verdict.",
+        "Final artifacts contain no bitmap payload, non-finite coordinate, open required cycle, stale score or mismatched output digest.",
+        "Artifact gates hold: ink_recall >= 0.995, ink_precision >= 0.975, component_delta == 0, seam_ratio <= 0.002 and halo_ratio <= 0.02 for the in-domain release corpus.",
+        "Photo/continuous-tone cases remain an explicit needs_review product limit rather than a false production_ready result.",
+        "Exact final artifact, hard SVG regression, all-mode corpus and benchmark release workflows are mandatory and green."
+      ],
+      "evidence": [
+        "test_artifact_quality.py",
+        "test_synthetic_vector_quality.py",
+        "regression/artifact_probe.py",
+        "app/quality.py"
+      ]
+    }
+  ]
+}
