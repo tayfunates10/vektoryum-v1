@@ -6,6 +6,7 @@ import hashlib
 import json
 import multiprocessing
 from pathlib import Path
+from queue import Empty
 from typing import Any
 
 import numpy as np
@@ -46,15 +47,24 @@ def _geometric(size: int) -> Image.Image:
 
 
 def _minimal(size: int) -> Image.Image:
+    """Curved monochrome wordmark-like field with a small blue accent.
+
+    Dense smooth waves keep edge density inside the flat-logo band while avoiding
+    the straight-corner signature of geometric marks. The small blue accent blocks
+    destructive binary modes without making the image color-rich.
+    """
     image = Image.new("RGB", (size, size), "white")
     draw = ImageDraw.Draw(image)
-    colors = [0, 32, 64, 96, 128, 160, 192, 224]
-    centers = [(105, 150), (235, 130), (375, 150), (515, 130), (130, 380), (270, 400), (410, 380), (540, 405)]
     u = size / 640.0
-    for index, ((cx, cy), value) in enumerate(zip(centers, colors)):
-        rx = (48 + (index % 3) * 7) * u
-        ry = (70 - (index % 2) * 9) * u
-        draw.ellipse(((cx*u-rx), (cy*u-ry), (cx*u+rx), (cy*u+ry)), fill=(value, value, value))
+    line_width = max(2, round(3*u))
+    for row in range(30):
+        base_y = (55 + row * 18) * u
+        points = []
+        for x in range(30, 611, 3):
+            wave = 8.0 * np.sin((x / 640.0) * np.pi * 6.0 + row * 0.31)
+            points.append((x*u, base_y + wave*u))
+        color = (35, 95, 205) if row in {10, 20} else (0, 0, 0)
+        draw.line(points, fill=color, width=line_width)
     return image
 
 
@@ -156,6 +166,21 @@ def _worker(queue: Any, case: dict[str, Any], repeat_index: int) -> None:
             analysis = analyzer.analyze_image_from_mem(image)
             decision = decide_trace_mode(analysis, image, "auto")
         contract = analysis.get("analyzer_contract") or {}
+        diagnostic_keys = (
+            "flat_color_count",
+            "edge_density",
+            "thin_ink_ratio",
+            "straight_edge_likelihood",
+            "corner_likelihood",
+            "has_gradient",
+            "likely_geometric_logo",
+            "likely_text_logo",
+            "likely_color_logo",
+            "likely_single_color",
+            "likely_line_art",
+            "likely_photo_or_complex",
+            "semantic_photo_like",
+        )
         queue.put(
             {
                 "ok": True,
@@ -166,6 +191,7 @@ def _worker(queue: Any, case: dict[str, Any], repeat_index: int) -> None:
                     "source_pixel_sha256": contract.get("source_pixel_sha256"),
                     "feature_digest": contract.get("feature_digest"),
                     "recommendation_digest": contract.get("recommendation_digest"),
+                    "detected_type": analysis.get("detected_type"),
                     "recommended_mode": analysis.get("recommended_mode"),
                     "decision_status": decision.get("status"),
                     "execution_mode": decision.get("execution_mode"),
@@ -175,6 +201,8 @@ def _worker(queue: Any, case: dict[str, Any], repeat_index: int) -> None:
                     "runner_up_margin": decision.get("runner_up_margin"),
                     "reason_codes": decision.get("reason_codes") or [],
                     "hed_status": (contract.get("optional_signals") or {}).get("hed"),
+                    "support_scores": contract.get("support_scores"),
+                    "analysis_features": {key: analysis.get(key) for key in diagnostic_keys},
                 },
             }
         )
@@ -193,9 +221,10 @@ def run_sample(case: dict[str, Any], repeat_index: int, timeout_seconds: int) ->
         process.terminate()
         process.join()
         return {"repeat_index": repeat_index, "status": "failure", "error": "timeout"}
-    if queue.empty():
+    try:
+        payload = queue.get(timeout=2)
+    except Empty:
         return {"repeat_index": repeat_index, "status": "failure", "error": "no_result"}
-    payload = queue.get()
     if not payload.get("ok") or process.exitcode != 0:
         return {
             "repeat_index": repeat_index,
@@ -208,6 +237,19 @@ def run_sample(case: dict[str, Any], repeat_index: int, timeout_seconds: int) ->
 def _write_report(path: Path, report: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _report_payload(cases: list[dict[str, Any]], repeat_count: int, verdict: str) -> dict[str, Any]:
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "repeat_count": repeat_count,
+        "environment": ENVIRONMENT,
+        "thresholds": THRESHOLDS,
+        "metrics": compute_release_metrics(cases),
+        "verdict": verdict,
+        "errors": [],
+        "cases": cases,
+    }
 
 
 def run_release(
@@ -236,19 +278,7 @@ def run_release(
                     "samples": samples,
                 }
             ]
-            _write_report(
-                report_path,
-                {
-                    "schema_version": SCHEMA_VERSION,
-                    "repeat_count": repeat_count,
-                    "environment": ENVIRONMENT,
-                    "thresholds": THRESHOLDS,
-                    "metrics": compute_release_metrics(partial_cases),
-                    "verdict": "running",
-                    "errors": [],
-                    "cases": partial_cases,
-                },
-            )
+            _write_report(report_path, _report_payload(partial_cases, repeat_count, "running"))
         signatures = {
             json.dumps(
                 {key: value for key, value in sample.items() if key != "repeat_index"},
@@ -264,22 +294,12 @@ def run_release(
             }
         )
 
-    report = {
-        "schema_version": SCHEMA_VERSION,
-        "repeat_count": repeat_count,
-        "environment": ENVIRONMENT,
-        "thresholds": THRESHOLDS,
-        "metrics": compute_release_metrics(report_cases),
-        "verdict": "release_ready",
-        "errors": [],
-        "cases": report_cases,
-    }
+    report = _report_payload(report_cases, repeat_count, "release_ready")
     errors = validate_release_report(report)
     if errors:
         report["verdict"] = "failed"
         report["errors"] = errors
-        errors = validate_release_report(report)
-        report["errors"] = errors
+        report["errors"] = validate_release_report(report)
     _write_report(report_path, report)
     return report
 
