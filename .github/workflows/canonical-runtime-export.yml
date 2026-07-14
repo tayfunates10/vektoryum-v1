@@ -13,6 +13,7 @@ on:
       - "engine/test_production_svg_selector.py"
       - "engine/test_pipeline_entry.py"
       - "engine/test_pipeline_canonical_report.py"
+      - "engine/test_pipeline_export_registration.py"
       - "engine/test_runtime_main.py"
       - ".github/workflows/canonical-runtime-export.yml"
   workflow_dispatch:
@@ -51,4 +52,5 @@ jobs:
           test_production_svg_selector.py
           test_pipeline_entry.py
           test_pipeline_canonical_report.py
+          test_pipeline_export_registration.py
           test_runtime_main.py
