@@ -5,7 +5,11 @@ on:
     paths:
       - "engine/production_platform_roadmap.json"
       - "engine/test_production_platform_roadmap.py"
+      - "engine/test_platform_identity.py"
       - "engine/app/main.py"
+      - "engine/app/runtime_main.py"
+      - "engine/app/platform_identity.py"
+      - "engine/app/platform_frontend.py"
       - "engine/app/settings.py"
       - "engine/app/store.py"
       - "docs/PRODUCTION_PLATFORM_ROADMAP.md"
@@ -23,10 +27,13 @@ concurrency:
 jobs:
   contract:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: engine
+    env:
+      PYTHONHASHSEED: "0"
+      VEKTORYUM_WORKERS: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -35,6 +42,8 @@ jobs:
           cache: pip
           cache-dependency-path: engine/requirements.txt
       - name: Install test dependencies
-        run: python -m pip install pytest
+        run: python -m pip install -r requirements.txt pytest httpx
       - name: Validate production platform roadmap
         run: python -m pytest -q test_production_platform_roadmap.py
+      - name: Validate PPC-2 account and login-state contract
+        run: python -m pytest -q test_platform_identity.py test_runtime_main.py
