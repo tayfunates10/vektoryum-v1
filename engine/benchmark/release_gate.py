@@ -87,6 +87,29 @@ def evaluate_release_gate(current_payload: dict[str, Any], baseline_payload: dic
             "case_set": {"added": added, "removed": removed},
         }
 
+    current_method = current_payload.get("measurement_method")
+    baseline_method = baseline_payload.get("measurement_method")
+    if current_method != baseline_method:
+        if not isinstance(current_method, dict) or not str(current_method.get("version", "")).strip():
+            return {
+                "schema_version": "benchmark-release-gate-v1",
+                "status": "fail",
+                "reason": "invalid_measurement_method",
+                "unmeasured": [],
+                "delta": None,
+            }
+        return {
+            "schema_version": "benchmark-release-gate-v1",
+            "status": "bootstrap",
+            "reason": "measurement_method_changed",
+            "unmeasured": [],
+            "delta": None,
+            "measurement_method": {
+                "baseline": baseline_method,
+                "current": current_method,
+            },
+        }
+
     exclusions = {
         case_id: {"alpha_iou"}
         for case_id in current_ids
