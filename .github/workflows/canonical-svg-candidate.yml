@@ -1,0 +1,38 @@
+name: Canonical SVG candidate contract
+
+on:
+  pull_request:
+    paths:
+      - "engine/app/canonical_svg_candidate.py"
+      - "engine/test_canonical_svg_candidate.py"
+      - ".github/workflows/canonical-svg-candidate.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: canonical-svg-candidate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: engine
+    env:
+      PYTHONHASHSEED: "0"
+      VEKTORYUM_WORKERS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: engine/requirements.txt
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt pytest
+      - name: Canonical candidate fail-closed contract
+        run: python -m pytest -q test_canonical_svg_candidate.py
