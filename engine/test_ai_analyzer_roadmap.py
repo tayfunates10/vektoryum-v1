@@ -9,7 +9,6 @@ from PIL import Image
 from app.main import ALLOWED_MODES
 import app.analyzer as analyzer
 
-
 ENGINE_DIR = Path(__file__).resolve().parent
 ROADMAP_PATH = ENGINE_DIR / "ai_analyzer_roadmap.json"
 EXPECTED_PHASES = ["AA-1", "AA-2", "AA-3", "AA-4"]
@@ -35,6 +34,7 @@ EXPECTED_DECISION_FIELDS = {
     "recommended_mode",
     "execution_mode",
     "abstained",
+    "fallback_applied",
     "reason_codes",
     "confidence",
     "runner_up_mode",
