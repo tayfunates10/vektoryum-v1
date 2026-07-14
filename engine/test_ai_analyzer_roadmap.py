@@ -143,7 +143,9 @@ def test_aa4_release_contract_is_mandatory_and_strict() -> None:
     assert THRESHOLDS["accepted_wrong_mode_max"] == 0
     assert THRESHOLDS["determinism_failures_max"] == 0
     assert THRESHOLDS["invalid_contracts_max"] == 0
-    assert THRESHOLDS["per_mode_accepted_precision_min"] == 1.0
+    assert THRESHOLDS["per_mode_recommendation_precision_min"] == 1.0
+    assert THRESHOLDS["per_mode_correct_recommendations_min"] == 1
+    assert THRESHOLDS["accepted_precision_min"] == 1.0
     workflow = ANALYZER_RELEASE_WORKFLOW.read_text(encoding="utf-8")
     assert "test_analyzer_release_contract.py" in workflow
     assert "test_analyzer_release_runner.py" in workflow
