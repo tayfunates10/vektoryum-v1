@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import analyzer_release_runner as runner
 from analyzer_release_contract import AUTO_MODES, CASE_KINDS, REPEAT_COUNT
+
+
+def _digest(mode: str, name: str) -> str:
+    return hashlib.sha256(f"{mode}:{name}".encode("utf-8")).hexdigest()
 
 
 def test_generated_corpus_is_deterministic_and_complete(tmp_path) -> None:
@@ -23,15 +28,13 @@ def test_generated_corpus_is_deterministic_and_complete(tmp_path) -> None:
 def test_release_runner_writes_valid_report_with_stubbed_samples(monkeypatch, tmp_path) -> None:
     def fake_sample(case, repeat_index, timeout_seconds):
         mode = case["label"]
-        seed = mode.replace("_", "")[:8].ljust(8, "0")
-        digest = (seed * 8)[:64]
         return {
             "repeat_index": repeat_index,
             "status": "success",
             "contract_status": "valid",
-            "source_pixel_sha256": digest,
-            "feature_digest": digest[::-1],
-            "recommendation_digest": digest[1:] + digest[:1],
+            "source_pixel_sha256": _digest(mode, "source"),
+            "feature_digest": _digest(mode, "feature"),
+            "recommendation_digest": _digest(mode, "recommendation"),
             "recommended_mode": mode,
             "decision_status": "accepted",
             "execution_mode": mode,
@@ -49,6 +52,7 @@ def test_release_runner_writes_valid_report_with_stubbed_samples(monkeypatch, tm
     assert report["errors"] == []
     assert (tmp_path / "release" / "analyzer_release_report.json").is_file()
     assert all(case["deterministic"] for case in report["cases"])
+    assert report["metrics"]["accepted_wrong_mode_count"] == 0
 
 
 def test_release_runner_requires_exact_repeat_count(tmp_path) -> None:
