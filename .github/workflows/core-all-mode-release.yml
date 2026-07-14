@@ -1,0 +1,67 @@
+name: Core all-mode release contract
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "engine/**"
+      - ".github/workflows/core-all-mode-release.yml"
+      - ".github/workflows/exact-final-svg.yml"
+      - ".github/workflows/benchmark-seed.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "engine/**"
+      - ".github/workflows/core-all-mode-release.yml"
+      - ".github/workflows/exact-final-svg.yml"
+      - ".github/workflows/benchmark-seed.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: core-all-mode-release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  all-mode-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: engine
+    env:
+      PYTHONHASHSEED: "0"
+      VEKTORYUM_WORKERS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: engine/requirements.txt
+      - name: Install system validators
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ghostscript libcairo2
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt pytest
+      - name: Validate CVE-4 fail-closed contracts
+        run: >-
+          python -m pytest -q
+          test_core_release_contract.py
+          test_core_release_runner.py
+          test_core_vector_engine_roadmap.py
+      - name: Run explicit-mode three-repeat release corpus
+        run: >-
+          python -m core_release_runner
+          --output core_release_artifacts
+          --engine-version "${GITHUB_SHA}"
+          --repeat-count 3
+      - name: Upload all-mode release evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-vector-engine-all-mode-release
+          path: engine/core_release_artifacts
+          if-no-files-found: error
+          retention-days: 30
