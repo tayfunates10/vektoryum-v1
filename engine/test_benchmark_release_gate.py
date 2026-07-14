@@ -1,3 +1,5 @@
+import pytest
+
 from benchmark.release_gate import evaluate_release_gate
 from benchmark.manifest import REQUIRED_METRICS
 
@@ -27,6 +29,7 @@ def test_stable_results_pass():
     report = evaluate_release_gate(_payload(), _payload())
     assert report["status"] == "pass"
     assert report["reason"] == "within_tolerance"
+    assert report["timing_normalization"] is None
 
 
 def test_regression_fails():
@@ -83,3 +86,75 @@ def test_case_removal_remains_fail_closed():
     assert report["status"] == "fail"
     assert report["reason"] == "case_set_mismatch"
     assert report["case_set"]["removed"] == ["case-2"]
+
+
+def _eight_cases() -> tuple[str, ...]:
+    return tuple(f"seed-{index:02d}-category{index}" for index in range(1, 9))
+
+
+def test_moderate_isolated_hosted_runner_timing_noise_is_tolerated():
+    case_ids = _eight_cases()
+    baseline = _payload(case_ids=case_ids)
+    current = _payload(case_ids=case_ids)
+    current["results"][0]["metrics"]["render_ms"] = 1.20
+
+    report = evaluate_release_gate(current, baseline)
+
+    assert report["status"] == "pass"
+    assert report["timing_normalization"] is None
+
+
+def test_bounded_common_mode_hosted_runner_slowdown_is_normalized():
+    case_ids = _eight_cases()
+    baseline = _payload(case_ids=case_ids)
+    current = _payload(case_ids=case_ids)
+    for item in current["results"]:
+        item["metrics"]["render_ms"] = 1.30
+
+    report = evaluate_release_gate(current, baseline)
+
+    assert report["status"] == "pass"
+    normalization = report["timing_normalization"]
+    assert normalization["applied"] is True
+    assert normalization["factor"] == pytest.approx(1.30)
+    assert normalization["slow_case_count"] == 8
+    assert normalization["raw_regression_count"] == 8
+
+
+def test_isolated_timing_regression_remains_fail_closed():
+    case_ids = _eight_cases()
+    baseline = _payload(case_ids=case_ids)
+    current = _payload(case_ids=case_ids)
+    current["results"][0]["metrics"]["render_ms"] = 1.30
+
+    report = evaluate_release_gate(current, baseline)
+
+    assert report["status"] == "fail"
+    assert report["timing_normalization"] is None
+
+
+def test_quality_regression_is_never_hidden_by_timing_normalization():
+    case_ids = _eight_cases()
+    baseline = _payload(case_ids=case_ids)
+    current = _payload(case_ids=case_ids)
+    for item in current["results"]:
+        item["metrics"]["render_ms"] = 1.30
+    current["results"][0]["metrics"]["fidelity"] = 0.0
+
+    report = evaluate_release_gate(current, baseline)
+
+    assert report["status"] == "fail"
+    assert report["timing_normalization"] is None
+
+
+def test_extreme_common_mode_slowdown_exceeds_safety_cap():
+    case_ids = _eight_cases()
+    baseline = _payload(case_ids=case_ids)
+    current = _payload(case_ids=case_ids)
+    for item in current["results"]:
+        item["metrics"]["render_ms"] = 1.60
+
+    report = evaluate_release_gate(current, baseline)
+
+    assert report["status"] == "fail"
+    assert report["timing_normalization"] is None

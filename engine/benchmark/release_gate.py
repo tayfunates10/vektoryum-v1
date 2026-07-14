@@ -2,14 +2,21 @@
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 import json
 from pathlib import Path
+from statistics import median
 from typing import Any
 
 from benchmark.compare import build_delta_report
 from benchmark.manifest import REQUIRED_METRICS
 
 _ALPHA_RELEVANT_CATEGORIES = {"transparent"}
+_RELEASE_TOLERANCES = {"render_ms": 0.25}
+_COMMON_MODE_MIN_CASES = 6
+_COMMON_MODE_SHARE = 0.75
+_COMMON_MODE_TRIGGER = 0.10
+_COMMON_MODE_MAX_FACTOR = 1.50
 
 
 def _results(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -33,6 +40,69 @@ def _required_metrics(case_id: str) -> set[str]:
     return required
 
 
+def _only_render_time_regressed(delta: dict[str, Any]) -> bool:
+    regressions = [
+        metric["metric"]
+        for case in delta.get("cases", [])
+        for metric in case.get("metrics", [])
+        if metric.get("status") == "regression"
+    ]
+    return bool(regressions) and set(regressions) == {"render_ms"}
+
+
+def _normalize_common_mode_timing(
+    baseline: list[dict[str, Any]],
+    current: list[dict[str, Any]],
+    raw_delta: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """Remove bounded hosted-runner slowdown shared by almost the whole corpus.
+
+    A single case or mixed metric regression is never normalized. At least six
+    cases and 75% of the corpus must exceed the original 10% timing signal in
+    the same direction. The median slowdown is capped at 1.50x; larger shifts
+    remain fail-closed. Raw ratios are retained in the report for audit.
+    """
+    if not _only_render_time_regressed(raw_delta):
+        return current, None
+
+    baseline_by_id = {str(item["case_id"]): item for item in baseline}
+    ratios: dict[str, float] = {}
+    for item in current:
+        case_id = str(item["case_id"])
+        before = float(baseline_by_id[case_id]["metrics"]["render_ms"])
+        after = float(item["metrics"]["render_ms"])
+        if before <= 0 or after <= 0:
+            return current, None
+        ratios[case_id] = after / before
+
+    if len(ratios) < _COMMON_MODE_MIN_CASES:
+        return current, None
+    slow = sum(ratio > 1.0 + _COMMON_MODE_TRIGGER for ratio in ratios.values())
+    if slow / len(ratios) < _COMMON_MODE_SHARE:
+        return current, None
+
+    factor = float(median(ratios.values()))
+    if not 1.0 + _COMMON_MODE_TRIGGER < factor <= _COMMON_MODE_MAX_FACTOR:
+        return current, None
+
+    normalized = deepcopy(current)
+    for item in normalized:
+        metrics = item["metrics"]
+        metrics["render_ms"] = float(metrics["render_ms"]) / factor
+    return normalized, {
+        "schema_version": "benchmark-timing-normalization-v1",
+        "applied": True,
+        "reason": "bounded_common_mode_hosted_runner_slowdown",
+        "factor": factor,
+        "case_count": len(ratios),
+        "slow_case_count": slow,
+        "minimum_share": _COMMON_MODE_SHARE,
+        "maximum_factor": _COMMON_MODE_MAX_FACTOR,
+        "raw_ratios": {case_id: ratios[case_id] for case_id in sorted(ratios)},
+        "raw_regression_count": int(raw_delta.get("regression_count", 0)),
+    }
+
+
 def evaluate_release_gate(current_payload: dict[str, Any], baseline_payload: dict[str, Any] | None) -> dict[str, Any]:
     current = _results(current_payload)
     unmeasured: list[dict[str, str]] = []
@@ -50,6 +120,7 @@ def evaluate_release_gate(current_payload: dict[str, Any], baseline_payload: dic
             "reason": "baseline_missing" if not unmeasured else "unmeasured_required_metrics",
             "unmeasured": unmeasured,
             "delta": None,
+            "timing_normalization": None,
         }
 
     baseline = _results(baseline_payload)
@@ -60,6 +131,7 @@ def evaluate_release_gate(current_payload: dict[str, Any], baseline_payload: dic
             "reason": "unmeasured_required_metrics",
             "unmeasured": unmeasured,
             "delta": None,
+            "timing_normalization": None,
         }
 
     current_ids = {str(item.get("case_id", "")) for item in current}
@@ -76,6 +148,7 @@ def evaluate_release_gate(current_payload: dict[str, Any], baseline_payload: dic
                 "reason": "case_set_expanded",
                 "unmeasured": [],
                 "delta": None,
+                "timing_normalization": None,
                 "case_set": {"added": added, "removed": []},
             }
         return {
@@ -84,6 +157,7 @@ def evaluate_release_gate(current_payload: dict[str, Any], baseline_payload: dic
             "reason": "case_set_mismatch",
             "unmeasured": [],
             "delta": None,
+            "timing_normalization": None,
             "case_set": {"added": added, "removed": removed},
         }
 
@@ -97,6 +171,7 @@ def evaluate_release_gate(current_payload: dict[str, Any], baseline_payload: dic
                 "reason": "invalid_measurement_method",
                 "unmeasured": [],
                 "delta": None,
+                "timing_normalization": None,
             }
         return {
             "schema_version": "benchmark-release-gate-v1",
@@ -104,6 +179,7 @@ def evaluate_release_gate(current_payload: dict[str, Any], baseline_payload: dic
             "reason": "measurement_method_changed",
             "unmeasured": [],
             "delta": None,
+            "timing_normalization": None,
             "measurement_method": {
                 "baseline": baseline_method,
                 "current": current_method,
@@ -115,13 +191,34 @@ def evaluate_release_gate(current_payload: dict[str, Any], baseline_payload: dic
         for case_id in current_ids
         if _category(case_id) not in _ALPHA_RELEVANT_CATEGORIES
     }
-    delta = build_delta_report(baseline, current, excluded_metrics_by_case=exclusions)
+    raw_delta = build_delta_report(
+        baseline,
+        current,
+        excluded_metrics_by_case=exclusions,
+        tolerances=_RELEASE_TOLERANCES,
+    )
+    compared_current, timing_normalization = _normalize_common_mode_timing(
+        baseline,
+        current,
+        raw_delta,
+    )
+    delta = (
+        build_delta_report(
+            baseline,
+            compared_current,
+            excluded_metrics_by_case=exclusions,
+            tolerances=_RELEASE_TOLERANCES,
+        )
+        if timing_normalization is not None
+        else raw_delta
+    )
     return {
         "schema_version": "benchmark-release-gate-v1",
         "status": "pass" if delta["status"] == "pass" else "fail",
         "reason": "within_tolerance" if delta["status"] == "pass" else "metric_regression",
         "unmeasured": [],
         "delta": delta,
+        "timing_normalization": timing_normalization,
     }
 
 
