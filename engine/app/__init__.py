@@ -3,8 +3,6 @@ from __future__ import annotations
 
 from functools import wraps
 
-# ``app.pipeline`` imports ``app.vector_engines`` immediately after package
-# initialization, so loading that existing module here adds no new dependency.
 from app import vector_engines as _vector_engines
 
 
@@ -16,9 +14,6 @@ def _lazy_graph_centerline(*args, **kwargs):
 
 _vector_engines.vectorize_skeleton_to_svg = _lazy_graph_centerline
 
-# AA-2: attach versioned metadata without changing the analyzer's heuristic
-# recommendation. AA-3 can provide a request-scoped precomputed report so the
-# auto gate and the core pipeline do not analyze the same pixels twice.
 from app import analyzer as _analyzer
 
 if not getattr(_analyzer.analyze_image_from_mem, "__vektoryum_contract_wrapped__", False):
@@ -40,9 +35,6 @@ if not getattr(_analyzer.analyze_image_from_mem, "__vektoryum_contract_wrapped__
     _analyzer.analyze_image_from_mem = _analyze_image_from_mem_with_contract
 
 
-# AA-3: verify auto metadata before it selects preprocessing. The mature core
-# pipeline receives an explicit verified mode, while manual requests pass through
-# unchanged. ContextVar handoff keeps concurrent requests isolated.
 from app import pipeline as _pipeline
 
 if not getattr(_pipeline.run_pipeline, "__vektoryum_auto_gate_wrapped__", False):
@@ -98,7 +90,7 @@ if not getattr(_pipeline.run_pipeline, "__vektoryum_auto_gate_wrapped__", False)
         result["mode_used"] = decision["execution_mode"]
         result["auto_decision"] = decision
         result["mode_warning"] = (
-            "Automatic mode confidence requires review; color-preserving mode was used."
+            "Automatic mode confidence requires review."
             if decision["status"] == "needs_review"
             else None
         )
@@ -112,10 +104,6 @@ if not getattr(_pipeline.run_pipeline, "__vektoryum_auto_gate_wrapped__", False)
     _pipeline.run_pipeline = _run_pipeline_with_auto_gate
 
 
-# The final exported SVG is evaluated after the pipeline in another thread-pool
-# call. Patch the evaluator once so an abstained auto request cannot be reported
-# production-ready. Candidate/journal evaluations are unaffected because the
-# registry only matches the exact <job_id>.svg export filename.
 from app import final_artifact_evaluator as _final_artifact_evaluator
 
 if not getattr(
@@ -136,9 +124,7 @@ if not getattr(
                 report.verdict = "needs_review"
             if "analyzer_auto_review" not in report.soft_warning_codes:
                 report.soft_warning_codes.append("analyzer_auto_review")
-                report.soft_warnings.append(
-                    "Automatic mode confidence requires review; color-preserving mode was used."
-                )
+                report.soft_warnings.append("Automatic mode confidence requires review.")
         return report
 
     _evaluate_final_svg_with_auto_review.__vektoryum_auto_review_wrapped__ = True
