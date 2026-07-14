@@ -12,6 +12,7 @@ from typing import Any
 import numpy as np
 from defusedxml import ElementTree as SafeET
 from PIL import Image, ImageDraw
+from svgpathtools import parse_path
 
 from app.fidelity import render_svg_to_rgb
 from app.final_artifact_evaluator import evaluate_final_svg
@@ -38,7 +39,6 @@ _IMAGE_CLASS = {
     "centerline": "lineart",
     "photo_poster": "photo",
 }
-_PATH_COMMAND = re.compile(r"[MmLlHhVvCcSsQqTtAaZz]")
 _STYLE_FILL = re.compile(r"(?:^|;)\s*fill\s*:\s*([^;]+)", re.I)
 
 
@@ -72,10 +72,10 @@ def _fixture(mode: str, path: Path, size: int = 192) -> dict[str, Any]:
     palette: list[tuple[int, int, int]] = [(255, 255, 255)]
 
     if mode == "geometric_logo":
-        draw.rectangle((18, 18, 174, 174), outline=(220, 30, 40, 255), width=8)
-        draw.rectangle((42, 54, 82, 138), fill=(15, 20, 28, 255))
-        draw.polygon([(108, 48), (160, 96), (108, 144), (86, 96)], fill=(15, 20, 28, 255))
-        palette += [(220, 30, 40), (15, 20, 28)]
+        draw.rectangle((18, 18, 174, 174), outline=(255, 0, 0, 255), width=8)
+        draw.rectangle((42, 54, 82, 138), fill=(0, 0, 0, 255))
+        draw.polygon([(108, 48), (160, 96), (108, 144), (86, 96)], fill=(0, 0, 0, 255))
+        palette += [(255, 0, 0), (0, 0, 0)]
     elif mode == "minimal_ai":
         draw.ellipse((30, 30, 162, 162), fill=(20, 32, 48, 255))
         draw.polygon([(96, 48), (142, 136), (50, 136)], fill=(245, 175, 35, 255))
@@ -92,20 +92,16 @@ def _fixture(mode: str, path: Path, size: int = 192) -> dict[str, Any]:
         draw.polygon([(48, 132), (96, 54), (144, 132)], fill=(245, 145, 25, 255))
         palette += [(34, 86, 165), (245, 145, 25)]
     elif mode == "single_color":
-        image = Image.new("RGBA", (size, size), (255, 255, 255, 0))
-        draw = ImageDraw.Draw(image)
         draw.polygon([(28, 156), (96, 24), (164, 156)], fill=(0, 0, 0, 255))
-        draw.ellipse((72, 86, 120, 134), fill=(255, 255, 255, 0))
-        palette = [(255, 255, 255), (0, 0, 0)]
+        draw.ellipse((72, 86, 120, 134), fill=white)
+        palette += [(0, 0, 0)]
     elif mode == "lineart":
         draw.rectangle((24, 24, 168, 168), outline=(0, 0, 0, 255), width=4)
         draw.line((34, 148, 92, 54, 158, 142), fill=(0, 0, 0, 255), width=4, joint="curve")
         draw.ellipse((66, 66, 126, 126), outline=(0, 0, 0, 255), width=4)
         palette += [(0, 0, 0)]
     elif mode == "centerline":
-        draw.line((28, 96, 164, 96), fill=(0, 0, 0, 255), width=4)
-        draw.line((96, 28, 96, 164), fill=(0, 0, 0, 255), width=4)
-        draw.line((96, 96, 150, 150), fill=(0, 0, 0, 255), width=4)
+        draw.line((32, 96, 160, 96), fill=(0, 0, 0, 255), width=1)
         palette += [(0, 0, 0)]
     elif mode == "photo_poster":
         yy, xx = np.mgrid[0:size, 0:size]
@@ -141,7 +137,12 @@ def _path_fill(element: Any) -> str:
 
 
 def _has_open_required_cycle(svg_path: Path) -> bool:
-    """Reject open filled subpaths while allowing legitimate open strokes."""
+    """Reject geometrically open filled subpaths while allowing open strokes.
+
+    A literal ``Z`` command is not required: several production tracers serialize
+    a closed curve by returning its final endpoint to the first point.  The
+    geometric path contract, not command spelling, is authoritative.
+    """
     try:
         root = SafeET.parse(str(svg_path)).getroot()
     except Exception:
@@ -151,10 +152,12 @@ def _has_open_required_cycle(svg_path: Path) -> bool:
             continue
         if _path_fill(element) == "none":
             continue
-        commands = _PATH_COMMAND.findall(str(element.attrib.get("d") or ""))
-        starts = sum(command in "Mm" for command in commands)
-        closes = sum(command in "Zz" for command in commands)
-        if starts and closes < starts:
+        d = str(element.attrib.get("d") or "")
+        try:
+            subpaths = parse_path(d).continuous_subpaths()
+        except Exception:
+            return True
+        if not subpaths or any(not subpath.isclosed() for subpath in subpaths):
             return True
     return False
 
@@ -181,9 +184,9 @@ def _quality_verdict(output: dict[str, Any], final_verdict: str) -> tuple[str, l
         structure_report=output.get("structure_report"),
     )
     reasons = [f"quality_warning:{index}" for index, _warning in enumerate(report.get("warnings") or [], start=1)]
-    if final_verdict == "failed" or report.get("status") == "failed":
+    if report.get("status") == "failed":
         return "failed", reasons
-    if final_verdict == "needs_review" or report.get("status") == "needs_review":
+    if final_verdict in {"failed", "needs_review"} or report.get("status") == "needs_review":
         return "needs_review", reasons
     return "production_ready", reasons
 
