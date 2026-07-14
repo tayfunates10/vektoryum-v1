@@ -43,6 +43,8 @@ jobs:
         run: python -m pytest -q test_exact_corpus.py
       - name: Transform journal contract
         run: python -m pytest -q test_transform_journal.py
+      - name: Production serializer selection gate
+        run: python -m pytest -q test_production_svg_selector.py
       - name: Final artifact metric contract
         run: python -m pytest -q test_final_artifact_metrics.py
       - name: Source truth unit gates
