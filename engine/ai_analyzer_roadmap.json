@@ -36,6 +36,20 @@
     "flat_logo",
     "centerline"
   ],
+  "auto_decision_fields": [
+    "schema_version",
+    "status",
+    "requested_mode",
+    "recommended_mode",
+    "execution_mode",
+    "abstained",
+    "fallback_applied",
+    "reason_codes",
+    "confidence",
+    "runner_up_mode",
+    "runner_up_margin",
+    "verified_recommendation_digest"
+  ],
   "public_report_fields": [
     "width",
     "height",
@@ -71,8 +85,8 @@
     },
     {
       "id": "no_fail_closed_abstention_contract",
-      "status": "open",
-      "evidence": "app/analyzer.py",
+      "status": "closed",
+      "evidence": "app/analyzer_decision_gate.py",
       "closure_phase": "AA-3"
     },
     {
@@ -124,7 +138,7 @@
     {
       "id": "AA-3",
       "title": "Review-aware auto-mode decision gate",
-      "status": "pending",
+      "status": "complete",
       "acceptance_criteria": [
         "Low-confidence or contradictory evidence produces an explicit needs_review result.",
         "Auto mode consumes only a validated analyzer report with matching feature and source digests.",
@@ -132,7 +146,14 @@
         "Boundary cases for all major image classes have deterministic review regressions.",
         "Missing confidence, stale metadata, digest drift and unsupported recommendations are rejected."
       ],
-      "evidence": []
+      "evidence": [
+        "ai_analyzer_roadmap.json",
+        "test_ai_analyzer_roadmap.py",
+        "test_analyzer_decision_gate.py",
+        "app/analyzer_decision_gate.py",
+        "app/analyzer_runtime.py",
+        "app/__init__.py"
+      ]
     },
     {
       "id": "AA-4",
