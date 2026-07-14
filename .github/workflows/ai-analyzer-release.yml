@@ -1,0 +1,51 @@
+name: AI analyzer release contract
+
+on:
+  pull_request:
+    paths:
+      - "engine/**"
+      - ".github/workflows/ai-analyzer-release.yml"
+      - ".github/workflows/exact-final-svg.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ai-analyzer-release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyzer-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: engine
+    env:
+      PYTHONHASHSEED: "0"
+      VEKTORYUM_WORKERS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: engine/requirements.txt
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt pytest httpx
+      - name: Validate analyzer release contracts
+        run: >-
+          python -m pytest -q
+          test_analyzer_release_contract.py
+          test_analyzer_release_runner.py
+      - name: Run labeled three-repeat analyzer corpus
+        run: python analyzer_release_runner.py --output analyzer_release_artifacts
+      - name: Upload analyzer release evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-analyzer-release-evidence
+          path: engine/analyzer_release_artifacts
+          if-no-files-found: error
+          retention-days: 30
