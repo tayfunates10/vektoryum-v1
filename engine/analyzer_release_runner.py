@@ -57,13 +57,13 @@ def _minimal(size: int) -> Image.Image:
     draw = ImageDraw.Draw(image)
     u = size / 640.0
     line_width = max(2, round(3*u))
-    for row in range(30):
-        base_y = (55 + row * 18) * u
+    for row in range(33):
+        base_y = (55 + row * 16) * u
         points = []
         for x in range(30, 611, 3):
             wave = 8.0 * np.sin((x / 640.0) * np.pi * 6.0 + row * 0.31)
             points.append((x*u, base_y + wave*u))
-        color = (35, 95, 205) if row in {10, 20} else (0, 0, 0)
+        color = (35, 95, 205) if row in {11, 22} else (0, 0, 0)
         draw.line(points, fill=color, width=line_width)
     return image
 
