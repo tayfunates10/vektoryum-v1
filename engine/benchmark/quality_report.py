@@ -9,11 +9,12 @@ from typing import Any
 
 _HIGHER_IS_BETTER = ("fidelity", "ssim", "edge_f1", "alpha_iou")
 _LOWER_IS_BETTER = ("delta_e00", "path_count", "svg_bytes", "render_ms", "peak_rss_mb")
+_ALPHA_RELEVANT_CATEGORIES = {"transparent"}
 
 
 def _category(case_id: str) -> str:
-    parts = str(case_id).split("-", 3)
-    return parts[3] if len(parts) == 4 else str(case_id)
+    parts = str(case_id).split("-", 2)
+    return parts[2] if len(parts) == 3 else str(case_id)
 
 
 def build_quality_summary(payload: dict[str, Any]) -> dict[str, Any]:
@@ -26,10 +27,12 @@ def build_quality_summary(payload: dict[str, Any]) -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
     for item in results:
         metrics = dict(item.get("metrics") or {})
+        category = _category(str(item.get("case_id", "")))
         missing = sorted(name for name in (*_HIGHER_IS_BETTER, *_LOWER_IS_BETTER) if metrics.get(name) is None)
         rows.append({
             "case_id": str(item.get("case_id", "")),
-            "category": _category(str(item.get("case_id", ""))),
+            "category": category,
+            "alpha_applicable": category in _ALPHA_RELEVANT_CATEGORIES,
             "failure": item.get("failure"),
             "missing_metrics": missing,
             "metrics": metrics,
@@ -37,14 +40,18 @@ def build_quality_summary(payload: dict[str, Any]) -> dict[str, Any]:
     rows.sort(key=lambda row: row["case_id"])
 
     def worst(metric: str, reverse: bool) -> list[dict[str, Any]]:
-        measured = [row for row in rows if row["metrics"].get(metric) is not None]
+        measured = [
+            row for row in rows
+            if row["metrics"].get(metric) is not None
+            and (metric != "alpha_iou" or row["alpha_applicable"])
+        ]
         measured.sort(key=lambda row: float(row["metrics"][metric]), reverse=reverse)
         return [{"case_id": row["case_id"], "value": row["metrics"][metric]} for row in measured[:3]]
 
     alerts: list[dict[str, Any]] = []
     for row in rows:
         m = row["metrics"]
-        if m.get("alpha_iou") is not None and float(m["alpha_iou"]) < 0.95:
+        if row["alpha_applicable"] and m.get("alpha_iou") is not None and float(m["alpha_iou"]) < 0.95:
             alerts.append({"case_id": row["case_id"], "metric": "alpha_iou", "value": m["alpha_iou"]})
         if m.get("ssim") is not None and float(m["ssim"]) < 0.97:
             alerts.append({"case_id": row["case_id"], "metric": "ssim", "value": m["ssim"]})
@@ -70,11 +77,12 @@ def write_reports(output_dir: Path, summary: dict[str, Any]) -> None:
     rows = []
     for row in summary["rows"]:
         m = row["metrics"]
+        alpha_value = m.get("alpha_iou") if row["alpha_applicable"] else "n/a"
         rows.append("<tr>" + "".join([
             f"<td>{html.escape(row['case_id'])}</td>",
             f"<td>{html.escape(row['category'])}</td>",
             f"<td>{m.get('fidelity')}</td>", f"<td>{m.get('ssim')}</td>",
-            f"<td>{m.get('edge_f1')}</td>", f"<td>{m.get('alpha_iou')}</td>",
+            f"<td>{m.get('edge_f1')}</td>", f"<td>{alpha_value}</td>",
             f"<td>{m.get('delta_e00')}</td>", f"<td>{m.get('path_count')}</td>",
             f"<td>{m.get('render_ms')}</td>",
         ]) + "</tr>")
