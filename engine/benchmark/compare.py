@@ -52,8 +52,13 @@ def compare_metrics(
     current: dict[str, float | int | None],
     *,
     tolerances: dict[str, float] | None = None,
+    metric_names: set[str] | frozenset[str] | None = None,
 ) -> list[MetricDelta]:
-    missing = REQUIRED_METRICS.difference(baseline) | REQUIRED_METRICS.difference(current)
+    selected = set(REQUIRED_METRICS if metric_names is None else metric_names)
+    unsupported = selected.difference(REQUIRED_METRICS)
+    if unsupported:
+        raise ValueError(f"unsupported benchmark metrics: {sorted(unsupported)}")
+    missing = selected.difference(baseline) | selected.difference(current)
     if missing:
         raise ValueError(f"missing benchmark metrics: {sorted(missing)}")
     limits = dict(DEFAULT_TOLERANCES)
@@ -61,7 +66,7 @@ def compare_metrics(
         limits.update(tolerances)
 
     deltas: list[MetricDelta] = []
-    for metric in sorted(REQUIRED_METRICS):
+    for metric in sorted(selected):
         before = baseline[metric]
         after = current[metric]
         if before is None or after is None:
@@ -97,6 +102,8 @@ def compare_metrics(
 def build_delta_report(
     baseline_results: list[dict[str, Any]],
     current_results: list[dict[str, Any]],
+    *,
+    excluded_metrics_by_case: dict[str, set[str] | frozenset[str]] | None = None,
 ) -> dict[str, Any]:
     baseline_by_id = {item["case_id"]: item for item in baseline_results}
     current_by_id = {item["case_id"]: item for item in current_results}
@@ -104,15 +111,28 @@ def build_delta_report(
         missing = sorted(set(baseline_by_id) ^ set(current_by_id))
         raise ValueError(f"benchmark case mismatch: {missing}")
 
+    exclusions = excluded_metrics_by_case or {}
     cases = []
     regression_count = 0
     for case_id in sorted(baseline_by_id):
+        excluded = set(exclusions.get(case_id, set()))
+        unsupported = excluded.difference(REQUIRED_METRICS)
+        if unsupported:
+            raise ValueError(f"unsupported excluded metrics for {case_id}: {sorted(unsupported)}")
+        selected = set(REQUIRED_METRICS).difference(excluded)
         deltas = compare_metrics(
-            baseline_by_id[case_id]["metrics"], current_by_id[case_id]["metrics"]
+            baseline_by_id[case_id]["metrics"],
+            current_by_id[case_id]["metrics"],
+            metric_names=selected,
         )
         status = "regression" if any(item.status == "regression" for item in deltas) else "pass"
         regression_count += status == "regression"
-        cases.append({"case_id": case_id, "status": status, "metrics": [d.to_dict() for d in deltas]})
+        cases.append({
+            "case_id": case_id,
+            "status": status,
+            "excluded_metrics": sorted(excluded),
+            "metrics": [d.to_dict() for d in deltas],
+        })
 
     return {
         "schema_version": "benchmark-delta-v1",

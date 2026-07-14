@@ -9,6 +9,8 @@ from typing import Any
 from benchmark.compare import build_delta_report
 from benchmark.manifest import REQUIRED_METRICS
 
+_ALPHA_RELEVANT_CATEGORIES = {"transparent"}
+
 
 def _results(payload: dict[str, Any]) -> list[dict[str, Any]]:
     if payload.get("schema_version") != "benchmark-results-v1":
@@ -19,14 +21,27 @@ def _results(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return results
 
 
+def _category(case_id: str) -> str:
+    parts = str(case_id).split("-", 2)
+    return parts[2] if len(parts) == 3 else str(case_id)
+
+
+def _required_metrics(case_id: str) -> set[str]:
+    required = set(REQUIRED_METRICS)
+    if _category(case_id) not in _ALPHA_RELEVANT_CATEGORIES:
+        required.discard("alpha_iou")
+    return required
+
+
 def evaluate_release_gate(current_payload: dict[str, Any], baseline_payload: dict[str, Any] | None) -> dict[str, Any]:
     current = _results(current_payload)
     unmeasured: list[dict[str, str]] = []
     for case in current:
+        case_id = str(case.get("case_id", ""))
         metrics = case.get("metrics") or {}
-        for metric in sorted(REQUIRED_METRICS):
+        for metric in sorted(_required_metrics(case_id)):
             if metric not in metrics or metrics[metric] is None:
-                unmeasured.append({"case_id": str(case.get("case_id", "")), "metric": metric})
+                unmeasured.append({"case_id": case_id, "metric": metric})
 
     if baseline_payload is None:
         return {
@@ -72,7 +87,12 @@ def evaluate_release_gate(current_payload: dict[str, Any], baseline_payload: dic
             "case_set": {"added": added, "removed": removed},
         }
 
-    delta = build_delta_report(baseline, current)
+    exclusions = {
+        case_id: {"alpha_iou"}
+        for case_id in current_ids
+        if _category(case_id) not in _ALPHA_RELEVANT_CATEGORIES
+    }
+    delta = build_delta_report(baseline, current, excluded_metrics_by_case=exclusions)
     return {
         "schema_version": "benchmark-release-gate-v1",
         "status": "pass" if delta["status"] == "pass" else "fail",

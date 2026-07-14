@@ -39,9 +39,30 @@ def test_regression_fails():
 
 
 def test_unmeasured_metric_fails_before_delta_comparison():
-    report = evaluate_release_gate(_payload(missing="alpha_iou"), _payload())
+    report = evaluate_release_gate(_payload(missing="ssim"), _payload())
     assert report["status"] == "fail"
     assert report["delta"] is None
+
+
+def test_opaque_case_does_not_require_or_compare_alpha_iou():
+    baseline = _payload(case_ids=("seed-01-logos",))
+    current = _payload(case_ids=("seed-01-logos",))
+    baseline["results"][0]["metrics"]["alpha_iou"] = None
+    current["results"][0]["metrics"]["alpha_iou"] = 0.0
+    report = evaluate_release_gate(current, baseline)
+    assert report["status"] == "pass"
+    case = report["delta"]["cases"][0]
+    assert case["excluded_metrics"] == ["alpha_iou"]
+    assert "alpha_iou" not in {item["metric"] for item in case["metrics"]}
+
+
+def test_transparent_case_still_requires_alpha_iou():
+    report = evaluate_release_gate(
+        _payload(missing="alpha_iou", case_ids=("seed-02-transparent",)),
+        None,
+    )
+    assert report["status"] == "fail"
+    assert report["unmeasured"] == [{"case_id": "seed-02-transparent", "metric": "alpha_iou"}]
 
 
 def test_measured_case_set_expansion_bootstraps_once():
