@@ -7,9 +7,10 @@ import cv2
 import numpy as np
 import pytest
 
+from app.centerline_contracts import install_centerline_quality_contract
 from app.centerline_graph import trace_skeleton_graph, validate_centerline_report
 from app.centerline_svg import read_centerline_report, vectorize_skeleton_graph_to_svg
-from app.quality import basic_svg_quality_check
+import app.quality as quality_module
 import app.scoring as scoring
 import app.vector_engines as vector_engines
 
@@ -30,10 +31,8 @@ def _assert_valid(result: dict) -> dict:
 def test_line_traces_as_one_open_path() -> None:
     mask = _mask()
     mask[7, 2:15] = 255
-
     result = trace_skeleton_graph(mask, min_branch=4)
     topology = _assert_valid(result)
-
     assert topology["path_count"] == 1
     assert topology["endpoint_count"] == 2
     assert topology["junction_count"] == 0
@@ -44,10 +43,8 @@ def test_polyline_preserves_one_connected_open_path() -> None:
     mask = _mask()
     mask[4, 3:12] = 255
     mask[4:14, 11] = 255
-
     result = trace_skeleton_graph(mask, min_branch=3)
     topology = _assert_valid(result)
-
     assert topology["path_count"] == 1
     assert topology["endpoint_count"] == 2
     assert len(result["paths"][0]["points"]) >= 3
@@ -57,9 +54,7 @@ def test_t_junction_keeps_three_connected_branches() -> None:
     mask = _mask()
     mask[5, 3:14] = 255
     mask[5:15, 8] = 255
-
     topology = _assert_valid(trace_skeleton_graph(mask, min_branch=3))
-
     assert topology["path_count"] == 3
     assert topology["endpoint_count"] == 3
     assert topology["junction_count"] == 1
@@ -69,9 +64,7 @@ def test_cross_junction_keeps_four_connected_branches() -> None:
     mask = _mask()
     mask[9, 2:17] = 255
     mask[2:17, 9] = 255
-
     topology = _assert_valid(trace_skeleton_graph(mask, min_branch=3))
-
     assert topology["path_count"] == 4
     assert topology["endpoint_count"] == 4
     assert topology["junction_count"] == 1
@@ -83,10 +76,8 @@ def test_loop_is_serialized_once_without_outline_contouring() -> None:
     mask[14, 4:15] = 255
     mask[4:15, 4] = 255
     mask[4:15, 14] = 255
-
     result = trace_skeleton_graph(mask, min_branch=3)
     topology = _assert_valid(result)
-
     assert topology["path_count"] == 1
     assert topology["loop_count"] == 1
     assert topology["endpoint_count"] == 0
@@ -97,10 +88,8 @@ def test_short_endpoint_spur_is_pruned_but_main_line_survives() -> None:
     mask = _mask()
     mask[10, 2:17] = 255
     mask[7:11, 9] = 255
-
     result = trace_skeleton_graph(mask, min_branch=4)
     topology = _assert_valid(result)
-
     assert topology["pruned_spur_count"] == 1
     assert topology["path_count"] == 1
     assert topology["endpoint_count"] == 2
@@ -119,10 +108,8 @@ def test_svg_output_is_deterministic_open_and_measured(tmp_path) -> None:
     first = tmp_path / "first.svg"
     second = tmp_path / "second.svg"
     cv2.imwrite(str(source), _source_image())
-
     report = vectorize_skeleton_graph_to_svg(source, first, {"min_branch": 4})
     vectorize_skeleton_graph_to_svg(source, second, {"min_branch": 4})
-
     assert sha256(first.read_bytes()).hexdigest() == sha256(second.read_bytes()).hexdigest()
     embedded = read_centerline_report(first)
     assert embedded == report
@@ -139,10 +126,8 @@ def test_empty_source_fails_closed_without_svg(tmp_path) -> None:
     source = tmp_path / "empty.png"
     output = tmp_path / "output.svg"
     cv2.imwrite(str(source), np.full((24, 24), 255, dtype=np.uint8))
-
     with pytest.raises(RuntimeError, match="centerline topology contract failed"):
         vectorize_skeleton_graph_to_svg(source, output)
-
     assert output.exists() is False
 
 
@@ -151,7 +136,6 @@ def test_candidate_score_exposes_backend_topology_and_confidence(tmp_path) -> No
     output = tmp_path / "output.svg"
     cv2.imwrite(str(source), _source_image())
     vectorize_skeleton_graph_to_svg(source, output, {"min_branch": 4})
-
     score = scoring.score_vector_candidate(
         original_path=source,
         svg_path=output,
@@ -159,7 +143,6 @@ def test_candidate_score_exposes_backend_topology_and_confidence(tmp_path) -> No
         mode="centerline",
     )
     details = score["score_details"]
-
     assert details["centerline_backend"] == "opencv_skeleton_graph"
     assert details["centerline_measurement_available"] is True
     assert details["centerline_valid"] is True
@@ -168,6 +151,7 @@ def test_candidate_score_exposes_backend_topology_and_confidence(tmp_path) -> No
 
 
 def test_invalid_or_unmeasured_fallback_cannot_be_production_ready() -> None:
+    install_centerline_quality_contract()
     invalid_report = {
         "schema_version": "centerline-graph-v1",
         "backend": "opencv_skeleton_graph",
@@ -176,7 +160,7 @@ def test_invalid_or_unmeasured_fallback_cannot_be_production_ready() -> None:
         "confidence": 1.0,
         "topology": {},
     }
-    quality = basic_svg_quality_check(
+    quality = quality_module.basic_svg_quality_check(
         score_details={
             "path_count": 10,
             "node_count": 30,
@@ -190,11 +174,20 @@ def test_invalid_or_unmeasured_fallback_cannot_be_production_ready() -> None:
         total_score=100,
         fidelity_score=99,
     )
-
     assert quality["status"] == "needs_review"
     assert quality["metrics"]["centerline_valid"] is False
     assert any("production-ready" in warning for warning in quality["warnings"])
 
 
-def test_public_candidate_dispatcher_uses_graph_fallback() -> None:
-    assert vector_engines.vectorize_skeleton_to_svg is vectorize_skeleton_graph_to_svg
+def test_public_candidate_dispatcher_uses_lazy_graph_fallback(tmp_path) -> None:
+    source = tmp_path / "source.png"
+    output = tmp_path / "output.svg"
+    cv2.imwrite(str(source), _source_image())
+    assert vector_engines.vectorize_skeleton_to_svg.__name__ == "_lazy_graph_centerline"
+    vector_engines.run_candidate(
+        "opencv_skeleton",
+        source,
+        output,
+        {"params": {"min_branch": 4}},
+    )
+    assert read_centerline_report(output)["backend"] == "opencv_skeleton_graph"
