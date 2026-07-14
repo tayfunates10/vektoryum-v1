@@ -20,6 +20,7 @@ from app.controlled_svg_cutover import select_controlled_svg_output
 from app.exporters import export_dxf, export_eps, export_pdf, export_png
 from app.pipeline_canonical_report import PipelineCanonicalSvgReport
 from app.production_serializer_runtime import publish_runtime_svg
+from app.production_svg_selector import ProductionSvgSelection, atomic_publish_svg
 
 _TRUE_VALUES = {"1", "true", "yes", "on", "enabled"}
 _MAX_PENDING = 128
@@ -78,6 +79,23 @@ def _remove_stale(path: Path) -> None:
     except OSError:
         # The exporter will fail explicitly if it cannot replace the file.
         pass
+
+
+def _restore_legacy_svg(legacy_svg: Path, legacy_bytes: bytes) -> str | None:
+    if not legacy_bytes:
+        return "legacy SVG backup is empty"
+    try:
+        selection = ProductionSvgSelection(
+            svg_bytes=legacy_bytes,
+            selected_path="legacy",
+            promoted=False,
+            output_sha256=sha256(legacy_bytes).hexdigest(),
+            errors=(),
+        )
+        atomic_publish_svg(selection, legacy_svg)
+    except Exception as exc:  # noqa: BLE001 - report rollback failure explicitly
+        return f"legacy rollback failed: {type(exc).__name__}: {exc}"
+    return None
 
 
 def _regenerate_derived_outputs(
@@ -162,9 +180,11 @@ def export_all_with_canonical(
     if not legacy_value:
         return outputs, {**errors, "canonical_svg": "legacy SVG output is missing"}
     legacy_svg = Path(legacy_value)
+    legacy_bytes = b""
 
     try:
-        legacy_text = legacy_svg.read_text(encoding="utf-8")
+        legacy_bytes = legacy_svg.read_bytes()
+        legacy_text = legacy_bytes.decode("utf-8")
         approved = str(env.get("VEKTORYUM_CANONICAL_SVG_SHA256", "")).strip().lower()
         cutover = select_controlled_svg_output(
             legacy_svg_text=legacy_text,
@@ -184,17 +204,26 @@ def export_all_with_canonical(
             environ=env,
         )
         if not runtime.published or not runtime.selection.promoted:
-            reason = "; ".join(runtime.selection.errors) or "runtime canonical publication rejected"
-            return outputs, {**errors, "canonical_svg": reason}
+            raise ValueError(
+                "; ".join(runtime.selection.errors)
+                or "runtime canonical publication rejected"
+            )
 
         published_bytes = legacy_svg.read_bytes()
         if sha256(published_bytes).hexdigest() != report.document_sha256:
             raise ValueError("published canonical SVG digest mismatch")
-    except Exception as exc:  # noqa: BLE001 - preserve already-generated legacy outputs
-        return outputs, {
-            **errors,
-            "canonical_svg": f"canonical runtime integration failed: {type(exc).__name__}: {exc}",
-        }
+    except Exception as exc:  # noqa: BLE001 - restore legacy before returning
+        rollback_error = None
+        try:
+            changed = bool(legacy_bytes) and legacy_svg.read_bytes() != legacy_bytes
+        except OSError:
+            changed = bool(legacy_bytes)
+        if changed:
+            rollback_error = _restore_legacy_svg(legacy_svg, legacy_bytes)
+        detail = f"canonical runtime integration failed: {type(exc).__name__}: {exc}"
+        if rollback_error:
+            detail = f"{detail}; {rollback_error}"
+        return outputs, {**errors, "canonical_svg": detail}
 
     outputs = dict(outputs)
     errors = dict(errors)
