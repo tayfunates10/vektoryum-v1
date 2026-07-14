@@ -1,11 +1,11 @@
 """Verified analyzer decision gate for ``trace_mode=auto``.
 
 AA-2 publishes versioned analyzer metadata. AA-3 verifies that metadata against the
-current decoded pixels and feature snapshot before allowing the recommendation to
-control production preprocessing. Invalid, stale or ambiguous recommendations are
-not consumed; the pipeline uses the color-preserving review mode and the final
-artifact is explicitly marked ``needs_review``. Manual explicit modes bypass this
-gate unchanged.
+current decoded pixels and feature snapshot before allowing it to control production
+preprocessing. Invalid or stale reports use a conservative color-preserving fallback.
+A valid but low-confidence report keeps its existing recommendation as best-effort
+execution while the final artifact is explicitly marked ``needs_review``. Manual
+explicit modes bypass this gate unchanged.
 """
 from __future__ import annotations
 
@@ -25,24 +25,20 @@ from app.analyzer_contracts import (
     build_analyzer_contract,
 )
 
-
 AUTO_DECISION_SCHEMA_VERSION = "analyzer-auto-decision-v1"
 MIN_AUTO_CONFIDENCE = 0.50
 MIN_AUTO_MARGIN = 0.05
 REVIEW_FALLBACK_MODE = "logo_color"
 _PRECOMPUTED_ANALYSIS: ContextVar[dict[str, Any] | None] = ContextVar(
-    "vektoryum_precomputed_analysis",
-    default=None,
+    "vektoryum_precomputed_analysis", default=None
 )
 
 
 def bind_precomputed_analysis(analysis: dict[str, Any]) -> Any:
-    """Bind one analyzer report to the current request context."""
     return _PRECOMPUTED_ANALYSIS.set(deepcopy(analysis))
 
 
 def consume_precomputed_analysis() -> dict[str, Any] | None:
-    """Consume the request-scoped report once; concurrent contexts stay isolated."""
     analysis = _PRECOMPUTED_ANALYSIS.get()
     if analysis is None:
         return None
@@ -55,11 +51,12 @@ def reset_precomputed_analysis(token: Any) -> None:
 
 
 def _same_digest(left: Any, right: Any) -> bool:
-    if not isinstance(left, str) or not isinstance(right, str):
-        return False
-    if len(left) != 64 or len(right) != 64:
-        return False
-    return hmac.compare_digest(left, right)
+    return (
+        isinstance(left, str)
+        and isinstance(right, str)
+        and len(left) == len(right) == 64
+        and hmac.compare_digest(left, right)
+    )
 
 
 def _version_errors(contract: dict[str, Any]) -> list[str]:
@@ -77,10 +74,8 @@ def _version_errors(contract: dict[str, Any]) -> list[str]:
 
 
 def verify_stored_contract(
-    analysis: dict[str, Any],
-    image: Image.Image,
+    analysis: dict[str, Any], image: Image.Image
 ) -> tuple[dict[str, Any] | None, list[str]]:
-    """Rebuild the contract from current truth and compare all authority fields."""
     stored = analysis.get("analyzer_contract")
     if not isinstance(stored, dict):
         return None, ["contract_missing"]
@@ -92,7 +87,8 @@ def verify_stored_contract(
     rebuilt_input = {
         key: value
         for key, value in analysis.items()
-        if key not in {
+        if key
+        not in {
             "analyzer_contract",
             "recommendation_confidence",
             "recommendation_margin",
@@ -109,24 +105,24 @@ def verify_stored_contract(
         if not _same_digest(stored.get(name), rebuilt.get(name)):
             errors.append(f"digest_mismatch:{name}")
 
-    scalar_fields = (
+    for name in (
         "confidence",
         "runner_up_mode",
         "runner_up_margin",
         "support_contradiction",
         "optional_signals",
-    )
-    for name in scalar_fields:
+    ):
         if stored.get(name) != rebuilt.get(name):
             errors.append(f"metadata_mismatch:{name}")
-
     if stored.get("support_scores") != rebuilt.get("support_scores"):
         errors.append("metadata_mismatch:support_scores")
     if analysis.get("recommendation_confidence") != stored.get("confidence"):
         errors.append("top_level_mismatch:confidence")
     if analysis.get("recommendation_margin") != stored.get("runner_up_margin"):
         errors.append("top_level_mismatch:margin")
-    if not _same_digest(analysis.get("recommendation_digest"), stored.get("recommendation_digest")):
+    if not _same_digest(
+        analysis.get("recommendation_digest"), stored.get("recommendation_digest")
+    ):
         errors.append("top_level_mismatch:digest")
 
     selected = analysis.get("recommended_mode")
@@ -135,17 +131,12 @@ def verify_stored_contract(
     if analysis.get("detected_type") != selected:
         errors.append("recommendation_type_mismatch")
 
-    if errors:
-        return None, sorted(set(errors))
-    return deepcopy(rebuilt), []
+    return (None, sorted(set(errors))) if errors else (deepcopy(rebuilt), [])
 
 
 def decide_trace_mode(
-    analysis: dict[str, Any],
-    image: Image.Image,
-    requested_mode: str,
+    analysis: dict[str, Any], image: Image.Image, requested_mode: str
 ) -> dict[str, Any]:
-    """Return the production execution mode and an auditable decision report."""
     if requested_mode != "auto":
         return {
             "schema_version": AUTO_DECISION_SCHEMA_VERSION,
@@ -156,6 +147,7 @@ def decide_trace_mode(
             "abstained": False,
             "reason_codes": ["manual_mode_bypass"],
             "confidence": None,
+            "runner_up_mode": None,
             "runner_up_margin": None,
             "verified_recommendation_digest": None,
         }
@@ -169,8 +161,10 @@ def decide_trace_mode(
             "recommended_mode": analysis.get("recommended_mode"),
             "execution_mode": REVIEW_FALLBACK_MODE,
             "abstained": True,
+            "fallback_applied": True,
             "reason_codes": errors or ["contract_verification_failed"],
             "confidence": None,
+            "runner_up_mode": None,
             "runner_up_margin": None,
             "verified_recommendation_digest": None,
         }
@@ -189,14 +183,18 @@ def decide_trace_mode(
     if contract.get("support_contradiction") is True:
         reason_codes.append("support_contradiction")
 
-    abstained = bool(reason_codes)
+    needs_review = bool(reason_codes)
     return {
         "schema_version": AUTO_DECISION_SCHEMA_VERSION,
-        "status": "needs_review" if abstained else "accepted",
+        "status": "needs_review" if needs_review else "accepted",
         "requested_mode": "auto",
         "recommended_mode": analysis.get("recommended_mode"),
-        "execution_mode": REVIEW_FALLBACK_MODE if abstained else analysis["recommended_mode"],
-        "abstained": abstained,
+        # The report is verified, so preserve the mature analyzer's best-effort
+        # execution mode. Fail-closed behavior is the review verdict, not an
+        # unrelated mode rewrite that can introduce new artifact failures.
+        "execution_mode": analysis["recommended_mode"],
+        "abstained": needs_review,
+        "fallback_applied": False,
         "reason_codes": reason_codes or ["verified_recommendation"],
         "confidence": confidence,
         "runner_up_mode": contract.get("runner_up_mode"),
@@ -206,11 +204,8 @@ def decide_trace_mode(
 
 
 def apply_auto_decision_to_final_artifact(
-    final_artifact: dict[str, Any],
-    analysis: dict[str, Any],
-    requested_mode: str,
+    final_artifact: dict[str, Any], analysis: dict[str, Any], requested_mode: str
 ) -> dict[str, Any]:
-    """Prevent an abstained auto decision from being reported production-ready."""
     if requested_mode != "auto":
         return final_artifact
     decision = analysis.get("auto_decision")
@@ -224,9 +219,7 @@ def apply_auto_decision_to_final_artifact(
     codes = list(final_artifact.get("soft_warning_codes") or [])
     if "analyzer_auto_review" not in codes:
         codes.append("analyzer_auto_review")
-        warnings.append(
-            "Automatic mode confidence was insufficient; a color-preserving review mode was used."
-        )
+        warnings.append("Automatic mode confidence requires review.")
     final_artifact["soft_warnings"] = warnings
     final_artifact["soft_warning_codes"] = codes
     final_artifact["auto_decision"] = deepcopy(decision)
