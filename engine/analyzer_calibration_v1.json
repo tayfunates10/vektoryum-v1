@@ -1,0 +1,367 @@
+{
+  "schema_version": "analyzer-calibration-evidence-v1",
+  "support_model_version": "analyzer-mode-support-v1",
+  "description": "Deterministic labeled synthetic feature evidence for post-hoc recommendation confidence calibration. Image-level release calibration is reserved for AA-4.",
+  "cases": [
+    {
+      "id": "geo-strong",
+      "label": "geometric_logo",
+      "features": {
+        "flat_color_count": 3,
+        "edge_density": 0.05,
+        "quality_score": 80,
+        "thin_ink_ratio": 0.30,
+        "straight_edge_likelihood": 0.80,
+        "corner_likelihood": 0.80,
+        "has_gradient": false,
+        "likely_geometric_logo": true,
+        "likely_text_logo": false,
+        "likely_color_logo": false,
+        "likely_photo_or_complex": false,
+        "likely_single_color": false,
+        "likely_line_art": false,
+        "semantic_photo_like": false
+      }
+    },
+    {
+      "id": "geo-bwr",
+      "label": "geometric_logo",
+      "features": {
+        "flat_color_count": 5,
+        "edge_density": 0.05,
+        "quality_score": 80,
+        "thin_ink_ratio": 0.50,
+        "straight_edge_likelihood": 0.55,
+        "corner_likelihood": 0.50,
+        "has_gradient": false,
+        "likely_geometric_logo": true,
+        "likely_text_logo": true,
+        "likely_color_logo": false,
+        "likely_photo_or_complex": false,
+        "likely_single_color": false,
+        "likely_line_art": false,
+        "semantic_photo_like": false
+      }
+    },
+    {
+      "id": "geo-boundary",
+      "label": "geometric_logo",
+      "features": {
+        "flat_color_count": 8,
+        "edge_density": 0.07,
+        "quality_score": 75,
+        "thin_ink_ratio": 0.50,
+        "straight_edge_likelihood": 0.36,
+        "corner_likelihood": 0.30,
+        "has_gradient": true,
+        "likely_geometric_logo": true,
+        "likely_text_logo": false,
+        "likely_color_logo": true,
+        "likely_photo_or_complex": false,
+        "likely_single_color": false,
+        "likely_line_art": false,
+        "semantic_photo_like": false
+      }
+    },
+    {
+      "id": "minimal-text",
+      "label": "minimal_ai",
+      "features": {
+        "flat_color_count": 2,
+        "edge_density": 0.07,
+        "quality_score": 85,
+        "thin_ink_ratio": 0.50,
+        "straight_edge_likelihood": 0.20,
+        "corner_likelihood": 0.20,
+        "has_gradient": false,
+        "likely_geometric_logo": false,
+        "likely_text_logo": true,
+        "likely_color_logo": false,
+        "likely_photo_or_complex": false,
+        "likely_single_color": false,
+        "likely_line_art": false,
+        "semantic_photo_like": false
+      }
+    },
+    {
+      "id": "minimal-flat",
+      "label": "minimal_ai",
+      "features": {
+        "flat_color_count": 7,
+        "edge_density": 0.07,
+        "quality_score": 70,
+        "thin_ink_ratio": 0.50,
+        "straight_edge_likelihood": 0.20,
+        "corner_likelihood": 0.20,
+        "has_gradient": false,
+        "likely_geometric_logo": false,
+        "likely_text_logo": true,
+        "likely_color_logo": false,
+        "likely_photo_or_complex": false,
+        "likely_single_color": false,
+        "likely_line_art": false,
+        "semantic_photo_like": false
+      }
+    },
+    {
+      "id": "minimal-boundary",
+      "label": "minimal_ai",
+      "features": {
+        "flat_color_count": 10,
+        "edge_density": 0.07,
+        "quality_score": 60,
+        "thin_ink_ratio": 0.50,
+        "straight_edge_likelihood": 0.35,
+        "corner_likelihood": 0.29,
+        "has_gradient": false,
+        "likely_geometric_logo": true,
+        "likely_text_logo": true,
+        "likely_color_logo": false,
+        "likely_photo_or_complex": false,
+        "likely_single_color": false,
+        "likely_line_art": false,
+        "semantic_photo_like": false
+      }
+    },
+    {
+      "id": "logo-gradient",
+      "label": "logo_color",
+      "features": {
+        "flat_color_count": 18,
+        "edge_density": 0.09,
+        "quality_score": 75,
+        "thin_ink_ratio": 0.50,
+        "straight_edge_likelihood": 0.20,
+        "corner_likelihood": 0.20,
+        "has_gradient": true,
+        "likely_geometric_logo": false,
+        "likely_text_logo": false,
+        "likely_color_logo": true,
+        "likely_photo_or_complex": false,
+        "likely_single_color": false,
+        "likely_line_art": false,
+        "semantic_photo_like": false
+      }
+    },
+    {
+      "id": "logo-multicolor",
+      "label": "logo_color",
+      "features": {
+        "flat_color_count": 24,
+        "edge_density": 0.08,
+        "quality_score": 75,
+        "thin_ink_ratio": 0.50,
+        "straight_edge_likelihood": 0.20,
+        "corner_likelihood": 0.20,
+        "has_gradient": false,
+        "likely_geometric_logo": false,
+        "likely_text_logo": false,
+        "likely_color_logo": true,
+        "likely_photo_or_complex": false,
+        "likely_single_color": false,
+        "likely_line_art": false,
+        "semantic_photo_like": false
+      }
+    },
+    {
+      "id": "logo-complex",
+      "label": "logo_color",
+      "features": {
+        "flat_color_count": 20,
+        "edge_density": 0.10,
+        "quality_score": 50,
+        "thin_ink_ratio": 0.50,
+        "straight_edge_likelihood": 0.20,
+        "corner_likelihood": 0.20,
+        "has_gradient": false,
+        "likely_geometric_logo": false,
+        "likely_text_logo": false,
+        "likely_color_logo": true,
+        "likely_photo_or_complex": true,
+        "likely_single_color": false,
+        "likely_line_art": false,
+        "semantic_photo_like": false
+      }
+    },
+    {
+      "id": "single-solid",
+      "label": "single_color",
+      "features": {
+        "flat_color_count": 2,
+        "edge_density": 0.04,
+        "quality_score": 75,
+        "thin_ink_ratio": 0.20,
+        "straight_edge_likelihood": 0.20,
+        "corner_likelihood": 0.20,
+        "has_gradient": false,
+        "likely_geometric_logo": false,
+        "likely_text_logo": false,
+        "likely_color_logo": false,
+        "likely_photo_or_complex": false,
+        "likely_single_color": true,
+        "likely_line_art": false,
+        "semantic_photo_like": false
+      }
+    },
+    {
+      "id": "single-alpha",
+      "label": "single_color",
+      "features": {
+        "flat_color_count": 2,
+        "edge_density": 0.05,
+        "quality_score": 75,
+        "thin_ink_ratio": 0.40,
+        "straight_edge_likelihood": 0.20,
+        "corner_likelihood": 0.20,
+        "has_gradient": false,
+        "likely_geometric_logo": false,
+        "likely_text_logo": false,
+        "likely_color_logo": false,
+        "likely_photo_or_complex": false,
+        "likely_single_color": true,
+        "likely_line_art": false,
+        "semantic_photo_like": false
+      }
+    },
+    {
+      "id": "single-boundary",
+      "label": "single_color",
+      "features": {
+        "flat_color_count": 3,
+        "edge_density": 0.075,
+        "quality_score": 75,
+        "thin_ink_ratio": 0.54,
+        "straight_edge_likelihood": 0.20,
+        "corner_likelihood": 0.20,
+        "has_gradient": false,
+        "likely_geometric_logo": false,
+        "likely_text_logo": false,
+        "likely_color_logo": false,
+        "likely_photo_or_complex": false,
+        "likely_single_color": true,
+        "likely_line_art": true,
+        "semantic_photo_like": false
+      }
+    },
+    {
+      "id": "line-thin",
+      "label": "lineart",
+      "features": {
+        "flat_color_count": 2,
+        "edge_density": 0.08,
+        "quality_score": 75,
+        "thin_ink_ratio": 0.85,
+        "straight_edge_likelihood": 0.20,
+        "corner_likelihood": 0.20,
+        "has_gradient": false,
+        "likely_geometric_logo": false,
+        "likely_text_logo": false,
+        "likely_color_logo": false,
+        "likely_photo_or_complex": false,
+        "likely_single_color": false,
+        "likely_line_art": true,
+        "semantic_photo_like": false
+      }
+    },
+    {
+      "id": "line-neutral",
+      "label": "lineart",
+      "features": {
+        "flat_color_count": 4,
+        "edge_density": 0.05,
+        "quality_score": 75,
+        "thin_ink_ratio": 0.70,
+        "straight_edge_likelihood": 0.20,
+        "corner_likelihood": 0.20,
+        "has_gradient": false,
+        "likely_geometric_logo": false,
+        "likely_text_logo": false,
+        "likely_color_logo": false,
+        "likely_photo_or_complex": false,
+        "likely_single_color": false,
+        "likely_line_art": true,
+        "semantic_photo_like": false
+      }
+    },
+    {
+      "id": "line-boundary",
+      "label": "lineart",
+      "features": {
+        "flat_color_count": 3,
+        "edge_density": 0.06,
+        "quality_score": 75,
+        "thin_ink_ratio": 0.58,
+        "straight_edge_likelihood": 0.20,
+        "corner_likelihood": 0.20,
+        "has_gradient": false,
+        "likely_geometric_logo": false,
+        "likely_text_logo": false,
+        "likely_color_logo": false,
+        "likely_photo_or_complex": false,
+        "likely_single_color": true,
+        "likely_line_art": true,
+        "semantic_photo_like": false
+      }
+    },
+    {
+      "id": "photo-semantic",
+      "label": "photo_poster",
+      "features": {
+        "flat_color_count": 40,
+        "edge_density": 0.20,
+        "quality_score": 35,
+        "thin_ink_ratio": 0.50,
+        "straight_edge_likelihood": 0.20,
+        "corner_likelihood": 0.20,
+        "has_gradient": true,
+        "likely_geometric_logo": false,
+        "likely_text_logo": false,
+        "likely_color_logo": false,
+        "likely_photo_or_complex": true,
+        "likely_single_color": false,
+        "likely_line_art": false,
+        "semantic_photo_like": true
+      }
+    },
+    {
+      "id": "photo-no-hed",
+      "label": "photo_poster",
+      "features": {
+        "flat_color_count": 36,
+        "edge_density": 0.15,
+        "quality_score": 40,
+        "thin_ink_ratio": 0.50,
+        "straight_edge_likelihood": 0.20,
+        "corner_likelihood": 0.20,
+        "has_gradient": true,
+        "likely_geometric_logo": false,
+        "likely_text_logo": false,
+        "likely_color_logo": false,
+        "likely_photo_or_complex": true,
+        "likely_single_color": false,
+        "likely_line_art": false,
+        "semantic_photo_like": false
+      }
+    },
+    {
+      "id": "photo-boundary",
+      "label": "photo_poster",
+      "features": {
+        "flat_color_count": 30,
+        "edge_density": 0.13,
+        "quality_score": 48,
+        "thin_ink_ratio": 0.50,
+        "straight_edge_likelihood": 0.20,
+        "corner_likelihood": 0.20,
+        "has_gradient": true,
+        "likely_geometric_logo": false,
+        "likely_text_logo": false,
+        "likely_color_logo": true,
+        "likely_photo_or_complex": true,
+        "likely_single_color": false,
+        "likely_line_art": false,
+        "semantic_photo_like": false
+      }
+    }
+  ]
+}
