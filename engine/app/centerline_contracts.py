@@ -37,7 +37,6 @@ def _attach_score_contract(
             return score
         report = read_centerline_report(Path(svg_path))
         if report is None:
-            # AutoTrace does not carry the OpenCV fallback report.
             return score
 
         valid, errors = validate_centerline_report(report)
@@ -119,42 +118,46 @@ def _attach_quality_contract(
     return wrapped
 
 
-def install_centerline_quality_contract() -> None:
-    """Install the lightweight legacy quality guard during package startup."""
+def install_centerline_quality_contract() -> Callable[..., dict[str, Any]]:
+    """Install quality guards only after a centerline fallback is selected."""
     global _QUALITY_INSTALLED
-    if _QUALITY_INSTALLED:
-        return
     from app import quality  # noqa: PLC0415
 
     current = quality.basic_svg_quality_check
-    if not getattr(current, "_vektoryum_centerline_contract", False):
-        quality.basic_svg_quality_check = _attach_quality_contract(current)
+    if not _QUALITY_INSTALLED and not getattr(current, "_vektoryum_centerline_contract", False):
+        current = _attach_quality_contract(current)
+        quality.basic_svg_quality_check = current
+    else:
+        current = quality.basic_svg_quality_check
+
+    main = sys.modules.get("app.main")
+    if main is not None:
+        setattr(main, "basic_svg_quality_check", current)
     _QUALITY_INSTALLED = True
+    return current
 
 
 def install_centerline_score_contract() -> None:
-    """Install scoring only after the fallback actually produced an SVG.
-
-    This avoids importing the heavy scoring/fidelity stack for unrelated modes
-    during package startup.  The already-imported pipeline alias is updated too,
-    because worker code imports ``score_vector_candidate`` by value.
-    """
+    """Install score/quality contracts only for an actual fallback request."""
     global _SCORE_INSTALLED
-    if _SCORE_INSTALLED:
-        return
     from app import scoring  # noqa: PLC0415
 
     current = scoring.score_vector_candidate
-    if not getattr(current, "_vektoryum_centerline_contract", False):
+    if not _SCORE_INSTALLED and not getattr(current, "_vektoryum_centerline_contract", False):
         current = _attach_score_contract(current)
         scoring.score_vector_candidate = current
+    else:
+        current = scoring.score_vector_candidate
+
     pipeline = sys.modules.get("app.pipeline")
     if pipeline is not None:
         setattr(pipeline, "score_vector_candidate", current)
+    install_centerline_quality_contract()
     _SCORE_INSTALLED = True
 
 
 __all__ = [
+    "_attach_quality_contract",
     "install_centerline_quality_contract",
     "install_centerline_score_contract",
 ]
