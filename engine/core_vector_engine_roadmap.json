@@ -120,7 +120,7 @@
     {
       "id": "CVE-4",
       "title": "All-mode artifact and corpus release closure",
-      "status": "pending",
+      "status": "complete",
       "acceptance_criteria": [
         "Every explicit production mode has a representative deterministic three-run corpus result or an explicit fail-closed unavailable/needs_review verdict.",
         "Final artifacts contain no bitmap payload, non-finite coordinate, open required cycle, stale score or mismatched output digest.",
@@ -129,10 +129,18 @@
         "Exact final artifact, hard SVG regression, all-mode corpus and benchmark release workflows are mandatory and green."
       ],
       "evidence": [
+        "core_vector_engine_roadmap.json",
+        "test_core_vector_engine_roadmap.py",
+        "core_release_contract.py",
+        "core_release_runner.py",
+        "test_core_release_contract.py",
+        "test_core_release_runner.py",
         "test_artifact_quality.py",
         "test_synthetic_vector_quality.py",
         "regression/artifact_probe.py",
-        "app/quality.py"
+        "app/final_artifact_evaluator.py",
+        "app/quality.py",
+        "../.github/workflows/core-all-mode-release.yml"
       ]
     }
   ]

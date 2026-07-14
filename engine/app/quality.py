@@ -40,6 +40,10 @@ def basic_svg_quality_check(
     ``structure_report`` (bkz. ``fidelity.score_structure_integrity``) verilirse
     kırık/eksik çizgi ve hayalet çizik denetimi yapılır: kontur karşılama oranı
     eşiğin altındaysa çıktı ASLA ``production_ready`` işaretlenmez.
+
+    ``photo_poster`` sürekli-tonlu girdiler için açık bir ürün limitidir. Bu mod
+    yüksek sezgisel veya algısal skor alsa bile otomatik olarak üretime hazır
+    ilan edilmez; kullanıcı incelemesi gerektiren ``needs_review`` hükmü korunur.
     """
     path_count = int(score_details.get("path_count", 0))
     unique_colors = int(score_details.get("unique_colors", 0))
@@ -55,6 +59,7 @@ def basic_svg_quality_check(
         warnings.append("No vector paths were produced.")
 
     flat_mode = mode in _FLAT_MODES
+    photo_product_limit = mode == "photo_poster"
     # Sade logolarda az path uyarısı verme kuralı
     low_path_exempt = flat_mode and unique_colors <= 6 and path_count >= 10
 
@@ -96,6 +101,11 @@ def basic_svg_quality_check(
             "The vector output is an approximation — a cleaner logo or higher-quality "
             "source image will give a better result."
         )
+    if photo_product_limit:
+        warnings.append(
+            "Photo/continuous-tone vectorization is an accepted product limit; "
+            "the output requires review before production use."
+        )
 
     # Yapı bütünlüğü: kırık/eksik çizgi ve hayalet çizik denetimi
     structure_broken = False
@@ -135,6 +145,9 @@ def basic_svg_quality_check(
         status = "failed" if path_count == 0 else "needs_review"
     elif structure_broken:
         # kırık çizgi / hayalet çizik varken çıktı üretime hazır sayılamaz
+        status = "needs_review"
+    elif photo_product_limit:
+        # CVE-4: sürekli-tonlu/foto modunda yanlış production_ready hükmü yok.
         status = "needs_review"
     elif low_fidelity:
         # ölçülen sadakat düşükse "üretime hazır" diyemeyiz (dürüst beklenti)
