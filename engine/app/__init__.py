@@ -1,17 +1,19 @@
 """Application package runtime bindings."""
 from __future__ import annotations
 
-# The candidate dispatcher resolves this module global at call time. Binding the
-# measured graph implementation here keeps the public engine name stable and
-# also applies in spawned worker processes, where the package initializer runs
-# before ``app.pipeline`` is imported.
+# ``app.pipeline`` imports ``app.vector_engines`` immediately after package
+# initialization, so loading that existing module here adds no new dependency.
+# Centerline graph, scoring and quality modules remain completely lazy for every
+# non-centerline request and benchmark category.
 from app import vector_engines as _vector_engines
-from app.centerline_contracts import (
-    install_centerline_quality_contract as _install_quality_contract,
-)
-from app.centerline_svg import vectorize_skeleton_graph_to_svg as _graph_centerline
 
-_vector_engines.vectorize_skeleton_to_svg = _graph_centerline
-_install_quality_contract()
 
-del _graph_centerline, _install_quality_contract, _vector_engines
+def _lazy_graph_centerline(*args, **kwargs):
+    from app.centerline_svg import vectorize_skeleton_graph_to_svg  # noqa: PLC0415
+
+    return vectorize_skeleton_graph_to_svg(*args, **kwargs)
+
+
+_vector_engines.vectorize_skeleton_to_svg = _lazy_graph_centerline
+
+del _vector_engines
