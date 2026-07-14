@@ -16,7 +16,8 @@ from benchmark.seed_runner import CATEGORIES, generate_seed_corpus
 
 BENCHMARK_CATEGORIES = frozenset(CATEGORIES)
 REPEAT_COUNT = 3
-MEASUREMENT_METHOD_VERSION = "median-performance-v2-isolated-rss"
+REPEAT_TIMEOUT_SECONDS = 1800
+MEASUREMENT_METHOD_VERSION = "median-performance-v3-repeat-samples"
 _HIGHER_IS_BETTER = {"fidelity", "ssim", "edge_f1", "alpha_iou"}
 _LOWER_IS_BETTER = {"delta_e00", "path_count", "svg_bytes"}
 _PERFORMANCE_METRICS = {"render_ms", "peak_rss_mb"}
@@ -58,7 +59,7 @@ def _run_case_isolated(
     corpus_root: Path,
     work_root: Path,
     engine_version: str,
-    timeout_seconds: int = 1800,
+    timeout_seconds: int = REPEAT_TIMEOUT_SECONDS,
 ) -> BenchmarkResult:
     context = multiprocessing.get_context("spawn")
     queue = context.Queue(maxsize=1)
@@ -121,29 +122,69 @@ def aggregate_repeats(repeats: list[BenchmarkResult]) -> BenchmarkResult:
     )
 
 
-def run_smoke(output_dir: Path, *, engine_version: str, repeat_count: int = REPEAT_COUNT) -> list[BenchmarkResult]:
+def _write_repeat_samples(path: Path, samples: list[dict[str, Any]], *, repeat_count: int, timeout_seconds: int) -> None:
+    payload = {
+        "schema_version": "benchmark-repeat-samples-v1",
+        "measurement_method": MEASUREMENT_METHOD_VERSION,
+        "repeat_count": repeat_count,
+        "timeout_seconds": timeout_seconds,
+        "sample_count": len(samples),
+        "samples": samples,
+    }
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def run_smoke(
+    output_dir: Path,
+    *,
+    engine_version: str,
+    repeat_count: int = REPEAT_COUNT,
+    timeout_seconds: int = REPEAT_TIMEOUT_SECONDS,
+) -> list[BenchmarkResult]:
     if repeat_count < 1 or repeat_count % 2 == 0:
         raise ValueError("repeat_count must be a positive odd integer")
+    if timeout_seconds < 1:
+        raise ValueError("timeout_seconds must be positive")
     output_dir.mkdir(parents=True, exist_ok=True)
     corpus_root = output_dir / "corpus"
     work_root = output_dir / "jobs"
+    samples_path = output_dir / "repeat_samples.json"
     cases = [
         case
         for case in generate_seed_corpus(corpus_root)
         if case.category in BENCHMARK_CATEGORIES
     ]
     results: list[BenchmarkResult] = []
+    samples: list[dict[str, Any]] = []
     for case in cases:
         repeats = []
         for repeat_index in range(repeat_count):
-            repeats.append(
-                _run_case_isolated(
+            sample = {
+                "case_id": case.case_id,
+                "repeat_index": repeat_index + 1,
+                "status": "running",
+                "result": None,
+                "error": None,
+            }
+            try:
+                result = _run_case_isolated(
                     case,
                     corpus_root=corpus_root,
                     work_root=work_root / f"repeat-{repeat_index + 1}",
                     engine_version=engine_version,
+                    timeout_seconds=timeout_seconds,
                 )
-            )
+            except BaseException as exc:
+                sample["status"] = "failure"
+                sample["error"] = f"{type(exc).__name__}: {exc}"
+                samples.append(sample)
+                _write_repeat_samples(samples_path, samples, repeat_count=repeat_count, timeout_seconds=timeout_seconds)
+                raise
+            sample["status"] = "success"
+            sample["result"] = result.to_dict()
+            samples.append(sample)
+            _write_repeat_samples(samples_path, samples, repeat_count=repeat_count, timeout_seconds=timeout_seconds)
+            repeats.append(result)
         results.append(aggregate_repeats(repeats))
     write_results(
         output_dir / "pipeline_results.json",
@@ -155,6 +196,8 @@ def run_smoke(output_dir: Path, *, engine_version: str, repeat_count: int = REPE
             "quality_aggregation": "conservative_worst_case",
             "artifact_sha_policy": "all_repeats_must_match",
             "rss_scope": "fresh_spawned_process_per_repeat",
+            "repeat_samples": "repeat_samples.json",
+            "timeout_seconds": timeout_seconds,
         },
     )
     return results
@@ -165,8 +208,14 @@ def main() -> None:
     parser.add_argument("--output", type=Path, default=Path("benchmark_artifacts"))
     parser.add_argument("--engine-version", default="unknown")
     parser.add_argument("--repeat-count", type=int, default=REPEAT_COUNT)
+    parser.add_argument("--repeat-timeout-seconds", type=int, default=REPEAT_TIMEOUT_SECONDS)
     args = parser.parse_args()
-    results = run_smoke(args.output, engine_version=args.engine_version, repeat_count=args.repeat_count)
+    results = run_smoke(
+        args.output,
+        engine_version=args.engine_version,
+        repeat_count=args.repeat_count,
+        timeout_seconds=args.repeat_timeout_seconds,
+    )
     print(json.dumps({"status": "ok", "case_count": len(results), "repeat_count": args.repeat_count}, sort_keys=True))
 
 
