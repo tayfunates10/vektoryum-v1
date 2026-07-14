@@ -1,0 +1,40 @@
+name: Production platform roadmap contract
+
+on:
+  pull_request:
+    paths:
+      - "engine/production_platform_roadmap.json"
+      - "engine/test_production_platform_roadmap.py"
+      - "engine/app/main.py"
+      - "engine/app/settings.py"
+      - "engine/app/store.py"
+      - "docs/PRODUCTION_PLATFORM_ROADMAP.md"
+      - "Dockerfile"
+      - ".github/workflows/production-platform-contract.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-platform-contract-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: engine
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: engine/requirements.txt
+      - name: Install test dependencies
+        run: python -m pip install pytest
+      - name: Validate production platform roadmap
+        run: python -m pytest -q test_production_platform_roadmap.py
