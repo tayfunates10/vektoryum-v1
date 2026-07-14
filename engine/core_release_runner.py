@@ -204,6 +204,7 @@ def _no_candidate_sample(mode: str, repeat_index: int, output: dict[str, Any]) -
 
 
 def _run_sample_inner(mode: str, repeat_index: int, source_path: Path, job_dir: Path, fixture: dict[str, Any]) -> dict[str, Any]:
+    job_dir.mkdir(parents=True, exist_ok=True)
     with Image.open(source_path) as opened:
         image = opened.convert("RGBA")
         source_rgb, source_alpha = _white_composite(image)
