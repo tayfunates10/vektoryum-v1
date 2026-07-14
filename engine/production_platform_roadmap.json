@@ -1,0 +1,88 @@
+{
+  "schema_version": "production-platform-closure-v1",
+  "goal": "Complete production platform readiness through four merge-gated phases.",
+  "scope": {
+    "included": [
+      "account and login lifecycle",
+      "durable job and user state",
+      "service operation modes",
+      "health diagnostics and gated deployment"
+    ],
+    "excluded": [
+      "vector engine quality",
+      "analyzer classification quality",
+      "billing integration"
+    ]
+  },
+  "known_limitations": [
+    {"id": "administrator_bootstrap_not_closed", "status": "open", "closure_phase": "PPC-2", "evidence": "app/main.py"},
+    {"id": "login_state_lifecycle_not_closed", "status": "open", "closure_phase": "PPC-2", "evidence": "app/main.py"},
+    {"id": "request_boundary_not_closed", "status": "open", "closure_phase": "PPC-2", "evidence": "app/main.py"},
+    {"id": "state_sync_integrity_not_closed", "status": "open", "closure_phase": "PPC-3", "evidence": "app/store.py"},
+    {"id": "job_retention_not_closed", "status": "open", "closure_phase": "PPC-3", "evidence": "app/main.py"},
+    {"id": "service_modes_not_closed", "status": "open", "closure_phase": "PPC-4", "evidence": "app/main.py"},
+    {"id": "gated_deploy_not_closed", "status": "open", "closure_phase": "PPC-4", "evidence": "../Dockerfile"}
+  ],
+  "phases": [
+    {
+      "id": "PPC-1",
+      "title": "Finite platform capability contract",
+      "status": "complete",
+      "acceptance_criteria": [
+        "A finite four-phase roadmap is committed and schema validated.",
+        "Every known limitation has one closure phase and an existing evidence file.",
+        "Completed engine and analyzer scopes are excluded.",
+        "Current API health and container entrypoints are inventoried without changing runtime behavior.",
+        "A dedicated pull-request workflow validates this roadmap."
+      ],
+      "evidence": [
+        "production_platform_roadmap.json",
+        "test_production_platform_roadmap.py",
+        "app/main.py",
+        "app/settings.py",
+        "app/store.py",
+        "../Dockerfile",
+        "../.github/workflows/production-platform-contract.yml"
+      ]
+    },
+    {
+      "id": "PPC-2",
+      "title": "Account and login-state closure",
+      "status": "pending",
+      "acceptance_criteria": [
+        "Administrator bootstrap requires explicit production configuration.",
+        "Login state expires can be revoked and remains valid across supported process restarts.",
+        "Browser cookie attributes and state-changing request boundaries are explicit.",
+        "Login and registration include deterministic abuse controls.",
+        "Identity and authorization boundaries have API regression coverage."
+      ],
+      "evidence": []
+    },
+    {
+      "id": "PPC-3",
+      "title": "Durable state and job lifecycle closure",
+      "status": "pending",
+      "acceptance_criteria": [
+        "User feedback and login state persistence is atomic and integrity checked.",
+        "Every job has owner timestamps terminal state and immutable artifact manifest.",
+        "Retention user quota and global disk budget cleanup are deterministic.",
+        "Restart recovery separates complete incomplete and damaged jobs.",
+        "Remote persistence failure is observable and cannot replace newer local state."
+      ],
+      "evidence": []
+    },
+    {
+      "id": "PPC-4",
+      "title": "Operations and deployment closure",
+      "status": "pending",
+      "acceptance_criteria": [
+        "Beta live and maintenance modes are explicit and consistently enforced.",
+        "Liveness and readiness return stable machine-readable checks.",
+        "Requests and jobs have correlation identifiers and structured lifecycle logs.",
+        "The production container passes non-root health shutdown and resource smoke tests.",
+        "Deployment is gated on mandatory CI and an auditable source revision."
+      ],
+      "evidence": []
+    }
+  ]
+}
