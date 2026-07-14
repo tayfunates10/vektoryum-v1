@@ -3,26 +3,81 @@ from __future__ import annotations
 
 import argparse
 import json
+import multiprocessing
 import resource
 from pathlib import Path
 from statistics import median
+from typing import Any
 
 from app.pipeline_entry import run_pipeline
-from benchmark.manifest import BenchmarkResult
+from benchmark.manifest import BenchmarkCase, BenchmarkResult
 from benchmark.pipeline_results import run_case, write_results
 from benchmark.seed_runner import CATEGORIES, generate_seed_corpus
 
 BENCHMARK_CATEGORIES = frozenset(CATEGORIES)
 REPEAT_COUNT = 3
-MEASUREMENT_METHOD_VERSION = "median-performance-v1"
+MEASUREMENT_METHOD_VERSION = "median-performance-v2-isolated-rss"
 _HIGHER_IS_BETTER = {"fidelity", "ssim", "edge_f1", "alpha_iou"}
 _LOWER_IS_BETTER = {"delta_e00", "path_count", "svg_bytes"}
 _PERFORMANCE_METRICS = {"render_ms", "peak_rss_mb"}
 
 
 def _peak_rss_mb() -> float:
-    # GitHub Actions uses Linux, where ru_maxrss is reported in KiB.
+    # Each repeat runs in a fresh spawned process, so ru_maxrss belongs only to that repeat.
     return float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) / 1024.0
+
+
+def _isolated_worker(
+    queue: Any,
+    case_payload: dict[str, Any],
+    corpus_root: str,
+    work_root: str,
+    engine_version: str,
+) -> None:
+    try:
+        case = BenchmarkCase(**case_payload)
+        result = run_case(
+            case,
+            corpus_root=Path(corpus_root),
+            work_root=Path(work_root),
+            pipeline=run_pipeline,
+            engine_version=engine_version,
+            trace_mode="auto",
+            peak_rss_mb=None,
+        )
+        result.metrics["peak_rss_mb"] = round(_peak_rss_mb(), 6)
+        queue.put({"ok": True, "result": result.to_dict()})
+    except BaseException as exc:  # fail closed across the process boundary
+        queue.put({"ok": False, "error": f"{type(exc).__name__}: {exc}"})
+        raise
+
+
+def _run_case_isolated(
+    case: BenchmarkCase,
+    *,
+    corpus_root: Path,
+    work_root: Path,
+    engine_version: str,
+    timeout_seconds: int = 1800,
+) -> BenchmarkResult:
+    context = multiprocessing.get_context("spawn")
+    queue = context.Queue(maxsize=1)
+    process = context.Process(
+        target=_isolated_worker,
+        args=(queue, case.to_dict(), str(corpus_root), str(work_root), engine_version),
+    )
+    process.start()
+    process.join(timeout_seconds)
+    if process.is_alive():
+        process.terminate()
+        process.join()
+        raise TimeoutError(f"isolated benchmark repeat timed out: {case.case_id}")
+    if queue.empty():
+        raise RuntimeError(f"isolated benchmark repeat exited without a result: {case.case_id} ({process.exitcode})")
+    payload = queue.get()
+    if not payload.get("ok") or process.exitcode != 0:
+        raise RuntimeError(f"isolated benchmark repeat failed: {case.case_id}: {payload.get('error')}")
+    return BenchmarkResult(**payload["result"])
 
 
 def _measured(values: list[float | int | None]) -> list[float]:
@@ -82,14 +137,11 @@ def run_smoke(output_dir: Path, *, engine_version: str, repeat_count: int = REPE
         repeats = []
         for repeat_index in range(repeat_count):
             repeats.append(
-                run_case(
+                _run_case_isolated(
                     case,
                     corpus_root=corpus_root,
                     work_root=work_root / f"repeat-{repeat_index + 1}",
-                    pipeline=run_pipeline,
                     engine_version=engine_version,
-                    trace_mode="auto",
-                    peak_rss_mb=_peak_rss_mb(),
                 )
             )
         results.append(aggregate_repeats(repeats))
@@ -102,6 +154,7 @@ def run_smoke(output_dir: Path, *, engine_version: str, repeat_count: int = REPE
             "performance_aggregation": "median",
             "quality_aggregation": "conservative_worst_case",
             "artifact_sha_policy": "all_repeats_must_match",
+            "rss_scope": "fresh_spawned_process_per_repeat",
         },
     )
     return results
