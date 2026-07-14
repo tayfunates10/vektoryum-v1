@@ -34,8 +34,8 @@
   "known_limitations": [
     {
       "id": "centerline_placeholder",
-      "status": "open",
-      "evidence": "app/vector_engines.py",
+      "status": "closed",
+      "evidence": "app/centerline_graph.py",
       "closure_phase": "CVE-2"
     },
     {
@@ -78,7 +78,7 @@
     {
       "id": "CVE-2",
       "title": "Deterministic centerline fallback closure",
-      "status": "pending",
+      "status": "complete",
       "acceptance_criteria": [
         "The OpenCV fallback traces a deterministic skeleton graph into open centerline paths instead of contouring the skeleton outline.",
         "Short spurs are pruned by the configured minimum branch length while endpoints and multi-way junctions remain connected.",
@@ -87,8 +87,13 @@
         "Line, polyline, T-junction, cross-junction, loop, spur-pruning and repeat-digest regression fixtures pass."
       ],
       "evidence": [
-        "app/vector_engines.py",
-        "app/quality.py"
+        "core_vector_engine_roadmap.json",
+        "test_core_vector_engine_roadmap.py",
+        "test_centerline_graph.py",
+        "app/centerline_graph.py",
+        "app/centerline_svg.py",
+        "app/centerline_contracts.py",
+        "app/__init__.py"
       ]
     },
     {
