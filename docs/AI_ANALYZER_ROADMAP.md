@@ -21,35 +21,50 @@ Durum: **complete**
 
 ## AA-2 — Versioned deterministic features and calibrated confidence
 
-Durum: **complete in this PR**
+Durum: **complete**
 
 - Feature adları, türleri, birimleri, aralıkları ve `analyzer-features-v1` sürümü tanımlandı.
 - Decoded RGBA pikseli, feature snapshot'ı ve recommendation raporu ayrı SHA-256 digestleriyle bağlandı.
 - Altı otomatik mod için 0..1 aralığında destek skorları ve ikinci seçenek marjı üretildi.
-- Confidence, repoya eklenen 18 etiketli sentetik feature örneğinden margin-bin yöntemiyle hesaplanıyor.
-- HED yoksa durum `unavailable` olarak raporlanıyor ve confidence en fazla `0.85` olabiliyor.
+- Confidence, repoya eklenen etiketli sentetik feature örneklerinden margin-bin yöntemiyle hesaplanıyor.
+- HED yoksa durum `unavailable` olarak raporlanıyor ve confidence artırılmıyor.
 - Eksik, sonlu olmayan, aralık dışı veya yarım opsiyonel feature verisi geçersiz metadata raporu üretiyor.
 - Mevcut `recommended_mode` ve sınıflandırma eşikleri değiştirilmedi.
 
 ## AA-3 — Review-aware auto-mode decision gate
 
-Durum: **pending**
+Durum: **complete**
 
-- Düşük güven veya çelişkili sinyal açık `needs_review` sonucu üretecek.
-- `auto` yalnız kaynak ve feature digestleri eşleşen analyzer raporunu kullanacak.
-- Manual explicit modlar confidence mantığı tarafından değiştirilmeyecek.
-- Sınır vakaları için deterministik review testleri eklenecek.
+- Düşük güven veya çelişkili sinyal açık `needs_review` sonucu üretiyor.
+- `auto` yalnız kaynak, feature ve recommendation digestleri eşleşen analyzer raporunu kullanıyor.
+- Geçerli fakat belirsiz raporda analyzer önerisi korunuyor ve sonuç review durumunda kalıyor.
+- Geçersiz veya eski rapor renk-koruyan fallback moduna geçiyor.
+- Manual explicit modlar confidence mantığı tarafından değiştirilmiyor.
+- Final artifact, review gereken bir auto kararından sonra production-ready olarak raporlanamıyor.
 
 ## AA-4 — Labeled analyzer corpus and release closure
 
-Durum: **pending**
+Durum: **complete**
 
-- Her otomatik mod için etiketli in-domain ve sınır corpus'u oluşturulacak.
-- Üç tekrarlı sonuçlar deterministik olacak.
-- Confusion, calibration ve review metrikleri raporlanacak.
-- Mod bazlı precision ve classification-error eşikleri uygulanacak.
-- Analyzer contract, corpus ve benchmark workflow'ları zorunlu olacak.
+- Altı otomatik modun her biri için `in_domain` ve `boundary` image-level corpus vakası oluşturuluyor.
+- Her vaka ayrı süreçte tam üç kez çalıştırılıyor.
+- HED açıkça kapalı `no_hed` ortamı release sözleşmesinin parçasıdır.
+- Kaynak pikseli, feature, recommendation, mod kararı, confidence ve review sonucu üç tekrarda birebir aynı olmalıdır.
+- Confusion, mod bazlı accepted precision, doğru kabul kapsamı, Brier skoru ve expected calibration error raporlanır.
+- Kabul edilmiş yanlış mod, geçersiz analyzer contract veya determinism sapması için tolerans sıfırdır.
+- `AI analyzer release contract` workflow'u unit sözleşmelerini ve gerçek corpus runner'ını çalıştırır; JSON rapor ve fixture'ları artifact olarak saklar.
+- Production sınıflandırma eşikleri veya manuel mod davranışı AA-4 kapsamında değiştirilmez.
+
+## Zorunlu kapanış kontrolleri
+
+AA-4 PR'ı yalnız aşağıdaki kontroller tamamen yeşilken sabit head SHA ile merge edilir:
+
+- `AI analyzer release contract`
+- `Exact final SVG contract`
+- `Benchmark v1 seed corpus`
+- `Core all-mode release contract`
+- `Core centerline graph contract`
 
 ## Yüzde hesabı
 
-Toplam dört merge-kapılı faz vardır. Her faz yalnız kendi PR'ı tüm zorunlu CI kontrolleri yeşilken sabit head SHA ile `main` dalına merge edildiğinde tamamlanmış sayılır. AA-2 merge edildiğinde analyzer roadmap ilerlemesi `2/4`, yani `%50` olacaktır.
+Toplam dört merge-kapılı faz vardır. AA-4 yeşil CI ile `main` dalına merge edildiğinde AI Analyzer roadmap ilerlemesi `4/4`, yani `%100` olur. Bu noktadan sonra bu roadmap için yeni faz veya davranış değişikliği açılmaz.
