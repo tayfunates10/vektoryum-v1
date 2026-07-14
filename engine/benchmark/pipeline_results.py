@@ -153,10 +153,16 @@ def run_case(
     )
 
 
-def write_results(path: Path, results: list[BenchmarkResult]) -> None:
+def write_results(
+    path: Path,
+    results: list[BenchmarkResult],
+    *,
+    measurement_method: dict[str, Any] | None = None,
+) -> None:
     payload = {
         "schema_version": "benchmark-results-v1",
         "case_count": len(results),
+        "measurement_method": measurement_method,
         "results": [item.to_dict() for item in sorted(results, key=lambda item: item.case_id)],
     }
     path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
