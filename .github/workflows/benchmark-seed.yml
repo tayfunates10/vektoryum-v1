@@ -7,15 +7,29 @@ on:
   pull_request:
     paths:
       - ".github/workflows/benchmark-seed.yml"
+      - ".github/workflows/ai-analyzer-release.yml"
       - "engine/benchmark/**"
       - "engine/app/**"
+      - "engine/analyzer_release_contract.py"
+      - "engine/analyzer_release_runner.py"
+      - "engine/test_analyzer_release_contract.py"
+      - "engine/test_analyzer_release_runner.py"
+      - "engine/ai_analyzer_roadmap.json"
+      - "engine/test_ai_analyzer_roadmap.py"
   push:
     branches:
       - main
     paths:
       - ".github/workflows/benchmark-seed.yml"
+      - ".github/workflows/ai-analyzer-release.yml"
       - "engine/benchmark/**"
       - "engine/app/**"
+      - "engine/analyzer_release_contract.py"
+      - "engine/analyzer_release_runner.py"
+      - "engine/test_analyzer_release_contract.py"
+      - "engine/test_analyzer_release_runner.py"
+      - "engine/ai_analyzer_roadmap.json"
+      - "engine/test_ai_analyzer_roadmap.py"
 
 permissions:
   contents: read
