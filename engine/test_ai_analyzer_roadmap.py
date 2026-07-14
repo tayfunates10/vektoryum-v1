@@ -28,6 +28,19 @@ EXPECTED_LIMITATIONS = {
     "no_fail_closed_abstention_contract",
     "no_labeled_analyzer_release_corpus",
 }
+EXPECTED_DECISION_FIELDS = {
+    "schema_version",
+    "status",
+    "requested_mode",
+    "recommended_mode",
+    "execution_mode",
+    "abstained",
+    "reason_codes",
+    "confidence",
+    "runner_up_mode",
+    "runner_up_margin",
+    "verified_recommendation_digest",
+}
 
 
 def _roadmap() -> dict:
@@ -77,7 +90,7 @@ def test_phase_order_and_status() -> None:
     assert [phase["status"] for phase in phases] == [
         "complete",
         "complete",
-        "pending",
+        "complete",
         "pending",
     ]
     assert len({phase["id"] for phase in phases}) == len(phases)
@@ -94,6 +107,7 @@ def test_mode_sets() -> None:
     assert manual == EXPECTED_EXPLICIT_ONLY
     assert automatic.isdisjoint(manual)
     assert automatic | manual == public - {"auto"}
+    assert set(data["auto_decision_fields"]) == EXPECTED_DECISION_FIELDS
 
 
 def test_limitation_status_matches_phase() -> None:
@@ -112,7 +126,7 @@ def test_limitation_status_matches_phase() -> None:
 
 def test_completed_evidence_files() -> None:
     completed = [phase for phase in _roadmap()["phases"] if phase["status"] == "complete"]
-    assert [phase["id"] for phase in completed] == ["AA-1", "AA-2"]
+    assert [phase["id"] for phase in completed] == ["AA-1", "AA-2", "AA-3"]
     for phase in completed:
         assert "test_ai_analyzer_roadmap.py" in phase["evidence"]
         assert len(phase["evidence"]) >= 4
