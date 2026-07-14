@@ -6,12 +6,14 @@ other production modes retain their existing scoring and quality behavior.
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 from typing import Any, Callable
 
 from app.centerline_graph import validate_centerline_report
 from app.centerline_svg import read_centerline_report
 
-_INSTALLED = False
+_SCORE_INSTALLED = False
+_QUALITY_INSTALLED = False
 
 
 def _attach_score_contract(
@@ -63,6 +65,7 @@ def _attach_score_contract(
 
     wrapped.__name__ = original.__name__
     wrapped.__doc__ = original.__doc__
+    setattr(wrapped, "_vektoryum_centerline_contract", True)
     return wrapped
 
 
@@ -112,19 +115,46 @@ def _attach_quality_contract(
 
     wrapped.__name__ = original.__name__
     wrapped.__doc__ = original.__doc__
+    setattr(wrapped, "_vektoryum_centerline_contract", True)
     return wrapped
 
 
-def install_centerline_contracts() -> None:
-    """Install idempotent score and quality wrappers before pipeline imports."""
-    global _INSTALLED
-    if _INSTALLED:
+def install_centerline_quality_contract() -> None:
+    """Install the lightweight legacy quality guard during package startup."""
+    global _QUALITY_INSTALLED
+    if _QUALITY_INSTALLED:
         return
-    from app import quality, scoring  # noqa: PLC0415
+    from app import quality  # noqa: PLC0415
 
-    scoring.score_vector_candidate = _attach_score_contract(scoring.score_vector_candidate)
-    quality.basic_svg_quality_check = _attach_quality_contract(quality.basic_svg_quality_check)
-    _INSTALLED = True
+    current = quality.basic_svg_quality_check
+    if not getattr(current, "_vektoryum_centerline_contract", False):
+        quality.basic_svg_quality_check = _attach_quality_contract(current)
+    _QUALITY_INSTALLED = True
 
 
-__all__ = ["install_centerline_contracts"]
+def install_centerline_score_contract() -> None:
+    """Install scoring only after the fallback actually produced an SVG.
+
+    This avoids importing the heavy scoring/fidelity stack for unrelated modes
+    during package startup.  The already-imported pipeline alias is updated too,
+    because worker code imports ``score_vector_candidate`` by value.
+    """
+    global _SCORE_INSTALLED
+    if _SCORE_INSTALLED:
+        return
+    from app import scoring  # noqa: PLC0415
+
+    current = scoring.score_vector_candidate
+    if not getattr(current, "_vektoryum_centerline_contract", False):
+        current = _attach_score_contract(current)
+        scoring.score_vector_candidate = current
+    pipeline = sys.modules.get("app.pipeline")
+    if pipeline is not None:
+        setattr(pipeline, "score_vector_candidate", current)
+    _SCORE_INSTALLED = True
+
+
+__all__ = [
+    "install_centerline_quality_contract",
+    "install_centerline_score_contract",
+]
