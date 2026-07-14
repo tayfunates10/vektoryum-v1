@@ -39,7 +39,7 @@ def test_roadmap_is_finite_ordered_and_schema_pinned() -> None:
     assert all(phase["status"] in VALID_PHASE_STATUS for phase in phases)
 
     statuses = [phase["status"] for phase in phases]
-    assert statuses == ["complete", "complete", "pending", "pending"]
+    assert statuses == ["complete", "complete", "complete", "pending"]
     assert all(len(phase["acceptance_criteria"]) >= 4 for phase in phases)
     assert all(
         all(isinstance(item, str) and item.strip() for item in phase["acceptance_criteria"])
@@ -49,7 +49,7 @@ def test_roadmap_is_finite_ordered_and_schema_pinned() -> None:
 
 def test_completed_phase_evidence_exists_and_is_not_self_declared_only() -> None:
     completed = [phase for phase in _roadmap()["phases"] if phase["status"] == "complete"]
-    assert [phase["id"] for phase in completed] == ["CVE-1", "CVE-2"]
+    assert [phase["id"] for phase in completed] == ["CVE-1", "CVE-2", "CVE-3"]
 
     for phase in completed:
         evidence = phase["evidence"]
