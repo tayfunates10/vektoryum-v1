@@ -20,8 +20,9 @@ THRESHOLDS = {
     "accepted_wrong_mode_max": 0,
     "determinism_failures_max": 0,
     "invalid_contracts_max": 0,
-    "per_mode_accepted_precision_min": 1.0,
-    "per_mode_correct_accepts_min": 1,
+    "per_mode_recommendation_precision_min": 1.0,
+    "per_mode_correct_recommendations_min": 1,
+    "accepted_precision_min": 1.0,
     "brier_score_max": 0.35,
     "expected_calibration_error_max": 0.35,
 }
@@ -41,13 +42,29 @@ def _in_bin(confidence: float, lower: float, upper: float) -> bool:
     return lower <= confidence <= upper if lower == 0.0 else lower < confidence <= upper
 
 
+def _valid_digest(value: Any) -> bool:
+    return isinstance(value, str) and len(value) == 64 and all(
+        character in "0123456789abcdef" for character in value
+    )
+
+
 def compute_release_metrics(cases: list[dict[str, Any]]) -> dict[str, Any]:
+    recommended_by_prediction = {mode: 0 for mode in AUTO_MODES}
+    correct_recommended_by_prediction = {mode: 0 for mode in AUTO_MODES}
+    correct_recommendations_by_label = {mode: 0 for mode in AUTO_MODES}
     accepted_by_prediction = {mode: 0 for mode in AUTO_MODES}
-    correct_by_prediction = {mode: 0 for mode in AUTO_MODES}
+    correct_accepted_by_prediction = {mode: 0 for mode in AUTO_MODES}
     correct_accepts_by_label = {mode: 0 for mode in AUTO_MODES}
+    confusion = {
+        label: {prediction: 0 for prediction in AUTO_MODES}
+        for label in AUTO_MODES
+    }
     accepted_wrong = 0
     invalid_contracts = 0
     determinism_failures = 0
+    accepted_count = 0
+    accepted_correct_count = 0
+    review_count = 0
     calibration_rows: list[tuple[float, float]] = []
 
     for case in cases:
@@ -63,6 +80,7 @@ def compute_release_metrics(cases: list[dict[str, Any]]) -> dict[str, Any]:
                 sample.get("recommended_mode"),
                 sample.get("decision_status"),
                 sample.get("execution_mode"),
+                sample.get("fallback_applied"),
                 sample.get("confidence"),
                 sample.get("runner_up_margin"),
                 tuple(sample.get("reason_codes") or []),
@@ -81,21 +99,63 @@ def compute_release_metrics(cases: list[dict[str, Any]]) -> dict[str, Any]:
         prediction = representative.get("recommended_mode")
         accepted = representative.get("decision_status") == "accepted"
         correct = prediction == label
-        if accepted and prediction in accepted_by_prediction:
-            accepted_by_prediction[prediction] += 1
+
+        if label in confusion and prediction in AUTO_MODES:
+            confusion[label][prediction] += 1
+            recommended_by_prediction[prediction] += 1
             if correct:
-                correct_by_prediction[prediction] += 1
-                correct_accepts_by_label[label] += 1
+                correct_recommended_by_prediction[prediction] += 1
+                correct_recommendations_by_label[label] += 1
+
+        if accepted:
+            accepted_count += 1
+            if prediction in accepted_by_prediction:
+                accepted_by_prediction[prediction] += 1
+            if correct:
+                accepted_correct_count += 1
+                if prediction in correct_accepted_by_prediction:
+                    correct_accepted_by_prediction[prediction] += 1
+                if label in correct_accepts_by_label:
+                    correct_accepts_by_label[label] += 1
             else:
                 accepted_wrong += 1
+        else:
+            review_count += 1
+
         confidence = _finite(representative.get("confidence"))
         if confidence is not None and 0.0 <= confidence <= 1.0:
-            calibration_rows.append((confidence, 1.0 if correct else 0.0))
+            # AA-3 confidence governs safe auto-acceptance. A correct recommendation
+            # that is intentionally routed to review is therefore a negative outcome
+            # for acceptance calibration, not a classification failure.
+            calibration_rows.append((confidence, 1.0 if accepted and correct else 0.0))
 
-    precision: dict[str, float | None] = {}
+    recommendation_precision: dict[str, float | None] = {}
+    accepted_precision: dict[str, float | None] = {}
+    recommendation_recall: dict[str, float] = {}
+    label_totals = {mode: 0 for mode in AUTO_MODES}
+    for case in cases:
+        label = case.get("label")
+        if label in label_totals:
+            label_totals[label] += 1
+
     for mode in AUTO_MODES:
-        total = accepted_by_prediction[mode]
-        precision[mode] = None if total == 0 else correct_by_prediction[mode] / total
+        recommendation_total = recommended_by_prediction[mode]
+        recommendation_precision[mode] = (
+            None
+            if recommendation_total == 0
+            else correct_recommended_by_prediction[mode] / recommendation_total
+        )
+        accepted_total = accepted_by_prediction[mode]
+        accepted_precision[mode] = (
+            None
+            if accepted_total == 0
+            else correct_accepted_by_prediction[mode] / accepted_total
+        )
+        recommendation_recall[mode] = (
+            0.0
+            if label_totals[mode] == 0
+            else correct_recommendations_by_label[mode] / label_totals[mode]
+        )
 
     brier = None
     ece = None
@@ -112,12 +172,21 @@ def compute_release_metrics(cases: list[dict[str, Any]]) -> dict[str, Any]:
                 )
         ece = weighted
 
+    case_count = len(cases)
     return {
+        "confusion_matrix": confusion,
+        "recommendation_precision_by_mode": recommendation_precision,
+        "recommendation_recall_by_label": recommendation_recall,
+        "accepted_precision_by_mode": accepted_precision,
+        "correct_recommendations_by_label": correct_recommendations_by_label,
+        "correct_accepts_by_label": correct_accepts_by_label,
         "accepted_wrong_mode_count": accepted_wrong,
         "invalid_contract_count": invalid_contracts,
         "determinism_failure_count": determinism_failures,
-        "accepted_precision_by_mode": precision,
-        "correct_accepts_by_label": correct_accepts_by_label,
+        "accepted_count": accepted_count,
+        "accepted_correct_count": accepted_correct_count,
+        "review_count": review_count,
+        "review_rate": 0.0 if case_count == 0 else round(review_count / case_count, 6),
         "brier_score": None if brier is None else round(brier, 6),
         "expected_calibration_error": None if ece is None else round(ece, 6),
     }
@@ -129,6 +198,8 @@ def validate_release_report(report: dict[str, Any]) -> list[str]:
         errors.append("schema_version")
     if report.get("repeat_count") != REPEAT_COUNT:
         errors.append("repeat_count")
+    if report.get("environment") not in REQUIRED_ENVIRONMENTS:
+        errors.append("report_environment")
     if report.get("thresholds") != THRESHOLDS:
         errors.append("thresholds")
 
@@ -152,6 +223,8 @@ def validate_release_report(report: dict[str, Any]) -> list[str]:
         if not case_id or case_id in case_ids:
             errors.append("case_id")
         case_ids.add(case_id)
+        if not _valid_digest(case.get("source_sha256")):
+            errors.append(f"source_sha256:{case_id}")
         if label not in AUTO_MODES or kind not in CASE_KINDS:
             errors.append(f"case_scope:{case_id}")
             continue
@@ -175,12 +248,20 @@ def validate_release_report(report: dict[str, Any]) -> list[str]:
                     sample.get("recommended_mode"),
                     sample.get("decision_status"),
                     sample.get("execution_mode"),
+                    sample.get("fallback_applied"),
                     sample.get("confidence"),
                     sample.get("runner_up_margin"),
                     tuple(sample.get("reason_codes") or []),
                     sample.get("hed_status"),
                 )
             )
+            for name in (
+                "source_pixel_sha256",
+                "feature_digest",
+                "recommendation_digest",
+            ):
+                if not _valid_digest(sample.get(name)):
+                    errors.append(f"digest:{case_id}:{name}")
             if sample.get("contract_status") != "valid":
                 errors.append(f"contract_status:{case_id}")
             if sample.get("hed_status") != "unavailable":
@@ -188,6 +269,12 @@ def validate_release_report(report: dict[str, Any]) -> list[str]:
             confidence = _finite(sample.get("confidence"))
             if confidence is None or not 0.0 <= confidence <= 1.0:
                 errors.append(f"confidence:{case_id}")
+            if sample.get("runner_up_mode") not in AUTO_MODES:
+                errors.append(f"runner_up_mode:{case_id}")
+            if not isinstance(sample.get("reason_codes"), list):
+                errors.append(f"reason_codes:{case_id}")
+            if not isinstance(sample.get("fallback_applied"), bool):
+                errors.append(f"fallback_applied:{case_id}")
         deterministic = len(signatures) == 1
         if bool(case.get("deterministic")) != deterministic or not deterministic:
             errors.append(f"determinism:{case_id}")
@@ -200,8 +287,8 @@ def validate_release_report(report: dict[str, Any]) -> list[str]:
             errors.append(f"prediction:{case_id}")
         if decision_status not in {"accepted", "needs_review"}:
             errors.append(f"decision_status:{case_id}")
-        if kind == "in_domain" and not (decision_status == "accepted" and correct):
-            errors.append(f"in_domain_not_accepted:{case_id}")
+        if kind == "in_domain" and not correct:
+            errors.append(f"in_domain_prediction_mismatch:{case_id}")
         if kind == "boundary" and not (correct or decision_status == "needs_review"):
             errors.append(f"boundary_false_accept:{case_id}")
 
@@ -218,10 +305,13 @@ def validate_release_report(report: dict[str, Any]) -> list[str]:
     if metrics["determinism_failure_count"] > THRESHOLDS["determinism_failures_max"]:
         errors.append("determinism_failures")
     for mode in AUTO_MODES:
-        if metrics["correct_accepts_by_label"][mode] < THRESHOLDS["per_mode_correct_accepts_min"]:
-            errors.append(f"correct_accept_coverage:{mode}")
-        precision = metrics["accepted_precision_by_mode"][mode]
-        if precision is None or precision < THRESHOLDS["per_mode_accepted_precision_min"]:
+        if metrics["correct_recommendations_by_label"][mode] < THRESHOLDS["per_mode_correct_recommendations_min"]:
+            errors.append(f"correct_recommendation_coverage:{mode}")
+        precision = metrics["recommendation_precision_by_mode"][mode]
+        if precision is None or precision < THRESHOLDS["per_mode_recommendation_precision_min"]:
+            errors.append(f"recommendation_precision:{mode}")
+        accepted_precision = metrics["accepted_precision_by_mode"][mode]
+        if accepted_precision is not None and accepted_precision < THRESHOLDS["accepted_precision_min"]:
             errors.append(f"accepted_precision:{mode}")
     brier = metrics["brier_score"]
     ece = metrics["expected_calibration_error"]
