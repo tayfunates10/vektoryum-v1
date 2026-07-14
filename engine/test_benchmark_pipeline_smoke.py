@@ -27,16 +27,18 @@ def _result(case_id: str, *, render_ms: float, peak_rss_mb: float, fidelity: flo
 def test_smoke_uses_all_deterministic_categories(tmp_path: Path, monkeypatch):
     seen = []
 
-    def fake_run_case(case, **kwargs):
+    def fake_isolated(case, **kwargs):
         seen.append(case.category)
         return _result(case.case_id, render_ms=1.0, peak_rss_mb=10.0)
 
-    monkeypatch.setattr(pipeline_smoke, "run_case", fake_run_case)
+    monkeypatch.setattr(pipeline_smoke, "_run_case_isolated", fake_isolated)
     results = pipeline_smoke.run_smoke(tmp_path, engine_version="test", repeat_count=3)
     assert seen == [category for category in CATEGORIES for _ in range(3)]
     assert len(results) == len(CATEGORIES) == 8
     payload = json.loads((tmp_path / "pipeline_results.json").read_text())
     assert payload["case_count"] == 8
+    assert payload["measurement_method"]["version"] == "median-performance-v2-isolated-rss"
+    assert payload["measurement_method"]["rss_scope"] == "fresh_spawned_process_per_repeat"
 
 
 def test_repeats_use_median_performance_and_conservative_quality():
@@ -63,3 +65,28 @@ def test_non_deterministic_artifact_sha_fails_closed():
 def test_repeat_count_must_be_positive_and_odd(tmp_path: Path):
     with pytest.raises(ValueError, match="positive odd"):
         pipeline_smoke.run_smoke(tmp_path, engine_version="test", repeat_count=2)
+
+
+def test_isolated_repeat_without_payload_fails_closed(monkeypatch, tmp_path: Path):
+    class FakeProcess:
+        exitcode = 3
+        def start(self): pass
+        def join(self, timeout=None): pass
+        def is_alive(self): return False
+
+    class FakeQueue:
+        def empty(self): return True
+
+    class FakeContext:
+        def Queue(self, maxsize=1): return FakeQueue()
+        def Process(self, target, args): return FakeProcess()
+
+    monkeypatch.setattr(pipeline_smoke.multiprocessing, "get_context", lambda mode: FakeContext())
+    case = type("Case", (), {"case_id": "seed-01-logos", "to_dict": lambda self: {}})()
+    with pytest.raises(RuntimeError, match="exited without a result"):
+        pipeline_smoke._run_case_isolated(
+            case,
+            corpus_root=tmp_path,
+            work_root=tmp_path / "work",
+            engine_version="test",
+        )
