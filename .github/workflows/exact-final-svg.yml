@@ -84,11 +84,12 @@ jobs:
           test_core_release_contract.py
           test_core_release_runner.py
           test_core_vector_engine_roadmap.py
-      - name: AI analyzer roadmap and confidence contracts
+      - name: AI analyzer roadmap confidence and auto decision contracts
         run: >-
           python -m pytest -q
           test_ai_analyzer_roadmap.py
           test_analyzer_contracts.py
+          test_analyzer_decision_gate.py
 
   pipeline-integration:
     runs-on: ubuntu-latest
