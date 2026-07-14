@@ -91,8 +91,8 @@
     },
     {
       "id": "no_labeled_analyzer_release_corpus",
-      "status": "open",
-      "evidence": "test_vector_engine.py",
+      "status": "closed",
+      "evidence": "analyzer_release_contract.py",
       "closure_phase": "AA-4"
     }
   ],
@@ -158,7 +158,7 @@
     {
       "id": "AA-4",
       "title": "Labeled analyzer corpus and release closure",
-      "status": "pending",
+      "status": "complete",
       "acceptance_criteria": [
         "Every automatic recommendation mode has labeled in-domain and boundary-case corpus coverage.",
         "Three-run corpus results are deterministic and contain confusion, calibration and review metrics.",
@@ -166,7 +166,16 @@
         "Optional-backend and no-HED environments produce documented deterministic results.",
         "Analyzer contract, corpus and benchmark workflows are mandatory and green."
       ],
-      "evidence": []
+      "evidence": [
+        "ai_analyzer_roadmap.json",
+        "test_ai_analyzer_roadmap.py",
+        "analyzer_release_contract.py",
+        "analyzer_release_runner.py",
+        "test_analyzer_release_contract.py",
+        "test_analyzer_release_runner.py",
+        "../.github/workflows/ai-analyzer-release.yml",
+        "../docs/AI_ANALYZER_ROADMAP.md"
+      ]
     }
   ]
 }
