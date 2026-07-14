@@ -37,16 +37,16 @@ Durum: **complete**
 
 ## CVE-3 — Curve-preserving cutout and topology closure
 
-Durum: **complete in this PR**
+Durum: **complete**
 
-- Public `shape_stacking=cutouts` girişi artık strict polygonal source contract
-  ile korunur.
-- Bézier/yay komutları, transform, stroke, açık path, unsupported primitive veya
-  doğrulanamayan fill modeli görülürse boolean motor hiç çalışmaz ve exact
-  stacked baytları korunur.
+- Public `shape_stacking=cutouts` girişi strict polygonal source contract ile
+  korunur.
+- Bézier/yay komutları, desteklenmeyen transform, stroke, açık path, unsupported
+  primitive veya doğrulanamayan fill modeli görülürse boolean motor çalışmaz ve
+  exact stacked baytları korunur.
 - Yalnız kapalı `M/L/H/V/Z` fill path'leri private pyclipper motoruna geçebilir.
-- Converter ikinci bir candidate dosyada çalışır; XML, sonlu koordinat, path
-  coverage, command-growth ve digest kontrolleri geçmeden atomik publish yoktur.
+- Converter ikinci candidate dosyada çalışır; XML, sonlu koordinat, path coverage,
+  command-growth ve digest kontrolleri geçmeden atomik publish yoktur.
 - Dependency yokluğu, converter exception ve kısmi yazma stacked çıktıyı
   değiştiremez.
 - Adjacent-color fixture için `seam_ratio <= 0.002`, `halo_ratio <= 0.02` ve
@@ -54,24 +54,30 @@ Durum: **complete in this PR**
 
 ## CVE-4 — All-mode artifact and corpus release closure
 
-Durum: **pending**
+Durum: **complete in this PR**
 
-Tüm açık üretim modları için üç tekrarlı deterministik corpus sonucu veya açık
-bir `needs_review/unavailable` hükmü zorunlu olacak. Final artifact digest,
-bitmap, sonlu koordinat, cycle kapanışı ve stale metric kontrolleri tek release
-kapısında birleşecektir. In-domain corpus için mevcut artefakt eşikleri korunur:
+- Sekiz explicit üretim modu küçük, deterministik fixture'larla fresh process
+  içinde üçer kez çalıştırılır.
+- Bir modun üç artifact digest'i aynı değilse, repeat durumları karışıksa veya
+  gerekli metriklerden biri ölçülemiyorsa release kapısı fail-closed kapanır.
+- Final SVG için bitmap, non-finite geometri, açık olması yasak fill cycle,
+  evaluator/output digest sapması ve score snapshot eskimesi doğrulanır.
+- In-domain corpus eşikleri değişmeden korunur:
 
-- `ink_recall >= 0.995`
-- `ink_precision >= 0.975`
-- `component_delta == 0`
-- `seam_ratio <= 0.002`
-- `halo_ratio <= 0.02`
+  - `ink_recall >= 0.995`
+  - `ink_precision >= 0.975`
+  - `component_delta == 0`
+  - `seam_ratio <= 0.002`
+  - `halo_ratio <= 0.02`
 
-Fotoğraf/sürekli-ton girdilerde düşük sadakat doğal ürün sınırı olarak açıkça
-`needs_review` kalır; yanlış `production_ready` hükmü kapanış kriterini bozar.
+- `photo_poster`, skorları yüksek olsa bile açık ürün limiti olarak daima
+  `needs_review` kalır; yanlış `production_ready` hükmü üretilemez.
+- `Exact final SVG contract`, `Core all-mode release contract` ve
+  `Benchmark v1 seed corpus` kapanışın zorunlu CI kanıtlarıdır.
 
 ## Yüzde hesabı
 
 Toplam dört merge-kapılı faz vardır. Bir faz ancak kendi PR'ı tüm zorunlu CI
 işleri yeşilken sabit head SHA ile `main` dalına merge edildiğinde tamamlanmış
-sayılır. Dolayısıyla her faz toplam çekirdek motor roadmap'inin `%25`'idir.
+sayılır. CVE-4 merge edildiğinde çekirdek motor roadmap'i `%100` olur ve bu
+roadmap kapsamında yeni değişiklik açılmaz.
