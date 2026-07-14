@@ -36,6 +36,19 @@
     "flat_logo",
     "centerline"
   ],
+  "auto_decision_fields": [
+    "schema_version",
+    "status",
+    "requested_mode",
+    "recommended_mode",
+    "execution_mode",
+    "abstained",
+    "reason_codes",
+    "confidence",
+    "runner_up_mode",
+    "runner_up_margin",
+    "verified_recommendation_digest"
+  ],
   "public_report_fields": [
     "width",
     "height",
@@ -54,8 +67,7 @@
     "analyzer_contract",
     "recommendation_confidence",
     "recommendation_margin",
-    "recommendation_digest",
-    "auto_decision"
+    "recommendation_digest"
   ],
   "known_limitations": [
     {
