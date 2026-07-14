@@ -1,0 +1,140 @@
+{
+  "schema_version": "ai-analyzer-closure-v1",
+  "goal": "Close automatic image classification, confidence and mode-recommendation behavior with explicit deterministic and fail-closed contracts.",
+  "scope": {
+    "included": [
+      "deterministic analyzer feature extraction",
+      "automatic image-type and trace-mode recommendation",
+      "calibrated confidence and abstention behavior",
+      "labeled analyzer corpus and release gates"
+    ],
+    "excluded": [
+      "vector candidate generation, topology and final artifact quality; closed by the core vector engine roadmap",
+      "SaaS billing, authentication, administration and user-interface work"
+    ]
+  },
+  "public_trace_modes": [
+    "auto",
+    "geometric_logo",
+    "minimal_ai",
+    "logo_color",
+    "flat_logo",
+    "single_color",
+    "lineart",
+    "centerline",
+    "photo_poster"
+  ],
+  "auto_recommendation_modes": [
+    "geometric_logo",
+    "minimal_ai",
+    "logo_color",
+    "single_color",
+    "lineart",
+    "photo_poster"
+  ],
+  "explicit_only_modes": [
+    "flat_logo",
+    "centerline"
+  ],
+  "public_report_fields": [
+    "width",
+    "height",
+    "has_transparency",
+    "estimated_color_count",
+    "flat_color_count",
+    "dominant_colors",
+    "background",
+    "blur_score",
+    "edge_density",
+    "has_gradient",
+    "quality_score",
+    "detected_type",
+    "recommended_mode",
+    "warnings"
+  ],
+  "known_limitations": [
+    {
+      "id": "missing_confidence_score",
+      "status": "open",
+      "evidence": "app/analyzer.py",
+      "closure_phase": "AA-2"
+    },
+    {
+      "id": "unversioned_feature_thresholds",
+      "status": "open",
+      "evidence": "app/analyzer.py",
+      "closure_phase": "AA-2"
+    },
+    {
+      "id": "no_fail_closed_abstention_contract",
+      "status": "open",
+      "evidence": "app/analyzer.py",
+      "closure_phase": "AA-3"
+    },
+    {
+      "id": "no_labeled_analyzer_release_corpus",
+      "status": "open",
+      "evidence": "test_vector_engine.py",
+      "closure_phase": "AA-4"
+    }
+  ],
+  "phases": [
+    {
+      "id": "AA-1",
+      "title": "Finite analyzer capability and roadmap contract",
+      "status": "complete",
+      "acceptance_criteria": [
+        "A finite, machine-readable four-phase analyzer roadmap is committed and schema-validated.",
+        "Automatic recommendation modes and explicit-only modes form a disjoint partition of the public non-auto trace modes.",
+        "The current public analyzer report field contract is pinned and deterministic seed decisions are regression-tested.",
+        "Every known analyzer limitation has exactly one closure phase and completed-phase evidence paths exist.",
+        "Production analyzer behavior remains unchanged."
+      ],
+      "evidence": [
+        "ai_analyzer_roadmap.json",
+        "test_ai_analyzer_roadmap.py",
+        "app/analyzer.py",
+        "app/main.py"
+      ]
+    },
+    {
+      "id": "AA-2",
+      "title": "Versioned deterministic features and calibrated confidence",
+      "status": "pending",
+      "acceptance_criteria": [
+        "Analyzer feature names, units, ranges and extraction version are machine-readable and stable.",
+        "Repeated analysis of the same decoded pixels produces identical features and recommendation digests.",
+        "Every recommendation includes calibrated confidence and runner-up margin derived from labeled evidence rather than an unbounded heuristic score.",
+        "Unavailable optional HED signals are explicit and cannot silently inflate confidence.",
+        "Feature drift, non-finite values and missing required signals fail closed."
+      ],
+      "evidence": []
+    },
+    {
+      "id": "AA-3",
+      "title": "Fail-closed abstention and auto-mode decision gate",
+      "status": "pending",
+      "acceptance_criteria": [
+        "Low-confidence or contradictory evidence produces an explicit needs_review abstention instead of a false high-confidence mode recommendation.",
+        "Auto mode consumes only a validated analyzer decision report with matching feature and source digests.",
+        "Manual explicit modes remain available and are never rewritten by analyzer confidence logic.",
+        "Photo, lineart, single-color, geometric and color-logo boundary cases have deterministic ambiguity regressions.",
+        "Missing confidence, stale report, digest drift and unsupported recommendation fail closed."
+      ],
+      "evidence": []
+    },
+    {
+      "id": "AA-4",
+      "title": "Labeled analyzer corpus and release closure",
+      "status": "pending",
+      "acceptance_criteria": [
+        "Every automatic recommendation mode has labeled in-domain, boundary and adversarial corpus coverage.",
+        "Three-run corpus results are deterministic and contain confusion, calibration and abstention metrics.",
+        "Per-mode precision, dangerous false-positive and confidence-calibration thresholds are explicit and fail closed.",
+        "Optional-backend and no-HED environments produce documented deterministic verdicts.",
+        "Analyzer exact-contract, corpus and benchmark release workflows are mandatory and green."
+      ],
+      "evidence": []
+    }
+  ]
+}
