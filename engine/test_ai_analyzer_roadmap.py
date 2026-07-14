@@ -69,14 +69,14 @@ def _color_logo() -> Image.Image:
     return Image.fromarray(arr, "RGB")
 
 
-def test_roadmap_is_finite_ordered_and_schema_pinned() -> None:
+def test_phase_order_and_status() -> None:
     data = _roadmap()
     assert data["schema_version"] == "ai-analyzer-closure-v1"
     phases = data["phases"]
     assert [phase["id"] for phase in phases] == EXPECTED_PHASES
     assert [phase["status"] for phase in phases] == [
         "complete",
-        "pending",
+        "complete",
         "pending",
         "pending",
     ]
@@ -84,66 +84,60 @@ def test_roadmap_is_finite_ordered_and_schema_pinned() -> None:
     assert all(len(phase["acceptance_criteria"]) >= 4 for phase in phases)
 
 
-def test_mode_sets_partition_public_non_auto_modes() -> None:
+def test_mode_sets() -> None:
     data = _roadmap()
     public = set(data["public_trace_modes"])
-    auto_modes = set(data["auto_recommendation_modes"])
-    explicit_only = set(data["explicit_only_modes"])
-
+    automatic = set(data["auto_recommendation_modes"])
+    manual = set(data["explicit_only_modes"])
     assert public == set(ALLOWED_MODES)
-    assert auto_modes == EXPECTED_AUTO_MODES
-    assert explicit_only == EXPECTED_EXPLICIT_ONLY
-    assert "auto" not in auto_modes
-    assert "auto" not in explicit_only
-    assert auto_modes.isdisjoint(explicit_only)
-    assert auto_modes | explicit_only == public - {"auto"}
+    assert automatic == EXPECTED_AUTO_MODES
+    assert manual == EXPECTED_EXPLICIT_ONLY
+    assert automatic.isdisjoint(manual)
+    assert automatic | manual == public - {"auto"}
 
 
-def test_known_limitations_have_one_pending_closure_phase() -> None:
+def test_limitation_status_matches_phase() -> None:
     data = _roadmap()
     phases = {phase["id"]: phase for phase in data["phases"]}
     limitations = data["known_limitations"]
-
     assert {item["id"] for item in limitations} == EXPECTED_LIMITATIONS
     assert len(limitations) == len({item["id"] for item in limitations})
     for item in limitations:
-        assert item["status"] == "open"
-        assert phases[item["closure_phase"]]["status"] == "pending"
+        assert item["status"] in {"open", "closed"}
+        assert item["closure_phase"] in phases
         assert (ENGINE_DIR / item["evidence"]).is_file()
+        expected = "pending" if item["status"] == "open" else "complete"
+        assert phases[item["closure_phase"]]["status"] == expected
 
 
-def test_completed_phase_evidence_exists_and_is_not_self_declared_only() -> None:
+def test_completed_evidence_files() -> None:
     completed = [phase for phase in _roadmap()["phases"] if phase["status"] == "complete"]
-    assert [phase["id"] for phase in completed] == ["AA-1"]
-    evidence = completed[0]["evidence"]
-    assert "test_ai_analyzer_roadmap.py" in evidence
-    assert len(evidence) >= 4
-    for relative in evidence:
-        assert (ENGINE_DIR / relative).is_file(), relative
+    assert [phase["id"] for phase in completed] == ["AA-1", "AA-2"]
+    for phase in completed:
+        assert "test_ai_analyzer_roadmap.py" in phase["evidence"]
+        assert len(phase["evidence"]) >= 4
+        for relative in phase["evidence"]:
+            assert (ENGINE_DIR / relative).is_file()
 
 
-def test_public_report_contract_and_seed_decisions_are_deterministic(monkeypatch) -> None:
+def test_public_fields_and_seed_decisions(monkeypatch) -> None:
     monkeypatch.setattr(analyzer, "calculate_semantic_edge_stats", lambda _image: None)
-    required_fields = set(_roadmap()["public_report_fields"])
-
-    geometric_first = analyzer.analyze_image_from_mem(_geometric_logo())
-    geometric_second = analyzer.analyze_image_from_mem(_geometric_logo())
+    required = set(_roadmap()["public_report_fields"])
+    first = analyzer.analyze_image_from_mem(_geometric_logo())
+    second = analyzer.analyze_image_from_mem(_geometric_logo())
     color = analyzer.analyze_image_from_mem(_color_logo())
-
-    assert required_fields <= set(geometric_first)
-    assert required_fields <= set(color)
-    assert {key: geometric_first[key] for key in required_fields} == {
-        key: geometric_second[key] for key in required_fields
-    }
-    assert geometric_first["recommended_mode"] == "geometric_logo"
+    assert required <= set(first)
+    assert required <= set(color)
+    assert {key: first[key] for key in required} == {key: second[key] for key in required}
+    assert first["recommended_mode"] == "geometric_logo"
     assert color["recommended_mode"] == "logo_color"
-    assert geometric_first["detected_type"] == geometric_first["recommended_mode"]
+    assert first["detected_type"] == first["recommended_mode"]
     assert color["detected_type"] == color["recommended_mode"]
-    assert geometric_first["recommended_mode"] in EXPECTED_AUTO_MODES
-    assert color["recommended_mode"] in EXPECTED_AUTO_MODES
+    assert first["analyzer_contract"]["status"] == "valid"
+    assert color["analyzer_contract"]["status"] == "valid"
 
 
-def test_scope_keeps_core_engine_and_saas_closure_separate() -> None:
+def test_scope_separation() -> None:
     excluded = " ".join(_roadmap()["scope"]["excluded"]).lower()
     assert "core vector engine roadmap" in excluded
     assert "billing" in excluded
