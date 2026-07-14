@@ -4,7 +4,6 @@ from __future__ import annotations
 import math
 from typing import Any
 
-
 SCHEMA_VERSION = "analyzer-release-report-v1"
 REPEAT_COUNT = 3
 AUTO_MODES = (
@@ -17,7 +16,6 @@ AUTO_MODES = (
 )
 CASE_KINDS = ("in_domain", "boundary")
 REQUIRED_ENVIRONMENTS = ("no_hed",)
-
 THRESHOLDS = {
     "accepted_wrong_mode_max": 0,
     "determinism_failures_max": 0,
@@ -39,6 +37,92 @@ def _finite(value: Any) -> float | None:
     return result if math.isfinite(result) else None
 
 
+def _in_bin(confidence: float, lower: float, upper: float) -> bool:
+    return lower <= confidence <= upper if lower == 0.0 else lower < confidence <= upper
+
+
+def compute_release_metrics(cases: list[dict[str, Any]]) -> dict[str, Any]:
+    accepted_by_prediction = {mode: 0 for mode in AUTO_MODES}
+    correct_by_prediction = {mode: 0 for mode in AUTO_MODES}
+    correct_accepts_by_label = {mode: 0 for mode in AUTO_MODES}
+    accepted_wrong = 0
+    invalid_contracts = 0
+    determinism_failures = 0
+    calibration_rows: list[tuple[float, float]] = []
+
+    for case in cases:
+        samples = case.get("samples") or []
+        if not samples:
+            determinism_failures += 1
+            continue
+        signatures = {
+            (
+                sample.get("source_pixel_sha256"),
+                sample.get("feature_digest"),
+                sample.get("recommendation_digest"),
+                sample.get("recommended_mode"),
+                sample.get("decision_status"),
+                sample.get("execution_mode"),
+                sample.get("confidence"),
+                sample.get("runner_up_margin"),
+                tuple(sample.get("reason_codes") or []),
+                sample.get("hed_status"),
+            )
+            for sample in samples
+        }
+        if len(signatures) != 1:
+            determinism_failures += 1
+        invalid_contracts += sum(
+            sample.get("contract_status") != "valid" for sample in samples
+        )
+
+        representative = samples[0]
+        label = case.get("label")
+        prediction = representative.get("recommended_mode")
+        accepted = representative.get("decision_status") == "accepted"
+        correct = prediction == label
+        if accepted and prediction in accepted_by_prediction:
+            accepted_by_prediction[prediction] += 1
+            if correct:
+                correct_by_prediction[prediction] += 1
+                correct_accepts_by_label[label] += 1
+            else:
+                accepted_wrong += 1
+        confidence = _finite(representative.get("confidence"))
+        if confidence is not None and 0.0 <= confidence <= 1.0:
+            calibration_rows.append((confidence, 1.0 if correct else 0.0))
+
+    precision: dict[str, float | None] = {}
+    for mode in AUTO_MODES:
+        total = accepted_by_prediction[mode]
+        precision[mode] = None if total == 0 else correct_by_prediction[mode] / total
+
+    brier = None
+    ece = None
+    if calibration_rows:
+        brier = sum((confidence - outcome) ** 2 for confidence, outcome in calibration_rows) / len(calibration_rows)
+        weighted = 0.0
+        for lower, upper in ((0.0, 0.5), (0.5, 0.7), (0.7, 0.85), (0.85, 1.0)):
+            rows = [row for row in calibration_rows if _in_bin(row[0], lower, upper)]
+            if rows:
+                average_confidence = sum(row[0] for row in rows) / len(rows)
+                average_accuracy = sum(row[1] for row in rows) / len(rows)
+                weighted += len(rows) / len(calibration_rows) * abs(
+                    average_confidence - average_accuracy
+                )
+        ece = weighted
+
+    return {
+        "accepted_wrong_mode_count": accepted_wrong,
+        "invalid_contract_count": invalid_contracts,
+        "determinism_failure_count": determinism_failures,
+        "accepted_precision_by_mode": precision,
+        "correct_accepts_by_label": correct_accepts_by_label,
+        "brier_score": None if brier is None else round(brier, 6),
+        "expected_calibration_error": None if ece is None else round(ece, 6),
+    }
+
+
 def validate_release_report(report: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     if report.get("schema_version") != SCHEMA_VERSION:
@@ -55,13 +139,6 @@ def validate_release_report(report: dict[str, Any]) -> list[str]:
     expected_pairs = {(mode, kind) for mode in AUTO_MODES for kind in CASE_KINDS}
     observed_pairs: set[tuple[str, str]] = set()
     case_ids: set[str] = set()
-    accepted_by_prediction = {mode: 0 for mode in AUTO_MODES}
-    correct_by_prediction = {mode: 0 for mode in AUTO_MODES}
-    correct_accepts_by_label = {mode: 0 for mode in AUTO_MODES}
-    accepted_wrong = 0
-    invalid_contracts = 0
-    determinism_failures = 0
-    calibration_rows: list[tuple[float, float]] = []
 
     for case in cases:
         if not isinstance(case, dict):
@@ -78,9 +155,9 @@ def validate_release_report(report: dict[str, Any]) -> list[str]:
         if label not in AUTO_MODES or kind not in CASE_KINDS:
             errors.append(f"case_scope:{case_id}")
             continue
+        observed_pairs.add((label, kind))
         if environment not in REQUIRED_ENVIRONMENTS:
             errors.append(f"environment:{case_id}")
-        observed_pairs.add((label, kind))
         if not isinstance(samples, list) or len(samples) != REPEAT_COUNT:
             errors.append(f"sample_count:{case_id}")
             continue
@@ -90,50 +167,40 @@ def validate_release_report(report: dict[str, Any]) -> list[str]:
             if not isinstance(sample, dict) or sample.get("status") != "success":
                 errors.append(f"sample_status:{case_id}")
                 continue
-            signature = (
-                sample.get("source_pixel_sha256"),
-                sample.get("feature_digest"),
-                sample.get("recommendation_digest"),
-                sample.get("recommended_mode"),
-                sample.get("decision_status"),
-                sample.get("execution_mode"),
-                sample.get("confidence"),
-                sample.get("runner_up_margin"),
-                tuple(sample.get("reason_codes") or []),
-                sample.get("hed_status"),
+            signatures.add(
+                (
+                    sample.get("source_pixel_sha256"),
+                    sample.get("feature_digest"),
+                    sample.get("recommendation_digest"),
+                    sample.get("recommended_mode"),
+                    sample.get("decision_status"),
+                    sample.get("execution_mode"),
+                    sample.get("confidence"),
+                    sample.get("runner_up_margin"),
+                    tuple(sample.get("reason_codes") or []),
+                    sample.get("hed_status"),
+                )
             )
-            signatures.add(signature)
             if sample.get("contract_status") != "valid":
-                invalid_contracts += 1
+                errors.append(f"contract_status:{case_id}")
             if sample.get("hed_status") != "unavailable":
                 errors.append(f"hed_status:{case_id}")
-
+            confidence = _finite(sample.get("confidence"))
+            if confidence is None or not 0.0 <= confidence <= 1.0:
+                errors.append(f"confidence:{case_id}")
         deterministic = len(signatures) == 1
         if bool(case.get("deterministic")) != deterministic or not deterministic:
-            determinism_failures += 1
+            errors.append(f"determinism:{case_id}")
+
         representative = samples[0]
         prediction = representative.get("recommended_mode")
         decision_status = representative.get("decision_status")
-        confidence = _finite(representative.get("confidence"))
+        correct = prediction == label
         if prediction not in AUTO_MODES:
             errors.append(f"prediction:{case_id}")
-            continue
-        accepted = decision_status == "accepted"
         if decision_status not in {"accepted", "needs_review"}:
             errors.append(f"decision_status:{case_id}")
-        correct = prediction == label
-        if accepted:
-            accepted_by_prediction[prediction] += 1
-            if correct:
-                correct_by_prediction[prediction] += 1
-                correct_accepts_by_label[label] += 1
-            else:
-                accepted_wrong += 1
-        if confidence is None or not 0.0 <= confidence <= 1.0:
-            errors.append(f"confidence:{case_id}")
-        else:
-            calibration_rows.append((confidence, 1.0 if correct else 0.0))
-        if kind == "in_domain" and not (accepted and correct):
+        if kind == "in_domain" and not (decision_status == "accepted" and correct):
             errors.append(f"in_domain_not_accepted:{case_id}")
         if kind == "boundary" and not (correct or decision_status == "needs_review"):
             errors.append(f"boundary_false_accept:{case_id}")
@@ -141,54 +208,28 @@ def validate_release_report(report: dict[str, Any]) -> list[str]:
     if observed_pairs != expected_pairs:
         errors.append("mode_kind_coverage")
 
-    precision: dict[str, float | None] = {}
+    metrics = compute_release_metrics(cases)
+    if report.get("metrics") != metrics:
+        errors.append("metrics_mismatch")
+    if metrics["accepted_wrong_mode_count"] > THRESHOLDS["accepted_wrong_mode_max"]:
+        errors.append("accepted_wrong_mode")
+    if metrics["invalid_contract_count"] > THRESHOLDS["invalid_contracts_max"]:
+        errors.append("invalid_contracts")
+    if metrics["determinism_failure_count"] > THRESHOLDS["determinism_failures_max"]:
+        errors.append("determinism_failures")
     for mode in AUTO_MODES:
-        denominator = accepted_by_prediction[mode]
-        precision[mode] = None if denominator == 0 else correct_by_prediction[mode] / denominator
-        if correct_accepts_by_label[mode] < THRESHOLDS["per_mode_correct_accepts_min"]:
+        if metrics["correct_accepts_by_label"][mode] < THRESHOLDS["per_mode_correct_accepts_min"]:
             errors.append(f"correct_accept_coverage:{mode}")
-        if precision[mode] is None or precision[mode] < THRESHOLDS["per_mode_accepted_precision_min"]:
+        precision = metrics["accepted_precision_by_mode"][mode]
+        if precision is None or precision < THRESHOLDS["per_mode_accepted_precision_min"]:
             errors.append(f"accepted_precision:{mode}")
-
-    brier = None
-    ece = None
-    if calibration_rows:
-        brier = sum((confidence - outcome) ** 2 for confidence, outcome in calibration_rows) / len(calibration_rows)
-        bins = [(0.0, 0.5), (0.5, 0.7), (0.7, 0.85), (0.85, 1.0)]
-        weighted = 0.0
-        for lower, upper in bins:
-            rows = [
-                row for row in calibration_rows
-                if lower <= row[0] <= upper if lower == 0.0 else lower < row[0] <= upper
-            ]
-            if rows:
-                avg_conf = sum(row[0] for row in rows) / len(rows)
-                avg_acc = sum(row[1] for row in rows) / len(rows)
-                weighted += len(rows) / len(calibration_rows) * abs(avg_conf - avg_acc)
-        ece = weighted
+    brier = metrics["brier_score"]
+    ece = metrics["expected_calibration_error"]
     if brier is None or brier > THRESHOLDS["brier_score_max"]:
         errors.append("brier_score")
     if ece is None or ece > THRESHOLDS["expected_calibration_error_max"]:
         errors.append("expected_calibration_error")
-    if accepted_wrong > THRESHOLDS["accepted_wrong_mode_max"]:
-        errors.append("accepted_wrong_mode")
-    if invalid_contracts > THRESHOLDS["invalid_contracts_max"]:
-        errors.append("invalid_contracts")
-    if determinism_failures > THRESHOLDS["determinism_failures_max"]:
-        errors.append("determinism_failures")
 
-    metrics = report.get("metrics")
-    expected_metrics = {
-        "accepted_wrong_mode_count": accepted_wrong,
-        "invalid_contract_count": invalid_contracts,
-        "determinism_failure_count": determinism_failures,
-        "accepted_precision_by_mode": precision,
-        "correct_accepts_by_label": correct_accepts_by_label,
-        "brier_score": None if brier is None else round(brier, 6),
-        "expected_calibration_error": None if ece is None else round(ece, 6),
-    }
-    if metrics != expected_metrics:
-        errors.append("metrics_mismatch")
     expected_verdict = "release_ready" if not errors else "failed"
     if report.get("verdict") != expected_verdict:
         errors.append("verdict")
@@ -202,5 +243,6 @@ __all__ = [
     "REQUIRED_ENVIRONMENTS",
     "SCHEMA_VERSION",
     "THRESHOLDS",
+    "compute_release_metrics",
     "validate_release_report",
 ]
