@@ -1,0 +1,43 @@
+name: Core vector engine roadmap contract
+
+on:
+  pull_request:
+    paths:
+      - "engine/core_vector_engine_roadmap.json"
+      - "engine/test_core_vector_engine_roadmap.py"
+      - "engine/app/vector_engines.py"
+      - "engine/app/quality.py"
+      - "engine/app/cutouts.py"
+      - "engine/app/counter_merge.py"
+      - "docs/CORE_VECTOR_ENGINE_ROADMAP.md"
+      - ".github/workflows/core-vector-engine-roadmap.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: core-vector-engine-roadmap-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: engine
+    env:
+      PYTHONHASHSEED: "0"
+      VEKTORYUM_WORKERS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: engine/requirements.txt
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt pytest httpx
+      - name: Validate finite roadmap and mode capabilities
+        run: python -m pytest -q test_core_vector_engine_roadmap.py
