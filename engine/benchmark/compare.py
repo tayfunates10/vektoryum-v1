@@ -63,6 +63,9 @@ def compare_metrics(
         raise ValueError(f"missing benchmark metrics: {sorted(missing)}")
     limits = dict(DEFAULT_TOLERANCES)
     if tolerances:
+        unknown = set(tolerances).difference(REQUIRED_METRICS)
+        if unknown:
+            raise ValueError(f"unsupported benchmark tolerances: {sorted(unknown)}")
         limits.update(tolerances)
 
     deltas: list[MetricDelta] = []
@@ -104,6 +107,7 @@ def build_delta_report(
     current_results: list[dict[str, Any]],
     *,
     excluded_metrics_by_case: dict[str, set[str] | frozenset[str]] | None = None,
+    tolerances: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     baseline_by_id = {item["case_id"]: item for item in baseline_results}
     current_by_id = {item["case_id"]: item for item in current_results}
@@ -124,6 +128,7 @@ def build_delta_report(
             baseline_by_id[case_id]["metrics"],
             current_by_id[case_id]["metrics"],
             metric_names=selected,
+            tolerances=tolerances,
         )
         status = "regression" if any(item.status == "regression" for item in deltas) else "pass"
         regression_count += status == "regression"
