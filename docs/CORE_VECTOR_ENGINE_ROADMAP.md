@@ -9,7 +9,7 @@ Makinece doğrulanan kaynak: `engine/core_vector_engine_roadmap.json`.
 
 ## CVE-1 — Finite capability and closure contract
 
-Durum: **complete in this PR**
+Durum: **complete**
 
 - Üretim modları ve bilinen motorlar tek manifestte sabitlenir.
 - Her mod en az bir zorunlu adaya sahip olmalıdır.
@@ -19,14 +19,21 @@ Durum: **complete in this PR**
 
 ## CVE-2 — Deterministic centerline fallback closure
 
-Durum: **pending**
+Durum: **complete in this PR**
 
-Mevcut `opencv_skeleton` fallback'i skeleton piksel kümesinin konturunu çıkarır ve
-README'de placeholder kalite olarak tanımlanır. Kapanışta skeleton gerçek bir
-grafa dönüştürülecek; endpoint/junction zincirleri tekil açık stroke yollarına
-çevrilecek, kısa spur'lar deterministik biçimde budanacak ve fallback kalite
-verisi raporlanacaktır. Ölçülemeyen veya topolojisi bozuk fallback çıktısı
-`production_ready` olamayacaktır.
+- `opencv_skeleton` public engine adı korunur, ancak fallback artık skeleton
+  konturunu değil skeleton grafını izler.
+- Komşu junction pikselleri tek düğümde birleştirilir; her graph edge tam bir kez
+  açık stroke yollarına serileştirilir.
+- Yalnız kısa endpoint→junction spur'ları `min_branch` sözleşmesiyle budanır;
+  bağımsız çizgiler, endpoint'ler, çok-yollu junction'lar ve loop'lar korunur.
+- SVG içine backend, topoloji, edge coverage ve confidence raporu deterministik
+  metadata olarak gömülür.
+- Ölçülemeyen, izole düğümlü veya edge coverage'ı eksik graph hiçbir SVG
+  yayımlamaz; defense-in-depth kalite kapısı da `production_ready` hükmünü
+  engeller.
+- Line, polyline, T, cross, loop, spur-pruning ve repeat-digest fixture'ları CI'da
+  zorunludur.
 
 ## CVE-3 — Curve-preserving cutout and topology closure
 
