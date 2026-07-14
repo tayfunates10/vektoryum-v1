@@ -14,6 +14,7 @@ from benchmark.seed_runner import CATEGORIES, generate_seed_corpus
 
 BENCHMARK_CATEGORIES = frozenset(CATEGORIES)
 REPEAT_COUNT = 3
+MEASUREMENT_METHOD_VERSION = "median-performance-v1"
 _HIGHER_IS_BETTER = {"fidelity", "ssim", "edge_f1", "alpha_iou"}
 _LOWER_IS_BETTER = {"delta_e00", "path_count", "svg_bytes"}
 _PERFORMANCE_METRICS = {"render_ms", "peak_rss_mb"}
@@ -92,7 +93,17 @@ def run_smoke(output_dir: Path, *, engine_version: str, repeat_count: int = REPE
                 )
             )
         results.append(aggregate_repeats(repeats))
-    write_results(output_dir / "pipeline_results.json", results)
+    write_results(
+        output_dir / "pipeline_results.json",
+        results,
+        measurement_method={
+            "version": MEASUREMENT_METHOD_VERSION,
+            "repeat_count": repeat_count,
+            "performance_aggregation": "median",
+            "quality_aggregation": "conservative_worst_case",
+            "artifact_sha_policy": "all_repeats_must_match",
+        },
+    )
     return results
 
 
