@@ -57,11 +57,11 @@ def test_arc_and_nested_hole_geometry_is_never_polygon_flattened(tmp_path) -> No
     assert path.read_bytes() == original
 
 
-def test_transformed_document_falls_back_without_partial_mutation(tmp_path) -> None:
+def test_unsupported_rotation_falls_back_without_partial_mutation(tmp_path) -> None:
     path = tmp_path / "transform.svg"
     original = _write(
         path,
-        '<path fill="#ff0000" transform="translate(1 1)" '
+        '<path fill="#ff0000" transform="rotate(15 32 20)" '
         'd="M 4 4 L 60 4 L 60 36 L 4 36 Z"/>'
         '<path fill="#0000ff" d="M 20 10 L 44 10 L 44 30 L 20 30 Z"/>',
     )
