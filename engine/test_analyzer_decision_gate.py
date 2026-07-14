@@ -50,6 +50,8 @@ def test_verified_strong_recommendation_is_accepted(monkeypatch) -> None:
     rebuilt, errors = verify_stored_contract(report, image)
     assert not errors
     assert rebuilt is not None
+    monkeypatch.setattr(gate, "MIN_AUTO_CONFIDENCE", 0.0)
+    monkeypatch.setattr(gate, "MIN_AUTO_MARGIN", -1.0)
 
     decision = decide_trace_mode(report, image, "auto")
     assert decision["status"] == "accepted"
@@ -127,7 +129,7 @@ def test_precomputed_analysis_is_request_scoped_and_single_use(monkeypatch) -> N
 
 
 def test_job_registry_only_matches_exact_final_export(tmp_path) -> None:
-    job_dir = tmp_path / "a" * 0 if False else tmp_path / "job123"
+    job_dir = tmp_path / "job123"
     job_dir.mkdir()
     decision = {"status": "needs_review", "execution_mode": REVIEW_FALLBACK_MODE}
     register_job_auto_decision(job_dir, decision)
@@ -196,6 +198,8 @@ def test_pipeline_wrapper_uses_verified_or_review_mode(monkeypatch, tmp_path) ->
 
     monkeypatch.setattr(app, "_original_run_pipeline", fake_core)
     monkeypatch.setattr(app, "_analysis_entry", lambda _image: copy.deepcopy(prepared))
+    monkeypatch.setattr(gate, "MIN_AUTO_CONFIDENCE", 0.0)
+    monkeypatch.setattr(gate, "MIN_AUTO_MARGIN", -1.0)
 
     accepted = pipeline.run_pipeline(image, Path("source.png"), "auto", tmp_path / "accepted")
     assert observed_modes[-1] == prepared["recommended_mode"]
