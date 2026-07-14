@@ -84,6 +84,8 @@ jobs:
           test_core_release_contract.py
           test_core_release_runner.py
           test_core_vector_engine_roadmap.py
+      - name: AI analyzer AA-1 roadmap contract
+        run: python -m pytest -q test_ai_analyzer_roadmap.py
 
   pipeline-integration:
     runs-on: ubuntu-latest
