@@ -145,6 +145,13 @@ def vectorize_skeleton_graph_to_svg(
         raise RuntimeError(
             "embedded centerline report failed: " + "; ".join(embedded_errors)
         )
+
+    # The scoring/fidelity stack is deliberately loaded only for a request that
+    # actually used this fallback. Unrelated benchmark categories keep the
+    # original startup path and timing.
+    from app.centerline_contracts import install_centerline_score_contract  # noqa: PLC0415
+
+    install_centerline_score_contract()
     return report
 
 
