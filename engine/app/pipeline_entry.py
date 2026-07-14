@@ -16,6 +16,7 @@ from PIL import Image
 from app.pipeline import WorkerFailure
 from app.pipeline import run_pipeline as _run_pipeline_core
 from app.pipeline_canonical_report import maybe_attach_canonical_svg_candidate
+from app.production_export_integration import register_pipeline_canonical_report
 from app.shadow_runtime import maybe_attach_shadow_telemetry
 
 
@@ -41,7 +42,8 @@ def run_pipeline(
 
     The production winner, SVG path and all existing result fields are produced by the
     unchanged core implementation. Shadow and canonical candidate failures are isolated
-    and never replace the winner or escape into the vectorization request.
+    and never replace the winner or escape into the vectorization request. A ready
+    canonical report is registered only for the matching job's one-shot export call.
     """
     result = _run_pipeline_core(
         image,
@@ -55,7 +57,9 @@ def run_pipeline(
         result,
         audit_path=_audit_path(Path(job_dir)),
     )
-    return maybe_attach_canonical_svg_candidate(result, image)
+    result = maybe_attach_canonical_svg_candidate(result, image)
+    register_pipeline_canonical_report(Path(job_dir), result)
+    return result
 
 
 __all__ = ["WorkerFailure", "run_pipeline"]

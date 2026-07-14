@@ -1,0 +1,56 @@
+name: Canonical runtime export contract
+
+on:
+  pull_request:
+    paths:
+      - "engine/app/pipeline_entry.py"
+      - "engine/app/runtime_main.py"
+      - "engine/app/production_export_integration.py"
+      - "engine/app/production_serializer_runtime.py"
+      - "engine/app/production_svg_selector.py"
+      - "engine/test_production_export_integration.py"
+      - "engine/test_production_serializer_runtime.py"
+      - "engine/test_production_svg_selector.py"
+      - "engine/test_pipeline_entry.py"
+      - "engine/test_pipeline_canonical_report.py"
+      - "engine/test_pipeline_export_registration.py"
+      - "engine/test_runtime_main.py"
+      - ".github/workflows/canonical-runtime-export.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: canonical-runtime-export-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: engine
+    env:
+      PYTHONHASHSEED: "0"
+      VEKTORYUM_WORKERS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: engine/requirements.txt
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt pytest httpx
+      - name: Canonical runtime publication and export contracts
+        run: >-
+          python -m pytest -q
+          test_production_export_integration.py
+          test_production_serializer_runtime.py
+          test_production_svg_selector.py
+          test_pipeline_entry.py
+          test_pipeline_canonical_report.py
+          test_pipeline_export_registration.py
+          test_runtime_main.py
