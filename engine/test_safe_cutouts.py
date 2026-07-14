@@ -71,6 +71,32 @@ def test_unsupported_rotation_falls_back_without_partial_mutation(tmp_path) -> N
     assert path.read_bytes() == original
 
 
+def test_polygon_translate_is_normalized_with_closed_subpaths(tmp_path) -> None:
+    path = tmp_path / "translated.svg"
+    _write(
+        path,
+        '<path fill="#0000ff" d="M 2 2 L 62 2 L 62 38 L 2 38 Z"/>'
+        '<path fill="#00ff00" transform="translate(4,0)" '
+        'd="M 12 8 L 44 8 L 44 32 L 12 32 Z"/>'
+        '<path fill="#ff0000" d="M 24 12 L 50 12 L 50 28 L 24 28 Z"/>',
+    )
+    before = render_svg_to_rgb(path, 64, 40)
+    assert before is not None
+
+    report = cutouts.convert_svg_to_cutouts(path)
+    after = render_svg_to_rgb(path, 64, 40)
+
+    assert report["status"] == "completed"
+    assert report["translate_normalized"] is True
+    assert "transform" not in path.read_text(encoding="utf-8")
+    assert after is not None
+    assert float(np.abs(before.astype(np.int16) - after.astype(np.int16)).mean()) < 1.0
+    for element in ET.parse(path).getroot().iter():
+        if element.tag.split("}")[-1] == "path":
+            commands = re.findall(r"[A-Za-z]", element.get("d") or "")
+            assert commands.count("M") + commands.count("m") == commands.count("Z") + commands.count("z")
+
+
 def test_dependency_unavailable_keeps_exact_stacked_bytes(monkeypatch, tmp_path) -> None:
     path = tmp_path / "dependency.svg"
     original = _polygon_fixture(path)
