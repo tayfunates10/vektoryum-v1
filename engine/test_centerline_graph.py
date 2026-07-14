@@ -10,7 +10,7 @@ import pytest
 from app.centerline_graph import trace_skeleton_graph, validate_centerline_report
 from app.centerline_svg import read_centerline_report, vectorize_skeleton_graph_to_svg
 from app.quality import basic_svg_quality_check
-from app.scoring import score_vector_candidate
+import app.scoring as scoring
 import app.vector_engines as vector_engines
 
 
@@ -152,7 +152,7 @@ def test_candidate_score_exposes_backend_topology_and_confidence(tmp_path) -> No
     cv2.imwrite(str(source), _source_image())
     vectorize_skeleton_graph_to_svg(source, output, {"min_branch": 4})
 
-    score = score_vector_candidate(
+    score = scoring.score_vector_candidate(
         original_path=source,
         svg_path=output,
         analysis_report={"estimated_color_count": 1},
