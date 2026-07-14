@@ -37,8 +37,12 @@ def test_smoke_uses_all_deterministic_categories(tmp_path: Path, monkeypatch):
     assert len(results) == len(CATEGORIES) == 8
     payload = json.loads((tmp_path / "pipeline_results.json").read_text())
     assert payload["case_count"] == 8
-    assert payload["measurement_method"]["version"] == "median-performance-v2-isolated-rss"
+    assert payload["measurement_method"]["version"] == "median-performance-v3-repeat-samples"
     assert payload["measurement_method"]["rss_scope"] == "fresh_spawned_process_per_repeat"
+    assert payload["measurement_method"]["repeat_samples"] == "repeat_samples.json"
+    samples = json.loads((tmp_path / "repeat_samples.json").read_text())
+    assert samples["schema_version"] == "benchmark-repeat-samples-v1"
+    assert samples["sample_count"] == 24
 
 
 def test_repeats_use_median_performance_and_conservative_quality():
