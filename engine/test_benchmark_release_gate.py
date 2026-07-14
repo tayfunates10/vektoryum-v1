@@ -92,6 +92,18 @@ def _eight_cases() -> tuple[str, ...]:
     return tuple(f"seed-{index:02d}-category{index}" for index in range(1, 9))
 
 
+def test_moderate_isolated_hosted_runner_timing_noise_is_tolerated():
+    case_ids = _eight_cases()
+    baseline = _payload(case_ids=case_ids)
+    current = _payload(case_ids=case_ids)
+    current["results"][0]["metrics"]["render_ms"] = 1.20
+
+    report = evaluate_release_gate(current, baseline)
+
+    assert report["status"] == "pass"
+    assert report["timing_normalization"] is None
+
+
 def test_bounded_common_mode_hosted_runner_slowdown_is_normalized():
     case_ids = _eight_cases()
     baseline = _payload(case_ids=case_ids)
