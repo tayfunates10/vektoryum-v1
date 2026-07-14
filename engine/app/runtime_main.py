@@ -12,6 +12,7 @@ from pathlib import Path
 from app import main as _main
 from app.exporters import export_all as _legacy_export_all
 from app.pipeline_entry import run_pipeline as _shadow_aware_run_pipeline
+from app.platform_frontend import install_platform_frontend
 from app.platform_identity import install_platform_identity
 from app.production_export_integration import export_all_with_canonical
 
@@ -44,5 +45,6 @@ _main.export_all = _runtime_export_all
 # ``_current_user`` lookup used by existing protected endpoints. Vector engine
 # and artifact behavior remain untouched.
 platform_identity = install_platform_identity(_main)
+install_platform_frontend(_main)
 
 app = _main.app
