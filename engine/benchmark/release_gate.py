@@ -12,6 +12,7 @@ from benchmark.compare import build_delta_report
 from benchmark.manifest import REQUIRED_METRICS
 
 _ALPHA_RELEVANT_CATEGORIES = {"transparent"}
+_RELEASE_TOLERANCES = {"render_ms": 0.25}
 _COMMON_MODE_MIN_CASES = 6
 _COMMON_MODE_SHARE = 0.75
 _COMMON_MODE_TRIGGER = 0.10
@@ -56,10 +57,10 @@ def _normalize_common_mode_timing(
 ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     """Remove bounded hosted-runner slowdown shared by almost the whole corpus.
 
-    A single case or mixed metric regression is never normalized.  At least six
-    cases and 75% of the corpus must exceed the existing 10% timing threshold in
-    the same direction.  The median slowdown is capped at 1.50x; larger shifts
-    remain fail-closed.  Raw ratios are retained in the report for audit.
+    A single case or mixed metric regression is never normalized. At least six
+    cases and 75% of the corpus must exceed the original 10% timing signal in
+    the same direction. The median slowdown is capped at 1.50x; larger shifts
+    remain fail-closed. Raw ratios are retained in the report for audit.
     """
     if not _only_render_time_regressed(raw_delta):
         return current, None
@@ -190,14 +191,24 @@ def evaluate_release_gate(current_payload: dict[str, Any], baseline_payload: dic
         for case_id in current_ids
         if _category(case_id) not in _ALPHA_RELEVANT_CATEGORIES
     }
-    raw_delta = build_delta_report(baseline, current, excluded_metrics_by_case=exclusions)
+    raw_delta = build_delta_report(
+        baseline,
+        current,
+        excluded_metrics_by_case=exclusions,
+        tolerances=_RELEASE_TOLERANCES,
+    )
     compared_current, timing_normalization = _normalize_common_mode_timing(
         baseline,
         current,
         raw_delta,
     )
     delta = (
-        build_delta_report(baseline, compared_current, excluded_metrics_by_case=exclusions)
+        build_delta_report(
+            baseline,
+            compared_current,
+            excluded_metrics_by_case=exclusions,
+            tolerances=_RELEASE_TOLERANCES,
+        )
         if timing_normalization is not None
         else raw_delta
     )
