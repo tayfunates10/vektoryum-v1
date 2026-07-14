@@ -6,6 +6,7 @@ on:
       - "engine/**"
       - ".github/workflows/exact-final-svg.yml"
       - ".github/workflows/benchmark-seed.yml"
+      - ".github/workflows/core-all-mode-release.yml"
       - "Dockerfile"
   workflow_dispatch:
 
@@ -77,6 +78,12 @@ jobs:
         run: python -m pytest -q test_benchmark_pipeline_smoke.py
       - name: Benchmark v1 fail-closed release gate
         run: python -m pytest -q test_benchmark_release_gate.py test_benchmark_release_gate_cli.py
+      - name: Core CVE-4 all-mode release unit contract
+        run: >-
+          python -m pytest -q
+          test_core_release_contract.py
+          test_core_release_runner.py
+          test_core_vector_engine_roadmap.py
 
   pipeline-integration:
     runs-on: ubuntu-latest
