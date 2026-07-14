@@ -216,9 +216,17 @@ def _normalize_polygon_translates(source: Path, destination: Path) -> bool | Non
         try:
             matrix = np.array([[1.0, 0.0, tx], [0.0, 1.0, ty], [0.0, 0.0, 1.0]])
             normalized = transform_path(parse_path(d), matrix)
+            serialized_subpaths: list[str] = []
+            for subpath in normalized.continuous_subpaths():
+                serialized = subpath.d().strip()
+                if subpath.isclosed() and not re.search(r"[Zz]\s*$", serialized):
+                    serialized = f"{serialized} Z"
+                serialized_subpaths.append(serialized)
+            if not serialized_subpaths:
+                return None
         except Exception:  # noqa: BLE001
             return None
-        element.set("d", normalized.d())
+        element.set("d", " ".join(serialized_subpaths))
         del element.attrib["transform"]
         changed = True
 
