@@ -13,8 +13,8 @@ _ALPHA_RELEVANT_CATEGORIES = {"transparent"}
 
 
 def _category(case_id: str) -> str:
-    parts = str(case_id).split("-", 3)
-    return parts[3] if len(parts) == 4 else str(case_id)
+    parts = str(case_id).split("-", 2)
+    return parts[2] if len(parts) == 3 else str(case_id)
 
 
 def build_quality_summary(payload: dict[str, Any]) -> dict[str, Any]:
