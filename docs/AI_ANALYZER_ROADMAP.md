@@ -50,7 +50,7 @@ Durum: **complete**
 - Her vaka ayrı süreçte tam üç kez çalıştırılıyor.
 - HED açıkça kapalı `no_hed` ortamı release sözleşmesinin parçasıdır.
 - Kaynak pikseli, feature, recommendation, mod kararı, confidence ve review sonucu üç tekrarda birebir aynı olmalıdır.
-- Confusion, mod bazlı accepted precision, doğru kabul kapsamı, Brier skoru ve expected calibration error raporlanır.
+- Confusion, mod bazlı recommendation precision ve recall, accepted precision, Brier skoru ve expected calibration error raporlanır.
 - Kabul edilmiş yanlış mod, geçersiz analyzer contract veya determinism sapması için tolerans sıfırdır.
 - `AI analyzer release contract` workflow'u unit sözleşmelerini ve gerçek corpus runner'ını çalıştırır; JSON rapor ve fixture'ları artifact olarak saklar.
 - Production sınıflandırma eşikleri veya manuel mod davranışı AA-4 kapsamında değiştirilmez.
@@ -63,7 +63,6 @@ AA-4 PR'ı yalnız aşağıdaki kontroller tamamen yeşilken sabit head SHA ile 
 - `Exact final SVG contract`
 - `Benchmark v1 seed corpus`
 - `Core all-mode release contract`
-- `Core centerline graph contract`
 
 ## Yüzde hesabı
 
