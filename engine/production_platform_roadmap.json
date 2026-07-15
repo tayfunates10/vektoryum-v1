@@ -20,8 +20,8 @@
     {"id": "request_boundary_not_closed", "status": "closed", "closure_phase": "PPC-2", "evidence": "app/platform_identity.py"},
     {"id": "state_sync_integrity_not_closed", "status": "closed", "closure_phase": "PPC-3", "evidence": "app/platform_persistence.py"},
     {"id": "job_retention_not_closed", "status": "closed", "closure_phase": "PPC-3", "evidence": "app/platform_persistence.py"},
-    {"id": "service_modes_not_closed", "status": "open", "closure_phase": "PPC-4", "evidence": "app/main.py"},
-    {"id": "gated_deploy_not_closed", "status": "open", "closure_phase": "PPC-4", "evidence": "../Dockerfile"}
+    {"id": "service_modes_not_closed", "status": "closed", "closure_phase": "PPC-4", "evidence": "app/platform_operations.py"},
+    {"id": "gated_deploy_not_closed", "status": "closed", "closure_phase": "PPC-4", "evidence": "../.github/workflows/huggingface-deploy.yml"}
   ],
   "phases": [
     {
@@ -35,15 +35,7 @@
         "Current API health and container entrypoints are inventoried without changing runtime behavior.",
         "A dedicated pull-request workflow validates this roadmap."
       ],
-      "evidence": [
-        "production_platform_roadmap.json",
-        "test_production_platform_roadmap.py",
-        "app/main.py",
-        "app/settings.py",
-        "app/store.py",
-        "../Dockerfile",
-        "../.github/workflows/production-platform-contract.yml"
-      ]
+      "evidence": ["production_platform_roadmap.json", "test_production_platform_roadmap.py", "app/main.py", "app/settings.py", "app/store.py", "../Dockerfile", "../.github/workflows/production-platform-contract.yml"]
     },
     {
       "id": "PPC-2",
@@ -56,15 +48,7 @@
         "Login and registration include deterministic abuse controls.",
         "Identity and authorization boundaries have API regression coverage."
       ],
-      "evidence": [
-        "production_platform_roadmap.json",
-        "test_production_platform_roadmap.py",
-        "test_platform_identity.py",
-        "app/platform_identity.py",
-        "app/platform_frontend.py",
-        "app/runtime_main.py",
-        "../.github/workflows/production-platform-contract.yml"
-      ]
+      "evidence": ["production_platform_roadmap.json", "test_production_platform_roadmap.py", "test_platform_identity.py", "app/platform_identity.py", "app/platform_frontend.py", "app/runtime_main.py", "../.github/workflows/production-platform-contract.yml"]
     },
     {
       "id": "PPC-3",
@@ -77,18 +61,12 @@
         "Restart recovery separates complete incomplete and damaged jobs.",
         "Remote persistence failure is observable and cannot replace newer local state."
       ],
-      "evidence": [
-        "production_platform_roadmap.json",
-        "test_production_platform_roadmap.py",
-        "test_platform_persistence.py",
-        "app/platform_persistence.py",
-        "../.github/workflows/production-platform-contract.yml"
-      ]
+      "evidence": ["production_platform_roadmap.json", "test_production_platform_roadmap.py", "test_platform_persistence.py", "app/platform_persistence.py", "../.github/workflows/production-platform-contract.yml"]
     },
     {
       "id": "PPC-4",
       "title": "Operations and deployment closure",
-      "status": "pending",
+      "status": "complete",
       "acceptance_criteria": [
         "Beta live and maintenance modes are explicit and consistently enforced.",
         "Liveness and readiness return stable machine-readable checks.",
@@ -96,7 +74,16 @@
         "The production container passes non-root health shutdown and resource smoke tests.",
         "Deployment is gated on mandatory CI and an auditable source revision."
       ],
-      "evidence": []
+      "evidence": [
+        "production_platform_roadmap.json",
+        "test_production_platform_roadmap.py",
+        "test_platform_operations.py",
+        "app/platform_operations.py",
+        "app/runtime_main.py",
+        "../Dockerfile",
+        "../.github/workflows/production-platform-contract.yml",
+        "../.github/workflows/huggingface-deploy.yml"
+      ]
     }
   ]
 }
