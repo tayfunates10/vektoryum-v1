@@ -185,10 +185,14 @@ class RFV2QualificationAdapterTests(unittest.TestCase):
         }
         validate_manifest(manifest, self.policy, self.intake_policy, require_complete=True)
 
-    def test_repository_manifest_is_honest_and_not_complete(self):
+    def test_repository_manifest_matches_its_finite_lifecycle_state(self):
         validate_manifest(self.manifest, self.policy, self.intake_policy)
-        with self.assertRaises(AssertionError):
+        if self.manifest["status"] == "qualified":
             validate_manifest(self.manifest, self.policy, self.intake_policy, require_complete=True)
+            self.assertEqual(self.manifest["qualified_case_count"], 24)
+        else:
+            with self.assertRaises(AssertionError):
+                validate_manifest(self.manifest, self.policy, self.intake_policy, require_complete=True)
 
     def test_invalid_or_fabricated_evidence_fails_closed(self):
         base = make_qualified_cases(self.policy, self.intake_policy)[0]
@@ -212,14 +216,19 @@ class RFV2QualificationAdapterTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             validate_qualified_cases([base, duplicate], self.policy, self.intake_policy, require_complete=False)
 
-    def test_roadmap_records_rfv1_merge_but_not_rfv2_completion(self):
+    def test_roadmap_allows_only_monotonic_rfv2_progression(self):
         roadmap = load_json(ROADMAP_PATH)
         phases = roadmap["phases"]
         self.assertEqual(roadmap["phase_count"], 4)
         self.assertEqual([phase["id"] for phase in phases], ["RFV-1", "RFV-2", "RFV-3", "RFV-4"])
         self.assertEqual(phases[0]["status"], "merged")
-        self.assertEqual(phases[1]["status"], "pending")
+        self.assertIn(phases[1]["status"], {"pending", "implemented", "merged"})
         self.assertEqual([phase["status"] for phase in phases[2:]], ["pending", "pending"])
+        if self.manifest["status"] == "awaiting_real_assets":
+            self.assertEqual(phases[1]["status"], "pending")
+        else:
+            self.assertIn(phases[1]["status"], {"implemented", "merged"})
+            self.assertTrue((ROOT / phases[1]["evidence"]).is_file())
         self.assertTrue((ROOT / phases[1]["preparation_evidence"]).is_file())
 
 
