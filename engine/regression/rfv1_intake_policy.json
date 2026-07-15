@@ -1,0 +1,60 @@
+{
+  "schema": "vektoryum-rfv1-intake-v1",
+  "target_cases": 120,
+  "storage_mode": "external_immutable_object_store",
+  "public_repo_contains_raw_assets": false,
+  "allowed_source_formats": ["png", "jpeg", "webp", "tiff"],
+  "max_pixels": 8294400,
+  "max_file_bytes": 26214400,
+  "required_record_fields": [
+    "case_id",
+    "category",
+    "source_sha256",
+    "consent_sha256",
+    "license",
+    "width",
+    "height",
+    "file_bytes",
+    "source_format",
+    "storage_object_id",
+    "privacy_review",
+    "contains_public_pii",
+    "split"
+  ],
+  "allowed_licenses": [
+    "owned-original",
+    "user-consented-private",
+    "customer-consented-private",
+    "cc0",
+    "public-domain"
+  ],
+  "forbidden_sources": [
+    "unknown",
+    "scraped-without-permission",
+    "copyright-unverified",
+    "terms-prohibited"
+  ],
+  "privacy": {
+    "requires_consent_digest": true,
+    "requires_approved_review": true,
+    "forbid_pii_in_public_manifest": true,
+    "require_redacted_digest_when_needed": true
+  },
+  "splits": {
+    "calibration": 72,
+    "qualification": 24,
+    "holdout": 24
+  },
+  "categories": {
+    "flat_logo": 15,
+    "badge_seal": 12,
+    "small_text": 15,
+    "monoline": 12,
+    "multicolor": 12,
+    "low_resolution_signage_photo": 15,
+    "gradient_artwork": 10,
+    "native_4k": 8,
+    "transparent_dark_background": 10,
+    "complex_illustration": 11
+  }
+}
