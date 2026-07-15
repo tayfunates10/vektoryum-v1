@@ -17,6 +17,7 @@ from engine.regression.rfv2_public_source_acquire import (
 )
 
 ROOT = Path(__file__).resolve().parents[2]
+QUALIFIED_MANIFEST_PATH = ROOT / "engine" / "regression" / "rfv2_qualification_manifest.json"
 ROADMAP_PATH = ROOT / "docs" / "real_world_fidelity_roadmap.json"
 
 
@@ -124,15 +125,25 @@ class RFV2PublicSourceAcquireTests(unittest.TestCase):
         with self.assertRaises(PublicSourceError):
             canonicalize_image(too_small, "loc_public_domain_4k_crop")
 
-    def test_roadmap_remains_honest_until_assets_are_acquired(self):
+    def test_roadmap_and_selection_follow_monotonic_acquisition_lifecycle(self):
         roadmap = json.loads(ROADMAP_PATH.read_text(encoding="utf-8"))
+        qualified_manifest = json.loads(QUALIFIED_MANIFEST_PATH.read_text(encoding="utf-8"))
         phases = roadmap["phases"]
         self.assertEqual(phases[0]["status"], "merged")
-        self.assertEqual(phases[1]["status"], "pending")
+        self.assertIn(phases[1]["status"], {"pending", "implemented", "merged"})
         self.assertEqual(phases[2]["status"], "pending")
         self.assertEqual(phases[3]["status"], "pending")
         self.assertEqual(phases[1]["public_source_evidence"], "docs/real_world_fidelity/rfv-2d.md")
-        self.assertEqual(phases[1]["selected_public_source_count"], 24)
+        self.assertEqual(self.manifest["expected_case_count"], 24)
+        self.assertEqual(len(self.manifest["cases"]), 24)
+        if qualified_manifest["status"] == "awaiting_real_assets":
+            self.assertEqual(phases[1]["status"], "pending")
+            self.assertEqual(self.manifest["status"], "selected_not_acquired")
+        else:
+            self.assertEqual(qualified_manifest["status"], "qualified")
+            self.assertEqual(qualified_manifest["qualified_case_count"], 24)
+            self.assertIn(phases[1]["status"], {"implemented", "merged"})
+            self.assertTrue((ROOT / phases[1]["evidence"]).is_file())
 
 
 if __name__ == "__main__":
