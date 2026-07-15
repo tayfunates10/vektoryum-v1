@@ -75,9 +75,8 @@ class F997PrintReadyValidatorContractTests(unittest.TestCase):
         phases = roadmap["phases"]
         self.assertEqual(roadmap["phase_count"], 8)
         self.assertEqual([p["id"] for p in phases], [f"F99-{i}" for i in range(1, 9)])
-        self.assertEqual([p["status"] for p in phases[:6]], ["merged"] * 6)
-        self.assertIn(phases[6]["status"], {"implemented", "merged"})
-        self.assertEqual(phases[7]["status"], "pending")
+        self.assertEqual([p["status"] for p in phases[:7]], ["merged"] * 7)
+        self.assertIn(phases[7]["status"], {"implemented", "merged"})
         self.assertTrue((ROOT / phases[6]["evidence"]).is_file())
         self.assertGreaterEqual(len(phases[6]["acceptance"]), 5)
 
