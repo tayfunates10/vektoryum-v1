@@ -5,6 +5,7 @@ on:
     paths:
       - "engine/app/pipeline_entry.py"
       - "engine/app/runtime_main.py"
+      - "engine/app/platform_operations.py"
       - "engine/app/production_export_integration.py"
       - "engine/app/production_serializer_runtime.py"
       - "engine/app/production_svg_selector.py"
@@ -15,6 +16,14 @@ on:
       - "engine/test_pipeline_canonical_report.py"
       - "engine/test_pipeline_export_registration.py"
       - "engine/test_runtime_main.py"
+      - "engine/test_platform_operations.py"
+      - ".github/workflows/canonical-runtime-export.yml"
+  push:
+    branches: [main]
+    paths:
+      - "engine/app/**"
+      - "engine/test_runtime_main.py"
+      - "engine/test_platform_operations.py"
       - ".github/workflows/canonical-runtime-export.yml"
   workflow_dispatch:
 
@@ -35,6 +44,8 @@ jobs:
     env:
       PYTHONHASHSEED: "0"
       VEKTORYUM_WORKERS: "1"
+      VEKTORYUM_SERVICE_MODE: "beta"
+      VEKTORYUM_SOURCE_REVISION: ${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -54,3 +65,4 @@ jobs:
           test_pipeline_canonical_report.py
           test_pipeline_export_registration.py
           test_runtime_main.py
+          test_platform_operations.py
