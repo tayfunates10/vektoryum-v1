@@ -1,0 +1,12 @@
+{
+  "artifact_digest": "a8be8c0782a8aeb037a2736de8adbd357c5074ad0da6355562e2543092d6af76",
+  "artifact_id": 8354853386,
+  "artifact_url": "https://github.com/tayfunates10/vektoryum-v1/actions/runs/29444449427/artifacts/8354853386",
+  "bundle_sha256": "1da641ad27b58985e4e1cf8d9972af5a15f5105e85e2c319151a5e373b6afc46",
+  "cases_sha256": "5f151a6cb1a433b0cb0989a67bd7cc7940162f4b36d67903d6ccdd173f9e7d89",
+  "head_sha": "d55f812f492e8e93c1956fe79bceaf7e3754d7e9",
+  "qualified_case_count": 24,
+  "raw_assets_in_repository": false,
+  "retention_days": 90,
+  "schema": "vektoryum-rfv2-actions-publication-envelope-v1"
+}
