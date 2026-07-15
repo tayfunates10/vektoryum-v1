@@ -65,6 +65,17 @@ jobs:
           test_pipeline_canonical_report.py
           test_pipeline_export_registration.py
       - name: Production runtime entry contract
-        run: python -m pytest -q test_runtime_main.py
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -vv --tb=short test_runtime_main.py 2>&1 | tee runtime-entry.log
+      - name: Upload runtime entry diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-entry-diagnostics
+          path: engine/runtime-entry.log
+          if-no-files-found: error
+          retention-days: 7
       - name: PPC-4 operations runtime compatibility
         run: python -m pytest -q test_platform_operations.py
