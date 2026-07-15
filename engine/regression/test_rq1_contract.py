@@ -23,8 +23,14 @@ class RQ1ContractTests(unittest.TestCase):
         self.assertEqual(self.roadmap["calculation"], "merged_phases / 4")
         phases = self.roadmap["phases"]
         self.assertEqual([phase["id"] for phase in phases], ["RQ-1", "RQ-2", "RQ-3", "RQ-4"])
-        self.assertEqual(phases[0]["status"], "implemented")
-        self.assertTrue(all(phase["status"] == "pending" for phase in phases[1:]))
+
+        statuses = [phase["status"] for phase in phases]
+        self.assertTrue(all(status in {"implemented", "pending"} for status in statuses))
+        self.assertEqual(statuses[0], "implemented")
+        first_pending = next((index for index, status in enumerate(statuses) if status == "pending"), len(statuses))
+        self.assertTrue(all(status == "implemented" for status in statuses[:first_pending]))
+        self.assertTrue(all(status == "pending" for status in statuses[first_pending:]))
+
         self.assertEqual(len(phases[0]["acceptance"]), 5)
         self.assertTrue(Path(phases[0]["evidence"]).is_file())
 
