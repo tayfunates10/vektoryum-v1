@@ -1,0 +1,25 @@
+name: Real-world fidelity RFV-2B intake tool
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  rfv2b-intake:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install Pillow
+        run: python -m pip install pillow
+      - name: Compile RFV-2B files
+        run: python -m py_compile engine/regression/rfv2_secure_intake.py engine/regression/test_rfv2_secure_intake.py
+      - name: Run RFV-2B tests
+        run: python -m unittest engine.regression.test_rfv2_secure_intake
