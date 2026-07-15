@@ -30,12 +30,17 @@ jobs:
         run: |
           python -m py_compile \
             engine/regression/rfv2_public_source_acquire.py \
+            engine/regression/rfv2_live_acquire.py \
             engine/regression/rfv2_manifest_assembler.py \
             engine/regression/rfv2_live_bundle.py \
+            engine/regression/test_rfv2_live_acquire.py \
             engine/regression/test_rfv2_live_bundle.py
 
-      - name: Validate deterministic fail-closed bundle contract
-        run: python -m unittest engine.regression.test_rfv2_live_bundle
+      - name: Validate deterministic fail-closed acquisition and bundle contracts
+        run: |
+          python -m unittest \
+            engine.regression.test_rfv2_live_acquire \
+            engine.regression.test_rfv2_live_bundle
 
       - name: Acquire and qualify all 24 reviewed public sources
         shell: bash
@@ -52,7 +57,7 @@ jobs:
           set +e
           (
             set -euo pipefail
-            python -m engine.regression.rfv2_public_source_acquire \
+            python -m engine.regression.rfv2_live_acquire \
               --all \
               --download-root "${RFV_ROOT}/downloads" \
               --storage-root "${RFV_ROOT}/storage" \
