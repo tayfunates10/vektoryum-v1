@@ -33,7 +33,7 @@
     {
       "id": "F99-3",
       "title": "Color fidelity",
-      "status": "implemented",
+      "status": "merged",
       "acceptance": [
         "mean perceptual color score is at least 0.990",
         "p05 perceptual color score is at least 0.980",
@@ -43,7 +43,19 @@
       ],
       "evidence": "docs/fidelity99/f99-3.md"
     },
-    {"id": "F99-4", "title": "Typography and fine detail", "status": "pending"},
+    {
+      "id": "F99-4",
+      "title": "Typography and fine detail",
+      "status": "implemented",
+      "acceptance": [
+        "mean glyph fidelity score is at least 0.990",
+        "p05 glyph fidelity score is at least 0.980",
+        "p95 normalized stroke-width error is at most 0.020",
+        "missing glyph, merged glyph, broken counter and lost fine-detail counts are zero",
+        "missing, duplicate, non-finite, out-of-range or shrinking evidence fails closed"
+      ],
+      "evidence": "docs/fidelity99/f99-4.md"
+    },
     {"id": "F99-5", "title": "Multi-scale processing", "status": "pending"},
     {"id": "F99-6", "title": "AI refiner", "status": "pending"},
     {"id": "F99-7", "title": "Print-ready validator", "status": "pending"},

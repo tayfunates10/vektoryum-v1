@@ -1,0 +1,28 @@
+name: Fidelity-99 F99-4 typography and fine detail contract
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "docs/fidelity99_roadmap.json"
+      - "docs/fidelity99/f99-4.md"
+      - "engine/tests/test_f99_4_typography_fidelity.py"
+      - ".github/workflows/fidelity99-f99-4-typography.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  f99-4-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Compile F99-4 contract
+        run: python -m py_compile engine/tests/test_f99_4_typography_fidelity.py
+      - name: Validate finite typography and fine-detail thresholds
+        run: python -m unittest -v engine.tests.test_f99_4_typography_fidelity
