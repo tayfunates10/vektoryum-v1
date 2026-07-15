@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 
 ALLOWED_SERVICE_MODES = frozenset({"beta", "live", "maintenance"})
 _WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+_HEALTH_PATHS = frozenset({"/livez", "/readyz"})
 logger = logging.getLogger("vektoryum.operations")
 
 
@@ -43,21 +44,30 @@ def _structured(event: str, **fields: object) -> None:
     logger.info(json.dumps({"event": event, **fields}, sort_keys=True, separators=(",", ":")))
 
 
+def _remove_health_routes(app: FastAPI) -> None:
+    app.router.routes[:] = [
+        route for route in app.router.routes
+        if getattr(route, "path", None) not in _HEALTH_PATHS
+    ]
+
+
 def install_platform_operations(app: FastAPI, *, revision: str | None = None) -> RuntimeState:
     if getattr(app.state, "platform_operations_installed", False):
         return app.state.platform_runtime_state
+    service_mode()  # fail closed during startup for invalid configuration
     state = RuntimeState(started_at=time.time())
     app.state.platform_runtime_state = state
     app.state.platform_operations_installed = True
     source_revision = revision or os.environ.get("VEKTORYUM_SOURCE_REVISION", "unknown")
+    _remove_health_routes(app)
 
     @app.middleware("http")
     async def operations_boundary(request: Request, call_next: Callable):
         correlation_id = request.headers.get("X-Correlation-ID", "").strip() or uuid.uuid4().hex
         mode = service_mode()
-        if not state.accepting_requests and request.url.path not in {"/livez", "/readyz"}:
+        if not state.accepting_requests and request.url.path not in _HEALTH_PATHS:
             return JSONResponse({"status": "unavailable", "reason": "shutdown_in_progress", "correlation_id": correlation_id}, status_code=503, headers={"X-Correlation-ID": correlation_id})
-        if mode == "maintenance" and request.method in _WRITE_METHODS and request.url.path not in {"/livez", "/readyz"}:
+        if mode == "maintenance" and request.method in _WRITE_METHODS and request.url.path not in _HEALTH_PATHS:
             return JSONResponse({"status": "maintenance", "correlation_id": correlation_id}, status_code=503, headers={"X-Correlation-ID": correlation_id})
         state.active_requests += 1
         started = time.monotonic()
