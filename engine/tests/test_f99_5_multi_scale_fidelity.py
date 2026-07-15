@@ -68,15 +68,34 @@ def validate_multi_scale_evidence(records, minimum_cases):
         raise AssertionError("multi-scale defect")
 
 
+def validate_roadmap_progress(phases):
+    statuses = [phase.get("status") for phase in phases]
+    if any(status not in {"merged", "implemented", "pending"} for status in statuses):
+        raise AssertionError("invalid roadmap status")
+    seen_implemented = False
+    seen_pending = False
+    for status in statuses:
+        if status == "merged":
+            if seen_implemented or seen_pending:
+                raise AssertionError("merged phase after active or pending phase")
+        elif status == "implemented":
+            if seen_implemented or seen_pending:
+                raise AssertionError("multiple or out-of-order implemented phases")
+            seen_implemented = True
+        else:
+            seen_pending = True
+    return statuses
+
+
 class F995MultiScaleFidelityContractTests(unittest.TestCase):
     def test_roadmap_is_finite_and_ordered(self):
         roadmap = json.loads(ROADMAP.read_text(encoding="utf-8"))
         phases = roadmap["phases"]
         self.assertEqual(roadmap["phase_count"], 8)
         self.assertEqual([p["id"] for p in phases], [f"F99-{i}" for i in range(1, 9)])
-        self.assertEqual([p["status"] for p in phases[:4]], ["merged"] * 4)
-        self.assertIn(phases[4]["status"], {"implemented", "merged"})
-        self.assertEqual([p["status"] for p in phases[5:]], ["pending"] * 3)
+        statuses = validate_roadmap_progress(phases)
+        self.assertEqual(statuses[:5], ["merged"] * 5)
+        self.assertIn(statuses[5], {"implemented", "merged"})
         self.assertTrue((ROOT / phases[4]["evidence"]).is_file())
         self.assertGreaterEqual(len(phases[4]["acceptance"]), 5)
 
@@ -114,6 +133,18 @@ class F995MultiScaleFidelityContractTests(unittest.TestCase):
             with self.subTest(records=records):
                 with self.assertRaises(AssertionError):
                     validate_multi_scale_evidence(records, 1)
+
+    def test_fails_closed_on_invalid_roadmap_sequences(self):
+        invalid = [
+            ["merged", "pending", "merged"],
+            ["merged", "implemented", "implemented"],
+            ["pending", "implemented"],
+            ["merged", "unknown"],
+        ]
+        for statuses in invalid:
+            with self.subTest(statuses=statuses):
+                with self.assertRaises(AssertionError):
+                    validate_roadmap_progress([{"status": status} for status in statuses])
 
 
 if __name__ == "__main__":
