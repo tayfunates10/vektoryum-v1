@@ -31,8 +31,10 @@
       "preparation_evidence": "docs/real_world_fidelity/rfv-2a.md",
       "intake_evidence": "docs/real_world_fidelity/rfv-2b.md",
       "assembly_evidence": "docs/real_world_fidelity/rfv-2c.md",
+      "public_source_evidence": "docs/real_world_fidelity/rfv-2d.md",
+      "selected_public_source_count": 24,
       "tracking_issue": 88,
-      "blocked_on": "24 reviewed real assets in external immutable object storage"
+      "blocked_on": "acquire, hash and externally store the 24 reviewed CC0/public-domain sources"
     },
     {"id": "RFV-3", "title": "Real pipeline measurement and automatic retry gate", "status": "pending"},
     {"id": "RFV-4", "title": "Live beta validation and release evidence", "status": "pending"}
