@@ -1,0 +1,27 @@
+{
+  "schema": "vektoryum-fidelity99-v1",
+  "phase_count": 8,
+  "calculation": "merged_phases / 8",
+  "phases": [
+    {
+      "id": "F99-1",
+      "title": "Geometric fidelity contract",
+      "status": "implemented",
+      "acceptance": [
+        "mean IoU is at least 0.990 on the qualified corpus",
+        "p05 IoU is at least 0.980 so aggregate scores cannot hide weak cases",
+        "normalized symmetric Hausdorff distance is at most 0.005",
+        "topology mismatch count is zero for every qualified case",
+        "missing metrics, non-finite values, corpus shrinkage or threshold regression fails closed"
+      ],
+      "evidence": "docs/fidelity99/f99-1.md"
+    },
+    {"id": "F99-2", "title": "Edge and curve quality", "status": "pending"},
+    {"id": "F99-3", "title": "Color fidelity", "status": "pending"},
+    {"id": "F99-4", "title": "Typography and fine detail", "status": "pending"},
+    {"id": "F99-5", "title": "Multi-scale processing", "status": "pending"},
+    {"id": "F99-6", "title": "AI refiner", "status": "pending"},
+    {"id": "F99-7", "title": "Print-ready validator", "status": "pending"},
+    {"id": "F99-8", "title": "Fidelity gate", "status": "pending"}
+  ]
+}
