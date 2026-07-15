@@ -1,0 +1,24 @@
+name: Fidelity-99 F99-3 color fidelity contract
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  f99-3-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile F99-3 contract
+        run: python -m py_compile engine/tests/test_f99_3_color_fidelity.py
+      - name: Validate finite color fidelity thresholds
+        run: python engine/tests/test_f99_3_color_fidelity.py
