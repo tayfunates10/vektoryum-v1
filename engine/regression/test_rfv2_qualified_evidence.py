@@ -168,12 +168,14 @@ class RFV2QualifiedEvidenceTests(unittest.TestCase):
             f"/tayfunates10/vektoryum-v1/actions/runs/{EXPECTED_RUN_ID}/artifacts/{EXPECTED_ARTIFACT_ID}",
         )
 
-    def test_roadmap_has_monotonic_implemented_state_and_evidence_paths(self) -> None:
+    def test_roadmap_has_monotonic_terminal_state_and_evidence_paths(self) -> None:
         phases = self.roadmap["phases"]
         self.assertEqual(self.roadmap["schema"], "vektoryum-real-world-fidelity-v1")
         self.assertEqual(self.roadmap["phase_count"], 4)
         self.assertEqual([phase["id"] for phase in phases], ["RFV-1", "RFV-2", "RFV-3", "RFV-4"])
-        self.assertEqual([phase["status"] for phase in phases], ["merged", "implemented", "pending", "pending"])
+        self.assertEqual(phases[0]["status"], "merged")
+        self.assertIn(phases[1]["status"], {"implemented", "merged"})
+        self.assertEqual([phase["status"] for phase in phases[2:]], ["pending", "pending"])
         phase = phases[1]
         self.assertEqual(phase["qualified_case_count"], 24)
         for key in (
