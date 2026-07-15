@@ -24,6 +24,7 @@ concurrency:
 jobs:
   mandatory-ci:
     runs-on: ubuntu-latest
+    timeout-minutes: 70
     outputs:
       source_sha: ${{ steps.source.outputs.sha }}
     steps:
@@ -45,14 +46,14 @@ jobs:
         run: |
           git fetch origin main
           test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
-      - name: Require all mandatory workflow conclusions
+      - name: Wait for all mandatory workflow conclusions
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ steps.source.outputs.sha }}
           REPO: ${{ github.repository }}
         run: |
           python - <<'PY'
-          import json, os, subprocess
+          import json, os, subprocess, time
           required = {
               "Production platform roadmap contract",
               "Exact final SVG contract",
@@ -61,23 +62,37 @@ jobs:
               "AI analyzer release contract",
               "Canonical runtime export contract",
           }
-          raw = subprocess.check_output([
-              "gh", "api", "--method", "GET",
-              f"repos/{os.environ['REPO']}/actions/runs",
-              "-f", f"head_sha={os.environ['SHA']}",
-              "-f", "per_page=100",
-          ], text=True)
-          runs = json.loads(raw)["workflow_runs"]
-          latest = {}
-          for run in runs:
-              name = run["name"]
-              if name in required and name not in latest:
-                  latest[name] = run
-          missing = sorted(required - latest.keys())
-          failed = sorted(name for name, run in latest.items() if run["status"] != "completed" or run["conclusion"] != "success")
-          if missing or failed:
-              raise SystemExit(f"mandatory CI not green; missing={missing}; failed={failed}")
-          print("mandatory CI green for", os.environ["SHA"])
+          deadline = time.time() + 3600
+          while True:
+              raw = subprocess.check_output([
+                  "gh", "api", "--method", "GET",
+                  f"repos/{os.environ['REPO']}/actions/runs",
+                  "-f", f"head_sha={os.environ['SHA']}",
+                  "-f", "per_page=100",
+              ], text=True)
+              runs = json.loads(raw)["workflow_runs"]
+              latest = {}
+              for run in runs:
+                  name = run["name"]
+                  if name in required and name not in latest:
+                      latest[name] = run
+              failed = sorted(
+                  name for name, run in latest.items()
+                  if run["status"] == "completed" and run["conclusion"] != "success"
+              )
+              if failed:
+                  raise SystemExit(f"mandatory CI failed for {os.environ['SHA']}: {failed}")
+              pending = sorted(
+                  name for name in required
+                  if name not in latest or latest[name]["status"] != "completed"
+              )
+              if not pending:
+                  print("mandatory CI green for", os.environ["SHA"])
+                  break
+              if time.time() >= deadline:
+                  raise SystemExit(f"mandatory CI timeout; pending={pending}")
+              print("waiting for mandatory CI:", pending, flush=True)
+              time.sleep(30)
           PY
 
   deploy:
