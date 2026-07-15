@@ -25,7 +25,10 @@ class F991GeometricFidelityTests(unittest.TestCase):
         phases = self.roadmap["phases"]
         self.assertEqual(self.roadmap["phase_count"], 8)
         self.assertEqual([p["id"] for p in phases], [f"F99-{i}" for i in range(1, 9)])
-        self.assertEqual([p["status"] for p in phases], ["implemented"] + ["pending"] * 7)
+        statuses = [p["status"] for p in phases]
+        self.assertEqual(statuses[0], "merged")
+        self.assertIn(statuses[1], {"implemented", "merged"})
+        self.assertEqual(statuses[2:], ["pending"] * 6)
         self.assertTrue(Path(phases[0]["evidence"]).is_file())
         self.assertEqual(len(phases[0]["acceptance"]), 5)
 
