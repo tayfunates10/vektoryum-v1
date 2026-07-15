@@ -1,0 +1,104 @@
+name: Hugging Face production deploy
+
+on:
+  workflow_run:
+    workflows: ["Production platform roadmap contract"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: "Exact main SHA to deploy"
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  checks: read
+  contents: read
+
+concurrency:
+  group: huggingface-production-deploy
+  cancel-in-progress: false
+
+jobs:
+  mandatory-ci:
+    runs-on: ubuntu-latest
+    outputs:
+      source_sha: ${{ steps.source.outputs.sha }}
+    steps:
+      - name: Resolve immutable main SHA
+        id: source
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          WORKFLOW_SHA: ${{ github.event.workflow_run.head_sha }}
+          MANUAL_SHA: ${{ inputs.source_sha }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_run" ]; then sha="$WORKFLOW_SHA"; else sha="$MANUAL_SHA"; fi
+          test -n "$sha"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.source.outputs.sha }}
+          fetch-depth: 0
+      - name: Require SHA to equal current main
+        run: |
+          git fetch origin main
+          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
+      - name: Require all mandatory workflow conclusions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.source.outputs.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          python - <<'PY'
+          import json, os, subprocess
+          required = {
+              "Production platform roadmap contract",
+              "Exact final SVG contract",
+              "Core all-mode release contract",
+              "Benchmark v1 seed corpus",
+              "AI analyzer release contract",
+          }
+          raw = subprocess.check_output([
+              "gh", "api", f"repos/{os.environ['REPO']}/actions/runs",
+              "-f", f"head_sha={os.environ['SHA']}", "-f", "per_page=100",
+          ], text=True)
+          runs = json.loads(raw)["workflow_runs"]
+          latest = {}
+          for run in runs:
+              name = run["name"]
+              if name in required and name not in latest:
+                  latest[name] = run
+          missing = sorted(required - latest.keys())
+          failed = sorted(name for name, run in latest.items() if run["status"] != "completed" or run["conclusion"] != "success")
+          if missing or failed:
+              raise SystemExit(f"mandatory CI not green; missing={missing}; failed={failed}")
+          print("mandatory CI green for", os.environ["SHA"])
+          PY
+
+  deploy:
+    needs: mandatory-ci
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      SOURCE_SHA: ${{ needs.mandatory-ci.outputs.source_sha }}
+      HF_SPACE_ID: ${{ secrets.HF_SPACE_ID }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          fetch-depth: 0
+      - name: Validate deployment secrets
+        run: test -n "$HF_SPACE_ID" && test -n "$HF_TOKEN"
+      - name: Push exact audited revision to Hugging Face
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add huggingface "https://oauth2:${HF_TOKEN}@huggingface.co/spaces/${HF_SPACE_ID}"
+          git push --force huggingface "${SOURCE_SHA}:refs/heads/main"
+      - name: Publish deployment summary
+        run: |
+          echo "source_sha=${SOURCE_SHA}" >> "$GITHUB_STEP_SUMMARY"
+          echo "space=${HF_SPACE_ID}" >> "$GITHUB_STEP_SUMMARY"
