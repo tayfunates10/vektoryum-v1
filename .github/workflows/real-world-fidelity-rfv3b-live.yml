@@ -34,10 +34,15 @@ jobs:
         run: |
           python -m py_compile \
             engine/regression/rfv3_live_measurement.py \
-            engine/regression/test_rfv3_live_measurement.py
+            engine/regression/rfv3_live_prepare.py \
+            engine/regression/test_rfv3_live_measurement.py \
+            engine/regression/test_rfv3_live_prepare.py
 
-      - name: Validate sharding extraction and aggregate gates
-        run: python -m unittest engine.regression.test_rfv3_live_measurement
+      - name: Validate sharding extraction identity and aggregate gates
+        run: >-
+          python -m unittest
+          engine.regression.test_rfv3_live_measurement
+          engine.regression.test_rfv3_live_prepare
 
       - name: Confirm RFV-3 remains pending before reviewed live results
         run: |
@@ -184,12 +189,16 @@ jobs:
           name: rfv3b-corpus-${{ github.event.pull_request.head.sha }}
           path: ${{ runner.temp }}/rfv3b-input
 
-      - name: Verify and safely extract corpus
-        run: >-
-          python -m engine.regression.rfv3_live_measurement extract
-          --bundle "${RUNNER_TEMP}/rfv3b-input/rfv2-public-corpus.tar.gz"
-          --checksums "${RUNNER_TEMP}/rfv3b-input/bundle-checksums.json"
-          --destination "${RUNNER_TEMP}/rfv3b-corpus"
+      - name: Verify stable source identity and safely prepare corpus
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m engine.regression.rfv3_live_prepare \
+            --bundle "${RUNNER_TEMP}/rfv3b-input/rfv2-public-corpus.tar.gz" \
+            --checksums "${RUNNER_TEMP}/rfv3b-input/bundle-checksums.json" \
+            --destination "${RUNNER_TEMP}/rfv3b-corpus" \
+            --evidence-out "${RUNNER_TEMP}/rfv3b-live-prepare-${{ matrix.shard }}.json" \
+            2>&1 | tee "${RUNNER_TEMP}/rfv3b-extract-${{ matrix.shard }}.log"
 
       - name: Measure shard through the production pipeline
         shell: bash
@@ -210,6 +219,8 @@ jobs:
         with:
           name: rfv3b-shard-failure-${{ matrix.shard }}-${{ github.event.pull_request.head.sha }}
           path: |
+            ${{ runner.temp }}/rfv3b-extract-${{ matrix.shard }}.log
+            ${{ runner.temp }}/rfv3b-live-prepare-${{ matrix.shard }}.json
             ${{ runner.temp }}/rfv3b-shard-${{ matrix.shard }}.log
             ${{ runner.temp }}/rfv3b-shard-${{ matrix.shard }}/retry-audit.json
           if-no-files-found: warn
@@ -221,6 +232,7 @@ jobs:
         with:
           name: rfv3b-shard-${{ matrix.shard }}-${{ github.event.pull_request.head.sha }}
           path: |
+            ${{ runner.temp }}/rfv3b-live-prepare-${{ matrix.shard }}.json
             ${{ runner.temp }}/rfv3b-shard-${{ matrix.shard }}/pipeline-results.json
             ${{ runner.temp }}/rfv3b-shard-${{ matrix.shard }}/retry-audit.json
             ${{ runner.temp }}/rfv3b-shard-${{ matrix.shard }}/shard-summary.json
