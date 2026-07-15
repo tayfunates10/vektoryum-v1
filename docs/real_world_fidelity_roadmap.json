@@ -19,7 +19,7 @@
     {
       "id": "RFV-2",
       "title": "Qualified real-world corpus",
-      "status": "implemented",
+      "status": "merged",
       "acceptance": [
         "exactly 24 reviewed real-world assets are registered in the immutable qualification split",
         "all ten difficult-image categories have at least one qualified case",
