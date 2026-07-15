@@ -59,10 +59,13 @@ jobs:
               "Core all-mode release contract",
               "Benchmark v1 seed corpus",
               "AI analyzer release contract",
+              "Canonical runtime export contract",
           }
           raw = subprocess.check_output([
-              "gh", "api", f"repos/{os.environ['REPO']}/actions/runs",
-              "-f", f"head_sha={os.environ['SHA']}", "-f", "per_page=100",
+              "gh", "api", "--method", "GET",
+              f"repos/{os.environ['REPO']}/actions/runs",
+              "-f", f"head_sha={os.environ['SHA']}",
+              "-f", "per_page=100",
           ], text=True)
           runs = json.loads(raw)["workflow_runs"]
           latest = {}
