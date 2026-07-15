@@ -129,6 +129,31 @@ def resolve_openclipart_asset_url(
     )
 
 
+def prepare_live_provider_case(case: dict[str, Any], manifest: dict[str, Any]) -> dict[str, Any]:
+    prepared = dict(case)
+    if prepared["provider"] != "library_of_congress":
+        return prepared
+
+    allowed_hosts = {host.lower() for host in manifest["allowed_source_hosts"]}
+    metadata_url = public_acquire._validated_https_url(
+        prepared.get("metadata_url"), allowed_hosts, "LOC metadata proof"
+    )
+    parsed = urllib.parse.urlsplit(metadata_url)
+    if parsed.hostname != "www.loc.gov" or parsed.query != "fo=json":
+        raise public_acquire.PublicSourceError("LOC metadata proof URL mismatch")
+    if prepared.get("rights_statement") != "No known restrictions on publication.":
+        raise public_acquire.PublicSourceError("LOC rights statement mismatch")
+
+    # LOC HTML item pages reject automated clients. The official JSON item
+    # representation contains the same catalog identity, rights metadata and
+    # raster links, so it is used as both the machine-readable source snapshot
+    # and public-domain proof while the original item URL remains in the
+    # reviewed source-selection manifest.
+    prepared["source_page_url"] = metadata_url
+    prepared["license_proof_url"] = metadata_url
+    return prepared
+
+
 def acquire_selected(
     *,
     cases: list[dict[str, Any]],
@@ -139,7 +164,7 @@ def acquire_selected(
 ) -> list[dict[str, Any]]:
     acquired: list[dict[str, Any]] = []
     for original in cases:
-        case = dict(original)
+        case = prepare_live_provider_case(original, manifest)
         if case["provider"] == "openclipart":
             case["asset_url"] = resolve_openclipart_asset_url(case, manifest)
         acquired.append(
