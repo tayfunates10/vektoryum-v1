@@ -1,0 +1,26 @@
+{
+  "schema": "vektoryum-rq3-resilience-v1",
+  "limits": {
+    "max_active": 2,
+    "max_queued": 3,
+    "per_user_retained_bytes": 10485760,
+    "disk_high_water_bytes": 52428800,
+    "disk_low_water_bytes": 41943040,
+    "lease_ttl_seconds": 120,
+    "job_timeout_seconds": 300
+  },
+  "terminal_states": ["succeeded", "failed", "cancelled", "timed_out", "quarantined"],
+  "protected_flags": ["active", "pinned", "legal_hold"],
+  "required_scenarios": [
+    "bounded_admission",
+    "per_user_quota",
+    "oldest_eligible_cleanup",
+    "protected_artifact_preservation",
+    "idempotent_cancellation",
+    "timeout_blocks_publication",
+    "exactly_once_restart_recovery",
+    "stale_lease_recovery",
+    "remote_generation_conflict",
+    "corrupt_manifest_quarantine"
+  ]
+}
