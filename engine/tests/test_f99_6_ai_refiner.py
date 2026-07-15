@@ -101,9 +101,21 @@ class F996AIRefinerContractTests(unittest.TestCase):
         phases = roadmap["phases"]
         self.assertEqual(roadmap["phase_count"], 8)
         self.assertEqual([p["id"] for p in phases], [f"F99-{i}" for i in range(1, 9)])
-        self.assertEqual([p["status"] for p in phases[:5]], ["merged"] * 5)
-        self.assertIn(phases[5]["status"], {"implemented", "merged"})
-        self.assertEqual([p["status"] for p in phases[6:]], ["pending"] * 2)
+        self.assertEqual([p["status"] for p in phases[:6]], ["merged"] * 6)
+
+        seen_implemented = False
+        seen_pending = False
+        for phase in phases[6:]:
+            status = phase["status"]
+            self.assertIn(status, {"merged", "implemented", "pending"})
+            if status == "merged":
+                self.assertFalse(seen_implemented or seen_pending)
+            elif status == "implemented":
+                self.assertFalse(seen_implemented or seen_pending)
+                seen_implemented = True
+            else:
+                seen_pending = True
+
         self.assertTrue((ROOT / phases[5]["evidence"]).is_file())
         self.assertGreaterEqual(len(phases[5]["acceptance"]), 5)
 
