@@ -1,0 +1,26 @@
+name: Release qualification RQ-3 contract
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rq3-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile RQ-3 resilience contract
+        run: python -m py_compile engine/tests/test_rq3_resilience_contract.py
+      - name: Validate bounded admission, quota and cleanup
+        run: python -m unittest -v engine.tests.test_rq3_resilience_contract.RQ3ResilienceContractTests.test_bounded_admission_rejects_before_allocation engine.tests.test_rq3_resilience_contract.RQ3ResilienceContractTests.test_per_user_quota_fails_closed engine.tests.test_rq3_resilience_contract.RQ3ResilienceContractTests.test_cleanup_is_oldest_eligible_first_and_preserves_protected
+      - name: Validate cancellation, timeout and restart recovery
+        run: python -m unittest -v engine.tests.test_rq3_resilience_contract.RQ3ResilienceContractTests.test_cancellation_and_timeout_are_terminal_and_non_publishable engine.tests.test_rq3_resilience_contract.RQ3ResilienceContractTests.test_restart_recovery_and_conflict_fail_closed
+      - name: Validate corruption quarantine and finite roadmap
+        run: python -m unittest -v engine.tests.test_rq3_resilience_contract.RQ3ResilienceContractTests.test_manifest_is_finite_and_bounded engine.tests.test_rq3_resilience_contract.RQ3ResilienceContractTests.test_corrupt_manifest_is_quarantined engine.tests.test_rq3_resilience_contract.RQ3ResilienceContractTests.test_roadmap_has_implemented_prefix_through_rq3
