@@ -29,6 +29,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY engine/app ./app
 COPY engine/models ./models
+# Analyzer runtime resolves this immutable calibration evidence relative to
+# /srv/engine. Keep the destination explicit so missing build assets fail in CI.
+COPY engine/analyzer_calibration_v1.json ./analyzer_calibration_v1.json
 
 # HF konteyneri root olmayan kullanıcıyla çalışır; motorun yazdığı yollar
 # zaten /tmp altında (JOBS_ROOT, DATA_ROOT) — ev dizini hf_hub önbelleği

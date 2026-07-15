@@ -1,0 +1,33 @@
+name: Production container asset contract
+
+on:
+  pull_request:
+    paths:
+      - 'Dockerfile'
+      - 'engine/analyzer_calibration_v1.json'
+      - 'engine/regression/test_production_container_assets.py'
+      - '.github/workflows/production-container-assets.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'Dockerfile'
+      - 'engine/analyzer_calibration_v1.json'
+      - 'engine/regression/test_production_container_assets.py'
+      - '.github/workflows/production-container-assets.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  container-assets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile production asset contract
+        run: python -m py_compile engine/regression/test_production_container_assets.py
+      - name: Validate analyzer calibration packaging
+        run: python -m unittest -v engine.regression.test_production_container_assets
