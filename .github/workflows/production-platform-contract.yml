@@ -13,6 +13,16 @@ on:
       - "Dockerfile"
       - ".github/workflows/production-platform-contract.yml"
       - ".github/workflows/huggingface-deploy.yml"
+  push:
+    branches: [main]
+    paths:
+      - "engine/production_platform_roadmap.json"
+      - "engine/test_production_platform_roadmap.py"
+      - "engine/test_platform_operations.py"
+      - "engine/app/**"
+      - "Dockerfile"
+      - ".github/workflows/production-platform-contract.yml"
+      - ".github/workflows/huggingface-deploy.yml"
   workflow_dispatch:
 
 permissions:
