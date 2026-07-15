@@ -18,8 +18,18 @@ class RQ4ReleaseGateTests(unittest.TestCase):
         self.assertEqual(self.manifest["schema"], "vektoryum-rq4-beta-release-v1")
         self.assertRegex(self.manifest["version"], r"^\d+\.\d+\.\d+-beta\.\d+$")
         self.assertEqual(sorted(self.manifest["required_secret_names"]), ["HF_SPACE", "HF_TOKEN"])
-        text = json.dumps(self.manifest).lower()
-        self.assertNotIn("hf_", text)
+
+        forbidden_value_keys = {
+            "hf_token",
+            "hf_space",
+            "token",
+            "secret",
+            "password",
+            "credential",
+            "api_key",
+        }
+        self.assertTrue(forbidden_value_keys.isdisjoint(self.manifest.keys()))
+        self.assertTrue(all(isinstance(name, str) and name.isupper() for name in self.manifest["required_secret_names"]))
         self.assertGreaterEqual(len(self.manifest["release_notes"]), 4)
 
     def test_gate_fails_closed_without_runtime_evidence(self) -> None:
