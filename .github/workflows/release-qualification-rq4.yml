@@ -1,0 +1,26 @@
+name: Release qualification RQ-4 contract
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rq4-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile RQ-4 beta gate contract
+        run: python -m py_compile engine/tests/test_rq4_release_gate.py
+      - name: Validate finite release manifest and secret safety
+        run: python -m unittest -v engine.tests.test_rq4_release_gate.RQ4ReleaseGateTests.test_manifest_is_finite_and_secret_safe
+      - name: Validate fail-closed runtime evidence gate
+        run: python -m unittest -v engine.tests.test_rq4_release_gate.RQ4ReleaseGateTests.test_gate_fails_closed_without_runtime_evidence engine.tests.test_rq4_release_gate.RQ4ReleaseGateTests.test_revision_and_rollback_contract
+      - name: Validate completed roadmap
+        run: python -m unittest -v engine.tests.test_rq4_release_gate.RQ4ReleaseGateTests.test_roadmap_is_complete_prefix

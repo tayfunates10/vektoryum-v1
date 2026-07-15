@@ -98,7 +98,9 @@ class RQ3ResilienceContractTests(unittest.TestCase):
     def test_roadmap_has_implemented_prefix_through_rq3(self) -> None:
         phases = self.roadmap["phases"]
         self.assertEqual([p["id"] for p in phases], ["RQ-1", "RQ-2", "RQ-3", "RQ-4"])
-        self.assertEqual([p["status"] for p in phases], ["implemented", "implemented", "implemented", "pending"])
+        statuses = [p["status"] for p in phases]
+        self.assertEqual(statuses[:3], ["implemented"] * 3)
+        self.assertIn(statuses[3], {"pending", "implemented"})
         self.assertTrue(Path(phases[2]["evidence"]).is_file())
 
 
