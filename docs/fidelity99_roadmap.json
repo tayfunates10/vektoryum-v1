@@ -46,7 +46,7 @@
     {
       "id": "F99-4",
       "title": "Typography and fine detail",
-      "status": "implemented",
+      "status": "merged",
       "acceptance": [
         "mean glyph fidelity score is at least 0.990",
         "p05 glyph fidelity score is at least 0.980",
@@ -56,7 +56,19 @@
       ],
       "evidence": "docs/fidelity99/f99-4.md"
     },
-    {"id": "F99-5", "title": "Multi-scale processing", "status": "pending"},
+    {
+      "id": "F99-5",
+      "title": "Multi-scale processing",
+      "status": "implemented",
+      "acceptance": [
+        "mean cross-scale fidelity score is at least 0.990",
+        "p05 cross-scale fidelity score is at least 0.980",
+        "p95 normalized scale drift is at most 0.020",
+        "missing level, scale-order, topology and detail-loss regression counts are zero",
+        "missing, duplicate, non-finite, out-of-range or shrinking evidence fails closed"
+      ],
+      "evidence": "docs/fidelity99/f99-5.md"
+    },
     {"id": "F99-6", "title": "AI refiner", "status": "pending"},
     {"id": "F99-7", "title": "Print-ready validator", "status": "pending"},
     {"id": "F99-8", "title": "Fidelity gate", "status": "pending"}
