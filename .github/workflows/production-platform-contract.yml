@@ -7,16 +7,12 @@ on:
       - "engine/test_production_platform_roadmap.py"
       - "engine/test_platform_identity.py"
       - "engine/test_platform_persistence.py"
-      - "engine/app/main.py"
-      - "engine/app/runtime_main.py"
-      - "engine/app/platform_identity.py"
-      - "engine/app/platform_frontend.py"
-      - "engine/app/platform_persistence.py"
-      - "engine/app/settings.py"
-      - "engine/app/store.py"
+      - "engine/test_platform_operations.py"
+      - "engine/app/**"
       - "docs/PRODUCTION_PLATFORM_ROADMAP.md"
       - "Dockerfile"
       - ".github/workflows/production-platform-contract.yml"
+      - ".github/workflows/huggingface-deploy.yml"
   workflow_dispatch:
 
 permissions:
@@ -29,13 +25,15 @@ concurrency:
 jobs:
   contract:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: engine
     env:
       PYTHONHASHSEED: "0"
       VEKTORYUM_WORKERS: "1"
+      VEKTORYUM_SERVICE_MODE: "beta"
+      VEKTORYUM_SOURCE_REVISION: ${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -51,3 +49,44 @@ jobs:
         run: python -m pytest -q test_platform_identity.py test_runtime_main.py
       - name: Validate PPC-3 durable persistence contract
         run: python -m pytest -q test_platform_persistence.py
+      - name: Validate PPC-4 operations contract
+        run: python -m pytest -q test_platform_operations.py
+
+  container-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build production image
+        run: docker build -t vektoryum-ppc4:${GITHUB_SHA} .
+      - name: Verify non-root image user
+        run: test "$(docker image inspect vektoryum-ppc4:${GITHUB_SHA} --format '{{.Config.User}}')" = "appuser"
+      - name: Start bounded container
+        run: >-
+          docker run -d --name vektoryum-ppc4
+          --memory 4g --cpus 2 --pids-limit 256
+          -e VEKTORYUM_SERVICE_MODE=beta
+          -e VEKTORYUM_SOURCE_REVISION=${GITHUB_SHA}
+          -p 7860:7860 vektoryum-ppc4:${GITHUB_SHA}
+      - name: Machine-readable liveness and readiness
+        run: |
+          for i in $(seq 1 45); do
+            python - <<'PY' && exit 0 || true
+          import json, urllib.request
+          for path in ("livez", "readyz"):
+              with urllib.request.urlopen(f"http://127.0.0.1:7860/{path}", timeout=3) as response:
+                  payload = json.load(response)
+                  assert payload["revision"]
+                  assert payload["status"] in {"ok", "ready"}
+          PY
+            sleep 2
+          done
+          docker logs vektoryum-ppc4
+          exit 1
+      - name: Graceful SIGTERM smoke
+        run: |
+          docker stop --time 20 vektoryum-ppc4
+          test "$(docker inspect vektoryum-ppc4 --format '{{.State.ExitCode}}')" = "0"
+      - name: Cleanup
+        if: always()
+        run: docker rm -f vektoryum-ppc4 >/dev/null 2>&1 || true
