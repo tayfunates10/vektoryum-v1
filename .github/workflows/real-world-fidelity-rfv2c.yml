@@ -1,0 +1,40 @@
+name: Real-world fidelity RFV-2C manifest assembler
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  rfv2c-manifest-assembler:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Run actions/checkout@v4
+        uses: actions/checkout@v4
+
+      - name: Run actions/setup-python@v5
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Compile RFV-2C files
+        run: python -m py_compile engine/regression/rfv2_manifest_assembler.py engine/regression/test_rfv2_manifest_assembler.py
+
+      - name: Validate fail-closed manifest assembly
+        run: python -m unittest engine.regression.test_rfv2_manifest_assembler
+
+      - name: Confirm real corpus is not fabricated
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          manifest = json.loads(Path('engine/regression/rfv2_qualification_manifest.json').read_text())
+          roadmap = json.loads(Path('docs/real_world_fidelity_roadmap.json').read_text())
+          assert manifest['status'] == 'awaiting_real_assets'
+          assert manifest['qualified_case_count'] == 0
+          assert manifest['cases'] == []
+          assert roadmap['phases'][1]['status'] == 'pending'
+          assert roadmap['phases'][1]['tracking_issue'] == 88
+          PY

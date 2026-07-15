@@ -29,6 +29,9 @@
         "missing evidence, duplicate identity, mutable storage, privacy gaps or corpus shrinkage fails closed"
       ],
       "preparation_evidence": "docs/real_world_fidelity/rfv-2a.md",
+      "intake_evidence": "docs/real_world_fidelity/rfv-2b.md",
+      "assembly_evidence": "docs/real_world_fidelity/rfv-2c.md",
+      "tracking_issue": 88,
       "blocked_on": "24 reviewed real assets in external immutable object storage"
     },
     {"id": "RFV-3", "title": "Real pipeline measurement and automatic retry gate", "status": "pending"},
