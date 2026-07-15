@@ -97,7 +97,7 @@ def install_platform_operations(app: FastAPI, *, revision: str | None = None) ->
 
     app.add_api_route("/livez", livez, methods=["GET"], include_in_schema=False)
     app.add_api_route("/readyz", readyz, methods=["GET"], include_in_schema=False)
-    app.add_event_handler("shutdown", shutdown)
+    app.on_event("shutdown")(shutdown)
     return state
 
 
