@@ -1,0 +1,24 @@
+{
+  "cases_sha256": "5f151a6cb1a433b0cb0989a67bd7cc7940162f4b36d67903d6ccdd173f9e7d89",
+  "category_counts": {
+    "badge_seal": 2,
+    "complex_illustration": 3,
+    "flat_logo": 3,
+    "gradient_artwork": 2,
+    "low_resolution_signage_photo": 3,
+    "monoline": 2,
+    "multicolor": 2,
+    "native_4k": 2,
+    "small_text": 3,
+    "transparent_dark_background": 2
+  },
+  "complete": true,
+  "duplicate_case_ids": 0,
+  "duplicate_inspection_digests": 0,
+  "duplicate_source_digests": 0,
+  "duplicate_storage_objects": 0,
+  "missing_categories": [],
+  "qualified_case_count": 24,
+  "required_case_count": 24,
+  "schema": "vektoryum-rfv2-assembly-audit-v1"
+}
