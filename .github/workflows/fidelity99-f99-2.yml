@@ -20,4 +20,4 @@ jobs:
       - name: Compile F99-2 contract
         run: python -m py_compile engine/tests/test_f99_2_edge_curve_quality.py
       - name: Validate finite edge and curve thresholds
-        run: python -m pytest -q engine/tests/test_f99_2_edge_curve_quality.py
+        run: python engine/tests/test_f99_2_edge_curve_quality.py
