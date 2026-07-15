@@ -1,0 +1,48 @@
+name: Release qualification RQ-2 contract
+
+on:
+  pull_request:
+    paths:
+      - 'docs/release_qualification_roadmap.json'
+      - 'docs/release_qualification/rq2.md'
+      - 'engine/regression/rq2_corpus_manifest.json'
+      - 'engine/regression/rq2_corpus_contract.py'
+      - '.github/workflows/release-qualification-rq2.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'docs/release_qualification_roadmap.json'
+      - 'docs/release_qualification/rq2.md'
+      - 'engine/regression/rq2_corpus_manifest.json'
+      - 'engine/regression/rq2_corpus_contract.py'
+      - '.github/workflows/release-qualification-rq2.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  rq2-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile RQ-2 corpus contract
+        run: python -m py_compile engine/regression/rq2_corpus_contract.py
+      - name: Validate immutable eight-category raster corpus
+        run: python engine/regression/rq2_corpus_contract.py
+      - name: Validate finite roadmap state
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          roadmap = json.loads(Path('docs/release_qualification_roadmap.json').read_text())
+          phases = roadmap['phases']
+          assert roadmap['phase_count'] == 4
+          assert [p['id'] for p in phases] == ['RQ-1', 'RQ-2', 'RQ-3', 'RQ-4']
+          assert [p['status'] for p in phases] == ['implemented', 'implemented', 'pending', 'pending']
+          assert len(phases[1]['acceptance']) == 5
+          assert Path(phases[1]['evidence']).is_file()
+          PY

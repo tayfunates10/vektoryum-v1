@@ -16,7 +16,19 @@
       ],
       "evidence": "docs/release_qualification/rq1.md"
     },
-    {"id": "RQ-2", "title": "Real image acceptance corpus", "status": "pending"},
+    {
+      "id": "RQ-2",
+      "title": "Real image acceptance corpus",
+      "status": "implemented",
+      "acceptance": [
+        "exactly eight required hard-image categories are represented by immutable manifest entries",
+        "every fixture has a stable sha256, bounded dimensions and an explicit source license classification",
+        "SVG, PDF, EPS and DXF are mandatory for every case and bitmap embedding is forbidden",
+        "finite per-category quality thresholds and fail-closed artifact checks are machine-readable",
+        "missing fixture, hash drift, duplicate category, unbounded size, absent export or threshold regression fails closed"
+      ],
+      "evidence": "docs/release_qualification/rq2.md"
+    },
     {"id": "RQ-3", "title": "Load and resilience qualification", "status": "pending"},
     {"id": "RQ-4", "title": "Beta release gate", "status": "pending"}
   ]
