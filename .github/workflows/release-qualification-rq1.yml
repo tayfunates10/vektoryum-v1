@@ -1,0 +1,35 @@
+name: Release qualification RQ-1 contract
+
+on:
+  pull_request:
+    paths:
+      - 'docs/release_qualification_roadmap.json'
+      - 'docs/release_qualification/rq1.md'
+      - 'engine/regression/rq1_live_probe.py'
+      - 'engine/regression/test_rq1_contract.py'
+      - '.github/workflows/release-qualification-rq1.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'docs/release_qualification_roadmap.json'
+      - 'docs/release_qualification/rq1.md'
+      - 'engine/regression/rq1_live_probe.py'
+      - 'engine/regression/test_rq1_contract.py'
+      - '.github/workflows/release-qualification-rq1.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  rq1-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile RQ-1 probe and tests
+        run: python -m py_compile engine/regression/rq1_live_probe.py engine/regression/test_rq1_contract.py
+      - name: Validate finite roadmap and fail-closed probe
+        run: python -m unittest -v engine.regression.test_rq1_contract
