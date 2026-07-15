@@ -18,8 +18,8 @@
     {"id": "administrator_bootstrap_not_closed", "status": "closed", "closure_phase": "PPC-2", "evidence": "app/platform_identity.py"},
     {"id": "login_state_lifecycle_not_closed", "status": "closed", "closure_phase": "PPC-2", "evidence": "app/platform_identity.py"},
     {"id": "request_boundary_not_closed", "status": "closed", "closure_phase": "PPC-2", "evidence": "app/platform_identity.py"},
-    {"id": "state_sync_integrity_not_closed", "status": "open", "closure_phase": "PPC-3", "evidence": "app/store.py"},
-    {"id": "job_retention_not_closed", "status": "open", "closure_phase": "PPC-3", "evidence": "app/main.py"},
+    {"id": "state_sync_integrity_not_closed", "status": "closed", "closure_phase": "PPC-3", "evidence": "app/platform_persistence.py"},
+    {"id": "job_retention_not_closed", "status": "closed", "closure_phase": "PPC-3", "evidence": "app/platform_persistence.py"},
     {"id": "service_modes_not_closed", "status": "open", "closure_phase": "PPC-4", "evidence": "app/main.py"},
     {"id": "gated_deploy_not_closed", "status": "open", "closure_phase": "PPC-4", "evidence": "../Dockerfile"}
   ],
@@ -69,7 +69,7 @@
     {
       "id": "PPC-3",
       "title": "Durable state and job lifecycle closure",
-      "status": "pending",
+      "status": "complete",
       "acceptance_criteria": [
         "User feedback and login state persistence is atomic and integrity checked.",
         "Every job has owner timestamps terminal state and immutable artifact manifest.",
@@ -77,7 +77,13 @@
         "Restart recovery separates complete incomplete and damaged jobs.",
         "Remote persistence failure is observable and cannot replace newer local state."
       ],
-      "evidence": []
+      "evidence": [
+        "production_platform_roadmap.json",
+        "test_production_platform_roadmap.py",
+        "test_platform_persistence.py",
+        "app/platform_persistence.py",
+        "../.github/workflows/production-platform-contract.yml"
+      ]
     },
     {
       "id": "PPC-4",

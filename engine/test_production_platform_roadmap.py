@@ -31,7 +31,7 @@ def test_phase_order_and_status() -> None:
     assert data["schema_version"] == "production-platform-closure-v1"
     phases = data["phases"]
     assert [phase["id"] for phase in phases] == EXPECTED_PHASES
-    assert [phase["status"] for phase in phases] == ["complete", "complete", "pending", "pending"]
+    assert [phase["status"] for phase in phases] == ["complete", "complete", "complete", "pending"]
     assert all(len(phase["acceptance_criteria"]) >= 5 for phase in phases)
 
 
@@ -49,12 +49,14 @@ def test_limitations_have_one_closure_phase() -> None:
         "administrator_bootstrap_not_closed",
         "login_state_lifecycle_not_closed",
         "request_boundary_not_closed",
+        "state_sync_integrity_not_closed",
+        "job_retention_not_closed",
     }
 
 
 def test_completed_phase_evidence_exists() -> None:
     completed = [phase for phase in _roadmap()["phases"] if phase["status"] == "complete"]
-    assert [phase["id"] for phase in completed] == ["PPC-1", "PPC-2"]
+    assert [phase["id"] for phase in completed] == ["PPC-1", "PPC-2", "PPC-3"]
     for phase in completed:
         assert "test_production_platform_roadmap.py" in phase["evidence"]
         for relative in phase["evidence"]:
@@ -72,6 +74,7 @@ def test_runtime_inventory() -> None:
     main_text = (ENGINE_DIR / "app/main.py").read_text(encoding="utf-8")
     settings_text = (ENGINE_DIR / "app/settings.py").read_text(encoding="utf-8")
     store_text = (ENGINE_DIR / "app/store.py").read_text(encoding="utf-8")
+    persistence_text = (ENGINE_DIR / "app/platform_persistence.py").read_text(encoding="utf-8")
     runtime_text = (ENGINE_DIR / "app/runtime_main.py").read_text(encoding="utf-8")
     docker_text = (REPO_DIR / "Dockerfile").read_text(encoding="utf-8")
 
@@ -83,6 +86,9 @@ def test_runtime_inventory() -> None:
     assert "max_upload_bytes" in settings_text
     assert "max_pixels" in settings_text
     assert "VEKTORYUM_DATASET" in store_text
+    assert "atomic_write_json" in persistence_text
+    assert "artifact_manifest" in persistence_text
+    assert "RemoteSyncObservation" in persistence_text
     assert "install_platform_identity" in runtime_text
     assert "install_platform_frontend" in runtime_text
     assert "USER appuser" in docker_text

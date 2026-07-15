@@ -6,10 +6,12 @@ on:
       - "engine/production_platform_roadmap.json"
       - "engine/test_production_platform_roadmap.py"
       - "engine/test_platform_identity.py"
+      - "engine/test_platform_persistence.py"
       - "engine/app/main.py"
       - "engine/app/runtime_main.py"
       - "engine/app/platform_identity.py"
       - "engine/app/platform_frontend.py"
+      - "engine/app/platform_persistence.py"
       - "engine/app/settings.py"
       - "engine/app/store.py"
       - "docs/PRODUCTION_PLATFORM_ROADMAP.md"
@@ -47,3 +49,5 @@ jobs:
         run: python -m pytest -q test_production_platform_roadmap.py
       - name: Validate PPC-2 account and login-state contract
         run: python -m pytest -q test_platform_identity.py test_runtime_main.py
+      - name: Validate PPC-3 durable persistence contract
+        run: python -m pytest -q test_platform_persistence.py
