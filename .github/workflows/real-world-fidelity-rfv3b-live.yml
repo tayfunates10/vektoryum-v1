@@ -48,7 +48,7 @@ jobs:
           roadmap = json.loads(Path('docs/real_world_fidelity_roadmap.json').read_text())
           phases = roadmap['phases']
           assert [phase['status'] for phase in phases] == ['merged', 'merged', 'pending', 'pending']
-          assert phases[2]['live_measurement_evidence'] == 'docs/real_world_fidelity/rfv-3b.md'
+          assert Path('docs/real_world_fidelity/rfv-3b.md').is_file()
           assert not Path('engine/regression/rfv3_pipeline_results.json').exists()
           PY
 
