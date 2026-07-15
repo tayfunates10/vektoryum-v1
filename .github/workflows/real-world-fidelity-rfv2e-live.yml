@@ -52,19 +52,19 @@ jobs:
           set +e
           (
             set -euo pipefail
-            python engine/regression/rfv2_public_source_acquire.py \
+            python -m engine.regression.rfv2_public_source_acquire \
               --all \
               --download-root "${RFV_ROOT}/downloads" \
               --storage-root "${RFV_ROOT}/storage" \
               --records-dir "${RFV_ROOT}/records"
 
-            python engine/regression/rfv2_manifest_assembler.py \
+            python -m engine.regression.rfv2_manifest_assembler \
               --records-dir "${RFV_ROOT}/records" \
               --manifest-out "${RFV_ROOT}/out/qualification-manifest.json" \
               --audit-out "${RFV_ROOT}/out/qualification-audit.json" \
               --require-complete
 
-            python engine/regression/rfv2_live_bundle.py \
+            python -m engine.regression.rfv2_live_bundle \
               --storage-root "${RFV_ROOT}/storage" \
               --download-root "${RFV_ROOT}/downloads" \
               --records-dir "${RFV_ROOT}/records" \
