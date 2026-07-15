@@ -69,8 +69,8 @@ def test_cleanup_is_deterministic_for_retention_quota_and_disk_budget(tmp_path: 
     removed = registry.cleanup(
         now=100,
         retention_seconds=50,
-        user_quota_bytes=300,
-        disk_budget_bytes=700,
+        user_quota_bytes=10000,
+        disk_budget_bytes=10000,
     )
     assert removed == ["old"]
 
