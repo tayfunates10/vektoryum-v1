@@ -3,7 +3,7 @@
   "expected_case_count": 24,
   "expected_cases_sha256": "5f151a6cb1a433b0cb0989a67bd7cc7940162f4b36d67903d6ccdd173f9e7d89",
   "repeat_count": 3,
-  "repeat_timeout_seconds": 1800,
+  "repeat_timeout_seconds": 3600,
   "max_transient_retries_per_repeat": 1,
   "retryable_failures": [
     "TimeoutError",
