@@ -36,7 +36,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          python -m unittest engine.regression.test_rfv3_measurement_runner 2>&1 | tee "${RUNNER_TEMP}/rfv3a-test.log"
+          PYTHONPATH=engine python -m unittest engine.regression.test_rfv3_measurement_runner 2>&1 | tee "${RUNNER_TEMP}/rfv3a-test.log"
 
       - name: Upload RFV-3A failure diagnostics
         if: failure()
