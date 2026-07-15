@@ -72,7 +72,7 @@
     {
       "id": "F99-6",
       "title": "AI refiner",
-      "status": "implemented",
+      "status": "merged",
       "acceptance": [
         "refinement never reduces the qualified fidelity score and mean gain is non-negative",
         "p05 post-refinement fidelity is at least 0.990",
@@ -82,7 +82,19 @@
       ],
       "evidence": "docs/fidelity99/f99-6.md"
     },
-    {"id": "F99-7", "title": "Print-ready validator", "status": "pending"},
+    {
+      "id": "F99-7",
+      "title": "Print-ready validator",
+      "status": "implemented",
+      "acceptance": [
+        "every required output format passes its finite parser and structural validation",
+        "open path, self-intersection, invalid fill-rule, missing color-profile and unsupported-feature counts are zero",
+        "page, viewBox and unit metadata are finite and internally consistent",
+        "manifest digests bind validation evidence to immutable artifacts",
+        "missing formats, duplicate evidence, invalid digests, non-finite metrics or any print defect fails closed"
+      ],
+      "evidence": "docs/fidelity99/f99-7.md"
+    },
     {"id": "F99-8", "title": "Fidelity gate", "status": "pending"}
   ]
 }
