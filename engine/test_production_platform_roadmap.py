@@ -90,5 +90,6 @@ def test_runtime_inventory() -> None:
     assert "USER appuser" in docker_text
     assert "HEALTHCHECK" in docker_text
     assert "exec python -m uvicorn" in docker_text
-    assert "github.sha" in deploy_text
+    assert "github.event.workflow_run.head_sha" in deploy_text
+    assert "Require SHA to equal current main" in deploy_text
     assert "needs: mandatory-ci" in deploy_text
