@@ -67,9 +67,23 @@ class F99TypographyFidelityContractTests(unittest.TestCase):
         phases = roadmap["phases"]
         self.assertEqual(roadmap["phase_count"], 8)
         self.assertEqual([p["id"] for p in phases], [f"F99-{i}" for i in range(1, 9)])
-        self.assertEqual([p["status"] for p in phases[:3]], ["merged"] * 3)
-        self.assertIn(phases[3]["status"], {"implemented", "merged"})
-        self.assertEqual([p["status"] for p in phases[4:]], ["pending"] * 4)
+
+        statuses = [p["status"] for p in phases]
+        self.assertEqual(statuses[:4], ["merged"] * 4)
+        seen_implemented = False
+        seen_pending = False
+        for status in statuses:
+            self.assertIn(status, {"merged", "implemented", "pending"})
+            if status == "merged":
+                self.assertFalse(seen_implemented)
+                self.assertFalse(seen_pending)
+            elif status == "implemented":
+                self.assertFalse(seen_implemented)
+                self.assertFalse(seen_pending)
+                seen_implemented = True
+            else:
+                seen_pending = True
+
         self.assertTrue((ROOT / phases[3]["evidence"]).is_file())
         self.assertGreaterEqual(len(phases[3]["acceptance"]), 5)
 

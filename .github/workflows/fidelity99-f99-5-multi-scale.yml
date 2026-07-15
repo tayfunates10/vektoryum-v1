@@ -1,0 +1,23 @@
+name: Fidelity-99 F99-5 multi-scale fidelity contract
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  f99-5-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Compile F99-5 contract
+        run: python -m py_compile engine/tests/test_f99_5_multi_scale_fidelity.py
+      - name: Validate finite multi-scale thresholds
+        run: python -m unittest -v engine.tests.test_f99_5_multi_scale_fidelity
