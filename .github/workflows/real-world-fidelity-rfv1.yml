@@ -1,0 +1,32 @@
+name: Real-world fidelity RFV-1 intake contract
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rfv1-intake-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile RFV-1 intake contract
+        run: python -m py_compile engine/regression/test_rfv1_intake_contract.py
+      - name: Validate finite real-world intake policy
+        run: python -m unittest engine.regression.test_rfv1_intake_contract -v
+      - name: Confirm RFV-1 does not claim collected evidence
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          text = Path('docs/real_world_fidelity/rfv-1.md').read_text(encoding='utf-8')
+          assert 'does not claim that 120 real assets have already been acquired' in text
+          assert 'RFV-2 will populate and qualify the actual corpus' in text
+          PY
