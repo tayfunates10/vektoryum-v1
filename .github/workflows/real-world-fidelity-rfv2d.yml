@@ -11,36 +11,30 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Run actions/checkout@v4
-        uses: actions/checkout@v4
-
-      - name: Run actions/setup-python@v5
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
       - name: Install Pillow
         run: python -m pip install --disable-pip-version-check pillow
-
       - name: Compile RFV-2D files
         run: python -m py_compile engine/regression/rfv2_public_source_acquire.py engine/regression/test_rfv2_public_source_acquire.py
-
       - name: Validate exact public-source allowlist and transforms
         run: python -m unittest engine.regression.test_rfv2_public_source_acquire
-
-      - name: Confirm selection does not claim acquisition
+      - name: Validate RFV-2D evidence state
         run: |
           python - <<'PY'
           import json
           from pathlib import Path
           sources = json.loads(Path('engine/regression/rfv2_public_source_manifest.json').read_text())
-          real_manifest = json.loads(Path('engine/regression/rfv2_qualification_manifest.json').read_text())
-          roadmap = json.loads(Path('docs/real_world_fidelity_roadmap.json').read_text())
-          assert sources['status'] == 'selected_not_acquired'
+          qualified = json.loads(Path('engine/regression/rfv2_qualification_manifest.json').read_text())
+          phase = json.loads(Path('docs/real_world_fidelity_roadmap.json').read_text())['phases'][1]
           assert len(sources['cases']) == 24
-          assert real_manifest['status'] == 'awaiting_real_assets'
-          assert real_manifest['qualified_case_count'] == 0
-          assert real_manifest['cases'] == []
-          assert roadmap['phases'][1]['status'] == 'pending'
-          assert roadmap['phases'][1]['selected_public_source_count'] == 24
+          assert qualified['status'] in {'awaiting_real_assets', 'qualified'}
+          if qualified['status'] == 'qualified':
+              assert qualified['qualified_case_count'] == 24
+              assert phase['status'] in {'implemented', 'merged'}
+          else:
+              assert qualified['cases'] == []
+              assert phase['status'] == 'pending'
           PY

@@ -13,7 +13,7 @@ from engine.regression.rfv2_secure_intake import (
     sha256_file,
     write_json_atomic,
 )
-from engine.regression.test_rfv2_qualification_adapter import validate_case
+from engine.regression.test_rfv2_qualification_adapter import validate_case, validate_manifest
 
 INTAKE_POLICY_PATH = ROOT / "engine" / "regression" / "rfv1_intake_policy.json"
 QUALIFICATION_POLICY_PATH = ROOT / "engine" / "regression" / "rfv2_qualification_policy.json"
@@ -104,7 +104,7 @@ class RFV2SecureIntakeTests(unittest.TestCase):
         with self.assertRaises(IntakeError):
             self.build(source=broken)
 
-    def test_policy_and_repository_evidence_remain_honest(self):
+    def test_policy_and_repository_evidence_follow_finite_lifecycle(self):
         policy = load_json(TOOL_POLICY_PATH)
         self.assertEqual(policy["schema"], "vektoryum-rfv2-secure-intake-v1")
         self.assertFalse(policy["network_access_required"])
@@ -113,12 +113,19 @@ class RFV2SecureIntakeTests(unittest.TestCase):
         self.assertTrue(policy["atomic_copy"])
 
         manifest = load_json(MANIFEST_PATH)
-        self.assertEqual(manifest["status"], "awaiting_real_assets")
-        self.assertEqual(manifest["qualified_case_count"], 0)
-        self.assertEqual(manifest["cases"], [])
-
+        validate_manifest(manifest, self.qualification_policy, self.intake_policy)
         phases = load_json(ROADMAP_PATH)["phases"]
-        self.assertEqual([phase["status"] for phase in phases], ["merged", "pending", "pending", "pending"])
+        self.assertEqual(phases[0]["status"], "merged")
+        self.assertEqual([phase["status"] for phase in phases[2:]], ["pending", "pending"])
+        if manifest["status"] == "awaiting_real_assets":
+            self.assertEqual(manifest["qualified_case_count"], 0)
+            self.assertEqual(manifest["cases"], [])
+            self.assertEqual(phases[1]["status"], "pending")
+        else:
+            validate_manifest(manifest, self.qualification_policy, self.intake_policy, require_complete=True)
+            self.assertEqual(manifest["qualified_case_count"], 24)
+            self.assertIn(phases[1]["status"], {"implemented", "merged"})
+            self.assertTrue((ROOT / phases[1]["evidence"]).is_file())
 
 
 if __name__ == "__main__":

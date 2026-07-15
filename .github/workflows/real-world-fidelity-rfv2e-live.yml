@@ -48,20 +48,36 @@ jobs:
           set -uo pipefail
           RFV_ROOT="${RUNNER_TEMP}/rfv2-live"
           rm -rf "${RFV_ROOT}"
-          mkdir -p \
-            "${RFV_ROOT}/downloads" \
-            "${RFV_ROOT}/storage" \
-            "${RFV_ROOT}/records" \
-            "${RFV_ROOT}/out"
+          mkdir -p "${RFV_ROOT}/out"
 
           set +e
           (
             set -euo pipefail
-            python -m engine.regression.rfv2_live_acquire \
-              --all \
-              --download-root "${RFV_ROOT}/downloads" \
-              --storage-root "${RFV_ROOT}/storage" \
-              --records-dir "${RFV_ROOT}/records"
+            acquired=0
+            for attempt in 1 2 3; do
+              rm -rf \
+                "${RFV_ROOT}/downloads" \
+                "${RFV_ROOT}/storage" \
+                "${RFV_ROOT}/records"
+              mkdir -p \
+                "${RFV_ROOT}/downloads" \
+                "${RFV_ROOT}/storage" \
+                "${RFV_ROOT}/records"
+              if python -m engine.regression.rfv2_live_acquire \
+                --all \
+                --download-root "${RFV_ROOT}/downloads" \
+                --storage-root "${RFV_ROOT}/storage" \
+                --records-dir "${RFV_ROOT}/records"; then
+                acquired=1
+                break
+              fi
+              echo "RFV-2E acquisition attempt ${attempt} failed; retrying reviewed allowlist"
+              sleep "$((attempt * 10))"
+            done
+            if [ "${acquired}" -ne 1 ]; then
+              echo "RFV-2E acquisition exhausted 3 bounded attempts"
+              exit 2
+            fi
 
             python -m engine.regression.rfv2_manifest_assembler \
               --records-dir "${RFV_ROOT}/records" \

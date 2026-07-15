@@ -14,6 +14,7 @@ from engine.regression.rfv2_manifest_assembler import (
 )
 
 INTAKE_POLICY_PATH = ROOT / "engine" / "regression" / "rfv1_intake_policy.json"
+MANIFEST_PATH = ROOT / "engine" / "regression" / "rfv2_qualification_manifest.json"
 ROADMAP_PATH = ROOT / "docs" / "real_world_fidelity_roadmap.json"
 
 
@@ -137,15 +138,24 @@ class RFV2ManifestAssemblerTests(unittest.TestCase):
         with self.assertRaises(AssemblyError):
             require_external_output(ROOT / "engine" / "regression" / "forbidden.json", "manifest output")
 
-    def test_roadmap_remains_honest_while_rfv2_is_blocked(self):
+    def test_roadmap_and_repository_manifest_follow_monotonic_lifecycle(self):
         roadmap = load_json(ROADMAP_PATH)
         phases = roadmap["phases"]
+        manifest = load_json(MANIFEST_PATH)
         self.assertEqual([phase["id"] for phase in phases], ["RFV-1", "RFV-2", "RFV-3", "RFV-4"])
         self.assertEqual(phases[0]["status"], "merged")
-        self.assertEqual(phases[1]["status"], "pending")
         self.assertEqual(phases[2]["status"], "pending")
         self.assertEqual(phases[3]["status"], "pending")
+        self.assertIn(phases[1]["status"], {"pending", "implemented", "merged"})
         self.assertTrue((ROOT / phases[1]["assembly_evidence"]).is_file())
+        if manifest["status"] == "awaiting_real_assets":
+            self.assertEqual(phases[1]["status"], "pending")
+            self.assertEqual(manifest["cases"], [])
+        else:
+            self.assertEqual(manifest["status"], "qualified")
+            self.assertEqual(manifest["qualified_case_count"], 24)
+            self.assertIn(phases[1]["status"], {"implemented", "merged"})
+            self.assertTrue((ROOT / phases[1]["evidence"]).is_file())
 
 
 if __name__ == "__main__":

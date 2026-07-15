@@ -25,16 +25,26 @@ jobs:
       - name: Validate fail-closed manifest assembly
         run: python -m unittest engine.regression.test_rfv2_manifest_assembler
 
-      - name: Confirm real corpus is not fabricated
+      - name: Confirm finite RFV-2 corpus lifecycle
         run: |
           python - <<'PY'
           import json
           from pathlib import Path
+
           manifest = json.loads(Path('engine/regression/rfv2_qualification_manifest.json').read_text())
           roadmap = json.loads(Path('docs/real_world_fidelity_roadmap.json').read_text())
-          assert manifest['status'] == 'awaiting_real_assets'
-          assert manifest['qualified_case_count'] == 0
-          assert manifest['cases'] == []
-          assert roadmap['phases'][1]['status'] == 'pending'
-          assert roadmap['phases'][1]['tracking_issue'] == 88
+          phase = roadmap['phases'][1]
+          assert phase['tracking_issue'] == 88
+          assert roadmap['phases'][2]['status'] == 'pending'
+          assert roadmap['phases'][3]['status'] == 'pending'
+          if manifest['status'] == 'awaiting_real_assets':
+              assert manifest['qualified_case_count'] == 0
+              assert manifest['cases'] == []
+              assert phase['status'] == 'pending'
+          else:
+              assert manifest['status'] == 'qualified'
+              assert manifest['qualified_case_count'] == 24
+              assert len(manifest['cases']) == 24
+              assert phase['status'] in {'implemented', 'merged'}
+              assert Path(phase['qualification_audit']).is_file()
           PY

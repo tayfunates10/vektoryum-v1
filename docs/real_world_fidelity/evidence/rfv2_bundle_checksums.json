@@ -1,0 +1,12 @@
+{
+  "bundle_bytes": 10888313,
+  "bundle_sha256": "1da641ad27b58985e4e1cf8d9972af5a15f5105e85e2c319151a5e373b6afc46",
+  "cases_sha256": "5f151a6cb1a433b0cb0989a67bd7cc7940162f4b36d67903d6ccdd173f9e7d89",
+  "qualification_audit_sha256": "cf42d7d4fb820c915a2023b242c10a54e21ca87c721f9b699d55d6a49bb0c0f0",
+  "qualification_manifest_sha256": "c2b1f4381d4ac9cd96e1ce8ba27589103a3ee696838dbf3dc487db96e51130aa",
+  "qualified_case_count": 24,
+  "raw_assets_in_repository": false,
+  "retention_days": 90,
+  "schema": "vektoryum-rfv2-live-bundle-checksums-v1",
+  "storage_mode": "github_actions_immutable_artifact"
+}

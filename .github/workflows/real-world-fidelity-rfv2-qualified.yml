@@ -1,0 +1,52 @@
+name: Real-world fidelity RFV-2 qualified corpus evidence
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rfv2-qualified-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rfv2-qualified-evidence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Run actions/checkout@v4
+        uses: actions/checkout@v4
+
+      - name: Run actions/setup-python@v5
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Compile RFV-2 qualified evidence contract
+        run: python -m py_compile engine/regression/test_rfv2_qualified_evidence.py
+
+      - name: Validate 24-case qualification evidence
+        run: python -m unittest engine.regression.test_rfv2_qualified_evidence
+
+      - name: Confirm raw source bytes remain outside repository
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path('.')
+          manifest = json.loads((root / 'engine/regression/rfv2_qualification_manifest.json').read_text())
+          envelope = json.loads((root / 'docs/real_world_fidelity/evidence/rfv2_publication_envelope.json').read_text())
+          assert manifest['public_repo_contains_raw_assets'] is False
+          assert envelope['raw_assets_in_repository'] is False
+          forbidden = []
+          for path in root.rglob('*'):
+              if not path.is_file() or '.git' in path.parts:
+                  continue
+              if path.suffix.lower() in {'.jpg', '.jpeg', '.png', '.webp', '.tif', '.tiff'}:
+                  relative = path.as_posix()
+                  if relative.startswith(('engine/regression/rfv2', 'docs/real_world_fidelity/evidence/rfv2')):
+                      forbidden.append(relative)
+          assert forbidden == [], forbidden
+          PY
