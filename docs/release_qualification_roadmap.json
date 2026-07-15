@@ -42,6 +42,18 @@
       ],
       "evidence": "docs/release_qualification/rq3.md"
     },
-    {"id": "RQ-4", "title": "Beta release gate", "status": "pending"}
+    {
+      "id": "RQ-4",
+      "title": "Beta release gate",
+      "status": "implemented",
+      "acceptance": [
+        "a finite machine-readable release manifest records semantic version, release notes, rollback target and required production secret names without storing secret values",
+        "the release decision fails closed unless user acceptance, green mandatory CI, deploy revision equality and live health evidence are all present",
+        "the deployed revision must be an exact 40-character main SHA and must equal the approved release candidate SHA",
+        "rollback is deterministic, bounded and points to a previously qualified immutable main SHA",
+        "missing evidence, stale evidence, secret value leakage, revision mismatch or any non-green mandatory check blocks beta release"
+      ],
+      "evidence": "docs/release_qualification/rq4.md"
+    }
   ]
 }
