@@ -55,7 +55,7 @@ jobs:
           cache-dependency-path: engine/requirements.txt
       - name: Install Python dependencies
         run: python -m pip install -r requirements.txt pytest httpx
-      - name: Canonical runtime publication and export contracts
+      - name: Canonical serializer and pipeline contracts
         run: >-
           python -m pytest -q
           test_production_export_integration.py
@@ -64,6 +64,7 @@ jobs:
           test_pipeline_entry.py
           test_pipeline_canonical_report.py
           test_pipeline_export_registration.py
-          test_runtime_main.py
+      - name: Production runtime entry contract
+        run: python -m pytest -q test_runtime_main.py
       - name: PPC-4 operations runtime compatibility
         run: python -m pytest -q test_platform_operations.py
