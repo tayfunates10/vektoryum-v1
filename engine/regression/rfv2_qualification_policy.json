@@ -1,0 +1,48 @@
+{
+  "schema": "vektoryum-rfv2-qualification-policy-v1",
+  "required_case_count": 24,
+  "required_split": "qualification",
+  "storage_mode": "external_immutable_object_store",
+  "public_repo_contains_raw_assets": false,
+  "minimum_category_coverage": 10,
+  "required_case_fields": [
+    "case_id",
+    "category",
+    "split",
+    "source_sha256",
+    "consent_sha256",
+    "inspection_sha256",
+    "license",
+    "source_format",
+    "width",
+    "height",
+    "file_bytes",
+    "storage_object_id",
+    "privacy_review",
+    "contains_public_pii",
+    "source_verified",
+    "consent_verified",
+    "object_immutable",
+    "decode_verified"
+  ],
+  "required_boolean_true_fields": [
+    "source_verified",
+    "consent_verified",
+    "object_immutable",
+    "decode_verified"
+  ],
+  "fail_closed_on": [
+    "missing_or_duplicate_identity",
+    "source_digest_mismatch",
+    "consent_digest_mismatch",
+    "mutable_storage_object",
+    "decode_failure",
+    "privacy_review_gap",
+    "public_pii",
+    "unsupported_source_format",
+    "unreviewed_license",
+    "dimension_or_file_budget_exceeded",
+    "qualification_corpus_shrinkage",
+    "missing_required_category"
+  ]
+}
