@@ -15,9 +15,9 @@
     ]
   },
   "known_limitations": [
-    {"id": "administrator_bootstrap_not_closed", "status": "open", "closure_phase": "PPC-2", "evidence": "app/main.py"},
-    {"id": "login_state_lifecycle_not_closed", "status": "open", "closure_phase": "PPC-2", "evidence": "app/main.py"},
-    {"id": "request_boundary_not_closed", "status": "open", "closure_phase": "PPC-2", "evidence": "app/main.py"},
+    {"id": "administrator_bootstrap_not_closed", "status": "closed", "closure_phase": "PPC-2", "evidence": "app/platform_identity.py"},
+    {"id": "login_state_lifecycle_not_closed", "status": "closed", "closure_phase": "PPC-2", "evidence": "app/platform_identity.py"},
+    {"id": "request_boundary_not_closed", "status": "closed", "closure_phase": "PPC-2", "evidence": "app/platform_identity.py"},
     {"id": "state_sync_integrity_not_closed", "status": "open", "closure_phase": "PPC-3", "evidence": "app/store.py"},
     {"id": "job_retention_not_closed", "status": "open", "closure_phase": "PPC-3", "evidence": "app/main.py"},
     {"id": "service_modes_not_closed", "status": "open", "closure_phase": "PPC-4", "evidence": "app/main.py"},
@@ -48,7 +48,7 @@
     {
       "id": "PPC-2",
       "title": "Account and login-state closure",
-      "status": "pending",
+      "status": "complete",
       "acceptance_criteria": [
         "Administrator bootstrap requires explicit production configuration.",
         "Login state expires can be revoked and remains valid across supported process restarts.",
@@ -56,7 +56,15 @@
         "Login and registration include deterministic abuse controls.",
         "Identity and authorization boundaries have API regression coverage."
       ],
-      "evidence": []
+      "evidence": [
+        "production_platform_roadmap.json",
+        "test_production_platform_roadmap.py",
+        "test_platform_identity.py",
+        "app/platform_identity.py",
+        "app/platform_frontend.py",
+        "app/runtime_main.py",
+        "../.github/workflows/production-platform-contract.yml"
+      ]
     },
     {
       "id": "PPC-3",
