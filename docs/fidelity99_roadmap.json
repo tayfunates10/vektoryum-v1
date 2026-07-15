@@ -59,7 +59,7 @@
     {
       "id": "F99-5",
       "title": "Multi-scale processing",
-      "status": "implemented",
+      "status": "merged",
       "acceptance": [
         "mean cross-scale fidelity score is at least 0.990",
         "p05 cross-scale fidelity score is at least 0.980",
@@ -69,7 +69,19 @@
       ],
       "evidence": "docs/fidelity99/f99-5.md"
     },
-    {"id": "F99-6", "title": "AI refiner", "status": "pending"},
+    {
+      "id": "F99-6",
+      "title": "AI refiner",
+      "status": "implemented",
+      "acceptance": [
+        "refinement never reduces the qualified fidelity score and mean gain is non-negative",
+        "p05 post-refinement fidelity is at least 0.990",
+        "only allowlisted geometry, color and topology corrections may be applied",
+        "refinement is deterministic for the same immutable input and model revision",
+        "missing provenance, non-finite metrics, unbounded edits, topology damage or artifact mutation fails closed"
+      ],
+      "evidence": "docs/fidelity99/f99-6.md"
+    },
     {"id": "F99-7", "title": "Print-ready validator", "status": "pending"},
     {"id": "F99-8", "title": "Fidelity gate", "status": "pending"}
   ]
