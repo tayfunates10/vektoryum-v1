@@ -62,6 +62,21 @@ def test_cross_origin_request_stays_fail_closed(monkeypatch, tmp_path) -> None:
     assert response.status_code == 403
 
 
+def test_scheme_mismatch_stays_fail_closed(monkeypatch, tmp_path) -> None:
+    client = _client(monkeypatch, tmp_path)
+    response = client.post("/api/vectorize", headers={"Origin": "http://testserver"})
+    assert response.status_code == 403
+
+
+def test_forwarded_https_same_origin_is_allowed(monkeypatch, tmp_path) -> None:
+    client = _client(monkeypatch, tmp_path)
+    response = client.post(
+        "/api/vectorize",
+        headers={"Origin": "https://testserver", "X-Forwarded-Proto": "https"},
+    )
+    assert response.status_code == 200
+
+
 def test_missing_origin_stays_fail_closed(monkeypatch, tmp_path) -> None:
     client = _client(monkeypatch, tmp_path)
     response = client.post("/api/vectorize")
