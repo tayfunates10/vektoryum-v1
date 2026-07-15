@@ -65,4 +65,5 @@ jobs:
           test_pipeline_canonical_report.py
           test_pipeline_export_registration.py
           test_runtime_main.py
-          test_platform_operations.py
+      - name: PPC-4 operations runtime compatibility
+        run: python -m pytest -q test_platform_operations.py
