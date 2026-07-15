@@ -6,7 +6,7 @@
     {
       "id": "F99-1",
       "title": "Geometric fidelity contract",
-      "status": "implemented",
+      "status": "merged",
       "acceptance": [
         "mean IoU is at least 0.990 on the qualified corpus",
         "p05 IoU is at least 0.980 so aggregate scores cannot hide weak cases",
@@ -16,7 +16,20 @@
       ],
       "evidence": "docs/fidelity99/f99-1.md"
     },
-    {"id": "F99-2", "title": "Edge and curve quality", "status": "pending"},
+    {
+      "id": "F99-2",
+      "title": "Edge and curve quality",
+      "status": "implemented",
+      "acceptance": [
+        "mean edge F-score is at least 0.990",
+        "p05 edge F-score is at least 0.980",
+        "p95 normalized tangent error is at most 0.020",
+        "p95 normalized curvature error is at most 0.030",
+        "open contour, self-intersection and cusp regression counts are zero",
+        "missing, duplicate, non-finite, out-of-range or shrinking evidence fails closed"
+      ],
+      "evidence": "docs/fidelity99/f99-2.md"
+    },
     {"id": "F99-3", "title": "Color fidelity", "status": "pending"},
     {"id": "F99-4", "title": "Typography and fine detail", "status": "pending"},
     {"id": "F99-5", "title": "Multi-scale processing", "status": "pending"},
