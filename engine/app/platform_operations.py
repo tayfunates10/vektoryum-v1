@@ -54,14 +54,13 @@ def _remove_health_routes(app: FastAPI) -> None:
 def install_platform_operations(app: FastAPI, *, revision: str | None = None) -> RuntimeState:
     if getattr(app.state, "platform_operations_installed", False):
         return app.state.platform_runtime_state
-    service_mode()  # fail closed during startup for invalid configuration
+    service_mode()
     state = RuntimeState(started_at=time.time())
     app.state.platform_runtime_state = state
     app.state.platform_operations_installed = True
     source_revision = revision or os.environ.get("VEKTORYUM_SOURCE_REVISION", "unknown")
     _remove_health_routes(app)
 
-    @app.middleware("http")
     async def operations_boundary(request: Request, call_next: Callable):
         correlation_id = request.headers.get("X-Correlation-ID", "").strip() or uuid.uuid4().hex
         mode = service_mode()
@@ -79,6 +78,11 @@ def install_platform_operations(app: FastAPI, *, revision: str | None = None) ->
         finally:
             state.active_requests -= 1
             _structured("request_finished", correlation_id=correlation_id, method=request.method, path=request.url.path, duration_ms=round((time.monotonic() - started) * 1000, 3))
+
+    if app.middleware_stack is None:
+        app.middleware("http")(operations_boundary)
+    else:
+        _structured("middleware_registration_skipped", reason="application_already_started")
 
     async def livez():
         return {"status": "ok", "check": "liveness", "mode": service_mode(), "revision": source_revision}
