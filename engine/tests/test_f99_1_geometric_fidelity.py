@@ -27,8 +27,18 @@ class F991GeometricFidelityTests(unittest.TestCase):
         self.assertEqual([p["id"] for p in phases], [f"F99-{i}" for i in range(1, 9)])
         statuses = [p["status"] for p in phases]
         self.assertEqual(statuses[0], "merged")
-        self.assertIn(statuses[1], {"implemented", "merged"})
-        self.assertEqual(statuses[2:], ["pending"] * 6)
+        self.assertTrue(set(statuses) <= {"merged", "implemented", "pending"})
+        self.assertLessEqual(statuses.count("implemented"), 1)
+
+        first_non_merged = next(
+            (index for index, status in enumerate(statuses) if status != "merged"),
+            len(statuses),
+        )
+        tail = statuses[first_non_merged:]
+        if tail and tail[0] == "implemented":
+            tail = tail[1:]
+        self.assertEqual(tail, ["pending"] * len(tail))
+
         self.assertTrue(Path(phases[0]["evidence"]).is_file())
         self.assertEqual(len(phases[0]["acceptance"]), 5)
 
