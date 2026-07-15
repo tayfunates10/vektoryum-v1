@@ -6,7 +6,7 @@
     {
       "id": "RFV-1",
       "title": "Real-world corpus intake foundation",
-      "status": "implemented",
+      "status": "merged",
       "acceptance": [
         "a finite 100-to-300 case target is distributed across all required difficult-image categories",
         "every future fixture is bound to immutable source and consent SHA-256 digests without publishing raw private assets",
@@ -16,7 +16,21 @@
       ],
       "evidence": "docs/real_world_fidelity/rfv-1.md"
     },
-    {"id": "RFV-2", "title": "Qualified real-world corpus", "status": "pending"},
+    {
+      "id": "RFV-2",
+      "title": "Qualified real-world corpus",
+      "status": "pending",
+      "acceptance": [
+        "exactly 24 reviewed real-world assets are registered in the immutable qualification split",
+        "all ten difficult-image categories have at least one qualified case",
+        "source, consent and inspection evidence is bound to independent SHA-256 digests",
+        "source retrieval, consent, object immutability, decoding and privacy checks all pass",
+        "raw private assets and public PII never enter the repository",
+        "missing evidence, duplicate identity, mutable storage, privacy gaps or corpus shrinkage fails closed"
+      ],
+      "preparation_evidence": "docs/real_world_fidelity/rfv-2a.md",
+      "blocked_on": "24 reviewed real assets in external immutable object storage"
+    },
     {"id": "RFV-3", "title": "Real pipeline measurement and automatic retry gate", "status": "pending"},
     {"id": "RFV-4", "title": "Live beta validation and release evidence", "status": "pending"}
   ]
