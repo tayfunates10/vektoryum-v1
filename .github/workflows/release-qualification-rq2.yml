@@ -38,11 +38,19 @@ jobs:
           python - <<'PY'
           import json
           from pathlib import Path
+
           roadmap = json.loads(Path('docs/release_qualification_roadmap.json').read_text())
           phases = roadmap['phases']
           assert roadmap['phase_count'] == 4
           assert [p['id'] for p in phases] == ['RQ-1', 'RQ-2', 'RQ-3', 'RQ-4']
-          assert [p['status'] for p in phases] == ['implemented', 'implemented', 'pending', 'pending']
+
+          statuses = [p['status'] for p in phases]
+          assert set(statuses) <= {'implemented', 'pending'}
+          assert statuses[:2] == ['implemented', 'implemented']
+          first_pending = statuses.index('pending') if 'pending' in statuses else len(statuses)
+          assert statuses[:first_pending] == ['implemented'] * first_pending
+          assert statuses[first_pending:] == ['pending'] * (len(statuses) - first_pending)
+
           assert len(phases[1]['acceptance']) == 5
           assert Path(phases[1]['evidence']).is_file()
           PY
