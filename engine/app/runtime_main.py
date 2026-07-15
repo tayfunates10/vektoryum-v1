@@ -9,6 +9,7 @@ from app.pipeline_entry import run_pipeline as _shadow_aware_run_pipeline
 from app.platform_frontend import install_platform_frontend
 from app.platform_identity import install_platform_identity
 from app.platform_operations import install_platform_operations
+from app.platform_request_compat import install_request_compat
 from app.production_export_integration import export_all_with_canonical
 
 
@@ -35,5 +36,6 @@ _main.run_pipeline = _shadow_aware_run_pipeline
 _main.export_all = _runtime_export_all
 platform_identity = install_platform_identity(_main)
 install_platform_frontend(_main)
+install_request_compat(_main.app)
 platform_operations = install_platform_operations(_main.app)
 app = _main.app
