@@ -15,6 +15,7 @@ def test_runtime_main_reuses_existing_fastapi_app(monkeypatch):
     assert main.run_pipeline is pipeline_entry.run_pipeline
     assert main.export_all is runtime_main._runtime_export_all
     assert runtime_main._legacy_export_all is exporters.export_all
+    assert runtime_main.app.state.request_compat_installed is True
 
 
 def test_runtime_entry_keeps_shadow_disabled_by_default(monkeypatch):
