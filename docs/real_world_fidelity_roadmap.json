@@ -19,7 +19,7 @@
     {
       "id": "RFV-2",
       "title": "Qualified real-world corpus",
-      "status": "pending",
+      "status": "implemented",
       "acceptance": [
         "exactly 24 reviewed real-world assets are registered in the immutable qualification split",
         "all ten difficult-image categories have at least one qualified case",
@@ -28,14 +28,18 @@
         "raw private assets and public PII never enter the repository",
         "missing evidence, duplicate identity, mutable storage, privacy gaps or corpus shrinkage fails closed"
       ],
+      "evidence": "docs/real_world_fidelity/rfv-2.md",
+      "qualification_manifest": "engine/regression/rfv2_qualification_manifest.json",
+      "qualification_audit": "docs/real_world_fidelity/evidence/rfv2_qualification_audit.json",
+      "bundle_checksums": "docs/real_world_fidelity/evidence/rfv2_bundle_checksums.json",
+      "publication_envelope": "docs/real_world_fidelity/evidence/rfv2_publication_envelope.json",
       "preparation_evidence": "docs/real_world_fidelity/rfv-2a.md",
       "intake_evidence": "docs/real_world_fidelity/rfv-2b.md",
       "assembly_evidence": "docs/real_world_fidelity/rfv-2c.md",
       "public_source_evidence": "docs/real_world_fidelity/rfv-2d.md",
       "live_acquisition_evidence": "docs/real_world_fidelity/rfv-2e.md",
-      "selected_public_source_count": 24,
-      "tracking_issue": 88,
-      "blocked_on": "successful live acquisition artifact and committed sanitized qualification evidence"
+      "qualified_case_count": 24,
+      "tracking_issue": 88
     },
     {"id": "RFV-3", "title": "Real pipeline measurement and automatic retry gate", "status": "pending"},
     {"id": "RFV-4", "title": "Live beta validation and release evidence", "status": "pending"}
