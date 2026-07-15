@@ -29,7 +29,19 @@
       ],
       "evidence": "docs/release_qualification/rq2.md"
     },
-    {"id": "RQ-3", "title": "Load and resilience qualification", "status": "pending"},
+    {
+      "id": "RQ-3",
+      "title": "Load and resilience qualification",
+      "status": "implemented",
+      "acceptance": [
+        "bounded concurrent admission rejects overload before work allocation and never exceeds the configured active plus queued budget",
+        "per-user quota and global disk budget are deterministic, observable and fail closed without deleting owned immutable artifacts",
+        "cancellation and timeout converge to terminal states without orphaned ownership, temporary files or reusable partial artifacts",
+        "restart recovery replays durable jobs exactly once and detects stale leases, corrupt manifests and remote persistence conflicts",
+        "retention cleanup is oldest-eligible-first, idempotent and preserves active, pinned and legal-hold artifacts"
+      ],
+      "evidence": "docs/release_qualification/rq3.md"
+    },
     {"id": "RQ-4", "title": "Beta release gate", "status": "pending"}
   ]
 }
