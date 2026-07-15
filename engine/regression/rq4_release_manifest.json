@@ -1,0 +1,23 @@
+{
+  "schema": "vektoryum-rq4-beta-release-v1",
+  "version": "1.0.0-beta.1",
+  "decision": "blocked-until-runtime-evidence",
+  "candidate_sha": "0000000000000000000000000000000000000000",
+  "deployed_sha": "0000000000000000000000000000000000000000",
+  "rollback_sha": "11233800b4104fb081ca008a4be9286648d0673e",
+  "required_secret_names": ["HF_TOKEN", "HF_SPACE"],
+  "evidence": {
+    "mandatory_ci_green": false,
+    "user_acceptance_complete": false,
+    "deploy_revision_equal": false,
+    "live_health_green": false,
+    "release_notes_present": true,
+    "rollback_qualified": true
+  },
+  "release_notes": [
+    "Core Vector Engine release contracts complete",
+    "AI Analyzer release contracts complete",
+    "Production Platform Closure complete",
+    "Release Qualification RQ-1 through RQ-4 contracts complete"
+  ]
+}
