@@ -24,7 +24,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install measurement contract dependencies
-        run: python -m pip install --disable-pip-version-check numpy pillow opencv-python-headless
+        run: python -m pip install --disable-pip-version-check numpy pillow opencv-python-headless scipy
 
       - name: Compile RFV-3A files
         run: |
