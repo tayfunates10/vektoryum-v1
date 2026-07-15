@@ -1,0 +1,8 @@
+{
+  "schema": "vektoryum-rfv2-qualification-manifest-v1",
+  "status": "awaiting_real_assets",
+  "expected_case_count": 24,
+  "qualified_case_count": 0,
+  "public_repo_contains_raw_assets": false,
+  "cases": []
+}
