@@ -1,0 +1,23 @@
+{
+  "schema": "vektoryum-real-world-fidelity-v1",
+  "phase_count": 4,
+  "calculation": "merged_phases / 4",
+  "phases": [
+    {
+      "id": "RFV-1",
+      "title": "Real-world corpus intake foundation",
+      "status": "implemented",
+      "acceptance": [
+        "a finite 100-to-300 case target is distributed across all required difficult-image categories",
+        "every future fixture is bound to immutable source and consent SHA-256 digests without publishing raw private assets",
+        "only reviewed ownership, consent or public-domain license classes are accepted",
+        "privacy review, bounded dimensions, bounded file size and deterministic corpus splits are mandatory",
+        "unknown provenance, missing consent, duplicate identity, private-data leakage or corpus shrinkage fails closed"
+      ],
+      "evidence": "docs/real_world_fidelity/rfv-1.md"
+    },
+    {"id": "RFV-2", "title": "Qualified real-world corpus", "status": "pending"},
+    {"id": "RFV-3", "title": "Real pipeline measurement and automatic retry gate", "status": "pending"},
+    {"id": "RFV-4", "title": "Live beta validation and release evidence", "status": "pending"}
+  ]
+}
