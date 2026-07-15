@@ -5,6 +5,7 @@ from PIL import Image
 
 from engine.regression.rfv2_live_acquire import (
     extract_openclipart_candidates,
+    prepare_live_provider_case,
     resolve_openclipart_asset_url,
 )
 from engine.regression.rfv2_public_source_acquire import PublicSourceError
@@ -73,9 +74,7 @@ class RFV2LiveAcquireTests(unittest.TestCase):
         case = dict(self.case, acquisition_profile="openclipart_transparent_png")
         opaque = "https://openclipart.org/image/800px/svg_to_png/345253/opaque.png"
         transparent = "https://openclipart.org/image/400px/svg_to_png/345253/transparent.png"
-        page = (
-            f'<img src="{opaque}"><img data-src="{transparent}">'
-        ).encode()
+        page = f'<img src="{opaque}"><img data-src="{transparent}">'.encode()
 
         def fetcher(url, allowed_hosts, max_bytes):
             if url == case["source_page_url"]:
@@ -99,6 +98,35 @@ class RFV2LiveAcquireTests(unittest.TestCase):
 
         with self.assertRaisesRegex(PublicSourceError, "asset resolution failed"):
             resolve_openclipart_asset_url(self.case, self.manifest, fetcher=fetcher)
+
+    def test_loc_uses_official_json_metadata_as_machine_readable_proof(self):
+        original = {
+            "case_id": "qualification-public-20",
+            "provider": "library_of_congress",
+            "source_page_url": "https://www.loc.gov/item/2016812028/",
+            "license_proof_url": "https://www.loc.gov/item/2016812028/",
+            "metadata_url": "https://www.loc.gov/item/2016812028/?fo=json",
+            "rights_statement": "No known restrictions on publication.",
+        }
+        prepared = prepare_live_provider_case(original, self.manifest)
+        self.assertEqual(prepared["source_page_url"], original["metadata_url"])
+        self.assertEqual(prepared["license_proof_url"], original["metadata_url"])
+        self.assertEqual(original["source_page_url"], "https://www.loc.gov/item/2016812028/")
+
+    def test_loc_metadata_adapter_rejects_host_query_or_rights_drift(self):
+        base = {
+            "case_id": "qualification-public-20",
+            "provider": "library_of_congress",
+            "metadata_url": "https://www.loc.gov/item/2016812028/?fo=json",
+            "rights_statement": "No known restrictions on publication.",
+        }
+        for patch in (
+            {"metadata_url": "https://openclipart.org/item/2016812028/?fo=json"},
+            {"metadata_url": "https://www.loc.gov/item/2016812028/"},
+            {"rights_statement": "unknown"},
+        ):
+            with self.subTest(patch=patch), self.assertRaises(PublicSourceError):
+                prepare_live_provider_case({**base, **patch}, self.manifest)
 
 
 if __name__ == "__main__":
