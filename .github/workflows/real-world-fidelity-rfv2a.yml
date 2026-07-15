@@ -1,0 +1,36 @@
+name: Real-world fidelity RFV-2A qualification adapter
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  rfv2a-qualification-adapter:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile RFV-2 qualification adapter
+        run: python -m py_compile engine/regression/test_rfv2_qualification_adapter.py
+      - name: Validate fail-closed qualification evidence contract
+        run: python -m unittest engine.regression.test_rfv2_qualification_adapter -v
+      - name: Confirm repository does not claim uncollected real evidence
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          manifest = json.loads(Path('engine/regression/rfv2_qualification_manifest.json').read_text())
+          roadmap = json.loads(Path('docs/real_world_fidelity_roadmap.json').read_text())
+          assert manifest['status'] == 'awaiting_real_assets'
+          assert manifest['qualified_case_count'] == 0
+          assert manifest['cases'] == []
+          assert roadmap['phases'][0]['status'] == 'merged'
+          assert roadmap['phases'][1]['status'] == 'pending'
+          PY
