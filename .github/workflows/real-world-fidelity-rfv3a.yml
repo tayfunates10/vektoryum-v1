@@ -33,7 +33,20 @@ jobs:
             engine/regression/test_rfv3_measurement_runner.py
 
       - name: Validate corpus binding and transient retry gate
-        run: python -m unittest engine.regression.test_rfv3_measurement_runner
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m unittest engine.regression.test_rfv3_measurement_runner 2>&1 | tee "${RUNNER_TEMP}/rfv3a-test.log"
+
+      - name: Upload RFV-3A failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rfv3a-failure-diagnostics-${{ github.event.pull_request.head.sha }}
+          path: ${{ runner.temp }}/rfv3a-test.log
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
 
       - name: Confirm RFV-3 remains pending without live results
         run: |
