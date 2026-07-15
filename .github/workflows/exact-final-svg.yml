@@ -9,6 +9,15 @@ on:
       - ".github/workflows/core-all-mode-release.yml"
       - ".github/workflows/ai-analyzer-release.yml"
       - "Dockerfile"
+  push:
+    branches: [main]
+    paths:
+      - "engine/**"
+      - ".github/workflows/exact-final-svg.yml"
+      - ".github/workflows/benchmark-seed.yml"
+      - ".github/workflows/core-all-mode-release.yml"
+      - ".github/workflows/ai-analyzer-release.yml"
+      - "Dockerfile"
   workflow_dispatch:
 
 permissions:
