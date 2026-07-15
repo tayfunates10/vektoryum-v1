@@ -1,0 +1,29 @@
+name: Fidelity-99 F99-1 geometric contract
+
+on:
+  pull_request:
+    paths:
+      - 'docs/fidelity99_roadmap.json'
+      - 'docs/fidelity99/f99-1.md'
+      - 'engine/tests/test_f99_1_geometric_fidelity.py'
+      - '.github/workflows/fidelity99-f99-1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  f99-1-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile F99-1 geometric contract
+        run: python -m py_compile engine/tests/test_f99_1_geometric_fidelity.py
+      - name: Validate finite roadmap and bounded metrics
+        run: python -m unittest -v engine.tests.test_f99_1_geometric_fidelity.F991GeometricFidelityTests.test_finite_roadmap_prefix engine.tests.test_f99_1_geometric_fidelity.F991GeometricFidelityTests.test_metrics_are_finite_unique_and_bounded
+      - name: Enforce geometric release thresholds
+        run: python -m unittest -v engine.tests.test_f99_1_geometric_fidelity.F991GeometricFidelityTests.test_geometric_release_thresholds
