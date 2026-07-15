@@ -40,7 +40,7 @@ jobs:
       - name: Acquire and qualify all 24 reviewed public sources
         shell: bash
         run: |
-          set -euo pipefail
+          set -uo pipefail
           RFV_ROOT="${RUNNER_TEMP}/rfv2-live"
           rm -rf "${RFV_ROOT}"
           mkdir -p \
@@ -49,28 +49,31 @@ jobs:
             "${RFV_ROOT}/records" \
             "${RFV_ROOT}/out"
 
-          python engine/regression/rfv2_public_source_acquire.py \
-            --all \
-            --download-root "${RFV_ROOT}/downloads" \
-            --storage-root "${RFV_ROOT}/storage" \
-            --records-dir "${RFV_ROOT}/records"
+          set +e
+          (
+            set -euo pipefail
+            python engine/regression/rfv2_public_source_acquire.py \
+              --all \
+              --download-root "${RFV_ROOT}/downloads" \
+              --storage-root "${RFV_ROOT}/storage" \
+              --records-dir "${RFV_ROOT}/records"
 
-          python engine/regression/rfv2_manifest_assembler.py \
-            --records-dir "${RFV_ROOT}/records" \
-            --manifest-out "${RFV_ROOT}/out/qualification-manifest.json" \
-            --audit-out "${RFV_ROOT}/out/qualification-audit.json" \
-            --require-complete
+            python engine/regression/rfv2_manifest_assembler.py \
+              --records-dir "${RFV_ROOT}/records" \
+              --manifest-out "${RFV_ROOT}/out/qualification-manifest.json" \
+              --audit-out "${RFV_ROOT}/out/qualification-audit.json" \
+              --require-complete
 
-          python engine/regression/rfv2_live_bundle.py \
-            --storage-root "${RFV_ROOT}/storage" \
-            --download-root "${RFV_ROOT}/downloads" \
-            --records-dir "${RFV_ROOT}/records" \
-            --manifest "${RFV_ROOT}/out/qualification-manifest.json" \
-            --audit "${RFV_ROOT}/out/qualification-audit.json" \
-            --bundle-out "${RFV_ROOT}/out/rfv2-public-corpus.tar.gz" \
-            --checksums-out "${RFV_ROOT}/out/bundle-checksums.json"
+            python engine/regression/rfv2_live_bundle.py \
+              --storage-root "${RFV_ROOT}/storage" \
+              --download-root "${RFV_ROOT}/downloads" \
+              --records-dir "${RFV_ROOT}/records" \
+              --manifest "${RFV_ROOT}/out/qualification-manifest.json" \
+              --audit "${RFV_ROOT}/out/qualification-audit.json" \
+              --bundle-out "${RFV_ROOT}/out/rfv2-public-corpus.tar.gz" \
+              --checksums-out "${RFV_ROOT}/out/bundle-checksums.json"
 
-          python - <<'PY'
+            python - <<'PY'
           import json
           import os
           from pathlib import Path
@@ -89,6 +92,24 @@ jobs:
           assert checksums["retention_days"] == 90
           assert (root / "rfv2-public-corpus.tar.gz").stat().st_size > 0
           PY
+          ) 2>&1 | tee "${RFV_ROOT}/out/live-acquisition.log"
+          status=${PIPESTATUS[0]}
+          if [ "${status}" -ne 0 ]; then
+            tail -n 80 "${RFV_ROOT}/out/live-acquisition.log" > "${RFV_ROOT}/out/failure-tail.log"
+            exit "${status}"
+          fi
+
+      - name: Upload RFV-2E failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rfv2e-failure-diagnostics-${{ github.event.pull_request.head.sha }}
+          path: |
+            ${{ runner.temp }}/rfv2-live/out/live-acquisition.log
+            ${{ runner.temp }}/rfv2-live/out/failure-tail.log
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
 
       - name: Upload immutable RFV-2 corpus artifact
         id: upload-corpus
