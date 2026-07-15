@@ -1,0 +1,67 @@
+name: Real-world fidelity RFV-3A measurement runner
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rfv3a-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rfv3a-measurement-runner:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Run actions/checkout@v4
+        uses: actions/checkout@v4
+
+      - name: Run actions/setup-python@v5
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install measurement contract dependencies
+        run: python -m pip install --disable-pip-version-check numpy pillow opencv-python-headless scipy defusedxml
+
+      - name: Compile RFV-3A files
+        run: |
+          python -m py_compile \
+            engine/regression/rfv3_measurement_runner.py \
+            engine/regression/test_rfv3_measurement_runner.py
+
+      - name: Validate corpus binding and transient retry gate
+        shell: bash
+        run: |
+          set -o pipefail
+          PYTHONPATH=engine python -m unittest engine.regression.test_rfv3_measurement_runner 2>&1 | tee "${RUNNER_TEMP}/rfv3a-test.log"
+
+      - name: Upload RFV-3A failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rfv3a-failure-diagnostics-${{ github.event.pull_request.head.sha }}
+          path: ${{ runner.temp }}/rfv3a-test.log
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+      - name: Confirm RFV-3 remains pending without live results
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          policy = json.loads(Path('engine/regression/rfv3_measurement_policy.json').read_text())
+          roadmap = json.loads(Path('docs/real_world_fidelity_roadmap.json').read_text())
+          phases = roadmap['phases']
+          assert [phase['status'] for phase in phases] == ['merged', 'merged', 'pending', 'pending']
+          assert policy['expected_case_count'] == 24
+          assert policy['repeat_count'] == 3
+          assert policy['max_transient_retries_per_repeat'] == 1
+          assert policy['phase_completion_requires_live_results'] is True
+          assert policy['raw_assets_in_repository'] is False
+          assert not Path('engine/regression/rfv3_pipeline_results.json').exists()
+          PY

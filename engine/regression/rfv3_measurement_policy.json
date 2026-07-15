@@ -1,0 +1,38 @@
+{
+  "schema": "vektoryum-rfv3-measurement-policy-v1",
+  "expected_case_count": 24,
+  "expected_cases_sha256": "5f151a6cb1a433b0cb0989a67bd7cc7940162f4b36d67903d6ccdd173f9e7d89",
+  "repeat_count": 3,
+  "repeat_timeout_seconds": 1800,
+  "max_transient_retries_per_repeat": 1,
+  "retryable_failures": [
+    "TimeoutError",
+    "isolated_worker_exit",
+    "isolated_worker_no_result"
+  ],
+  "non_retryable_failures": [
+    "source_digest_mismatch",
+    "corpus_escape",
+    "invalid_manifest",
+    "missing_metric_contract",
+    "non_deterministic_artifact",
+    "quality_threshold_failure"
+  ],
+  "required_metrics": [
+    "fidelity",
+    "ssim",
+    "edge_f1",
+    "alpha_iou",
+    "delta_e00",
+    "path_count",
+    "svg_bytes",
+    "render_ms",
+    "peak_rss_mb"
+  ],
+  "performance_aggregation": "median",
+  "quality_aggregation": "conservative_worst_case",
+  "artifact_sha_policy": "all_successful_repeats_must_match",
+  "unmeasured_metric_policy": "preserve_null_never_fabricate",
+  "raw_assets_in_repository": false,
+  "phase_completion_requires_live_results": true
+}

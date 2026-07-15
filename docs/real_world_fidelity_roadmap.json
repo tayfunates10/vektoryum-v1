@@ -41,7 +41,14 @@
       "qualified_case_count": 24,
       "tracking_issue": 88
     },
-    {"id": "RFV-3", "title": "Real pipeline measurement and automatic retry gate", "status": "pending"},
+    {
+      "id": "RFV-3",
+      "title": "Real pipeline measurement and automatic retry gate",
+      "status": "pending",
+      "preparation_evidence": "docs/real_world_fidelity/rfv-3a.md",
+      "measurement_policy": "engine/regression/rfv3_measurement_policy.json",
+      "blocked_on": "complete 24-case live production-pipeline results and reviewed retry/quality decision"
+    },
     {"id": "RFV-4", "title": "Live beta validation and release evidence", "status": "pending"}
   ]
 }
