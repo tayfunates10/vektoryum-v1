@@ -85,7 +85,7 @@
     {
       "id": "F99-7",
       "title": "Print-ready validator",
-      "status": "implemented",
+      "status": "merged",
       "acceptance": [
         "every required output format passes its finite parser and structural validation",
         "open path, self-intersection, invalid fill-rule, missing color-profile and unsupported-feature counts are zero",
@@ -95,6 +95,18 @@
       ],
       "evidence": "docs/fidelity99/f99-7.md"
     },
-    {"id": "F99-8", "title": "Fidelity gate", "status": "pending"}
+    {
+      "id": "F99-8",
+      "title": "Final fidelity gate",
+      "status": "implemented",
+      "acceptance": [
+        "overall fidelity score is at least 0.990 for every qualified artifact",
+        "geometric, edge, color, typography and print-readiness component scores are each at least 0.980",
+        "artifacts below 0.990 are rejected and never published",
+        "release evidence is bound to immutable source and artifact SHA-256 digests",
+        "missing components, duplicate cases, non-finite scores, digest mismatch or corpus shrinkage fails closed"
+      ],
+      "evidence": "docs/fidelity99/f99-8.md"
+    }
   ]
 }
