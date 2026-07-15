@@ -1,0 +1,17 @@
+{
+  "schema": "vektoryum-rfv2-secure-intake-v1",
+  "execution_mode": "offline_operator_cli",
+  "network_access_required": false,
+  "raw_assets_in_repository": false,
+  "record_output_in_repository": false,
+  "storage_root_external": true,
+  "storage_layout": "content_addressed",
+  "required_split": "qualification",
+  "reject_symlink_inputs": true,
+  "privacy_review": "approved",
+  "confirm_no_public_pii": true,
+  "atomic_copy": true,
+  "readonly_object": true,
+  "record_schema": "vektoryum-rfv2-qualified-case-v1",
+  "inspection_schema": "vektoryum-rfv2-inspection-v1"
+}
