@@ -6,6 +6,12 @@ on:
       - "engine/**"
       - ".github/workflows/ai-analyzer-release.yml"
       - ".github/workflows/exact-final-svg.yml"
+  push:
+    branches: [main]
+    paths:
+      - "engine/**"
+      - ".github/workflows/ai-analyzer-release.yml"
+      - ".github/workflows/exact-final-svg.yml"
   workflow_dispatch:
 
 permissions:

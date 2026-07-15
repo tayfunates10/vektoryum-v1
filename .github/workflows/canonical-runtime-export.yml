@@ -5,6 +5,7 @@ on:
     paths:
       - "engine/app/pipeline_entry.py"
       - "engine/app/runtime_main.py"
+      - "engine/app/platform_operations.py"
       - "engine/app/production_export_integration.py"
       - "engine/app/production_serializer_runtime.py"
       - "engine/app/production_svg_selector.py"
@@ -15,6 +16,14 @@ on:
       - "engine/test_pipeline_canonical_report.py"
       - "engine/test_pipeline_export_registration.py"
       - "engine/test_runtime_main.py"
+      - "engine/test_platform_operations.py"
+      - ".github/workflows/canonical-runtime-export.yml"
+  push:
+    branches: [main]
+    paths:
+      - "engine/app/**"
+      - "engine/test_runtime_main.py"
+      - "engine/test_platform_operations.py"
       - ".github/workflows/canonical-runtime-export.yml"
   workflow_dispatch:
 
@@ -35,6 +44,8 @@ jobs:
     env:
       PYTHONHASHSEED: "0"
       VEKTORYUM_WORKERS: "1"
+      VEKTORYUM_SERVICE_MODE: "beta"
+      VEKTORYUM_SOURCE_REVISION: ${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -44,7 +55,7 @@ jobs:
           cache-dependency-path: engine/requirements.txt
       - name: Install Python dependencies
         run: python -m pip install -r requirements.txt pytest httpx
-      - name: Canonical runtime publication and export contracts
+      - name: Canonical serializer and pipeline contracts
         run: >-
           python -m pytest -q
           test_production_export_integration.py
@@ -53,4 +64,18 @@ jobs:
           test_pipeline_entry.py
           test_pipeline_canonical_report.py
           test_pipeline_export_registration.py
-          test_runtime_main.py
+      - name: Production runtime entry contract
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -vv --tb=short test_runtime_main.py 2>&1 | tee runtime-entry.log
+      - name: Upload runtime entry diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-entry-diagnostics
+          path: engine/runtime-entry.log
+          if-no-files-found: error
+          retention-days: 7
+      - name: PPC-4 operations runtime compatibility
+        run: python -m pytest -q test_platform_operations.py

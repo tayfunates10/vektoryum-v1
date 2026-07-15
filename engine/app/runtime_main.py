@@ -1,10 +1,4 @@
-"""Production ASGI entrypoint with fail-closed canonical SVG cutover.
-
-The existing FastAPI application and routes remain unchanged. The module-level
-``run_pipeline`` and ``export_all`` references used by ``app.main.vectorize_image``
-are replaced with feature-flag-aware facades. With canonical flags off (default),
-legacy pipeline and export behavior is preserved.
-"""
+"""Production ASGI entrypoint with fail-closed canonical SVG cutover."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -14,6 +8,7 @@ from app.exporters import export_all as _legacy_export_all
 from app.pipeline_entry import run_pipeline as _shadow_aware_run_pipeline
 from app.platform_frontend import install_platform_frontend
 from app.platform_identity import install_platform_identity
+from app.platform_operations import install_platform_operations
 from app.production_export_integration import export_all_with_canonical
 
 
@@ -36,15 +31,9 @@ def _runtime_export_all(
     )
 
 
-# ``vectorize_image`` resolves these globals from app.main at request time, so
-# assignment is sufficient and avoids copying or redefining any route.
 _main.run_pipeline = _shadow_aware_run_pipeline
 _main.export_all = _runtime_export_all
-
-# Production identity bindings replace only the account routes and the
-# ``_current_user`` lookup used by existing protected endpoints. Vector engine
-# and artifact behavior remain untouched.
 platform_identity = install_platform_identity(_main)
 install_platform_frontend(_main)
-
+platform_operations = install_platform_operations(_main.app)
 app = _main.app
