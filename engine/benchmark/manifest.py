@@ -69,6 +69,9 @@ class BenchmarkResult:
     metrics: dict[str, float | int | None]
     artifact_sha256: str | None = None
     failure: str | None = None
+    # RFV-3D2: runtime evidence for the exact-winner metric path. Optional and
+    # absent on legacy rows, so old shard payloads stay valid (backward compat).
+    metric_provenance: dict[str, Any] | None = None
 
     def validate(self) -> None:
         if not self.case_id.strip() or not self.engine_version.strip():
@@ -80,6 +83,8 @@ class BenchmarkResult:
             if len(self.artifact_sha256) != 64:
                 raise ValueError("artifact_sha256 must be a 64-character SHA-256 hex digest")
             int(self.artifact_sha256, 16)
+        if self.metric_provenance is not None and not isinstance(self.metric_provenance, dict):
+            raise ValueError("metric_provenance must be a dict when present")
 
     def to_dict(self) -> dict[str, Any]:
         self.validate()

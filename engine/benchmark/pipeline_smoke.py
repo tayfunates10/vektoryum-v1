@@ -114,11 +114,28 @@ def aggregate_repeats(repeats: list[BenchmarkResult]) -> BenchmarkResult:
         else:
             raise ValueError(f"unsupported repeated benchmark metric: {metric}")
 
+    # RFV-3D2: repeats must agree on how metrics were produced. Sanitized
+    # failure text may vary in wording, so only decision fields are compared;
+    # disagreement is real measurement non-determinism and fails closed.
+    provenances = [item.metric_provenance for item in repeats]
+    provenance: dict[str, Any] | None = None
+    if any(item is not None for item in provenances):
+        if any(item is None for item in provenances):
+            raise ValueError(f"mixed metric provenance coverage: {first.case_id}")
+        stable_keys = sorted(set(provenances[0]) - {"exact_evaluator_failure_message_sanitized"})
+        base = {key: provenances[0].get(key) for key in stable_keys}
+        for item in provenances[1:]:
+            if {key: item.get(key) for key in stable_keys} != base:
+                raise ValueError(f"non-deterministic metric provenance: {first.case_id}")
+        provenance = dict(provenances[0])
+        provenance["repeat_count"] = len(repeats)
+
     return BenchmarkResult(
         case_id=first.case_id,
         engine_version=first.engine_version,
         metrics=metrics,
         artifact_sha256=first.artifact_sha256,
+        metric_provenance=provenance,
     )
 
 
