@@ -1,12 +1,8 @@
 {
-  "schema": "vektoryum-real-world-fidelity-v1",
-  "phase_count": 4,
   "calculation": "merged_phases / 4",
+  "phase_count": 4,
   "phases": [
     {
-      "id": "RFV-1",
-      "title": "Real-world corpus intake foundation",
-      "status": "merged",
       "acceptance": [
         "a finite 100-to-300 case target is distributed across all required difficult-image categories",
         "every future fixture is bound to immutable source and consent SHA-256 digests without publishing raw private assets",
@@ -14,12 +10,12 @@
         "privacy review, bounded dimensions, bounded file size and deterministic corpus splits are mandatory",
         "unknown provenance, missing consent, duplicate identity, private-data leakage or corpus shrinkage fails closed"
       ],
-      "evidence": "docs/real_world_fidelity/rfv-1.md"
+      "evidence": "docs/real_world_fidelity/rfv-1.md",
+      "id": "RFV-1",
+      "status": "merged",
+      "title": "Real-world corpus intake foundation"
     },
     {
-      "id": "RFV-2",
-      "title": "Qualified real-world corpus",
-      "status": "merged",
       "acceptance": [
         "exactly 24 reviewed real-world assets are registered in the immutable qualification split",
         "all ten difficult-image categories have at least one qualified case",
@@ -28,27 +24,55 @@
         "raw private assets and public PII never enter the repository",
         "missing evidence, duplicate identity, mutable storage, privacy gaps or corpus shrinkage fails closed"
       ],
-      "evidence": "docs/real_world_fidelity/rfv-2.md",
-      "qualification_manifest": "engine/regression/rfv2_qualification_manifest.json",
-      "qualification_audit": "docs/real_world_fidelity/evidence/rfv2_qualification_audit.json",
-      "bundle_checksums": "docs/real_world_fidelity/evidence/rfv2_bundle_checksums.json",
-      "publication_envelope": "docs/real_world_fidelity/evidence/rfv2_publication_envelope.json",
-      "preparation_evidence": "docs/real_world_fidelity/rfv-2a.md",
-      "intake_evidence": "docs/real_world_fidelity/rfv-2b.md",
       "assembly_evidence": "docs/real_world_fidelity/rfv-2c.md",
-      "public_source_evidence": "docs/real_world_fidelity/rfv-2d.md",
+      "bundle_checksums": "docs/real_world_fidelity/evidence/rfv2_bundle_checksums.json",
+      "evidence": "docs/real_world_fidelity/rfv-2.md",
+      "id": "RFV-2",
+      "intake_evidence": "docs/real_world_fidelity/rfv-2b.md",
       "live_acquisition_evidence": "docs/real_world_fidelity/rfv-2e.md",
+      "preparation_evidence": "docs/real_world_fidelity/rfv-2a.md",
+      "public_source_evidence": "docs/real_world_fidelity/rfv-2d.md",
+      "publication_envelope": "docs/real_world_fidelity/evidence/rfv2_publication_envelope.json",
+      "qualification_audit": "docs/real_world_fidelity/evidence/rfv2_qualification_audit.json",
+      "qualification_manifest": "engine/regression/rfv2_qualification_manifest.json",
       "qualified_case_count": 24,
+      "status": "merged",
+      "title": "Qualified real-world corpus",
       "tracking_issue": 88
     },
     {
+      "acceptance": [
+        "the exact qualified 24-case corpus is measured through the production pipeline three times per case",
+        "all 72 repeat samples are complete and bound to the immutable case-set and measurement head SHA",
+        "only one retry is allowed for bounded transient timeout or isolated-worker failures and every retry is audited",
+        "successful repeats for a case produce an identical SVG artifact SHA-256",
+        "a reviewed finite quality decision is emitted without fabricating missing metrics or claiming universal fidelity",
+        "RFV-4 remains blocked when the reviewed real-world release decision is no-go"
+      ],
+      "blocked_on": "engine quality remediation followed by a passing real-world quality rerun before RFV-4",
+      "decision_evidence": "docs/real_world_fidelity/evidence/rfv3_quality_decision.json",
+      "decision_policy": "engine/regression/rfv3_quality_decision_policy.json",
       "id": "RFV-3",
-      "title": "Real pipeline measurement and automatic retry gate",
-      "status": "pending",
-      "preparation_evidence": "docs/real_world_fidelity/rfv-3a.md",
+      "live_measurement_evidence": "docs/real_world_fidelity/rfv-3b.md",
+      "measured_case_count": 24,
+      "measurement_envelope": "docs/real_world_fidelity/evidence/rfv3_measurement_envelope.json",
       "measurement_policy": "engine/regression/rfv3_measurement_policy.json",
-      "blocked_on": "complete 24-case live production-pipeline results and reviewed retry/quality decision"
+      "pipeline_results": "docs/real_world_fidelity/evidence/rfv3_pipeline_results.json",
+      "preparation_evidence": "docs/real_world_fidelity/rfv-3a.md",
+      "publication_envelope": "docs/real_world_fidelity/evidence/rfv3_publication_envelope.json",
+      "release_decision": "no_go",
+      "repeat_sample_count": 72,
+      "retry_audit": "docs/real_world_fidelity/evidence/rfv3_retry_audit.json",
+      "review_evidence": "docs/real_world_fidelity/rfv-3c.md",
+      "status": "implemented",
+      "title": "Real pipeline measurement and automatic retry gate"
     },
-    {"id": "RFV-4", "title": "Live beta validation and release evidence", "status": "pending"}
-  ]
+    {
+      "blocked_on": "engine quality remediation and a passing real-world quality rerun with release_decision go",
+      "id": "RFV-4",
+      "status": "pending",
+      "title": "Live beta validation and release evidence"
+    }
+  ],
+  "schema": "vektoryum-real-world-fidelity-v1"
 }
