@@ -112,13 +112,14 @@ class RFV3QualityDecisionTests(unittest.TestCase):
         self.assertEqual(decision["release_decision"], "no_go")
         self.assertTrue(any(item["case_id"] == pipeline["results"][0]["case_id"] for item in decision["quality_gate"]["missing_metric_cases"]))
 
-    def test_roadmap_marks_measurement_phase_implemented_but_blocks_rfv4(self):
+    def test_roadmap_records_reviewed_no_go_but_waits_for_phase_closure(self):
         roadmap = load_json(ROADMAP_PATH)
         phases = roadmap["phases"]
         self.assertEqual([phase["id"] for phase in phases], ["RFV-1", "RFV-2", "RFV-3", "RFV-4"])
-        self.assertEqual([phase["status"] for phase in phases], ["merged", "merged", "implemented", "pending"])
+        self.assertEqual([phase["status"] for phase in phases], ["merged", "merged", "pending", "pending"])
         self.assertEqual(phases[2]["release_decision"], "no_go")
         self.assertEqual(phases[2]["decision_evidence"], "docs/real_world_fidelity/evidence/rfv3_quality_decision.json")
+        self.assertIn("phase closure", phases[2]["blocked_on"])
         self.assertIn("passing real-world quality rerun", phases[3]["blocked_on"])
 
 
