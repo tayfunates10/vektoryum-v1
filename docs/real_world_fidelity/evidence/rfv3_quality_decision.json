@@ -1,0 +1,63 @@
+{
+  "artifact_determinism_gate": {
+    "policy": "all_successful_repeats_must_match",
+    "status": "passed"
+  },
+  "case_count": 24,
+  "cases_sha256": "5f151a6cb1a433b0cb0989a67bd7cc7940162f4b36d67903d6ccdd173f9e7d89",
+  "completeness_gate": {
+    "failed_case_count": 0,
+    "status": "passed",
+    "unique_case_count": 24
+  },
+  "decision_sha256": "79ffd3ef2761ac00d12f8b91694cc70f11a32e81eebdf01d7444e39b1c8ccdf4",
+  "evidence": {
+    "artifact_digest": "a98861c6bd9fb09a9d948b25317d11f53c69c25243bfa1eb6e1d1306cba91b77",
+    "artifact_id": 8362376085,
+    "committed_measurement_envelope_sha256": "4f7aaf2aafa74f254a090ec3530af5d433bc7b43b815392e3c7cff0a32880307",
+    "committed_pipeline_results_sha256": "1ac74d0b41343ccb17d43d1271b3ce4de6581c39477d129547ed3d6125ab12b7",
+    "committed_retry_audit_sha256": "c736ddbc354c224b8e5f0704672ca31e448ec34e31413d9920b1d2c06ad850fe",
+    "measurement_envelope_sha256": "4f7aaf2aafa74f254a090ec3530af5d433bc7b43b815392e3c7cff0a32880307",
+    "pipeline_results_sha256": "1ac74d0b41343ccb17d43d1271b3ce4de6581c39477d129547ed3d6125ab12b7",
+    "retry_audit_sha256": "c7eec85ced0f5504ec0bf52aa29961c943df436bd922814ba3f9f328cc6c347f"
+  },
+  "measurement_head_sha": "4abb6840887bb0803ea7bad2b6f91babba621e4f",
+  "performance_observation": {
+    "delta_e00": {"max": 15.78123950958252, "measured_count": 21, "median": 0.8891783952713013, "min": 0.4038403332233429, "p95": 14.664047241210938},
+    "path_count": {"max": 142058.0, "measured_count": 21, "median": 37.0, "min": 8.0, "p95": 1543.0},
+    "peak_rss_mb": {"max": 1800.375, "measured_count": 24, "median": 568.7265625, "min": 271.207031, "p95": 1274.0525386000004},
+    "render_ms": {"max": 1945554.610632, "measured_count": 24, "median": 175824.301697, "min": 16015.586623, "p95": 1258261.1175984011},
+    "svg_bytes": {"max": 28409228.0, "measured_count": 24, "median": 75238.5, "min": 28445.0, "p95": 12358999.000000002}
+  },
+  "quality_gate": {
+    "component_violation_counts": {"alpha_iou": 21, "edge_f1": 13, "fidelity": 24, "ssim": 13},
+    "metrics": {
+      "alpha_iou": {"max": 1.0, "measured_count": 24, "median": 0.7850325107574463, "min": 0.23612412810325623, "missing_count": 0, "p95": 0.9971765071153641, "pass_count": 3, "required_count": 24, "threshold": 0.98, "violation_count": 21},
+      "edge_f1": {"max": 0.9986600240196429, "measured_count": 21, "median": 0.924375361338317, "min": 0.5586120379899041, "missing_count": 3, "p95": 0.9966695066222601, "pass_count": 8, "required_count": 24, "threshold": 0.98, "violation_count": 13},
+      "fidelity": {"max": 92.47, "measured_count": 24, "median": 81.005, "min": 21.34, "missing_count": 0, "p95": 88.3615, "pass_count": 0, "required_count": 24, "threshold": 99.0, "violation_count": 24},
+      "ssim": {"max": 0.9930421814489037, "measured_count": 21, "median": 0.9599467058854844, "min": 0.3326845642154632, "missing_count": 3, "p95": 0.9897508584093107, "pass_count": 8, "required_count": 24, "threshold": 0.98, "violation_count": 13}
+    },
+    "missing_metric_cases": [
+      {"case_id": "qualification-public-10", "metrics": ["edge_f1", "ssim"]},
+      {"case_id": "qualification-public-14", "metrics": ["edge_f1", "ssim"]},
+      {"case_id": "qualification-public-18", "metrics": ["edge_f1", "ssim"]}
+    ],
+    "status": "failed",
+    "violation_case_count": 24,
+    "worst_fidelity_cases": [
+      {"case_id": "qualification-public-22", "fidelity": 21.34, "missing_required_metrics": [], "threshold_violations": ["alpha_iou", "edge_f1", "fidelity", "ssim"]},
+      {"case_id": "qualification-public-23", "fidelity": 23.5, "missing_required_metrics": [], "threshold_violations": ["alpha_iou", "edge_f1", "fidelity", "ssim"]},
+      {"case_id": "qualification-public-20", "fidelity": 29.23, "missing_required_metrics": [], "threshold_violations": ["alpha_iou", "edge_f1", "fidelity", "ssim"]},
+      {"case_id": "qualification-public-21", "fidelity": 29.28, "missing_required_metrics": [], "threshold_violations": ["alpha_iou", "edge_f1", "fidelity", "ssim"]},
+      {"case_id": "qualification-public-24", "fidelity": 32.38, "missing_required_metrics": [], "threshold_violations": ["alpha_iou", "edge_f1", "fidelity", "ssim"]}
+    ]
+  },
+  "raw_assets_in_repository": false,
+  "release_block_reasons": ["fidelity_threshold_not_met", "component_threshold_not_met", "missing_required_component_metrics"],
+  "release_decision": "no_go",
+  "repeat_sample_count": 72,
+  "retry_gate": {"allowed_retry_budget": 1, "max_attempt_count": 1, "retried_sample_count": 0, "sample_count": 72, "status": "passed"},
+  "rfv3_phase_decision": "implemented_measurement_gate_release_blocked",
+  "rfv4_allowed": false,
+  "schema": "vektoryum-rfv3-reviewed-quality-decision-v1"
+}
