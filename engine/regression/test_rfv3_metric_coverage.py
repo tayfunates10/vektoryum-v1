@@ -3,12 +3,12 @@ from __future__ import annotations
 import unittest
 
 from engine.regression.rfv3_metric_coverage import (
+    DEFAULT_RESULTS,
     MetricCoverageError,
     classify_missing_metrics,
     diagnose,
     load_results,
     verify_expected_diagnosis,
-    DEFAULT_RESULTS,
 )
 
 
@@ -24,6 +24,16 @@ class RFV3MetricCoverageTests(unittest.TestCase):
         self.assertIsNone(reason)
 
     def test_partial_report_signature_is_classified(self) -> None:
+        missing, reason = classify_missing_metrics({
+            "ssim": None,
+            "edge_f1": None,
+            "alpha_iou": 1.0,
+            "delta_e00": None,
+        })
+        self.assertEqual(missing, ["delta_e00", "edge_f1", "ssim"])
+        self.assertEqual(reason, "partial_quality_report_fallback")
+
+    def test_partial_report_signature_with_color_metric_is_classified(self) -> None:
         missing, reason = classify_missing_metrics({
             "ssim": None,
             "edge_f1": None,
