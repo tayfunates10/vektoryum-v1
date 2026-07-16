@@ -1,0 +1,382 @@
+name: Real-world fidelity RFV-3B live production measurement
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rfv3b-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: engine
+    steps:
+      - name: Run actions/checkout@v4
+        uses: actions/checkout@v4
+
+      - name: Run actions/setup-python@v5
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install RFV-3B contract dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          numpy pillow opencv-python-headless scipy defusedxml
+
+      - name: Compile RFV-3B files
+        run: |
+          python -m py_compile \
+            engine/regression/rfv3_live_measurement.py \
+            engine/regression/rfv3_live_prepare.py \
+            engine/regression/test_rfv3_live_measurement.py \
+            engine/regression/test_rfv3_live_prepare.py
+
+      - name: Validate sharding extraction identity and aggregate gates
+        run: >-
+          python -m unittest
+          engine.regression.test_rfv3_live_measurement
+          engine.regression.test_rfv3_live_prepare
+
+      - name: Confirm RFV-3 remains pending before reviewed live results
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          roadmap = json.loads(Path('docs/real_world_fidelity_roadmap.json').read_text())
+          phases = roadmap['phases']
+          assert [phase['status'] for phase in phases] == ['merged', 'merged', 'pending', 'pending']
+          assert Path('docs/real_world_fidelity/rfv-3b.md').is_file()
+          assert not Path('engine/regression/rfv3_pipeline_results.json').exists()
+          PY
+
+  acquire:
+    needs: contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Run actions/checkout@v4
+        uses: actions/checkout@v4
+
+      - name: Run actions/setup-python@v5
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install acquisition dependencies
+        run: python -m pip install --disable-pip-version-check Pillow
+
+      - name: Acquire and bundle the exact 24 reviewed sources
+        shell: bash
+        run: |
+          set -uo pipefail
+          RFV_ROOT="${RUNNER_TEMP}/rfv3b-acquire"
+          rm -rf "${RFV_ROOT}"
+          mkdir -p "${RFV_ROOT}/out"
+
+          set +e
+          (
+            set -euo pipefail
+            acquired=0
+            for attempt in 1 2 3; do
+              rm -rf \
+                "${RFV_ROOT}/downloads" \
+                "${RFV_ROOT}/storage" \
+                "${RFV_ROOT}/records"
+              mkdir -p \
+                "${RFV_ROOT}/downloads" \
+                "${RFV_ROOT}/storage" \
+                "${RFV_ROOT}/records"
+              if python -m engine.regression.rfv2_live_acquire \
+                --all \
+                --download-root "${RFV_ROOT}/downloads" \
+                --storage-root "${RFV_ROOT}/storage" \
+                --records-dir "${RFV_ROOT}/records"; then
+                acquired=1
+                break
+              fi
+              echo "RFV-3B acquisition attempt ${attempt} failed; retrying reviewed allowlist"
+              sleep "$((attempt * 10))"
+            done
+            if [ "${acquired}" -ne 1 ]; then
+              echo "RFV-3B acquisition exhausted 3 bounded attempts"
+              exit 2
+            fi
+
+            python -m engine.regression.rfv2_manifest_assembler \
+              --records-dir "${RFV_ROOT}/records" \
+              --manifest-out "${RFV_ROOT}/out/qualification-manifest.json" \
+              --audit-out "${RFV_ROOT}/out/qualification-audit.json" \
+              --require-complete
+
+            python -m engine.regression.rfv2_live_bundle \
+              --storage-root "${RFV_ROOT}/storage" \
+              --download-root "${RFV_ROOT}/downloads" \
+              --records-dir "${RFV_ROOT}/records" \
+              --manifest "${RFV_ROOT}/out/qualification-manifest.json" \
+              --audit "${RFV_ROOT}/out/qualification-audit.json" \
+              --bundle-out "${RFV_ROOT}/out/rfv2-public-corpus.tar.gz" \
+              --checksums-out "${RFV_ROOT}/out/bundle-checksums.json"
+          ) 2>&1 | tee "${RFV_ROOT}/out/acquisition.log"
+          status=${PIPESTATUS[0]}
+          if [ "${status}" -ne 0 ]; then
+            tail -n 100 "${RFV_ROOT}/out/acquisition.log" > "${RFV_ROOT}/out/failure-tail.log"
+            exit "${status}"
+          fi
+
+      - name: Upload acquisition failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rfv3b-acquisition-failure-${{ github.event.pull_request.head.sha }}
+          path: |
+            ${{ runner.temp }}/rfv3b-acquire/out/acquisition.log
+            ${{ runner.temp }}/rfv3b-acquire/out/failure-tail.log
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+      - name: Upload immutable corpus for measurement shards
+        uses: actions/upload-artifact@v4
+        with:
+          name: rfv3b-corpus-${{ github.event.pull_request.head.sha }}
+          path: |
+            ${{ runner.temp }}/rfv3b-acquire/out/rfv2-public-corpus.tar.gz
+            ${{ runner.temp }}/rfv3b-acquire/out/bundle-checksums.json
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  measure:
+    needs: [contract, acquire]
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      PYTHONHASHSEED: "0"
+      PYTHONPATH: engine
+      VEKTORYUM_WORKERS: "1"
+    steps:
+      - name: Run actions/checkout@v4
+        uses: actions/checkout@v4
+
+      - name: Run actions/setup-python@v5
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: engine/requirements.txt
+
+      - name: Install system validators
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ghostscript libcairo2
+
+      - name: Install production pipeline dependencies
+        run: python -m pip install -r engine/requirements.txt pytest httpx
+
+      - name: Download immutable RFV-2 corpus
+        uses: actions/download-artifact@v4
+        with:
+          name: rfv3b-corpus-${{ github.event.pull_request.head.sha }}
+          path: ${{ runner.temp }}/rfv3b-input
+
+      - name: Verify stable source identity and safely prepare corpus
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m engine.regression.rfv3_live_prepare \
+            --bundle "${RUNNER_TEMP}/rfv3b-input/rfv2-public-corpus.tar.gz" \
+            --checksums "${RUNNER_TEMP}/rfv3b-input/bundle-checksums.json" \
+            --destination "${RUNNER_TEMP}/rfv3b-corpus" \
+            --evidence-out "${RUNNER_TEMP}/rfv3b-live-prepare-${{ matrix.shard }}.json" \
+            2>&1 | tee "${RUNNER_TEMP}/rfv3b-extract-${{ matrix.shard }}.log"
+
+      - name: Measure shard through the production pipeline
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p "${RUNNER_TEMP}/rfv3b-shard-${{ matrix.shard }}"
+          python -m engine.regression.rfv3_live_measurement shard \
+            --corpus-root "${RUNNER_TEMP}/rfv3b-corpus" \
+            --output "${RUNNER_TEMP}/rfv3b-shard-${{ matrix.shard }}" \
+            --engine-version "${{ github.event.pull_request.head.sha }}" \
+            --shard-index "${{ matrix.shard }}" \
+            --shard-count 6 \
+            2>&1 | tee "${RUNNER_TEMP}/rfv3b-shard-${{ matrix.shard }}.log"
+
+      - name: Upload shard failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rfv3b-shard-failure-${{ matrix.shard }}-${{ github.event.pull_request.head.sha }}
+          path: |
+            ${{ runner.temp }}/rfv3b-extract-${{ matrix.shard }}.log
+            ${{ runner.temp }}/rfv3b-live-prepare-${{ matrix.shard }}.json
+            ${{ runner.temp }}/rfv3b-shard-${{ matrix.shard }}.log
+            ${{ runner.temp }}/rfv3b-shard-${{ matrix.shard }}/retry-audit.json
+          if-no-files-found: warn
+          retention-days: 14
+          compression-level: 0
+
+      - name: Upload immutable shard evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: rfv3b-shard-${{ matrix.shard }}-${{ github.event.pull_request.head.sha }}
+          path: |
+            ${{ runner.temp }}/rfv3b-live-prepare-${{ matrix.shard }}.json
+            ${{ runner.temp }}/rfv3b-shard-${{ matrix.shard }}/pipeline-results.json
+            ${{ runner.temp }}/rfv3b-shard-${{ matrix.shard }}/retry-audit.json
+            ${{ runner.temp }}/rfv3b-shard-${{ matrix.shard }}/shard-summary.json
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
+
+  aggregate:
+    needs: measure
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PYTHONPATH: engine
+    steps:
+      - name: Run actions/checkout@v4
+        uses: actions/checkout@v4
+
+      - name: Run actions/setup-python@v5
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install aggregate contract dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          numpy pillow opencv-python-headless scipy defusedxml
+
+      - name: Download all six immutable shard artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: rfv3b-shard-*-${{ github.event.pull_request.head.sha }}
+          path: ${{ runner.temp }}/rfv3b-shards
+          merge-multiple: false
+
+      - name: Aggregate and validate exact 24-case evidence
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m engine.regression.rfv3_live_measurement aggregate \
+            --input-root "${RUNNER_TEMP}/rfv3b-shards" \
+            --output "${RUNNER_TEMP}/rfv3b-final" \
+            --engine-version "${{ github.event.pull_request.head.sha }}" \
+            --shard-count 6 \
+            2>&1 | tee "${RUNNER_TEMP}/rfv3b-aggregate.log"
+
+      - name: Confirm finite measurement completeness
+        run: |
+          python - <<'PY'
+          import json
+          import math
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ['RUNNER_TEMP']) / 'rfv3b-final'
+          results = json.loads((root / 'pipeline-results.json').read_text())
+          retry = json.loads((root / 'retry-audit.json').read_text())
+          envelope = json.loads((root / 'measurement-envelope.json').read_text())
+          assert results['case_count'] == 24
+          assert len(results['results']) == 24
+          assert retry['completed_case_count'] == 24
+          assert retry['sample_count'] == 72
+          assert envelope['case_count'] == 24
+          assert envelope['repeat_sample_count'] == 72
+          assert envelope['raw_assets_in_repository'] is False
+          assert len({item['case_id'] for item in results['results']}) == 24
+          assert all(item['artifact_sha256'] for item in results['results'])
+          for item in results['results']:
+              for value in item['metrics'].values():
+                  assert value is None or (not isinstance(value, bool) and math.isfinite(float(value)))
+          PY
+
+      - name: Upload aggregate failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rfv3b-aggregate-failure-${{ github.event.pull_request.head.sha }}
+          path: |
+            ${{ runner.temp }}/rfv3b-aggregate.log
+            ${{ runner.temp }}/rfv3b-final/retry-audit.json
+          if-no-files-found: warn
+          retention-days: 14
+          compression-level: 0
+
+      - name: Upload immutable RFV-3 measurement evidence
+        id: upload-measurement
+        uses: actions/upload-artifact@v4
+        with:
+          name: rfv3-live-measurement-${{ github.event.pull_request.head.sha }}
+          path: |
+            ${{ runner.temp }}/rfv3b-final/pipeline-results.json
+            ${{ runner.temp }}/rfv3b-final/retry-audit.json
+            ${{ runner.temp }}/rfv3b-final/measurement-envelope.json
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
+
+      - name: Bind measurement artifact identity
+        env:
+          ARTIFACT_ID: ${{ steps.upload-measurement.outputs.artifact-id }}
+          ARTIFACT_URL: ${{ steps.upload-measurement.outputs.artifact-url }}
+          ARTIFACT_DIGEST: ${{ steps.upload-measurement.outputs.artifact-digest }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          root = Path(os.environ['RUNNER_TEMP']) / 'rfv3b-final'
+          envelope = json.loads((root / 'measurement-envelope.json').read_text())
+          artifact_id = os.environ['ARTIFACT_ID']
+          artifact_url = os.environ['ARTIFACT_URL']
+          artifact_digest = os.environ['ARTIFACT_DIGEST']
+          head_sha = os.environ['HEAD_SHA']
+          assert artifact_id.isdigit()
+          assert artifact_url.startswith('https://github.com/')
+          assert re.fullmatch(r'(?:sha256:)?[0-9a-f]{64}', artifact_digest)
+          assert re.fullmatch(r'[0-9a-f]{40}', head_sha)
+          publication = {
+              'schema': 'vektoryum-rfv3-actions-publication-envelope-v1',
+              'head_sha': head_sha,
+              'artifact_id': int(artifact_id),
+              'artifact_url': artifact_url,
+              'artifact_digest': artifact_digest,
+              'retention_days': 90,
+              'case_count': envelope['case_count'],
+              'repeat_sample_count': envelope['repeat_sample_count'],
+              'cases_sha256': envelope['cases_sha256'],
+              'pipeline_results_sha256': envelope['pipeline_results_sha256'],
+              'retry_audit_sha256': envelope['retry_audit_sha256'],
+              'raw_assets_in_repository': False,
+          }
+          (root / 'publication-envelope.json').write_text(
+              json.dumps(publication, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
+          )
+          PY
+
+      - name: Upload publication envelope
+        uses: actions/upload-artifact@v4
+        with:
+          name: rfv3-publication-envelope-${{ github.event.pull_request.head.sha }}
+          path: ${{ runner.temp }}/rfv3b-final/publication-envelope.json
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
