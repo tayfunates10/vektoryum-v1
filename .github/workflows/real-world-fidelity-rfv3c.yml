@@ -69,7 +69,7 @@ jobs:
           decision = json.loads(Path('docs/real_world_fidelity/evidence/rfv3_quality_decision.json').read_text())
           assert roadmap['phases'][2]['status'] == 'pending'
           assert roadmap['phases'][2]['release_decision'] == 'no_go'
-          assert 'phase closure' in roadmap['phases'][2]['blocked_on']
+          assert 'reviewed RFV-3 closure' in roadmap['phases'][2]['blocked_on']
           assert roadmap['phases'][3]['status'] == 'pending'
           assert decision['release_decision'] == 'no_go'
           assert decision['rfv4_allowed'] is False
