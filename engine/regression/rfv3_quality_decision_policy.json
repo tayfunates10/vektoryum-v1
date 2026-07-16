@@ -4,6 +4,16 @@
     "isolated_worker_exit",
     "isolated_worker_no_result"
   ],
+  "artifact_file_sha256": {
+    "measurement_envelope": "4f7aaf2aafa74f254a090ec3530af5d433bc7b43b815392e3c7cff0a32880307",
+    "pipeline_results": "1ac74d0b41343ccb17d43d1271b3ce4de6581c39477d129547ed3d6125ab12b7",
+    "retry_audit": "c7eec85ced0f5504ec0bf52aa29961c943df436bd922814ba3f9f328cc6c347f"
+  },
+  "committed_file_sha256": {
+    "measurement_envelope": "4f7aaf2aafa74f254a090ec3530af5d433bc7b43b815392e3c7cff0a32880307",
+    "pipeline_results": "1ac74d0b41343ccb17d43d1271b3ce4de6581c39477d129547ed3d6125ab12b7",
+    "retry_audit": "c736ddbc354c224b8e5f0704672ca31e448ec34e31413d9920b1d2c06ad850fe"
+  },
   "evidence_artifact_digest": "a98861c6bd9fb09a9d948b25317d11f53c69c25243bfa1eb6e1d1306cba91b77",
   "evidence_artifact_id": 8362376085,
   "evidence_engine_version": "4abb6840887bb0803ea7bad2b6f91babba621e4f",
@@ -31,11 +41,6 @@
   },
   "quality_violation_policy": "release_no_go",
   "raw_assets_in_repository": false,
-  "required_file_sha256": {
-    "measurement_envelope": "4f7aaf2aafa74f254a090ec3530af5d433bc7b43b815392e3c7cff0a32880307",
-    "pipeline_results": "1ac74d0b41343ccb17d43d1271b3ce4de6581c39477d129547ed3d6125ab12b7",
-    "retry_audit": "c7eec85ced0f5504ec0bf52aa29961c943df436bd922814ba3f9f328cc6c347f"
-  },
   "required_quality_metrics": [
     "fidelity",
     "ssim",
