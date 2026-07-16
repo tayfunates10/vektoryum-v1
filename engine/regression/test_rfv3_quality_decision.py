@@ -119,7 +119,7 @@ class RFV3QualityDecisionTests(unittest.TestCase):
         self.assertEqual([phase["status"] for phase in phases], ["merged", "merged", "pending", "pending"])
         self.assertEqual(phases[2]["release_decision"], "no_go")
         self.assertEqual(phases[2]["decision_evidence"], "docs/real_world_fidelity/evidence/rfv3_quality_decision.json")
-        self.assertIn("phase closure", phases[2]["blocked_on"])
+        self.assertIn("reviewed RFV-3 closure", phases[2]["blocked_on"])
         self.assertIn("passing real-world quality rerun", phases[3]["blocked_on"])
 
 
