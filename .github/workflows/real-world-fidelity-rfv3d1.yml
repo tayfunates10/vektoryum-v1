@@ -1,0 +1,41 @@
+name: Real-world fidelity RFV-3D1 metric coverage diagnostics
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  rfv3d1-metric-coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Run actions/checkout@v4
+        uses: actions/checkout@v4
+
+      - name: Run actions/setup-python@v5
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Compile RFV-3D1 diagnostics
+        run: python -m py_compile engine/regression/rfv3_metric_coverage.py engine/regression/test_rfv3_metric_coverage.py
+
+      - name: Test RFV-3D1 fail-closed classification
+        run: python -m unittest engine.regression.test_rfv3_metric_coverage -v
+
+      - name: Verify committed missing-metric diagnosis
+        run: python -m engine.regression.rfv3_metric_coverage --verify-committed
+
+      - name: Confirm RFV-4 remains blocked
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          roadmap = json.loads(Path('docs/real_world_fidelity_roadmap.json').read_text())
+          decision = json.loads(Path('docs/real_world_fidelity/evidence/rfv3_quality_decision.json').read_text())
+          assert roadmap['phases'][3]['status'] == 'pending'
+          assert decision['release_decision'] == 'no_go'
+          assert decision['rfv4_allowed'] is False
+          PY
