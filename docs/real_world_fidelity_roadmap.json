@@ -49,7 +49,7 @@
         "a reviewed finite quality decision is emitted without fabricating missing metrics or claiming universal fidelity",
         "RFV-4 remains blocked when the reviewed real-world release decision is no-go"
       ],
-      "blocked_on": "engine quality remediation followed by a passing real-world quality rerun before RFV-4",
+      "blocked_on": "merge reviewed RFV-3 closure; release remains blocked on engine quality remediation and a passing real-world rerun",
       "decision_evidence": "docs/real_world_fidelity/evidence/rfv3_quality_decision.json",
       "decision_policy": "engine/regression/rfv3_quality_decision_policy.json",
       "id": "RFV-3",
@@ -64,7 +64,7 @@
       "repeat_sample_count": 72,
       "retry_audit": "docs/real_world_fidelity/evidence/rfv3_retry_audit.json",
       "review_evidence": "docs/real_world_fidelity/rfv-3c.md",
-      "status": "implemented",
+      "status": "pending",
       "title": "Real pipeline measurement and automatic retry gate"
     },
     {
