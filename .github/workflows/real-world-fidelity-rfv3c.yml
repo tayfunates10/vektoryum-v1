@@ -1,0 +1,44 @@
+name: Real-world fidelity RFV-3C reviewed quality decision
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  rfv3c-reviewed-decision:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Run actions/checkout@v4
+        uses: actions/checkout@v4
+
+      - name: Run actions/setup-python@v5
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Compile RFV-3C evaluator and tests
+        run: python -m py_compile engine/regression/rfv3_quality_decision.py engine/regression/test_rfv3_quality_decision.py
+
+      - name: Validate immutable evidence and fail-closed decision
+        run: python -m unittest engine.regression.test_rfv3_quality_decision
+
+      - name: Reproduce committed NO-GO decision
+        run: python -m engine.regression.rfv3_quality_decision --verify-committed
+
+      - name: Confirm RFV-4 remains blocked
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          roadmap = json.loads(Path('docs/real_world_fidelity_roadmap.json').read_text())
+          decision = json.loads(Path('docs/real_world_fidelity/evidence/rfv3_quality_decision.json').read_text())
+          assert roadmap['phases'][2]['status'] == 'implemented'
+          assert roadmap['phases'][2]['release_decision'] == 'no_go'
+          assert roadmap['phases'][3]['status'] == 'pending'
+          assert decision['release_decision'] == 'no_go'
+          assert decision['rfv4_allowed'] is False
+          assert decision['raw_assets_in_repository'] is False
+          PY
