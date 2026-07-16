@@ -109,8 +109,15 @@ def _fallback(
     message: object | None,
     elapsed_ms: float,
     peak_rss_mb: float | None,
+    artifact_sha: str | None = None,
 ) -> tuple[dict[str, float | int | None], str | None, dict[str, Any]]:
-    """Record a non-silent fallback; missing metrics stay ``None`` (no guessing)."""
+    """Record a non-silent fallback; missing metrics stay ``None`` (no guessing).
+
+    ``artifact_sha``: when the winner SVG bytes were actually read/evaluated the
+    real digest is known and MUST be kept — dropping it made the fail-closed
+    runner reject repeats for a digest that genuinely exists (live regression
+    observed on qualification-public-14).
+    """
     provenance["metric_source"] = "partial_quality_report"
     provenance["exact_evaluator_failure_class"] = failure_class
     if message is not None:
@@ -119,7 +126,7 @@ def _fallback(
     provenance["fallback_source"] = "partial_quality_report"
     return (
         extract_metrics(output, elapsed_ms=elapsed_ms, peak_rss_mb=peak_rss_mb),
-        None,
+        artifact_sha,
         provenance,
     )
 
@@ -186,9 +193,11 @@ def _exact_winner_metrics(
             "peak_rss_mb": None if peak_rss_mb is None else round(float(peak_rss_mb), 6),
         }
     except Exception as exc:  # noqa: BLE001 — recorded, never silent
+        # Winner dosyası okundu ve digest'i biliniyor; digest atılmaz.
         return _fallback(
             output, provenance, failure_class="evaluator_exception", message=exc,
             elapsed_ms=elapsed_ms, peak_rss_mb=peak_rss_mb,
+            artifact_sha=provenance["selected_svg_sha256"],
         )
 
     # The exact path only counts as completed when SSIM, edge F1 and delta_e00
@@ -202,10 +211,13 @@ def _exact_winner_metrics(
     hard_codes = set(getattr(report, "hard_fail_codes", None) or [])
     failure_class = "render_failure" if "render_failed" in hard_codes else "exact_metrics_incomplete"
     missing = sorted(name for name, value in component.items() if not _finite(value))
+    # Evaluator gerçek winner baytlarını hashledi; digest kaybedilmez (aksi eski
+    # davranışa göre regresyondu: digest'siz satır fail-closed reddediliyordu).
     return _fallback(
         output, provenance, failure_class=failure_class,
         message=f"non-finite exact component metrics: {missing}",
         elapsed_ms=elapsed_ms, peak_rss_mb=peak_rss_mb,
+        artifact_sha=report.sha256,
     )
 
 

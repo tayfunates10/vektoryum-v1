@@ -117,10 +117,13 @@ class RFV3D2ProvenanceTests(unittest.TestCase):
     def test_evaluator_exception_is_recorded_and_sanitized(self):
         with TemporaryDirectory() as tmp:
             svg = _write_svg(Path(tmp))
-            metrics, _sha, prov = _call(
+            expected_digest = hashlib.sha256(svg.read_bytes()).hexdigest()
+            metrics, sha, prov = _call(
                 _winner(svg),
                 evaluator={"side_effect": RuntimeError(f"boom at {svg} object 0x7fab12cd")},
             )
+        # dosya okundu → digest bilinir ve korunur (aynı winner baytları)
+        self.assertEqual(sha, expected_digest)
         self.assertEqual(prov["exact_evaluator_failure_class"], "evaluator_exception")
         self.assertTrue(prov["exact_evaluator_attempted"])
         self.assertFalse(prov["exact_evaluator_completed"])
@@ -154,7 +157,9 @@ class RFV3D2ProvenanceTests(unittest.TestCase):
         self.assertFalse(prov["exact_evaluator_completed"])
         self.assertEqual(prov["metric_source"], "partial_quality_report")
         self.assertIn("edge_f1", prov["exact_evaluator_failure_message_sanitized"])
-        self.assertIsNone(exact_sha)
+        # digest KORUNUR: evaluator gerçek winner baytlarını hashledi (canlı
+        # regresyon: digest'siz satır fail-closed runner'da reddediliyordu)
+        self.assertEqual(exact_sha, "b" * 64)
         self.assertIsNone(metrics["edge_f1"])  # fallback boş output'tan → null
 
     def test_no_branch_completes_without_finite_components(self):
