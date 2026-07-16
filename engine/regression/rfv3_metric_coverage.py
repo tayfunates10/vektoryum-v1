@@ -29,10 +29,15 @@ def classify_missing_metrics(metrics: dict[str, Any]) -> tuple[list[str], str | 
     if not missing:
         return [], None
 
-    # FinalArtifactEvaluator creates B_visual and D_edge_geometry together after a
-    # successful render. Therefore this exact signature proves that extraction
-    # fell back to a partial quality/legacy report rather than exact winner metrics.
-    if missing == ["edge_f1", "ssim"] and metrics.get("alpha_iou") is not None and metrics.get("delta_e00") is not None:
+    # FinalArtifactEvaluator creates B_visual, C_color and D_edge_geometry after a
+    # successful exact render. The committed affected cases retain alpha_iou but
+    # lose SSIM and edge F1, with delta_e00 optionally absent as part of the same
+    # partial quality/legacy-report fallback. Do not fabricate any missing value.
+    partial_fallback_signatures = {
+        ("edge_f1", "ssim"),
+        ("delta_e00", "edge_f1", "ssim"),
+    }
+    if tuple(missing) in partial_fallback_signatures and metrics.get("alpha_iou") is not None:
         return missing, "partial_quality_report_fallback"
     return missing, "unclassified_required_metric_gap"
 
