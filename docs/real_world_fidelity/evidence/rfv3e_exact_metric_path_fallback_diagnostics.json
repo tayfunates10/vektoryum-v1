@@ -1,0 +1,117 @@
+{
+  "analysis": {
+    "aggregate_case_provenance_consistent": true,
+    "cluster_root_cause_class": null,
+    "diagnostic_failure_class": "provenance_missing_repeat_level_evaluator_report_detail",
+    "next_branch": "agent/rfv-3e-exact-metric-path-provenance-completion",
+    "observed_failure_class": "exact_metrics_incomplete",
+    "observed_failure_class_status": "proven_at_aggregate_case_level",
+    "original_routing_hypothesis_status": "disproven",
+    "production_fix_allowed": false,
+    "production_fix_forbidden_scope": [
+      "measurement-path routing change",
+      "final-artifact evaluator behavior change",
+      "winner selection or serializer change",
+      "threshold, corpus, repeat-count or release-decision change"
+    ],
+    "production_fix_scope": [],
+    "root_cause_status": "unresolved",
+    "unresolved_reason": "The published artifact proves that the winner path and file existed and the exact evaluator was attempted, but it does not publish per-repeat evaluator provenance, evaluator report status, hard-failure codes, or which evaluator metric group was absent. exact_metrics_incomplete is an observed result class, not the production cause of that result."
+  },
+  "bindings": {
+    "canonical_decision_file_sha256": "4fb585cc99c566c6a340ad8a2a982aaea4cea68077a197acfd20ea1db814ace6",
+    "canonical_decision_sha256": "39f2c1a7ac81f2a0f338c0099c0c82de53f295fb4b56dc5b6ed3179004c6148c",
+    "canonical_results_sha256": "663697ba9c021b49d42b5e8941c2d81794d3fb60c96b2273c61fe838b23f3e0a",
+    "corpus_or_case_set_sha256": "5f151a6cb1a433b0cb0989a67bd7cc7940162f4b36d67903d6ccdd173f9e7d89",
+    "remediation_plan_git_blob_sha": "822db26d6ef2012f1065aecba689106c58a3ae44"
+  },
+  "observations": [
+    {
+      "artifact_sha256": "c617bbf0533b4ddcf75106fd2a9500a49e6b68f6b0fd363ffee47fd61b6e1e74",
+      "case_id": "qualification-public-10",
+      "exact_evaluator_attempted": true,
+      "exact_evaluator_completed": false,
+      "exact_evaluator_failure_class": "exact_metrics_incomplete",
+      "fallback_source": "partial_quality_report",
+      "fallback_used": true,
+      "metric_source": "partial_quality_report",
+      "missing_exact_component_metrics": ["delta_e00", "edge_f1", "ssim"],
+      "repeat_audit": [
+        {"attempt_count": 1, "repeat_index": 1, "retried": false, "status": "success"},
+        {"attempt_count": 1, "repeat_index": 2, "retried": false, "status": "success"},
+        {"attempt_count": 1, "repeat_index": 3, "retried": false, "status": "success"}
+      ],
+      "repeat_metric_provenance_available": false,
+      "selected_svg_file_present": true,
+      "selected_svg_path_present": true,
+      "selected_svg_sha256": "c617bbf0533b4ddcf75106fd2a9500a49e6b68f6b0fd363ffee47fd61b6e1e74"
+    },
+    {
+      "artifact_sha256": "f2ace52eab2ed5c75a53bbb3033900714930e07f61ce1dd3be3717a66346220a",
+      "case_id": "qualification-public-14",
+      "exact_evaluator_attempted": true,
+      "exact_evaluator_completed": false,
+      "exact_evaluator_failure_class": "exact_metrics_incomplete",
+      "fallback_source": "partial_quality_report",
+      "fallback_used": true,
+      "metric_source": "partial_quality_report",
+      "missing_exact_component_metrics": ["delta_e00", "edge_f1", "ssim"],
+      "repeat_audit": [
+        {"attempt_count": 1, "repeat_index": 1, "retried": false, "status": "success"},
+        {"attempt_count": 1, "repeat_index": 2, "retried": false, "status": "success"},
+        {"attempt_count": 1, "repeat_index": 3, "retried": false, "status": "success"}
+      ],
+      "repeat_metric_provenance_available": false,
+      "selected_svg_file_present": true,
+      "selected_svg_path_present": true,
+      "selected_svg_sha256": "f2ace52eab2ed5c75a53bbb3033900714930e07f61ce1dd3be3717a66346220a"
+    },
+    {
+      "artifact_sha256": "621759af9e376c3d4cfbe38d2bc7b61ce1c0023730cf9e52aa6aa40479a3e43a",
+      "case_id": "qualification-public-18",
+      "exact_evaluator_attempted": true,
+      "exact_evaluator_completed": false,
+      "exact_evaluator_failure_class": "exact_metrics_incomplete",
+      "fallback_source": "partial_quality_report",
+      "fallback_used": true,
+      "metric_source": "partial_quality_report",
+      "missing_exact_component_metrics": ["delta_e00", "edge_f1", "ssim"],
+      "repeat_audit": [
+        {"attempt_count": 1, "repeat_index": 1, "retried": false, "status": "success"},
+        {"attempt_count": 1, "repeat_index": 2, "retried": false, "status": "success"},
+        {"attempt_count": 1, "repeat_index": 3, "retried": false, "status": "success"}
+      ],
+      "repeat_metric_provenance_available": false,
+      "selected_svg_file_present": true,
+      "selected_svg_path_present": true,
+      "selected_svg_sha256": "621759af9e376c3d4cfbe38d2bc7b61ce1c0023730cf9e52aa6aa40479a3e43a"
+    }
+  ],
+  "plan_claim_assessment": {
+    "cluster_id": "exact-metric-path-fallback",
+    "plan_claim": "selected winner SVG does not reach the exact final-artifact evaluator",
+    "requires_plan_correction_before_production_fix": true,
+    "status": "superseded_by_live_diagnostics"
+  },
+  "release_decision": "no_go",
+  "rfv4_allowed": false,
+  "schema": "vektoryum-rfv3e-exact-metric-path-fallback-diagnostics-v1",
+  "scope": {
+    "case_ids": ["qualification-public-10", "qualification-public-14", "qualification-public-18"],
+    "cluster_id": "exact-metric-path-fallback"
+  },
+  "source": {
+    "artifact_digest": "sha256:d747ce3d8b1eb5e403bea39ba2607a7b75d3cb8cff2f77f26a1b528d7a7dd037",
+    "artifact_id": 8399777964,
+    "artifact_name": "rfv3-live-measurement-0c09bcbad152c2661673e214dd159183e50a6525",
+    "head_sha": "0c09bcbad152c2661673e214dd159183e50a6525",
+    "measurement_envelope_file_sha256": "abaa39ec421a980b711c8b54b49b4768a28a55a966e4ea05d71480b6a051a988",
+    "pipeline_results_file_sha256": "6e6c8f1458a1725153f7187fb3eefeef645b9565c56df4aed9d4c6fc35b7631a",
+    "pull_request": 100,
+    "repository": "tayfunates10/vektoryum-v1",
+    "retry_audit_file_sha256": "c7eec85ced0f5504ec0bf52aa29961c943df436bd922814ba3f9f328cc6c347f",
+    "workflow_name": "Real-world fidelity RFV-3B live production measurement",
+    "workflow_run_attempt": 1,
+    "workflow_run_id": 29555984755
+  }
+}
