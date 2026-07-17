@@ -1,11 +1,10 @@
 """Sanitized RFV-3E diagnostics for the exact-metric fallback cluster.
 
-The live PR #100 artifact proves that the selected SVG path and file existed and
-that the exact evaluator was attempted for cases -10, -14 and -18.  It also
-proves an ``exact_metrics_incomplete`` result and an explicit partial-report
-fallback.  It does not contain repeat-level evaluator reports or hard-failure
-codes, so the production cause remains unresolved and no production fix is
-allowed by this module.
+The PR #100 live artifact proves that the selected SVG path and file existed and
+that the exact evaluator was attempted for cases -10, -14 and -18. It also
+records ``exact_metrics_incomplete`` and an explicit partial-report fallback.
+The artifact does not expose repeat-level evaluator report details, so the
+production cause remains unresolved and this module does not authorize a fix.
 """
 from __future__ import annotations
 
@@ -31,6 +30,12 @@ EXPECTED_CASES = (
 )
 EXPECTED_GAPS = ("delta_e00", "edge_f1", "ssim")
 EXPECTED_THRESHOLDS = {"alpha_iou": 0.98, "edge_f1": 0.98, "fidelity": 99.0, "ssim": 0.98}
+EXPECTED_FORBIDDEN_SCOPE = (
+    "measurement-path routing change",
+    "final-artifact evaluator behavior change",
+    "winner selection or serializer change",
+    "threshold, corpus, repeat-count or release-decision change",
+)
 EXPECTED_SOURCE = {
     "artifact_digest": "sha256:d747ce3d8b1eb5e403bea39ba2607a7b75d3cb8cff2f77f26a1b528d7a7dd037",
     "artifact_id": 8399777964,
@@ -139,6 +144,8 @@ def _index(rows: Any, key: str, label: str) -> dict[str, dict[str, Any]]:
 
 
 def _repeat_rows(samples: Any, case_id: str) -> list[dict[str, Any]]:
+    if not isinstance(samples, list):
+        raise DiagnosticsError("retry samples missing")
     rows = [row for row in samples if isinstance(row, dict) and row.get("case_id") == case_id]
     by_index: dict[int, dict[str, Any]] = {}
     for row in rows:
@@ -195,8 +202,6 @@ def build_evidence(
 
     rows = _index(pipeline.get("results"), "case_id", "pipeline case")
     samples = retry.get("samples")
-    if not isinstance(samples, list):
-        raise DiagnosticsError("retry samples missing")
     observations: list[dict[str, Any]] = []
     for case_id in EXPECTED_CASES:
         row = rows.get(case_id)
@@ -243,12 +248,7 @@ def build_evidence(
             "observed_failure_class_status": "proven_at_aggregate_case_level",
             "original_routing_hypothesis_status": "disproven",
             "production_fix_allowed": False,
-            "production_fix_forbidden_scope": [
-                "measurement-path routing change",
-                "final-artifact evaluator behavior change",
-                "winner selection or serializer change",
-                "threshold, corpus, repeat-count or release-decision change",
-            ],
+            "production_fix_forbidden_scope": list(EXPECTED_FORBIDDEN_SCOPE),
             "production_fix_scope": [],
             "root_cause_status": "unresolved",
             "unresolved_reason": (
@@ -326,8 +326,7 @@ def verify_evidence(
     scope = evidence.get("scope") or {}
     if tuple(scope.get("case_ids", [])) != EXPECTED_CASES or scope.get("cluster_id") != "exact-metric-path-fallback":
         raise DiagnosticsError("diagnostic scope drift")
-    observations = evidence.get("observations")
-    indexed = _index(observations, "case_id", "diagnostic case")
+    indexed = _index(evidence.get("observations"), "case_id", "diagnostic case")
     if tuple(indexed) != EXPECTED_CASES:
         raise DiagnosticsError("diagnostic case order or identity drift")
     for case_id in EXPECTED_CASES:
@@ -371,10 +370,18 @@ def verify_evidence(
     for key, value in exact_analysis.items():
         if analysis.get(key) != value:
             raise DiagnosticsError(f"analysis drift: {key}")
-    if not analysis.get("production_fix_forbidden_scope") or not analysis.get("unresolved_reason"):
-        raise DiagnosticsError("fail-closed analysis detail missing")
+    if tuple(analysis.get("production_fix_forbidden_scope", [])) != EXPECTED_FORBIDDEN_SCOPE:
+        raise DiagnosticsError("production fix forbidden scope drift")
+    if not isinstance(analysis.get("unresolved_reason"), str) or not analysis["unresolved_reason"].strip():
+        raise DiagnosticsError("fail-closed unresolved reason missing")
+
     assessment = evidence.get("plan_claim_assessment") or {}
-    if assessment.get("status") != "superseded_by_live_diagnostics" or assessment.get("requires_plan_correction_before_production_fix") is not True:
+    if (
+        assessment.get("cluster_id") != "exact-metric-path-fallback"
+        or assessment.get("plan_claim") != "selected winner SVG does not reach the exact final-artifact evaluator"
+        or assessment.get("status") != "superseded_by_live_diagnostics"
+        or assessment.get("requires_plan_correction_before_production_fix") is not True
+    ):
         raise DiagnosticsError("plan claim assessment drift")
     if evidence.get("release_decision") != "no_go" or evidence.get("rfv4_allowed") is not False:
         raise DiagnosticsError("diagnostic release gate drift")
