@@ -1,0 +1,144 @@
+name: Real-world fidelity RFV-3E exact metric path fallback diagnostics
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  rfv3e-exact-metric-path-fallback-diagnostics:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: engine
+    steps:
+      - name: Run actions/checkout@v4
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run actions/setup-python@v5
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Compile RFV-3E diagnostics
+        run: |
+          python -m py_compile \
+            engine/regression/rfv3e_exact_metric_path_fallback_diagnostics.py \
+            engine/regression/test_rfv3e_exact_metric_path_fallback_diagnostics.py
+
+      - name: Test RFV-3E fail-closed diagnostics contract
+        run: python -m unittest engine.regression.test_rfv3e_exact_metric_path_fallback_diagnostics -v
+
+      - name: Verify committed diagnostics evidence
+        run: |
+          python -m regression.rfv3e_exact_metric_path_fallback_diagnostics verify \
+            --evidence docs/real_world_fidelity/evidence/rfv3e_exact_metric_path_fallback_diagnostics.json
+
+      - name: Verify source artifact bindings and exact three-case scope
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p = json.loads(Path('docs/real_world_fidelity/evidence/rfv3e_exact_metric_path_fallback_diagnostics.json').read_text())
+          source = p['source']
+          assert source['pull_request'] == 100
+          assert source['head_sha'] == '0c09bcbad152c2661673e214dd159183e50a6525'
+          assert source['workflow_run_id'] == 29555984755
+          assert source['artifact_id'] == 8399777964
+          assert source['artifact_digest'] == 'sha256:d747ce3d8b1eb5e403bea39ba2607a7b75d3cb8cff2f77f26a1b528d7a7dd037'
+          assert p['scope']['case_ids'] == [
+              'qualification-public-10',
+              'qualification-public-14',
+              'qualification-public-18',
+          ]
+          PY
+
+      - name: Verify repeat completeness and evaluator observation
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p = json.loads(Path('docs/real_world_fidelity/evidence/rfv3e_exact_metric_path_fallback_diagnostics.json').read_text())
+          for row in p['observations']:
+              assert [r['repeat_index'] for r in row['repeat_audit']] == [1, 2, 3]
+              assert all(r['status'] == 'success' and r['attempt_count'] == 1 and r['retried'] is False for r in row['repeat_audit'])
+              assert row['selected_svg_path_present'] is True
+              assert row['selected_svg_file_present'] is True
+              assert row['exact_evaluator_attempted'] is True
+              assert row['exact_evaluator_completed'] is False
+              assert row['exact_evaluator_failure_class'] == 'exact_metrics_incomplete'
+              assert row['repeat_metric_provenance_available'] is False
+          PY
+
+      - name: Verify deterministic serialization and no path or secret leakage
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from regression.rfv3e_exact_metric_path_fallback_diagnostics import canonical_sha256, reject_sensitive
+          path = Path('docs/real_world_fidelity/evidence/rfv3e_exact_metric_path_fallback_diagnostics.json')
+          payload = json.loads(path.read_text())
+          first = canonical_sha256(payload)
+          second = canonical_sha256(json.loads(json.dumps(payload, sort_keys=True)))
+          assert first == second
+          reject_sensitive(payload)
+          PY
+
+      - name: Verify remediation-plan and canonical decision bindings
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from regression.rfv3e_exact_metric_path_fallback_diagnostics import git_blob_sha
+          evidence = json.loads(Path('docs/real_world_fidelity/evidence/rfv3e_exact_metric_path_fallback_diagnostics.json').read_text())
+          plan_path = Path('docs/real_world_fidelity/evidence/rfv3e_remediation_plan.json')
+          plan = json.loads(plan_path.read_text())
+          decision = json.loads(Path('docs/real_world_fidelity/evidence/rfv3_quality_decision.json').read_text())
+          assert git_blob_sha(plan_path) == evidence['bindings']['remediation_plan_git_blob_sha']
+          assert plan['source_results_sha256'] == evidence['bindings']['canonical_results_sha256']
+          assert plan['source_decision_sha256'] == evidence['bindings']['canonical_decision_sha256']
+          assert decision['decision_sha256'] == evidence['bindings']['canonical_decision_sha256']
+          assert decision['cases_sha256'] == evidence['bindings']['corpus_or_case_set_sha256']
+          PY
+
+      - name: Verify thresholds unchanged and RFV-4 remains blocked
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          plan = json.loads(Path('docs/real_world_fidelity/evidence/rfv3e_remediation_plan.json').read_text())
+          decision = json.loads(Path('docs/real_world_fidelity/evidence/rfv3_quality_decision.json').read_text())
+          roadmap = json.loads(Path('docs/real_world_fidelity_roadmap.json').read_text())
+          evidence = json.loads(Path('docs/real_world_fidelity/evidence/rfv3e_exact_metric_path_fallback_diagnostics.json').read_text())
+          assert plan['thresholds'] == {'alpha_iou': 0.98, 'edge_f1': 0.98, 'fidelity': 99.0, 'ssim': 0.98}
+          assert decision['release_decision'] == evidence['release_decision'] == 'no_go'
+          assert decision['rfv4_allowed'] is evidence['rfv4_allowed'] is False
+          status = {phase['id']: phase['status'] for phase in roadmap['phases']}
+          assert status['RFV-3'] == 'pending'
+          assert status['RFV-4'] == 'pending'
+          assert evidence['analysis']['production_fix_allowed'] is False
+          assert evidence['analysis']['root_cause_status'] == 'unresolved'
+          PY
+
+      - name: Verify diagnostics-only diff scope
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          git diff --name-only "$BASE_SHA" HEAD | while IFS= read -r path; do
+            case "$path" in
+              engine/regression/rfv3e_exact_metric_path_fallback_diagnostics.py|\
+              engine/regression/test_rfv3e_exact_metric_path_fallback_diagnostics.py|\
+              docs/real_world_fidelity/evidence/rfv3e_exact_metric_path_fallback_diagnostics.json|\
+              docs/real_world_fidelity/rfv-3e-exact-metric-path-fallback-diagnostics.md|\
+              .github/workflows/real-world-fidelity-rfv3e-exact-metric-path-fallback-diagnostics.yml)
+                ;;
+              *)
+                echo "unexpected production or unrelated diff path: $path" >&2
+                exit 1
+                ;;
+            esac
+          done
