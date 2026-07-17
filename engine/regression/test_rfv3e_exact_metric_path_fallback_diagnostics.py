@@ -173,6 +173,7 @@ EVIDENCE_MUTATIONS: dict[str, Mutator] = {
     "root_cause_promoted": _set(("analysis", "root_cause_status"), "proven"),
     "production_fix_enabled": _set(("analysis", "production_fix_allowed"), True),
     "production_fix_scope_added": _append(("analysis", "production_fix_scope"), "routing fix"),
+    "production_fix_forbidden_scope_removed": lambda p: p["analysis"]["production_fix_forbidden_scope"].pop(),
     "routing_hypothesis_restored": _set(("analysis", "original_routing_hypothesis_status"), "proven"),
     "next_branch_drift": _set(("analysis", "next_branch"), "agent/rfv-3e-exact-metric-path-fallback-fix"),
     "plan_assessment_drift": _set(("plan_claim_assessment", "status"), "current"),
