@@ -2,6 +2,12 @@ name: Real-world fidelity RFV-3E exact metric path fallback diagnostics
 
 on:
   pull_request:
+    paths:
+      - engine/regression/rfv3e_exact_metric_path_fallback_diagnostics.py
+      - engine/regression/test_rfv3e_exact_metric_path_fallback_diagnostics.py
+      - docs/real_world_fidelity/evidence/rfv3e_exact_metric_path_fallback_diagnostics.json
+      - docs/real_world_fidelity/rfv-3e-exact-metric-path-fallback-diagnostics.md
+      - .github/workflows/real-world-fidelity-rfv3e-exact-metric-path-fallback-diagnostics.yml
 
 permissions:
   contents: read
