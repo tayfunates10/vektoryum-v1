@@ -1,0 +1,325 @@
+{
+  "case_count": 24,
+  "cluster_count": 6,
+  "clusters": [
+    {
+      "allowed_change_scope": [
+        "measurement-path routing fix so the selected winner SVG reaches the exact final-artifact evaluator",
+        "full 24-case live rerun producing a new immutable evidence generation"
+      ],
+      "cluster_id": "exact-metric-path-fallback",
+      "confidence": "proven",
+      "confidence_basis": "RFV-3D1 coverage diagnosis proved the partial_quality_report_fallback signature for exactly these cases; RFV-3D2 merged runtime provenance instrumentation records the fail-closed reason class per repeat.",
+      "evidence_case_ids": [
+        "qualification-public-10",
+        "qualification-public-14",
+        "qualification-public-18"
+      ],
+      "failed_metrics": [
+        "alpha_iou",
+        "edge_f1",
+        "fidelity",
+        "ssim"
+      ],
+      "forbidden_changes": [
+        "fabricating or defaulting missing metrics",
+        "removing affected cases from the corpus",
+        "threshold or repeat-count changes"
+      ],
+      "phase_branches": {
+        "diagnostics": "agent/rfv-3e-exact-metric-path-fallback-diagnostics",
+        "fix": "agent/rfv-3e-exact-metric-path-fallback-fix",
+        "rerun": "agent/rfv-3e-exact-metric-path-fallback-rerun"
+      },
+      "priority": 1,
+      "regression_cases": [
+        "qualification-public-01",
+        "qualification-public-02",
+        "qualification-public-03",
+        "qualification-public-04",
+        "qualification-public-05",
+        "qualification-public-06",
+        "qualification-public-07",
+        "qualification-public-08",
+        "qualification-public-09",
+        "qualification-public-11",
+        "qualification-public-12",
+        "qualification-public-13",
+        "qualification-public-15",
+        "qualification-public-16",
+        "qualification-public-17",
+        "qualification-public-19",
+        "qualification-public-20",
+        "qualification-public-21",
+        "qualification-public-22",
+        "qualification-public-23",
+        "qualification-public-24"
+      ],
+      "root_cause_class": "measurement_metric_completeness",
+      "suspected_modules": [
+        "engine/benchmark/pipeline_results.py",
+        "engine/app pipeline winner output contract (best.svg_path)"
+      ],
+      "verification_cases": [
+        "qualification-public-10",
+        "qualification-public-14",
+        "qualification-public-18"
+      ]
+    },
+    {
+      "allowed_change_scope": [
+        "instrumentation isolating where alpha coverage diverges (threshold, halo, compositing)",
+        "alpha-aware boundary handling gated by re-measurement"
+      ],
+      "cluster_id": "transparent-logo-alpha-boundary",
+      "confidence": "strong",
+      "confidence_basis": "alpha_iou is tightly clustered at 0.78-0.96 across six transparent logo/badge cases while SSIM stays >= 0.979 and edge F1 >= 0.974, indicating a systematic transparent-boundary treatment rather than per-case noise; the shared mechanism is not yet isolated to one module.",
+      "evidence_case_ids": [
+        "qualification-public-02",
+        "qualification-public-04",
+        "qualification-public-05",
+        "qualification-public-08",
+        "qualification-public-15",
+        "qualification-public-16"
+      ],
+      "failed_metrics": [
+        "alpha_iou",
+        "edge_f1",
+        "fidelity",
+        "ssim"
+      ],
+      "forbidden_changes": [
+        "flattening alpha onto white before comparison",
+        "mask polarity or tolerance tricks that only move the metric"
+      ],
+      "phase_branches": {
+        "diagnostics": "agent/rfv-3e-transparent-logo-alpha-boundary-diagnostics",
+        "fix": "agent/rfv-3e-transparent-logo-alpha-boundary-fix",
+        "rerun": "agent/rfv-3e-transparent-logo-alpha-boundary-rerun"
+      },
+      "priority": 2,
+      "regression_cases": [
+        "qualification-public-01",
+        "qualification-public-13"
+      ],
+      "root_cause_class": "alpha_mask_fidelity",
+      "suspected_modules": [
+        "engine/app/preprocess.py alpha handling",
+        "engine/app/pipeline.py region compositing",
+        "engine/app/edge_cleanup.py boundary passes"
+      ],
+      "verification_cases": [
+        "qualification-public-02",
+        "qualification-public-04",
+        "qualification-public-05",
+        "qualification-public-08",
+        "qualification-public-15",
+        "qualification-public-16"
+      ]
+    },
+    {
+      "allowed_change_scope": [
+        "stage-level instrumentation separating path generation, simplify/refit, shared boundary and render contributions",
+        "shared-boundary geometry and adaptive simplification fixes gated by re-measurement",
+        "small-text preservation improvements"
+      ],
+      "cluster_id": "line-art-edge-structure",
+      "confidence": "strong",
+      "confidence_basis": "edge F1 0.687-0.944 and/or SSIM 0.903-0.974 measured below threshold on monoline, small-text, flat-logo and gradient artwork; the worst edge case (monoline, 0.687) and the small-text delta_e00 outlier (11.56) are direct measurements, but the responsible pipeline stage is not yet isolated.",
+      "evidence_case_ids": [
+        "qualification-public-03",
+        "qualification-public-06",
+        "qualification-public-07",
+        "qualification-public-09",
+        "qualification-public-13",
+        "qualification-public-19"
+      ],
+      "failed_metrics": [
+        "alpha_iou",
+        "edge_f1",
+        "fidelity",
+        "ssim"
+      ],
+      "forbidden_changes": [
+        "removing simplification quality gates without measurement",
+        "per-case parameter hardcoding"
+      ],
+      "phase_branches": {
+        "diagnostics": "agent/rfv-3e-line-art-edge-structure-diagnostics",
+        "fix": "agent/rfv-3e-line-art-edge-structure-fix",
+        "rerun": "agent/rfv-3e-line-art-edge-structure-rerun"
+      },
+      "priority": 3,
+      "regression_cases": [
+        "qualification-public-01",
+        "qualification-public-02",
+        "qualification-public-05",
+        "qualification-public-08",
+        "qualification-public-15",
+        "qualification-public-16"
+      ],
+      "root_cause_class": "geometry_edge",
+      "suspected_modules": [
+        "engine/app/edge_cleanup.py simplify/refit",
+        "engine/app/pipeline.py shared-boundary handling",
+        "small-text preservation in candidate selection"
+      ],
+      "verification_cases": [
+        "qualification-public-03",
+        "qualification-public-06",
+        "qualification-public-07",
+        "qualification-public-09",
+        "qualification-public-13",
+        "qualification-public-19"
+      ]
+    },
+    {
+      "allowed_change_scope": [
+        "image-class-aware representation improvements (gradient primitive recovery, adaptive region budget) gated by re-measurement",
+        "photograph-class diagnostics quantifying the representation gap per stage"
+      ],
+      "cluster_id": "photographic-content-representation",
+      "confidence": "strong",
+      "confidence_basis": "all five JPEG photographic cases (640px signage photos and 3840x2160 native 4K) measure SSIM 0.333-0.496, edge F1 0.559-0.773 and delta_e00 13.56-15.78: flat-region tracing under-represents photographic content as a class; the exact representation gap per stage is not yet isolated.",
+      "evidence_case_ids": [
+        "qualification-public-20",
+        "qualification-public-21",
+        "qualification-public-22",
+        "qualification-public-23",
+        "qualification-public-24"
+      ],
+      "failed_metrics": [
+        "alpha_iou",
+        "edge_f1",
+        "fidelity",
+        "ssim"
+      ],
+      "forbidden_changes": [
+        "removing photographic cases from the corpus",
+        "embedding raster or base64 source data inside the SVG",
+        "declaring the category out of scope to pass the gate"
+      ],
+      "phase_branches": {
+        "diagnostics": "agent/rfv-3e-photographic-content-representation-diagnostics",
+        "fix": "agent/rfv-3e-photographic-content-representation-fix",
+        "rerun": "agent/rfv-3e-photographic-content-representation-rerun"
+      },
+      "priority": 4,
+      "regression_cases": [
+        "qualification-public-01",
+        "qualification-public-08"
+      ],
+      "root_cause_class": "visual_appearance",
+      "suspected_modules": [
+        "engine/app/analyzer.py image-class routing",
+        "engine/app/preprocess.py",
+        "multi-candidate trace parameterization for photographic classes"
+      ],
+      "verification_cases": [
+        "qualification-public-20",
+        "qualification-public-21",
+        "qualification-public-22",
+        "qualification-public-23",
+        "qualification-public-24"
+      ]
+    },
+    {
+      "allowed_change_scope": [
+        "topology-preserving tracing and palette handling gated by re-measurement",
+        "bounded path budget with quality gate (no quality-blind cap)"
+      ],
+      "cluster_id": "multicolor-illustration-alpha-collapse",
+      "confidence": "strong",
+      "confidence_basis": "alpha_iou collapses to 0.24-0.42 on multicolor/complex illustrations while path counts explode (858, 862 and 142058 paths; 11 MB SVG), measured directly; whether quantization, topology or compositing drives the collapse is not yet isolated.",
+      "evidence_case_ids": [
+        "qualification-public-11",
+        "qualification-public-12",
+        "qualification-public-17"
+      ],
+      "failed_metrics": [
+        "alpha_iou",
+        "edge_f1",
+        "fidelity",
+        "ssim"
+      ],
+      "forbidden_changes": [
+        "removing path-count observability",
+        "raster embedding to mask representation gaps"
+      ],
+      "phase_branches": {
+        "diagnostics": "agent/rfv-3e-multicolor-illustration-alpha-collapse-diagnostics",
+        "fix": "agent/rfv-3e-multicolor-illustration-alpha-collapse-fix",
+        "rerun": "agent/rfv-3e-multicolor-illustration-alpha-collapse-rerun"
+      },
+      "priority": 5,
+      "regression_cases": [
+        "qualification-public-01",
+        "qualification-public-13"
+      ],
+      "root_cause_class": "alpha_topology",
+      "suspected_modules": [
+        "color quantization / palette handling",
+        "region topology (component merge, holes)",
+        "path budget control in candidate generation"
+      ],
+      "verification_cases": [
+        "qualification-public-11",
+        "qualification-public-12",
+        "qualification-public-17"
+      ]
+    },
+    {
+      "allowed_change_scope": [
+        "diagnostics only: instrument the composite score decomposition for this case before any production proposal"
+      ],
+      "cluster_id": "fidelity-composite-only",
+      "confidence": "tentative",
+      "confidence_basis": "every component threshold passes (SSIM 0.990, edge F1 0.995, alpha IoU 0.982, delta_e00 0.54) yet composite fidelity is 85.06; which composite penalty dominates has not been measured, so no production change is justified yet.",
+      "evidence_case_ids": [
+        "qualification-public-01"
+      ],
+      "failed_metrics": [
+        "fidelity"
+      ],
+      "forbidden_changes": [
+        "any production scoring or pipeline change before the diagnostics phase produces proof",
+        "raising the reported score without component evidence"
+      ],
+      "phase_branches": {
+        "diagnostics": "agent/rfv-3e-fidelity-composite-only-diagnostics",
+        "fix": "agent/rfv-3e-fidelity-composite-only-fix",
+        "rerun": "agent/rfv-3e-fidelity-composite-only-rerun"
+      },
+      "priority": 6,
+      "regression_cases": [
+        "qualification-public-02",
+        "qualification-public-08"
+      ],
+      "root_cause_class": "composite_scoring_gap",
+      "suspected_modules": [
+        "composite fidelity scoring calibration"
+      ],
+      "verification_cases": [
+        "qualification-public-01"
+      ]
+    }
+  ],
+  "failing_case_count": 24,
+  "passing_case_count": 0,
+  "release_decision": "no_go",
+  "rerun_policy": "no release decision change without a full 24-case live rerun on the unchanged corpus identity with 3 repeats per case and unchanged retry policy",
+  "rfv4_allowed": false,
+  "schema": "vektoryum-rfv3e-remediation-plan-v1",
+  "source_cases_sha256": "5f151a6cb1a433b0cb0989a67bd7cc7940162f4b36d67903d6ccdd173f9e7d89",
+  "source_decision_file_sha256": "4fb585cc99c566c6a340ad8a2a982aaea4cea68077a197acfd20ea1db814ace6",
+  "source_decision_sha256": "39f2c1a7ac81f2a0f338c0099c0c82de53f295fb4b56dc5b6ed3179004c6148c",
+  "source_generation": "rfv3b-live-24case-72repeat",
+  "source_measurement_head_sha": "4abb6840887bb0803ea7bad2b6f91babba621e4f",
+  "source_results_sha256": "663697ba9c021b49d42b5e8941c2d81794d3fb60c96b2273c61fe838b23f3e0a",
+  "thresholds": {
+    "alpha_iou": 0.98,
+    "edge_f1": 0.98,
+    "fidelity": 99.0,
+    "ssim": 0.98
+  }
+}

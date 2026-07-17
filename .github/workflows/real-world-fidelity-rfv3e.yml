@@ -1,0 +1,52 @@
+name: Real-world fidelity RFV-3E remediation plan
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  rfv3e-remediation-plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: engine
+    steps:
+      - name: Run actions/checkout@v4
+        uses: actions/checkout@v4
+
+      - name: Run actions/setup-python@v5
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Compile RFV-3E files
+        run: |
+          python -m py_compile \
+            engine/regression/rfv3e_remediation_plan.py \
+            engine/regression/test_rfv3e_remediation_plan.py
+
+      - name: Verify committed remediation plan
+        run: python -m regression.rfv3e_remediation_plan
+
+      - name: Test RFV-3E remediation plan contract
+        run: python -m unittest engine.regression.test_rfv3e_remediation_plan -v
+
+      - name: Guard existing measurement diagnostics
+        run: python -m regression.rfv3_metric_coverage --verify-committed
+
+      - name: Confirm RFV-4 remains blocked
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          roadmap = json.loads(Path('docs/real_world_fidelity_roadmap.json').read_text())
+          decision = json.loads(Path('docs/real_world_fidelity/evidence/rfv3_quality_decision.json').read_text())
+          plan = json.loads(Path('docs/real_world_fidelity/evidence/rfv3e_remediation_plan.json').read_text())
+          assert roadmap['phases'][3]['status'] == 'pending'
+          assert decision['release_decision'] == 'no_go'
+          assert decision['rfv4_allowed'] is False
+          assert plan['release_decision'] == 'no_go'
+          assert plan['rfv4_allowed'] is False
+          PY
