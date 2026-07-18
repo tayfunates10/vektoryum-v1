@@ -3,11 +3,14 @@
 Unavailable metrics remain ``None``. The adapter never fabricates quality scores and
 never changes the pipeline-selected artifact.
 
-RFV-3D2: every result now carries ``metric_provenance`` proving at runtime which
-path produced the metrics (exact final-artifact evaluation vs partial
-quality-report fallback) and, when the exact path could not run, the exact
-fail-closed reason class. Fallback is never silent and missing metrics stay
-``None``; no value is fabricated and no threshold changes.
+RFV-3D2: every result carries ``metric_provenance`` proving at runtime which path
+produced the metrics (exact final-artifact evaluation vs partial quality-report
+fallback) and, when the exact path could not run, the fail-closed reason class.
+
+RFV-3E provenance completion adds sanitized evaluator-report status, reason codes,
+metric-group/component presence, render outcome and a deterministic report-summary
+digest. These are diagnostics only: no evaluator, threshold, winner or serializer
+behaviour is changed.
 """
 from __future__ import annotations
 
@@ -27,6 +30,15 @@ from app.source_truth import alpha_plane_metrics, render_svg_to_rgba
 from benchmark.manifest import BenchmarkCase, BenchmarkResult, REQUIRED_METRICS
 
 PROVENANCE_SCHEMA = "rfv3d2-metric-provenance-v1"
+EVALUATOR_DETAIL_SCHEMA = "rfv3e-exact-evaluator-detail-v1"
+_EVALUATOR_GROUPS = (
+    "A_structure",
+    "B_visual",
+    "C_color",
+    "D_edge_geometry",
+    "G_gradient_alpha",
+    "H_editability",
+)
 # Windows drive or POSIX absolute path tokens — redacted from published evidence.
 _ABS_PATH_TOKEN = re.compile(r"(?:[A-Za-z]:)?(?:[\\/][\w.\-~+]+){2,}")
 _SANITIZED_MESSAGE_LIMIT = 200
@@ -85,6 +97,19 @@ def _white_composite(rgba: Image.Image) -> np.ndarray:
     return np.asarray(background.convert("RGB"), dtype=np.uint8).copy()
 
 
+def _component_status(value: object) -> str:
+    if value is None:
+        return "missing"
+    if _finite(value):
+        return "finite"
+    return "non_finite"
+
+
+def _canonical_sha256(value: object) -> str:
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
 def _new_provenance() -> dict[str, Any]:
     return {
         "schema": PROVENANCE_SCHEMA,
@@ -98,7 +123,95 @@ def _new_provenance() -> dict[str, Any]:
         "selected_svg_sha256": None,
         "fallback_used": False,
         "fallback_source": None,
+        "exact_evaluator_detail_schema": EVALUATOR_DETAIL_SCHEMA,
+        "exact_evaluator_report_status": "not_attempted",
+        "exact_evaluator_reason_code": None,
+        "exact_evaluator_report_summary_sha256": None,
+        "exact_evaluator_verdict": None,
+        "exact_evaluator_byte_read_stable": None,
+        "exact_evaluator_deterministic": None,
+        "exact_evaluator_hard_fail_codes": [],
+        "exact_evaluator_soft_warning_codes": [],
+        "exact_evaluator_unmeasured_required": [],
+        "exact_evaluator_metric_group_presence": {name: False for name in _EVALUATOR_GROUPS},
+        "exact_evaluator_component_status": {
+            "ssim": "not_attempted",
+            "edge_f1": "not_attempted",
+            "delta_e00": "not_attempted",
+        },
+        "exact_evaluator_missing_component_metrics": [],
+        "exact_evaluator_render_outcome": "not_attempted",
     }
+
+
+def _capture_report_detail(report: object, provenance: dict[str, Any]) -> dict[str, Any]:
+    report_metrics = getattr(report, "metrics", None)
+    if not isinstance(report_metrics, dict):
+        report_metrics = {}
+    visual = report_metrics.get("B_visual") if isinstance(report_metrics.get("B_visual"), dict) else {}
+    color = report_metrics.get("C_color") if isinstance(report_metrics.get("C_color"), dict) else {}
+    edge = report_metrics.get("D_edge_geometry") if isinstance(report_metrics.get("D_edge_geometry"), dict) else {}
+
+    ssim = visual.get("ms_ssim") if visual.get("ms_ssim") is not None else visual.get("ssim")
+    component_values = {
+        "ssim": ssim,
+        "edge_f1": edge.get("edge_f1_1px"),
+        "delta_e00": color.get("de00_mean"),
+    }
+    component_status = {name: _component_status(value) for name, value in component_values.items()}
+    missing = sorted(name for name, status in component_status.items() if status != "finite")
+
+    hard_codes = sorted({str(item) for item in (getattr(report, "hard_fail_codes", None) or [])})
+    soft_codes = sorted({str(item) for item in (getattr(report, "soft_warning_codes", None) or [])})
+    unmeasured = sorted({str(item) for item in (getattr(report, "unmeasured_required", None) or [])})
+    group_presence = {name: isinstance(report_metrics.get(name), dict) for name in _EVALUATOR_GROUPS}
+
+    if "render_failed" in hard_codes:
+        render_outcome = "failed"
+    elif all(group_presence[name] for name in ("B_visual", "C_color", "D_edge_geometry")):
+        render_outcome = "rendered"
+    else:
+        render_outcome = "not_reached"
+
+    deterministic = getattr(report, "deterministic", None)
+    if not isinstance(deterministic, bool):
+        deterministic = None
+    byte_read_stable = getattr(report, "byte_read_stable", None)
+    if not isinstance(byte_read_stable, bool):
+        byte_read_stable = None
+    verdict = getattr(report, "verdict", None)
+    if verdict is not None:
+        verdict = str(verdict)
+
+    provenance.update(
+        {
+            "exact_evaluator_report_status": "returned",
+            "exact_evaluator_verdict": verdict,
+            "exact_evaluator_byte_read_stable": byte_read_stable,
+            "exact_evaluator_deterministic": deterministic,
+            "exact_evaluator_hard_fail_codes": hard_codes,
+            "exact_evaluator_soft_warning_codes": soft_codes,
+            "exact_evaluator_unmeasured_required": unmeasured,
+            "exact_evaluator_metric_group_presence": group_presence,
+            "exact_evaluator_component_status": component_status,
+            "exact_evaluator_missing_component_metrics": missing,
+            "exact_evaluator_render_outcome": render_outcome,
+        }
+    )
+    summary = {
+        "artifact_sha256": getattr(report, "sha256", None),
+        "verdict": verdict,
+        "byte_read_stable": byte_read_stable,
+        "deterministic": deterministic,
+        "hard_fail_codes": hard_codes,
+        "soft_warning_codes": soft_codes,
+        "unmeasured_required": unmeasured,
+        "metric_group_presence": group_presence,
+        "component_status": component_status,
+        "render_outcome": render_outcome,
+    }
+    provenance["exact_evaluator_report_summary_sha256"] = _canonical_sha256(summary)
+    return component_values
 
 
 def _fallback(
@@ -115,11 +228,12 @@ def _fallback(
 
     ``artifact_sha``: when the winner SVG bytes were actually read/evaluated the
     real digest is known and MUST be kept — dropping it made the fail-closed
-    runner reject repeats for a digest that genuinely exists (live regression
-    observed on qualification-public-14).
+    runner reject repeats for a digest that genuinely exists.
     """
     provenance["metric_source"] = "partial_quality_report"
     provenance["exact_evaluator_failure_class"] = failure_class
+    if provenance.get("exact_evaluator_reason_code") is None:
+        provenance["exact_evaluator_reason_code"] = failure_class
     if message is not None:
         provenance["exact_evaluator_failure_message_sanitized"] = _sanitize_failure_message(message)
     provenance["fallback_used"] = True
@@ -158,6 +272,8 @@ def _exact_winner_metrics(
     provenance["selected_svg_sha256"] = hashlib.sha256(svg_path.read_bytes()).hexdigest()
 
     provenance["exact_evaluator_attempted"] = True
+    provenance["exact_evaluator_report_status"] = "attempting"
+    provenance["exact_evaluator_render_outcome"] = "unknown"
     try:
         rgba = np.asarray(source_rgba, dtype=np.uint8).copy()
         source_rgb = _white_composite(source_rgba)
@@ -169,6 +285,7 @@ def _exact_winner_metrics(
             image_class="clean_logo",
             required_metrics={"alpha_fidelity"},
         )
+        component_values = _capture_report_detail(report, provenance)
         exact = report.metrics
         visual = exact.get("B_visual") or {}
         color = exact.get("C_color") or {}
@@ -183,17 +300,21 @@ def _exact_winner_metrics(
 
         metrics: dict[str, float | int | None] = {
             "fidelity": best.get("fidelity_score"),
-            "ssim": visual.get("ms_ssim") if visual.get("ms_ssim") is not None else visual.get("ssim"),
-            "edge_f1": edge.get("edge_f1_1px"),
+            "ssim": component_values["ssim"],
+            "edge_f1": component_values["edge_f1"],
             "alpha_iou": alpha_iou,
-            "delta_e00": color.get("de00_mean"),
+            "delta_e00": component_values["delta_e00"],
             "path_count": editability.get("path_count"),
             "svg_bytes": svg_path.stat().st_size,
             "render_ms": round(float(elapsed_ms), 6),
             "peak_rss_mb": None if peak_rss_mb is None else round(float(peak_rss_mb), 6),
         }
     except Exception as exc:  # noqa: BLE001 — recorded, never silent
-        # Winner dosyası okundu ve digest'i biliniyor; digest atılmaz.
+        if provenance.get("exact_evaluator_report_status") == "returned":
+            provenance["exact_evaluator_reason_code"] = "post_evaluator_render_exception"
+        else:
+            provenance["exact_evaluator_report_status"] = "exception"
+            provenance["exact_evaluator_reason_code"] = "evaluator_exception"
         return _fallback(
             output, provenance, failure_class="evaluator_exception", message=exc,
             elapsed_ms=elapsed_ms, peak_rss_mb=peak_rss_mb,
@@ -206,13 +327,19 @@ def _exact_winner_metrics(
     if all(_finite(value) for value in component.values()):
         provenance["exact_evaluator_completed"] = True
         provenance["metric_source"] = "exact_final_artifact"
+        provenance["exact_evaluator_reason_code"] = "exact_metrics_complete"
         return {name: metrics.get(name) for name in REQUIRED_METRICS}, report.sha256, provenance
 
     hard_codes = set(getattr(report, "hard_fail_codes", None) or [])
     failure_class = "render_failure" if "render_failed" in hard_codes else "exact_metrics_incomplete"
     missing = sorted(name for name, value in component.items() if not _finite(value))
-    # Evaluator gerçek winner baytlarını hashledi; digest kaybedilmez (aksi eski
-    # davranışa göre regresyondu: digest'siz satır fail-closed reddediliyordu).
+    provenance["exact_evaluator_reason_code"] = (
+        "render_failed"
+        if failure_class == "render_failure"
+        else "exact_component_metrics_non_finite"
+        if any(provenance["exact_evaluator_component_status"].get(name) == "non_finite" for name in missing)
+        else "exact_component_metrics_missing"
+    )
     return _fallback(
         output, provenance, failure_class=failure_class,
         message=f"non-finite exact component metrics: {missing}",
@@ -254,8 +381,6 @@ def run_case(
         )
 
     artifact_sha = exact_sha or output.get("final_svg_sha256") or _get(output, "final_artifact", "final_svg_sha256")
-    # Bind provenance to the artifact digest so evidence rows cannot be
-    # reinterpreted against a different artifact later.
     provenance["artifact_sha256"] = artifact_sha
     return BenchmarkResult(
         case_id=case.case_id,
