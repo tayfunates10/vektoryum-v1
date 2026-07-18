@@ -4,9 +4,13 @@ on:
   pull_request:
     paths:
       - ".github/workflows/real-world-fidelity-rfv3e-viewbox-fix.yml"
+      - ".github/workflows/real-world-fidelity-rfv3e-viewbox-journal-diagnostics.yml"
       - "engine/app/transform_journal.py"
       - "engine/test_transform_journal.py"
+      - "engine/regression/rfv3e_viewbox_journal_diagnostics.py"
+      - "engine/regression/test_rfv3e_viewbox_journal_diagnostics.py"
       - "docs/real_world_fidelity/rfv-3e-exact-metric-path-viewbox-fix.md"
+      - "docs/real_world_fidelity/rfv-3e-exact-metric-path-viewbox-diagnostics.md"
 
 permissions:
   contents: read
@@ -37,20 +41,31 @@ jobs:
       - name: Install production test dependencies
         run: python -m pip install -r engine/requirements.txt pytest
 
-      - name: Compile changed production contract
-        run: python -m py_compile engine/app/transform_journal.py engine/test_transform_journal.py
+      - name: Compile changed production and historical contracts
+        run: >-
+          python -m py_compile
+          engine/app/transform_journal.py
+          engine/test_transform_journal.py
+          engine/regression/rfv3e_viewbox_journal_diagnostics.py
+          engine/regression/test_rfv3e_viewbox_journal_diagnostics.py
 
       - name: Run complete transform journal contract
         working-directory: engine
         run: pytest -q test_transform_journal.py
 
-      - name: Verify alpha-preserving viewBox acceptance and alpha rollback
+      - name: Verify stage-scoped alpha behavior
         working-directory: engine
         run: >-
           pytest -q test_transform_journal.py
-          -k 'alpha_preserving_viewbox_restore or alpha_plane_regression or unmeasured_alpha'
+          -k 'alpha_preserving_viewbox_restore or alpha_plane_regression or unmeasured_alpha or alpha_measurement_is_scoped'
 
-      - name: Verify narrow production diff scope
+      - name: Verify immutable historical diagnostics
+        run: |
+          python -m unittest engine.regression.test_rfv3e_viewbox_journal_diagnostics -v
+          python -m engine.regression.rfv3e_viewbox_journal_diagnostics verify \
+            --evidence docs/real_world_fidelity/evidence/rfv3e_viewbox_journal_diagnostics.json
+
+      - name: Verify narrow production and evidence-contract diff scope
         shell: bash
         run: |
           set -euo pipefail
@@ -60,9 +75,13 @@ jobs:
             [ -z "${path}" ] && continue
             case "${path}" in
               .github/workflows/real-world-fidelity-rfv3e-viewbox-fix.yml|\
+              .github/workflows/real-world-fidelity-rfv3e-viewbox-journal-diagnostics.yml|\
               engine/app/transform_journal.py|\
               engine/test_transform_journal.py|\
-              docs/real_world_fidelity/rfv-3e-exact-metric-path-viewbox-fix.md)
+              engine/regression/rfv3e_viewbox_journal_diagnostics.py|\
+              engine/regression/test_rfv3e_viewbox_journal_diagnostics.py|\
+              docs/real_world_fidelity/rfv-3e-exact-metric-path-viewbox-fix.md|\
+              docs/real_world_fidelity/rfv-3e-exact-metric-path-viewbox-diagnostics.md)
                 ;;
               *)
                 echo "Unexpected file in RFV-3E viewBox fix diff: ${path}"
@@ -70,6 +89,13 @@ jobs:
                 ;;
             esac
           done <<< "${changed}"
+
+      - name: Confirm historical evidence bytes are unchanged
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --exit-code "origin/${{ github.base_ref }}...HEAD" -- \
+            docs/real_world_fidelity/evidence/rfv3e_viewbox_journal_diagnostics.json
 
       - name: Confirm forbidden contracts are unchanged
         shell: bash
