@@ -1,0 +1,100 @@
+name: Real-world fidelity RFV-3E viewBox alpha-journal fix
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/real-world-fidelity-rfv3e-viewbox-fix.yml"
+      - "engine/app/transform_journal.py"
+      - "engine/test_transform_journal.py"
+      - "docs/real_world_fidelity/rfv-3e-exact-metric-path-viewbox-fix.md"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rfv3e-viewbox-fix-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rfv3e-viewbox-alpha-journal-fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      PYTHONPATH: engine
+    steps:
+      - name: Run actions/checkout@v4
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run actions/setup-python@v5
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: engine/requirements.txt
+
+      - name: Install production test dependencies
+        run: python -m pip install -r engine/requirements.txt pytest
+
+      - name: Compile changed production contract
+        run: python -m py_compile engine/app/transform_journal.py engine/test_transform_journal.py
+
+      - name: Run complete transform journal contract
+        working-directory: engine
+        run: pytest -q test_transform_journal.py
+
+      - name: Verify alpha-preserving viewBox acceptance and alpha rollback
+        working-directory: engine
+        run: >-
+          pytest -q test_transform_journal.py
+          -k 'alpha_preserving_viewbox_restore or alpha_plane_regression or unmeasured_alpha'
+
+      - name: Verify narrow production diff scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin "${{ github.base_ref }}"
+          changed="$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")"
+          while IFS= read -r path; do
+            [ -z "${path}" ] && continue
+            case "${path}" in
+              .github/workflows/real-world-fidelity-rfv3e-viewbox-fix.yml|\
+              engine/app/transform_journal.py|\
+              engine/test_transform_journal.py|\
+              docs/real_world_fidelity/rfv-3e-exact-metric-path-viewbox-fix.md)
+                ;;
+              *)
+                echo "Unexpected file in RFV-3E viewBox fix diff: ${path}"
+                exit 1
+                ;;
+            esac
+          done <<< "${changed}"
+
+      - name: Confirm forbidden contracts are unchanged
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --exit-code "origin/${{ github.base_ref }}...HEAD" -- \
+            engine/app/final_artifact_evaluator.py \
+            engine/app/pipeline.py \
+            engine/benchmark \
+            docs/real_world_fidelity/evidence/rfv3_quality_decision.json \
+            docs/real_world_fidelity_roadmap.json
+
+      - name: Confirm release remains NO-GO and RFV-4 blocked
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          roadmap = json.loads(Path('docs/real_world_fidelity_roadmap.json').read_text())
+          decision = json.loads(
+              Path('docs/real_world_fidelity/evidence/rfv3_quality_decision.json').read_text()
+          )
+          assert roadmap['phases'][2]['status'] == 'pending'
+          assert roadmap['phases'][3]['status'] == 'pending'
+          assert decision['release_decision'] == 'no_go'
+          assert decision['rfv4_allowed'] is False
+          print('RFV-3 remains pending; RFV-4 remains blocked')
+          PY
