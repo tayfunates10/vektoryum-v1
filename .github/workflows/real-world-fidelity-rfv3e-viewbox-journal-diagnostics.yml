@@ -1,0 +1,121 @@
+name: Real-world fidelity RFV-3E viewBox journal diagnostics
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/real-world-fidelity-rfv3e-viewbox-journal-diagnostics.yml"
+      - "engine/regression/rfv3e_viewbox_journal_diagnostics.py"
+      - "engine/regression/test_rfv3e_viewbox_journal_diagnostics.py"
+      - "docs/real_world_fidelity/evidence/rfv3e_viewbox_journal_diagnostics.json"
+      - "docs/real_world_fidelity/rfv-3e-exact-metric-path-viewbox-diagnostics.md"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rfv3e-viewbox-diagnostics-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rfv3e-viewbox-journal-diagnostics:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHONPATH: engine
+    steps:
+      - name: Run actions/checkout@v4
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run actions/setup-python@v5
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install diagnostics dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check
+          numpy pillow opencv-python-headless scipy defusedxml svgpathtools
+
+      - name: Compile RFV-3E viewBox diagnostics
+        run: |
+          python -m py_compile \
+            engine/regression/rfv3e_viewbox_journal_diagnostics.py \
+            engine/regression/test_rfv3e_viewbox_journal_diagnostics.py
+
+      - name: Test deterministic viewBox rollback diagnosis
+        run: >-
+          python -m unittest
+          engine.regression.test_rfv3e_viewbox_journal_diagnostics
+          -v
+
+      - name: Rebuild deterministic diagnostics evidence
+        run: |
+          python -m engine.regression.rfv3e_viewbox_journal_diagnostics \
+            build \
+            --output "${RUNNER_TEMP}/rfv3e-viewbox-journal-diagnostics.json"
+          cmp \
+            docs/real_world_fidelity/evidence/rfv3e_viewbox_journal_diagnostics.json \
+            "${RUNNER_TEMP}/rfv3e-viewbox-journal-diagnostics.json"
+
+      - name: Verify committed diagnostics evidence
+        run: |
+          python -m engine.regression.rfv3e_viewbox_journal_diagnostics \
+            verify \
+            --evidence docs/real_world_fidelity/evidence/rfv3e_viewbox_journal_diagnostics.json
+
+      - name: Guard existing transform journal contracts
+        run: |
+          python -m unittest discover \
+            -s engine/regression \
+            -p 'test_transform_journal*.py' \
+            -v
+
+      - name: Verify diagnostics-only diff scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin "${{ github.base_ref }}"
+          changed="$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")"
+          while IFS= read -r path; do
+            [ -z "${path}" ] && continue
+            case "${path}" in
+              .github/workflows/real-world-fidelity-rfv3e-viewbox-journal-diagnostics.yml|\
+              engine/regression/rfv3e_viewbox_journal_diagnostics.py|\
+              engine/regression/test_rfv3e_viewbox_journal_diagnostics.py|\
+              docs/real_world_fidelity/evidence/rfv3e_viewbox_journal_diagnostics.json|\
+              docs/real_world_fidelity/rfv-3e-exact-metric-path-viewbox-diagnostics.md)
+                ;;
+              *)
+                echo "Unexpected file in RFV-3E viewBox diagnostics diff: ${path}"
+                exit 1
+                ;;
+            esac
+          done <<< "${changed}"
+
+      - name: Confirm production code remains unchanged
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --name-only "origin/${{ github.base_ref }}...HEAD" | grep -E '^(engine/app|engine/benchmark)/'; then
+            echo "Production or benchmark code changed in diagnostics-only PR"
+            exit 1
+          fi
+
+      - name: Confirm release remains NO-GO and RFV-4 blocked
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          roadmap = json.loads(Path('docs/real_world_fidelity_roadmap.json').read_text())
+          decision = json.loads(
+              Path('docs/real_world_fidelity/evidence/rfv3_quality_decision.json').read_text()
+          )
+          assert roadmap['phases'][2]['status'] == 'pending'
+          assert roadmap['phases'][3]['status'] == 'pending'
+          assert decision['release_decision'] == 'no_go'
+          assert decision['rfv4_allowed'] is False
+          print('RFV-3 remains pending; RFV-4 remains blocked')
+          PY
