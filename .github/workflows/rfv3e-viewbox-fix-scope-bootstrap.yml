@@ -35,7 +35,7 @@ jobs:
           cache: pip
           cache-dependency-path: engine/requirements.txt
 
-      - name: Apply stage-scoped alpha patch
+      - name: Apply stage-scoped alpha and historical-diagnostics patch
         run: python engine/regression/apply_rfv3e_viewbox_fix_scope.py
 
       - name: Install production test dependencies
@@ -53,18 +53,19 @@ jobs:
         working-directory: engine
         run: pytest -q test_transform_journal.py
 
-      - name: Prove historical diagnostics still execute
-        run: >-
-          python -m unittest
-          engine.regression.test_rfv3e_viewbox_journal_diagnostics
-          -v
+      - name: Verify immutable historical diagnostics
+        run: |
+          python -m unittest engine.regression.test_rfv3e_viewbox_journal_diagnostics -v
+          python -m engine.regression.rfv3e_viewbox_journal_diagnostics verify \
+            --evidence docs/real_world_fidelity/evidence/rfv3e_viewbox_journal_diagnostics.json
 
       - name: Verify exact patch scope
         shell: bash
         run: |
           set -euo pipefail
           changed="$(git diff --name-only HEAD)"
-          test "${changed}" = $'engine/app/transform_journal.py\nengine/test_transform_journal.py'
+          expected=$'docs/real_world_fidelity/rfv-3e-exact-metric-path-viewbox-diagnostics.md\nengine/app/transform_journal.py\nengine/regression/rfv3e_viewbox_journal_diagnostics.py\nengine/regression/test_rfv3e_viewbox_journal_diagnostics.py\nengine/test_transform_journal.py'
+          test "${changed}" = "${expected}"
 
       - name: Commit validated stage-scoped fix
         shell: bash
@@ -72,6 +73,11 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add engine/app/transform_journal.py engine/test_transform_journal.py
-          git commit -m "fix(rfv3e): scope alpha measurement to viewBox repair"
+          git add \
+            engine/app/transform_journal.py \
+            engine/test_transform_journal.py \
+            engine/regression/rfv3e_viewbox_journal_diagnostics.py \
+            engine/regression/test_rfv3e_viewbox_journal_diagnostics.py \
+            docs/real_world_fidelity/rfv-3e-exact-metric-path-viewbox-diagnostics.md
+          git commit -m "fix(rfv3e): scope alpha repair and retire live diagnosis"
           git push origin HEAD:agent/rfv-3e-exact-metric-path-viewbox-fix
