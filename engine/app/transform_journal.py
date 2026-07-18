@@ -18,6 +18,8 @@ from typing import Any, Callable
 import cv2
 import numpy as np
 
+from app import source_truth as _source_truth
+
 
 def _sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
@@ -122,10 +124,13 @@ def _measure_svg_bytes(
     else:
         h, w = h0, w0
 
+    render_rgba = None
     with tempfile.TemporaryDirectory(prefix="vektoryum-stage-") as directory:
         path = Path(directory) / "candidate.svg"
         path.write_bytes(render_data)
         rnd = render_svg_to_rgb(path, w, h)
+        if "alpha_fidelity" in set(required_metrics or ()):
+            render_rgba = _source_truth.render_svg_to_rgba(path, w, h)
     if rnd is None:
         metric["required_unmeasured"] = sorted(
             set(metric["required_unmeasured"]) | {"stage_render"}
@@ -133,6 +138,30 @@ def _measure_svg_bytes(
         return metric
     if rnd.shape[:2] != (h, w):
         rnd = cv2.resize(rnd, (w, h), interpolation=cv2.INTER_AREA)
+
+    # TransformJournal'ın görevi final source-truth kararını yeniden vermek değil,
+    # kabul edilmiş parent artifact'a göre her mutasyonun alpha düzlemini
+    # koruduğunu kanıtlamaktır. Parent ve candidate aynı bounded RGBA renderer ile
+    # ölçülür; ham ndarray yalnız özel cache anahtarında tutulur ve public journal
+    # raporuna hiçbir zaman serileştirilmez. Renderer yoksa required metric açıkça
+    # unmeasured kalır ve mevcut fail-closed karar yolu candidate'ı reddeder.
+    if "alpha_fidelity" in set(required_metrics or ()):
+        if render_rgba is None:
+            metric["alpha_fidelity_status"] = "unmeasured"
+        else:
+            if render_rgba.shape[:2] != (h, w):
+                render_rgba = _source_truth.resize_rgba(render_rgba, w, h)
+            render_alpha = np.asarray(render_rgba[:, :, 3], dtype=np.uint8).copy()
+            metric["_render_alpha"] = render_alpha
+            metric["alpha_fidelity_status"] = "measured"
+            metric["alpha_coverage"] = float(render_alpha.astype(np.float32).mean() / 255.0)
+            metric["alpha_sha256"] = hashlib.sha256(
+                np.ascontiguousarray(render_alpha).tobytes()
+            ).hexdigest()
+            metric["required_unmeasured"] = [
+                name for name in metric["required_unmeasured"]
+                if name != "alpha_fidelity"
+            ]
 
     ga = cv2.cvtColor(src, cv2.COLOR_RGB2GRAY)
     gb = cv2.cvtColor(rnd, cv2.COLOR_RGB2GRAY)
@@ -257,13 +286,25 @@ class TransformJournal:
     def _deltas(before: dict[str, Any], after: dict[str, Any]) -> dict[str, float]:
         keys = (
             "byte_size", "path_count", "node_count", "ssim", "edge_f1_1px",
-            "seam_ratio", "component_delta", "hole_delta",
+            "seam_ratio", "component_delta", "hole_delta", "alpha_coverage",
         )
         result: dict[str, float] = {}
         for key in keys:
             if isinstance(before.get(key), (int, float)) and isinstance(after.get(key), (int, float)):
                 result[key] = float(after[key]) - float(before[key])
         return result
+
+    @staticmethod
+    def _alpha_comparison(
+        before: dict[str, Any], after: dict[str, Any],
+    ) -> dict[str, float] | None:
+        parent_alpha = before.get("_render_alpha")
+        candidate_alpha = after.get("_render_alpha")
+        if not isinstance(parent_alpha, np.ndarray) or not isinstance(candidate_alpha, np.ndarray):
+            return None
+        if parent_alpha.shape != candidate_alpha.shape:
+            return None
+        return _source_truth.alpha_plane_metrics(parent_alpha, candidate_alpha)
 
     def _decide(self, before: dict[str, Any], after: dict[str, Any]) -> list[str]:
         reasons: list[str] = []
@@ -278,6 +319,22 @@ class TransformJournal:
         visual_keys = ("ssim", "edge_f1_1px", "seam_ratio", "component_delta", "hole_delta")
         if any(key not in after for key in visual_keys):
             reasons.append("stage_metrics_incomplete")
+
+        if "alpha_fidelity" in self.required_metrics:
+            alpha_comparison = self._alpha_comparison(before, after)
+            if alpha_comparison is None:
+                reasons.append("alpha_stage_metrics_incomplete")
+            else:
+                # Yeni eşik icat edilmez: final artifact evaluator'ın mevcut,
+                # image-class bağlı alpha hard gate'leri parent/candidate koruma
+                # karşılaştırmasında aynen yeniden kullanılır.
+                from app.final_artifact_evaluator import _thresholds  # noqa: PLC0415
+
+                alpha_thresholds = _thresholds(self.image_class, None)
+                if float(alpha_comparison["alpha_iou"]) < alpha_thresholds["alpha_iou_min"]:
+                    reasons.append("alpha_iou_regression")
+                if float(alpha_comparison["alpha_mae"]) > alpha_thresholds["alpha_mae_max"]:
+                    reasons.append("alpha_mae_regression")
         if reasons:
             return list(dict.fromkeys(reasons))
 
@@ -385,6 +442,13 @@ class TransformJournal:
             status = "accepted" if accepted else "rolled_back"
 
         accepted_sha = candidate_sha if accepted else parent_sha
+        alpha_comparison = self._alpha_comparison(before or {}, after or {})
+        before_public = (
+            _source_truth.public_metric_dict(before) if isinstance(before, dict) else before
+        )
+        after_public = (
+            _source_truth.public_metric_dict(after) if isinstance(after, dict) else after
+        )
         stage = {
             "stage_id": stage_id,
             "transform_name": stage_id,
@@ -396,8 +460,9 @@ class TransformJournal:
             "duration_ms": round(duration_ms, 3),
             "status": status,
             "reason_codes": reasons or ["metrics_non_regressing"],
-            "before_metrics": before,
-            "after_metrics": after,
+            "before_metrics": before_public,
+            "after_metrics": after_public,
+            "alpha_comparison": alpha_comparison,
             "metric_deltas": self._deltas(before or {}, after or {}),
             "complexity_delta": {
                 key: self._deltas(before or {}, after or {}).get(key)
