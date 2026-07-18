@@ -62,6 +62,7 @@ def _measure_svg_bytes(
     *,
     max_side: int = 512,
     required_metrics: set[str] | None = None,
+    measure_alpha: bool = False,
     _allow_topology_refinement: bool = True,
 ) -> dict[str, Any]:
     """Stage gate için bounded structural + source-fidelity ölçümü."""
@@ -129,7 +130,7 @@ def _measure_svg_bytes(
         path = Path(directory) / "candidate.svg"
         path.write_bytes(render_data)
         rnd = render_svg_to_rgb(path, w, h)
-        if "alpha_fidelity" in set(required_metrics or ()):
+        if measure_alpha and "alpha_fidelity" in set(required_metrics or ()):
             render_rgba = _source_truth.render_svg_to_rgba(path, w, h)
     if rnd is None:
         metric["required_unmeasured"] = sorted(
@@ -145,7 +146,7 @@ def _measure_svg_bytes(
     # ölçülür; ham ndarray yalnız özel cache anahtarında tutulur ve public journal
     # raporuna hiçbir zaman serileştirilmez. Renderer yoksa required metric açıkça
     # unmeasured kalır ve mevcut fail-closed karar yolu candidate'ı reddeder.
-    if "alpha_fidelity" in set(required_metrics or ()):
+    if measure_alpha and "alpha_fidelity" in set(required_metrics or ()):
         if render_rgba is None:
             metric["alpha_fidelity_status"] = "unmeasured"
         else:
@@ -205,6 +206,7 @@ def _measure_svg_bytes(
             source_rgb,
             max_side=refined_side,
             required_metrics=required_metrics,
+            measure_alpha=measure_alpha,
             _allow_topology_refinement=False,
         )
         if all(key in refined for key in (
@@ -248,6 +250,10 @@ class TransformJournal:
         self.source_rgb = np.asarray(source_rgb, dtype=np.uint8)
         self.image_class = image_class
         self.required_metrics = set(required_metrics or ())
+        # Alpha measurement is deliberately stage-scoped. The proven defect only
+        # affects the mandatory coordinate-contract repair; opening alpha for every
+        # downstream mutator would change previously fail-closed production scope.
+        self._measurement_stage_id: str | None = None
         self.max_side = min(512, max(256, int(max_side)))
         self.budget_seconds = (
             budget_seconds if budget_seconds is not None
@@ -271,16 +277,19 @@ class TransformJournal:
 
     def _measure(self, data: bytes) -> dict[str, Any]:
         sha = _sha(data)
-        if sha not in self._cache:
+        measure_alpha = self._measurement_stage_id == "restore_source_dimensions"
+        cache_key = f"{sha}:alpha={int(measure_alpha)}"
+        if cache_key not in self._cache:
             started = time.perf_counter()
             try:
-                self._cache[sha] = _measure_svg_bytes(
+                self._cache[cache_key] = _measure_svg_bytes(
                     data, self.source_rgb, max_side=self.max_side,
                     required_metrics=self.required_metrics,
+                    measure_alpha=measure_alpha,
                 )
             finally:
                 self.evaluation_seconds += time.perf_counter() - started
-        return self._cache[sha]
+        return self._cache[cache_key]
 
     @staticmethod
     def _deltas(before: dict[str, Any], after: dict[str, Any]) -> dict[str, float]:
@@ -435,8 +444,13 @@ class TransformJournal:
             reasons = list(forced_reasons or [])
             status = forced_status
         else:
-            before = self._measure(parent_data)
-            after = self._measure(candidate_data)
+            previous_stage = self._measurement_stage_id
+            self._measurement_stage_id = stage_id
+            try:
+                before = self._measure(parent_data)
+                after = self._measure(candidate_data)
+            finally:
+                self._measurement_stage_id = previous_stage
             reasons = self._decide(before, after)
             accepted = not reasons
             status = "accepted" if accepted else "rolled_back"

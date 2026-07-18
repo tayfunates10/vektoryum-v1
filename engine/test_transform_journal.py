@@ -465,13 +465,47 @@ def test_alpha_plane_regression_is_rolled_back_even_when_rgb_is_identical(
     journal = TransformJournal(
         parent, source, required_metrics={"alpha_fidelity"},
     )
-    accepted, stage = journal.consider_candidate("alpha_loss", parent, candidate)
+    accepted, stage = journal.consider_candidate(
+        "restore_source_dimensions", parent, candidate,
+    )
 
     assert accepted == parent
     assert stage["status"] == "rolled_back"
     assert set(stage["reason_codes"]) & {"alpha_iou_regression", "alpha_mae_regression"}
     assert stage["required_unmeasured"] == []
     assert stage["alpha_comparison"]["alpha_iou"] < 0.995
+
+
+def test_alpha_measurement_is_scoped_to_source_dimension_restore(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.fidelity as fidelity
+    import app.source_truth as source_truth
+    from app.transform_journal import TransformJournal
+
+    source = _square_source()
+    monkeypatch.setattr(fidelity, "render_svg_to_rgb", lambda *_args, **_kwargs: source.copy())
+
+    def stable_alpha(_path: Path, width: int, height: int) -> np.ndarray:
+        rgba = np.zeros((height, width, 4), dtype=np.uint8)
+        rgba[24:104, 24:104, :3] = (227, 0, 11)
+        rgba[24:104, 24:104, 3] = 255
+        return rgba
+
+    monkeypatch.setattr(source_truth, "render_svg_to_rgba", stable_alpha)
+    parent = tmp_path / "parent.svg"
+    candidate = tmp_path / "candidate.svg"
+    parent.write_bytes(_square_svg())
+    candidate.write_bytes(_square_svg("<metadata>downstream-change</metadata>"))
+    journal = TransformJournal(parent, source, required_metrics={"alpha_fidelity"})
+    accepted, stage = journal.consider_candidate("boundary_refit", parent, candidate)
+
+    assert accepted == parent
+    assert stage["status"] == "rolled_back"
+    assert "required_metric_unmeasured" in stage["reason_codes"]
+    assert "alpha_stage_metrics_incomplete" in stage["reason_codes"]
+    assert stage["required_unmeasured"] == ["alpha_fidelity"]
+    assert stage["alpha_comparison"] is None
 
 
 def test_assertions_are_real() -> None:
