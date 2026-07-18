@@ -42,7 +42,27 @@ jobs:
           cache-dependency-path: engine/requirements.txt
 
       - name: Apply fail-closed source-bound patch
-        run: python engine/regression/apply_rfv3e_viewbox_fix.py
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('engine/regression/apply_rfv3e_viewbox_fix.py')
+          source = path.read_text(encoding='utf-8')
+          workflow_start = source.index(
+              'workflow = ROOT / ".github/workflows/real-world-fidelity-rfv3e-viewbox-fix.yml"'
+          )
+          report_start = source.index(
+              'report = ROOT / "docs/real_world_fidelity/rfv-3e-exact-metric-path-viewbox-fix.md"'
+          )
+          source = source[:workflow_start] + source[report_start:]
+          source = source.replace(
+              '''# The bootstrap is intentionally absent from the final PR diff.\n(ROOT / "engine/regression/apply_rfv3e_viewbox_fix.py").unlink()\n(ROOT / ".github/workflows/rfv3e-viewbox-fix-bootstrap.yml").unlink()\nprint("RFV-3E viewBox alpha-journal fix applied")\n''',
+              '''print("RFV-3E viewBox alpha-journal fix applied")\n''',
+          )
+          namespace = {'__name__': '__main__', '__file__': str(path.resolve())}
+          exec(compile(source, str(path), 'exec'), namespace)
+          PY
 
       - name: Install production test dependencies
         run: python -m pip install -r engine/requirements.txt pytest
@@ -62,9 +82,6 @@ jobs:
           while IFS= read -r path; do
             [ -z "${path}" ] && continue
             case "${path}" in
-              .github/workflows/rfv3e-viewbox-fix-bootstrap.yml|\
-              engine/regression/apply_rfv3e_viewbox_fix.py|\
-              .github/workflows/real-world-fidelity-rfv3e-viewbox-fix.yml|\
               engine/app/transform_journal.py|\
               engine/test_transform_journal.py|\
               docs/real_world_fidelity/rfv-3e-exact-metric-path-viewbox-fix.md)
@@ -75,8 +92,9 @@ jobs:
                 ;;
             esac
           done <<< "${changed}"
-          test ! -e engine/regression/apply_rfv3e_viewbox_fix.py
-          test ! -e .github/workflows/rfv3e-viewbox-fix-bootstrap.yml
+          test -e engine/regression/apply_rfv3e_viewbox_fix.py
+          test -e .github/workflows/rfv3e-viewbox-fix-bootstrap.yml
+          test ! -e .github/workflows/real-world-fidelity-rfv3e-viewbox-fix.yml
 
       - name: Commit validated production fix
         shell: bash
@@ -84,6 +102,9 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
+          git add \
+            engine/app/transform_journal.py \
+            engine/test_transform_journal.py \
+            docs/real_world_fidelity/rfv-3e-exact-metric-path-viewbox-fix.md
           git commit -m "fix(rfv3e): measure alpha preservation before viewBox repair"
           git push origin HEAD:agent/rfv-3e-exact-metric-path-viewbox-fix
