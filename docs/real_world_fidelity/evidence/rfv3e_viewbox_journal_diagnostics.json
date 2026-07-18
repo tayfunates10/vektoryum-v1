@@ -1,0 +1,64 @@
+{
+  "diagnosis": {
+    "allowed_fix_scope": [
+      "measure alpha fidelity in the transform journal before enforcing it",
+      "or gate the mandatory coordinate-contract repair with a dedicated fail-closed structural policy"
+    ],
+    "direct_restore_added_viewbox": true,
+    "forbidden_scope": [
+      "changing evaluator thresholds",
+      "fabricating alpha or visual metrics",
+      "changing winner selection",
+      "changing corpus, repeat count, timeout or retry policy",
+      "enabling RFV-4"
+    ],
+    "journal_with_alpha_requirement": {
+      "accepted": false,
+      "output_viewbox_present": false,
+      "reason_codes": [
+        "required_metric_unmeasured"
+      ],
+      "status": "rolled_back"
+    },
+    "journal_without_alpha_requirement": {
+      "accepted": true,
+      "output_viewbox_present": true,
+      "reason_codes": [
+        "metrics_non_regressing"
+      ],
+      "status": "accepted"
+    },
+    "production_fix_authorized": false,
+    "repaired_viewbox": "0 0 48 32",
+    "root_cause_class": "transform_journal_required_alpha_metric_deadlock",
+    "root_cause_status": "proven",
+    "root_cause_summary": "restore_source_dimensions creates a valid viewBox, but the RGBA transform journal rolls it back solely because alpha_fidelity remains unmeasured",
+    "stage_measurement_required_unmeasured": [
+      "alpha_fidelity"
+    ],
+    "stage_measurement_structural_safe": true,
+    "stage_measurement_visual_metrics_complete": true
+  },
+  "next_branch": "agent/rfv-3e-exact-metric-path-viewbox-fix",
+  "release_decision": "no_go",
+  "rfv4_allowed": false,
+  "schema": "vektoryum-rfv3e-viewbox-journal-diagnostics-v1",
+  "scope": {
+    "case_ids": [
+      "qualification-public-10",
+      "qualification-public-14",
+      "qualification-public-18"
+    ],
+    "observed_hard_fail_code": "viewbox_missing",
+    "observed_reason_code": "exact_component_metrics_missing"
+  },
+  "source": {
+    "aggregate_artifact_digest": "sha256:ff45ec277fe8162f3be117cff76ec3fb82e3cafc4d563941fcabd145ff1e8cb0",
+    "aggregate_artifact_id": 8424383328,
+    "main_sha": "19e91d10926f8709112b0afd6c576b886a5dfeb5",
+    "measurement_head_sha": "92fa263a938a39f44c288109c8f05a8a38c98f7e",
+    "pull_request": 103,
+    "repository": "tayfunates10/vektoryum-v1",
+    "workflow_run_id": 29623130466
+  }
+}
