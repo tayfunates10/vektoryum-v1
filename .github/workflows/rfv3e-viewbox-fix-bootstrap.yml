@@ -7,12 +7,18 @@ on:
     paths:
       - ".github/workflows/rfv3e-viewbox-fix-bootstrap.yml"
       - "engine/regression/apply_rfv3e_viewbox_fix.py"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/rfv3e-viewbox-fix-bootstrap.yml"
+      - "engine/regression/apply_rfv3e_viewbox_fix.py"
 
 permissions:
   contents: write
 
 concurrency:
-  group: rfv3e-viewbox-fix-bootstrap-${{ github.ref }}
+  group: rfv3e-viewbox-fix-bootstrap-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
