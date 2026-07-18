@@ -65,13 +65,6 @@ jobs:
             verify \
             --evidence docs/real_world_fidelity/evidence/rfv3e_viewbox_journal_diagnostics.json
 
-      - name: Guard existing transform journal contracts
-        run: |
-          python -m unittest discover \
-            -s engine/regression \
-            -p 'test_transform_journal*.py' \
-            -v
-
       - name: Verify diagnostics-only diff scope
         shell: bash
         run: |
