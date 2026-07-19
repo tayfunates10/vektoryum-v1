@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 import numpy as np
+from PIL import Image
 
 from app.alpha_preprocess import _rgba_from_source_at_size
 from app.source_truth import alpha_plane_metrics, render_svg_to_rgba, resize_rgba
@@ -24,9 +25,10 @@ _MODE_IMAGE_CLASS = {
     "geometric_logo": "geometric",
     "minimal_ai": "clean_logo",
     "flat_logo": "clean_logo",
-    "logo_color": "illustration",
+    "logo_color": "clean_logo",
     "photo_poster": "photo",
 }
+_ALPHA_STYLE_NAMES = {"opacity", "fill-opacity", "stroke-opacity"}
 
 
 def _sha256(path: Path) -> str:
@@ -127,6 +129,27 @@ def _rectangles_path(rectangles: list[tuple[int, int, int, int]]) -> str:
     )
 
 
+def _strip_content_alpha(element: ET.Element) -> None:
+    """Make the source mask the only alpha truth; avoid multiplying alpha twice."""
+    for node in element.iter():
+        for name in _ALPHA_STYLE_NAMES:
+            node.attrib.pop(name, None)
+        style = node.get("style")
+        if not style:
+            continue
+        declarations: list[str] = []
+        for declaration in style.split(";"):
+            if not declaration.strip():
+                continue
+            key = declaration.split(":", 1)[0].strip().lower()
+            if key not in _ALPHA_STYLE_NAMES:
+                declarations.append(declaration.strip())
+        if declarations:
+            node.set("style", ";".join(declarations))
+        else:
+            node.attrib.pop("style", None)
+
+
 def _atomic_write_tree(tree: ET.ElementTree, path: Path) -> None:
     descriptor, temporary_name = tempfile.mkstemp(
         dir=Path(path).parent,
@@ -165,7 +188,7 @@ def apply_source_alpha_mask(
     source_rgba = _rgba_from_source_at_size(
         Path(source_path), (raster_width, raster_height)
     )
-    source_alpha = np.asarray(source_rgba[:, :, 3], dtype=np.uint8)
+    source_alpha = np.asarray(source_rgba[:, :, 3], dtype=np.uint8).copy()
     if bool(np.all(source_alpha == 255)):
         return {
             "status": "not_applicable",
@@ -248,6 +271,7 @@ def apply_source_alpha_mask(
     )
     for child in movable:
         root.remove(child)
+        _strip_content_alpha(child)
         wrapper.append(child)
     root.append(wrapper)
     _atomic_write_tree(tree, svg_path)
@@ -263,7 +287,7 @@ def apply_source_alpha_mask(
 
     from app.final_artifact_evaluator import _thresholds  # noqa: PLC0415
 
-    image_class = _MODE_IMAGE_CLASS.get(mode, "illustration")
+    image_class = _MODE_IMAGE_CLASS.get(mode, "clean_logo")
     thresholds = _thresholds(image_class, None)
     if float(metrics["alpha_iou"]) < float(thresholds["alpha_iou_min"]):
         raise RuntimeError(
@@ -348,10 +372,15 @@ def wrap_run_pipeline_with_alpha_mask(
             return result
 
         source_path = Path(original_path)
-        with __import__("PIL.Image", fromlist=["Image"]).open(source_path) as source:
-            source_alpha = np.asarray(source.convert("RGBA"), dtype=np.uint8)[:, :, 3]
+        with Image.open(source_path) as source:
+            source_alpha = np.asarray(
+                source.convert("RGBA"), dtype=np.uint8
+            )[:, :, 3].copy()
         if bool(np.all(source_alpha == 255)):
-            result["alpha_mask_report"] = {"status": "not_applicable", "applied": False}
+            result["alpha_mask_report"] = {
+                "status": "not_applicable",
+                "applied": False,
+            }
             return result
 
         parent_path = Path(best["svg_path"])
