@@ -50,6 +50,7 @@ The gradient candidate has the same white-composite assumption and no native sou
 14. Submit the exact masked candidate to the real `TransformJournal`, which enforces structural safety, SSIM, edge, topology and hard path/node/byte complexity gates.
 15. Merge the accepted alpha stage into the existing journal and require a valid SHA chain through the final artifact.
 16. Re-score the exact accepted masked artifact before publication.
+17. Preserve the selected vector-engine candidate identity after finalization. The artifact path, mask report and journal SHA move to the masked SVG, but names such as `geo_standard` or `logo_gradient` remain unchanged because `source_alpha_vector_mask` is a journaled artifact transform, not a new candidate generator.
 
 Opaque inputs and non-color modes retain their existing behavior.
 
@@ -67,6 +68,7 @@ The dedicated workflow requires:
 - proof that the mask uses editable `<g>`/`<rect>` primitives and contains no `<image>` element;
 - a real RGBA-render proof against the existing final evaluator's unchanged alpha IoU and alpha MAE thresholds;
 - real `TransformJournal` acceptance and final-SHA chain validation;
+- stable candidate-name proof for alpha-finalized outputs, with fail-closed rejection when the source candidate cannot be bound;
 - unchanged structural, visual, topology and hard complexity gates;
 - narrow diff scope;
 - unchanged evaluator, source-truth, transform-journal, corpus, measurement policy, retry and release-decision files.
