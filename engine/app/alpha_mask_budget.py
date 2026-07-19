@@ -1,7 +1,10 @@
-"""Pre-construction complexity gate for vector source-alpha masks."""
+"""Pre-construction and rollback gates for vector source-alpha masks."""
 from __future__ import annotations
 
+import os
 import re
+import shutil
+import tempfile
 from functools import wraps
 from pathlib import Path
 from typing import Any, Callable
@@ -151,19 +154,54 @@ def _preflight(svg_path: Path, source_path: Path) -> dict[str, int] | None:
     }
 
 
+def _create_atomic_backup(svg_path: Path) -> Path:
+    descriptor, backup_name = tempfile.mkstemp(
+        dir=svg_path.parent,
+        prefix=f".{svg_path.name}.",
+        suffix=".alpha-rollback.svg",
+    )
+    os.close(descriptor)
+    backup = Path(backup_name)
+    try:
+        shutil.copy2(svg_path, backup)
+    except Exception:
+        backup.unlink(missing_ok=True)
+        raise
+    return backup
+
+
+def _restore_atomic_backup(backup: Path, svg_path: Path) -> None:
+    if not backup.exists():
+        raise RuntimeError("source_alpha_mask_rollback_backup_missing")
+    os.replace(backup, svg_path)
+
+
 def wrap_apply_source_alpha_mask(
     original: Callable[[Path, Path, str], dict[str, Any]],
 ) -> Callable[[Path, Path, str], dict[str, Any]]:
-    """Reject pathological masks before the production builder allocates them."""
+    """Budget-check before allocation and roll back every rejected write."""
     if getattr(original, "__vektoryum_budget_guarded__", False):
         return original
 
     @wraps(original)
     def guarded(svg_path: Path, source_path: Path, mode: str) -> dict[str, Any]:
-        preflight = _preflight(Path(svg_path), Path(source_path))
-        report = original(Path(svg_path), Path(source_path), mode)
+        target = Path(svg_path)
+        preflight = _preflight(target, Path(source_path))
+        backup = _create_atomic_backup(target)
+        try:
+            report = original(target, Path(source_path), mode)
+        except BaseException:
+            # The wrapped builder atomically replaces `target` before running its
+            # render/alpha hard gates. Restore the exact pre-call file for direct
+            # callers as well as pipeline callers whenever any later gate rejects.
+            _restore_atomic_backup(backup, target)
+            raise
+        else:
+            backup.unlink(missing_ok=True)
+
         if preflight is not None and report.get("applied"):
             report.update(preflight)
+        report["rollback_guard"] = "armed_and_committed"
         return report
 
     guarded.__vektoryum_budget_guarded__ = True
