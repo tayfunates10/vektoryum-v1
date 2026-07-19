@@ -1,14 +1,15 @@
 """Alpha-safe production bindings for transparent raster inputs.
 
-The existing color preprocessors intentionally compare appearance on a white
-background, but writing that white-composited RGB image as the tracer input
-silently discards the source alpha plane. VTracer then sees the white canvas as
-real artwork and can emit a full-canvas opaque SVG.
+Color preprocessing still performs its established palette and geometry work on
+white-composited RGB. Before tracing, this module replaces undefined transparent
+RGB with canonical black and restores straight source RGB on partially
+transparent pixels. The trace input remains deliberately opaque RGB: source
+alpha is applied once, after all SVG mutations, by ``app.alpha_svg_mask``.
 
-This module keeps the established RGB preprocessing unchanged for opaque pixels
-and restores the transformed source alpha plane immediately before tracing.
-Transparent gradient candidates remain fail-closed until the gradient engine has
-an alpha-aware region/mask contract of its own.
+Keeping alpha out of the tracer prevents renderer-dependent alpha multiplication
+while the staged hash and read-back proof keep the source plane bound to the job.
+Transparent gradient candidates remain fail-closed until that engine has an
+alpha-aware region/mask contract.
 """
 from __future__ import annotations
 
@@ -47,18 +48,18 @@ def _rgba_from_source_at_size(source_path: Path, size: tuple[int, int]) -> np.nd
     return np.asarray(_symmetrize_if_mirror(rgba, {"steps": []}), dtype=np.uint8)
 
 
-def _atomic_write_rgba(path: Path, rgba: np.ndarray) -> None:
+def _atomic_write_rgb(path: Path, rgb: np.ndarray) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
         dir=path.parent,
         prefix=f".{path.name}.",
-        suffix=".alpha.png",
+        suffix=".alpha-stage.png",
     )
     os.close(descriptor)
     temporary = Path(temporary_name)
     try:
-        Image.fromarray(np.asarray(rgba, dtype=np.uint8), mode="RGBA").save(
+        Image.fromarray(np.asarray(rgb, dtype=np.uint8), mode="RGB").save(
             temporary,
             format="PNG",
         )
@@ -67,53 +68,57 @@ def _atomic_write_rgba(path: Path, rgba: np.ndarray) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def _restore_source_alpha(
+def _stage_source_alpha(
     source_path: Path,
     processed_path: Path,
     report: dict[str, Any],
 ) -> tuple[Path, dict[str, Any]]:
-    """Restore source alpha to an RGB-preprocessed trace image, fail-closed."""
+    """Prepare trace-safe RGB and bind the transformed source alpha, fail-closed."""
     processed_path = Path(processed_path)
     with Image.open(processed_path) as processed_image:
-        processed_rgb = np.asarray(processed_image.convert("RGB"), dtype=np.uint8).copy()
+        processed_rgb = np.asarray(
+            processed_image.convert("RGB"), dtype=np.uint8
+        ).copy()
         target_size = processed_image.size
 
     source_rgba = _rgba_from_source_at_size(Path(source_path), target_size)
     if source_rgba.ndim != 3 or source_rgba.shape[2] != 4:
         raise RuntimeError("source_alpha_contract_invalid_rgba")
 
-    source_alpha = source_rgba[:, :, 3]
+    source_alpha = source_rgba[:, :, 3].copy()
     if bool(np.all(source_alpha == 255)):
         return processed_path, report
 
-    # Preserve the established quantized/cleaned RGB for opaque pixels. On the
-    # anti-aliased boundary, use straight source RGB rather than the prior white
-    # composite so black/checker renders do not acquire a white fringe. Fully
-    # transparent RGB is canonicalized to zero; it is visually undefined.
+    # Opaque interiors retain the existing quantized/cleaned RGB. Soft boundary
+    # pixels use straight source RGB, and fully transparent pixels are canonical
+    # black. The final vector mask supplies the only alpha plane.
     output_rgb = processed_rgb.copy()
     partial = (source_alpha > 0) & (source_alpha < 255)
     transparent = source_alpha == 0
     output_rgb[partial] = source_rgba[:, :, :3][partial]
     output_rgb[transparent] = 0
-    output_rgba = np.dstack([output_rgb, source_alpha]).astype(np.uint8)
 
-    _atomic_write_rgba(processed_path, output_rgba)
+    _atomic_write_rgb(processed_path, output_rgb)
 
-    # Read-after-write proof: a failed codec/write must never silently fall back
-    # to the old opaque production path.
+    # Read-after-write proof: a failed codec/write must never silently return to
+    # the previous white-composited trace input.
     with Image.open(processed_path) as verified_image:
-        verified = np.asarray(verified_image.convert("RGBA"), dtype=np.uint8)
-    if verified.shape != output_rgba.shape or not np.array_equal(
-        verified[:, :, 3], source_alpha
+        if verified_image.mode != "RGB":
+            raise RuntimeError("source_alpha_trace_input_not_rgb")
+        verified_rgb = np.asarray(verified_image, dtype=np.uint8).copy()
+    if verified_rgb.shape != output_rgb.shape or not np.array_equal(
+        verified_rgb, output_rgb
     ):
-        raise RuntimeError("source_alpha_preservation_verification_failed")
+        raise RuntimeError("source_alpha_trace_input_verification_failed")
+    if not bool(np.all(verified_rgb[transparent] == 0)):
+        raise RuntimeError("source_alpha_transparent_rgb_not_canonical")
 
     alpha_bytes = np.ascontiguousarray(source_alpha).tobytes()
     steps = report.setdefault("steps", [])
-    if "source_alpha_preserved" not in steps:
-        steps.append("source_alpha_preserved")
+    if "source_alpha_staged" not in steps:
+        steps.append("source_alpha_staged")
     report["source_alpha"] = {
-        "status": "preserved",
+        "status": "staged_for_vector_mask",
         "width": int(target_size[0]),
         "height": int(target_size[1]),
         "minimum": int(source_alpha.min(initial=255)),
@@ -123,6 +128,8 @@ def _restore_source_alpha(
             float(np.mean((source_alpha > 0) & (source_alpha < 255))), 8
         ),
         "alpha_sha256": hashlib.sha256(alpha_bytes).hexdigest(),
+        "trace_input_mode": "RGB",
+        "finalizer": "rfv3d2-source-alpha-vector-mask-v1",
     }
     return processed_path, report
 
@@ -130,7 +137,7 @@ def _restore_source_alpha(
 def wrap_preprocess_for_mode(
     original: Callable[..., tuple[Path, dict[str, Any]]],
 ) -> Callable[..., tuple[Path, dict[str, Any]]]:
-    """Wrap preprocess_for_mode with source-alpha restoration for color modes."""
+    """Wrap preprocess_for_mode with source-alpha staging for color modes."""
     if getattr(original, "__vektoryum_alpha_preserving__", False):
         return original
 
@@ -153,7 +160,7 @@ def wrap_preprocess_for_mode(
         )
         if mode not in _ALPHA_COLOR_MODES:
             return Path(processed_path), report
-        return _restore_source_alpha(
+        return _stage_source_alpha(
             Path(image_path), Path(processed_path), dict(report)
         )
 
@@ -175,7 +182,7 @@ def wrap_gradient_vectorizer(
         params: dict[str, Any] | None = None,
     ) -> None:
         with Image.open(input_path) as source:
-            alpha = np.asarray(source.convert("RGBA"), dtype=np.uint8)[:, :, 3]
+            alpha = np.asarray(source.convert("RGBA"), dtype=np.uint8)[:, :, 3].copy()
         if bool(np.any(alpha < 255)):
             raise RuntimeError(
                 "transparent_gradient_candidate_requires_alpha_aware_mask"
