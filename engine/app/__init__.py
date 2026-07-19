@@ -35,9 +35,8 @@ if not getattr(_analyzer.analyze_image_from_mem, "__vektoryum_contract_wrapped__
     _analyzer.analyze_image_from_mem = _analyze_image_from_mem_with_contract
 
 
-# Alpha must be restored before pipeline imports preprocess_for_mode by value.
-# The gradient module is patched at package initialization because run_candidate
-# imports its entry point lazily inside worker processes.
+# Alpha is staged before pipeline imports preprocess_for_mode by value. The
+# selected SVG receives the single source-alpha truth only after every mutator.
 from app import preprocess as _preprocess
 from app.alpha_preprocess import wrap_gradient_vectorizer, wrap_preprocess_for_mode
 
@@ -119,6 +118,11 @@ if not getattr(_pipeline.run_pipeline, "__vektoryum_auto_gate_wrapped__", False)
 
     _run_pipeline_with_auto_gate.__vektoryum_auto_gate_wrapped__ = True
     _pipeline.run_pipeline = _run_pipeline_with_auto_gate
+
+
+from app.alpha_svg_mask import wrap_run_pipeline_with_alpha_mask
+
+_pipeline.run_pipeline = wrap_run_pipeline_with_alpha_mask(_pipeline.run_pipeline)
 
 
 from app import final_artifact_evaluator as _final_artifact_evaluator
