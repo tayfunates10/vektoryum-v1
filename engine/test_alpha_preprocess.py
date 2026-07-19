@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 from PIL import Image
@@ -119,8 +121,10 @@ class AlphaPreprocessUnitTests(unittest.TestCase):
                 }
 
             wrapped = wrap_run_pipeline_with_alpha_mask(lineart_pipeline)
+            with Image.open(source_path) as opened:
+                source_image = opened.copy()
             result = wrapped(
-                Image.open(source_path),
+                source_image,
                 source_path,
                 "lineart",
                 root,
@@ -131,6 +135,99 @@ class AlphaPreprocessUnitTests(unittest.TestCase):
             )
             self.assertFalse(result["alpha_mask_report"]["applied"])
             self.assertEqual(svg_path.read_text(encoding="utf-8"), original_svg)
+
+    def test_color_finalizer_uses_real_transform_journal(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_path = root / "source.png"
+            svg_path = root / "selected.svg"
+            source = np.zeros((64, 64, 4), dtype=np.uint8)
+            source[16:48, 16:48, :3] = (214, 32, 48)
+            source[16:48, 16:48, 3] = 255
+            Image.fromarray(source, mode="RGBA").save(source_path)
+            svg_path.write_text(
+                '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" '
+                'viewBox="0 0 64 64">'
+                '<path fill="#000000" d="M0 0h64v64H0Z"/>'
+                '<path fill="#d62030" d="M16 16h32v32H16Z"/>'
+                '</svg>',
+                encoding="utf-8",
+            )
+            parent_sha = hashlib.sha256(svg_path.read_bytes()).hexdigest()
+
+            def color_pipeline(*args, **kwargs):
+                del args, kwargs
+                return {
+                    "analysis": {},
+                    "mode_used": "logo_color",
+                    "best": {
+                        "name": "selected",
+                        "svg_path": svg_path,
+                        "rendered_ok": True,
+                        "fidelity_score": 50.0,
+                    },
+                    "scored": [],
+                    "selection_reason": "fidelity_best",
+                    "refit_info": {},
+                    "transform_journal": {
+                        "schema_version": 1,
+                        "baseline_sha256": parent_sha,
+                        "final_accepted_sha256": parent_sha,
+                        "stages": [],
+                        "budget": {
+                            "seconds": 0.0,
+                            "elapsed_seconds": 0.0,
+                            "wall_seconds": 0.0,
+                            "stage_timeout_seconds": 0.0,
+                            "max_side": 0,
+                        },
+                        "budget_exhausted": False,
+                        "chain_valid": True,
+                        "chain_failure_codes": [],
+                    },
+                }
+
+            def measured_candidate(candidate, *args, **kwargs):
+                del args, kwargs
+                return {
+                    **candidate,
+                    "rendered_ok": True,
+                    "fidelity_score": 99.0,
+                    "total_score": 99.0,
+                    "score_details": {"path_count": 3},
+                }
+
+            wrapped = wrap_run_pipeline_with_alpha_mask(color_pipeline)
+            with Image.open(source_path) as opened:
+                source_image = opened.copy()
+            with patch(
+                "app.pipeline.score_candidate",
+                side_effect=measured_candidate,
+            ), patch(
+                "app.pipeline.score_structure_integrity",
+                return_value={"status": "measured"},
+            ):
+                result = wrapped(
+                    source_image,
+                    source_path,
+                    "logo_color",
+                    root,
+                )
+
+            self.assertTrue(result["alpha_mask_report"]["applied"])
+            self.assertEqual(
+                result["alpha_mask_report"]["journal_status"], "accepted"
+            )
+            self.assertTrue(result["transform_journal"]["chain_valid"])
+            self.assertEqual(
+                result["transform_journal"]["final_accepted_sha256"],
+                result["alpha_mask_report"]["after_sha256"],
+            )
+            self.assertEqual(
+                result["transform_journal"]["stages"][-1]["stage_id"],
+                "source_alpha_vector_mask",
+            )
+            self.assertNotEqual(Path(result["best"]["svg_path"]), svg_path)
 
     def test_transparent_gradient_candidate_is_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
