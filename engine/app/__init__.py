@@ -35,6 +35,23 @@ if not getattr(_analyzer.analyze_image_from_mem, "__vektoryum_contract_wrapped__
     _analyzer.analyze_image_from_mem = _analyze_image_from_mem_with_contract
 
 
+# Alpha must be restored before pipeline imports preprocess_for_mode by value.
+# The gradient module is patched at package initialization because run_candidate
+# imports its entry point lazily inside worker processes.
+from app import preprocess as _preprocess
+from app.alpha_preprocess import wrap_gradient_vectorizer, wrap_preprocess_for_mode
+
+_preprocess.preprocess_for_mode = wrap_preprocess_for_mode(
+    _preprocess.preprocess_for_mode
+)
+
+from app import gradient_vectorize as _gradient_vectorize
+
+_gradient_vectorize.vectorize_with_gradients = wrap_gradient_vectorizer(
+    _gradient_vectorize.vectorize_with_gradients
+)
+
+
 from app import pipeline as _pipeline
 
 if not getattr(_pipeline.run_pipeline, "__vektoryum_auto_gate_wrapped__", False):
@@ -133,5 +150,7 @@ if not getattr(
 
 del _final_artifact_evaluator
 del _pipeline
+del _gradient_vectorize
+del _preprocess
 del _analyzer
 del _vector_engines
