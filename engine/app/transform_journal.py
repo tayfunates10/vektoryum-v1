@@ -18,6 +18,8 @@ from typing import Any, Callable
 import cv2
 import numpy as np
 
+from app import source_truth as _source_truth
+
 
 def _sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
@@ -60,6 +62,8 @@ def _measure_svg_bytes(
     *,
     max_side: int = 512,
     required_metrics: set[str] | None = None,
+    measure_alpha: bool = False,
+    capture_render: bool = False,
     _allow_topology_refinement: bool = True,
 ) -> dict[str, Any]:
     """Stage gate için bounded structural + source-fidelity ölçümü."""
@@ -122,10 +126,26 @@ def _measure_svg_bytes(
     else:
         h, w = h0, w0
 
+    alpha_required = (
+        measure_alpha and "alpha_fidelity" in set(required_metrics or ())
+    )
+    render_rgba = None
     with tempfile.TemporaryDirectory(prefix="vektoryum-stage-") as directory:
         path = Path(directory) / "candidate.svg"
         path.write_bytes(render_data)
-        rnd = render_svg_to_rgb(path, w, h)
+        if alpha_required:
+            render_rgba = _source_truth.render_svg_to_rgba(path, w, h)
+            if render_rgba is not None:
+                if render_rgba.shape[:2] != (h, w):
+                    render_rgba = _source_truth.resize_rgba(render_rgba, w, h)
+                # The alpha proof already produced a straight RGBA render.
+                # Reuse its white composite for the existing RGB gates.
+                rnd = _source_truth.composite_rgba(render_rgba, 255)
+            else:
+                # Preserve visual diagnostics while alpha stays fail-closed.
+                rnd = render_svg_to_rgb(path, w, h)
+        else:
+            rnd = render_svg_to_rgb(path, w, h)
     if rnd is None:
         metric["required_unmeasured"] = sorted(
             set(metric["required_unmeasured"]) | {"stage_render"}
@@ -133,6 +153,45 @@ def _measure_svg_bytes(
         return metric
     if rnd.shape[:2] != (h, w):
         rnd = cv2.resize(rnd, (w, h), interpolation=cv2.INTER_AREA)
+
+    # Zorunlu coordinate-contract onarımında parent/candidate render'ı özel
+    # cache alanında tutulur. Bu, source-topology AA sınıflandırma gürültüsünü
+    # gerçek render regresyonundan ayırır ve gradient preservation'ı ölçer.
+    # Ham RGB ndarray public journal'a hiçbir zaman serileştirilmez.
+    if capture_render:
+        render_rgb = np.asarray(rnd, dtype=np.uint8).copy()
+        metric['_render_rgb'] = render_rgb
+        metric['render_rgb_sha256'] = hashlib.sha256(
+            np.ascontiguousarray(render_rgb).tobytes()
+        ).hexdigest()
+        if 'gradient_fidelity' in set(required_metrics or ()):
+            metric['gradient_fidelity_status'] = 'measured'
+            metric['required_unmeasured'] = [
+                name for name in metric['required_unmeasured']
+                if name != 'gradient_fidelity'
+            ]
+
+    # TransformJournal'ın görevi final source-truth kararını yeniden vermek değil,
+    # kabul edilmiş parent artifact'a göre her mutasyonun alpha düzlemini
+    # koruduğunu kanıtlamaktır. Parent ve candidate aynı bounded RGBA renderer ile
+    # ölçülür; ham ndarray yalnız özel cache anahtarında tutulur ve public journal
+    # raporuna hiçbir zaman serileştirilmez. Renderer yoksa required metric açıkça
+    # unmeasured kalır ve mevcut fail-closed karar yolu candidate'ı reddeder.
+    if alpha_required:
+        if render_rgba is None:
+            metric["alpha_fidelity_status"] = "unmeasured"
+        else:
+            render_alpha = np.asarray(render_rgba[:, :, 3], dtype=np.uint8).copy()
+            metric["_render_alpha"] = render_alpha
+            metric["alpha_fidelity_status"] = "measured"
+            metric["alpha_coverage"] = float(render_alpha.astype(np.float32).mean() / 255.0)
+            metric["alpha_sha256"] = hashlib.sha256(
+                np.ascontiguousarray(render_alpha).tobytes()
+            ).hexdigest()
+            metric["required_unmeasured"] = [
+                name for name in metric["required_unmeasured"]
+                if name != "alpha_fidelity"
+            ]
 
     ga = cv2.cvtColor(src, cv2.COLOR_RGB2GRAY)
     gb = cv2.cvtColor(rnd, cv2.COLOR_RGB2GRAY)
@@ -176,6 +235,10 @@ def _measure_svg_bytes(
             source_rgb,
             max_side=refined_side,
             required_metrics=required_metrics,
+            # Fine pass only replaces topology fields; alpha/render proof was
+            # already completed at the bounded coarse resolution.
+            measure_alpha=False,
+            capture_render=False,
             _allow_topology_refinement=False,
         )
         if all(key in refined for key in (
@@ -219,6 +282,10 @@ class TransformJournal:
         self.source_rgb = np.asarray(source_rgb, dtype=np.uint8)
         self.image_class = image_class
         self.required_metrics = set(required_metrics or ())
+        # Alpha ve direct render preservation ölçümü yalnız mandatory
+        # coordinate-contract repair'a açılır. Downstream mutatorlar önceki
+        # fail-closed required-metric scope'larını aynen korur.
+        self._measurement_stage_id: str | None = None
         self.max_side = min(512, max(256, int(max_side)))
         self.budget_seconds = (
             budget_seconds if budget_seconds is not None
@@ -242,22 +309,27 @@ class TransformJournal:
 
     def _measure(self, data: bytes) -> dict[str, Any]:
         sha = _sha(data)
-        if sha not in self._cache:
+        capture_render = self._measurement_stage_id == "restore_source_dimensions"
+        measure_alpha = capture_render
+        cache_key = f"{sha}:alpha={int(measure_alpha)}:render={int(capture_render)}"
+        if cache_key not in self._cache:
             started = time.perf_counter()
             try:
-                self._cache[sha] = _measure_svg_bytes(
+                self._cache[cache_key] = _measure_svg_bytes(
                     data, self.source_rgb, max_side=self.max_side,
                     required_metrics=self.required_metrics,
+                    measure_alpha=measure_alpha,
+                    capture_render=capture_render,
                 )
             finally:
                 self.evaluation_seconds += time.perf_counter() - started
-        return self._cache[sha]
+        return self._cache[cache_key]
 
     @staticmethod
     def _deltas(before: dict[str, Any], after: dict[str, Any]) -> dict[str, float]:
         keys = (
             "byte_size", "path_count", "node_count", "ssim", "edge_f1_1px",
-            "seam_ratio", "component_delta", "hole_delta",
+            "seam_ratio", "component_delta", "hole_delta", "alpha_coverage",
         )
         result: dict[str, float] = {}
         for key in keys:
@@ -265,7 +337,57 @@ class TransformJournal:
                 result[key] = float(after[key]) - float(before[key])
         return result
 
-    def _decide(self, before: dict[str, Any], after: dict[str, Any]) -> list[str]:
+    @staticmethod
+    def _alpha_comparison(
+        before: dict[str, Any], after: dict[str, Any],
+    ) -> dict[str, float] | None:
+        parent_alpha = before.get("_render_alpha")
+        candidate_alpha = after.get("_render_alpha")
+        if not isinstance(parent_alpha, np.ndarray) or not isinstance(candidate_alpha, np.ndarray):
+            return None
+        if parent_alpha.shape != candidate_alpha.shape:
+            return None
+        return _source_truth.alpha_plane_metrics(parent_alpha, candidate_alpha)
+
+    @staticmethod
+    def _render_comparison(
+        before: dict[str, Any], after: dict[str, Any],
+    ) -> dict[str, float] | None:
+        parent_rgb = before.get('_render_rgb')
+        candidate_rgb = after.get('_render_rgb')
+        if not isinstance(parent_rgb, np.ndarray) or not isinstance(candidate_rgb, np.ndarray):
+            return None
+        if parent_rgb.shape != candidate_rgb.shape:
+            return None
+        from app.fidelity import _edge_f1, _ssim  # noqa: PLC0415
+
+        parent_gray = cv2.cvtColor(parent_rgb, cv2.COLOR_RGB2GRAY)
+        candidate_gray = cv2.cvtColor(candidate_rgb, cv2.COLOR_RGB2GRAY)
+        diff = np.abs(
+            parent_rgb.astype(np.float32) - candidate_rgb.astype(np.float32)
+        ) / 255.0
+        return {
+            'ssim': float(_ssim(parent_gray, candidate_gray)),
+            'edge_f1_1px': float(_edge_f1(candidate_gray, parent_gray, tolerance=1)),
+            'rgb_mae': float(diff.mean()),
+            'rgb_p95': float(np.percentile(diff, 95)),
+        }
+
+    def _render_equivalent(self, comparison: dict[str, float] | None) -> bool:
+        if comparison is None:
+            return False
+        from app.final_artifact_evaluator import _thresholds  # noqa: PLC0415
+
+        thresholds = _thresholds(self.image_class, None)
+        return bool(
+            float(comparison['ssim']) >= thresholds['ssim_min']
+            and float(comparison['edge_f1_1px']) >= thresholds['edge_f1_min']
+            and float(comparison['rgb_mae']) <= thresholds['alpha_background_mae_max']
+        )
+
+    def _decide(
+        self, before: dict[str, Any], after: dict[str, Any], *, stage_id: str,
+    ) -> list[str]:
         reasons: list[str] = []
         if not after.get("structural_safe"):
             reasons.extend(after.get("structural_failure_codes") or ["structure_failed"])
@@ -278,6 +400,37 @@ class TransformJournal:
         visual_keys = ("ssim", "edge_f1_1px", "seam_ratio", "component_delta", "hole_delta")
         if any(key not in after for key in visual_keys):
             reasons.append("stage_metrics_incomplete")
+        render_comparison = self._render_comparison(before, after)
+
+        if "alpha_fidelity" in self.required_metrics:
+            alpha_comparison = self._alpha_comparison(before, after)
+            if alpha_comparison is None:
+                reasons.append("alpha_stage_metrics_incomplete")
+            else:
+                # Yeni eşik icat edilmez: final artifact evaluator'ın mevcut,
+                # image-class bağlı alpha hard gate'leri parent/candidate koruma
+                # karşılaştırmasında aynen yeniden kullanılır.
+                from app.final_artifact_evaluator import _thresholds  # noqa: PLC0415
+
+                alpha_thresholds = _thresholds(self.image_class, None)
+                if float(alpha_comparison["alpha_iou"]) < alpha_thresholds["alpha_iou_min"]:
+                    reasons.append("alpha_iou_regression")
+                if float(alpha_comparison["alpha_mae"]) > alpha_thresholds["alpha_mae_max"]:
+                    reasons.append("alpha_mae_regression")
+
+        if 'gradient_fidelity' in self.required_metrics:
+            if render_comparison is None:
+                reasons.append('gradient_stage_metrics_incomplete')
+            else:
+                from app.final_artifact_evaluator import _thresholds  # noqa: PLC0415
+
+                gradient_thresholds = _thresholds(self.image_class, None)
+                if float(render_comparison['ssim']) < gradient_thresholds['ssim_min']:
+                    reasons.append('gradient_ssim_regression')
+                if float(render_comparison['edge_f1_1px']) < gradient_thresholds['edge_f1_min']:
+                    reasons.append('gradient_edge_regression')
+                if float(render_comparison['rgb_mae']) > gradient_thresholds['alpha_background_mae_max']:
+                    reasons.append('gradient_rgb_mae_regression')
         if reasons:
             return list(dict.fromkeys(reasons))
 
@@ -286,7 +439,11 @@ class TransformJournal:
             # Clean/artwork outputunda topoloji önceki kabul edilmiş artifact'tan
             # daha kötü olamaz. Photo sınıfında semantik renk topolojisi güvenilir
             # değildir; complexity ve render kapıları yine uygulanır.
-            if self.image_class != "photo":
+            coordinate_render_equivalent = (
+                stage_id == 'restore_source_dimensions'
+                and self._render_equivalent(render_comparison)
+            )
+            if self.image_class != "photo" and not coordinate_render_equivalent:
                 if after["component_delta"] > before["component_delta"]:
                     reasons.append("topology_component_regression")
                 if after["hole_delta"] > before["hole_delta"]:
@@ -378,13 +535,26 @@ class TransformJournal:
             reasons = list(forced_reasons or [])
             status = forced_status
         else:
-            before = self._measure(parent_data)
-            after = self._measure(candidate_data)
-            reasons = self._decide(before, after)
+            previous_stage = self._measurement_stage_id
+            self._measurement_stage_id = stage_id
+            try:
+                before = self._measure(parent_data)
+                after = self._measure(candidate_data)
+            finally:
+                self._measurement_stage_id = previous_stage
+            reasons = self._decide(before, after, stage_id=stage_id)
             accepted = not reasons
             status = "accepted" if accepted else "rolled_back"
 
         accepted_sha = candidate_sha if accepted else parent_sha
+        alpha_comparison = self._alpha_comparison(before or {}, after or {})
+        render_comparison = self._render_comparison(before or {}, after or {})
+        before_public = (
+            _source_truth.public_metric_dict(before) if isinstance(before, dict) else before
+        )
+        after_public = (
+            _source_truth.public_metric_dict(after) if isinstance(after, dict) else after
+        )
         stage = {
             "stage_id": stage_id,
             "transform_name": stage_id,
@@ -396,8 +566,10 @@ class TransformJournal:
             "duration_ms": round(duration_ms, 3),
             "status": status,
             "reason_codes": reasons or ["metrics_non_regressing"],
-            "before_metrics": before,
-            "after_metrics": after,
+            "before_metrics": before_public,
+            "after_metrics": after_public,
+            "alpha_comparison": alpha_comparison,
+            "render_comparison": render_comparison,
             "metric_deltas": self._deltas(before or {}, after or {}),
             "complexity_delta": {
                 key: self._deltas(before or {}, after or {}).get(key)

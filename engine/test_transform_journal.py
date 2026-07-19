@@ -374,9 +374,13 @@ def test_noop_and_budget_exhaustion_do_not_mutate(tmp_path: Path) -> None:
     assert path.read_bytes() == original
 
 
-def test_unmeasured_alpha_or_gradient_forces_changed_stage_rollback(tmp_path: Path) -> None:
+def test_unmeasured_alpha_or_gradient_forces_changed_stage_rollback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.source_truth as source_truth
     from app.transform_journal import TransformJournal
 
+    monkeypatch.setattr(source_truth, "render_svg_to_rgba", lambda *_args, **_kwargs: None)
     parent = tmp_path / "parent.svg"
     candidate = tmp_path / "candidate.svg"
     parent.write_bytes(_square_svg())
@@ -388,7 +392,303 @@ def test_unmeasured_alpha_or_gradient_forces_changed_stage_rollback(tmp_path: Pa
     assert accepted == parent
     assert stage["status"] == "rolled_back"
     assert "required_metric_unmeasured" in stage["reason_codes"]
+    assert "alpha_stage_metrics_incomplete" in stage["reason_codes"]
 
+
+def test_alpha_preserving_viewbox_restore_is_accepted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.fidelity as fidelity
+    import app.source_truth as source_truth
+    from app.pipeline import _restore_source_dimensions
+    from app.transform_journal import TransformJournal
+
+    source = _square_source()
+    monkeypatch.setattr(fidelity, "render_svg_to_rgb", lambda *_args, **_kwargs: source.copy())
+
+    def stable_alpha(_path: Path, width: int, height: int) -> np.ndarray:
+        rgba = np.zeros((height, width, 4), dtype=np.uint8)
+        rgba[24:104, 24:104, :3] = (227, 0, 11)
+        rgba[24:104, 24:104, 3] = 255
+        return rgba
+
+    monkeypatch.setattr(source_truth, "render_svg_to_rgba", stable_alpha)
+    path = tmp_path / "transparent-no-viewbox.svg"
+    path.write_bytes(
+        b'<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128">'
+        b'<path fill="#e3000b" d="M24 24H104V104H24Z"/></svg>'
+    )
+    journal = TransformJournal(
+        path, source, required_metrics={"alpha_fidelity"},
+    )
+    accepted, _report, stage = journal.run_in_place(
+        "restore_source_dimensions",
+        path,
+        lambda candidate: _restore_source_dimensions(
+            candidate, {"width": 128, "height": 128},
+        ),
+    )
+
+    assert accepted
+    assert stage["status"] == "accepted"
+    assert stage["required_unmeasured"] == []
+    assert stage["alpha_comparison"]["alpha_iou"] == pytest.approx(1.0)
+    assert stage["alpha_comparison"]["alpha_mae"] == pytest.approx(0.0)
+    assert "_render_alpha" not in stage["before_metrics"]
+    assert "_render_alpha" not in stage["after_metrics"]
+    assert ET.fromstring(path.read_bytes()).get("viewBox") == "0 0 128 128"
+
+
+def test_alpha_plane_regression_is_rolled_back_even_when_rgb_is_identical(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.fidelity as fidelity
+    import app.source_truth as source_truth
+    from app.transform_journal import TransformJournal
+
+    source = _square_source()
+    monkeypatch.setattr(fidelity, "render_svg_to_rgb", lambda *_args, **_kwargs: source.copy())
+
+    def rendered_alpha(path: Path, width: int, height: int) -> np.ndarray:
+        rgba = np.zeros((height, width, 4), dtype=np.uint8)
+        loss = b"alpha-loss" in Path(path).read_bytes()
+        lo, hi = (36, 92) if loss else (24, 104)
+        rgba[lo:hi, lo:hi, :3] = (227, 0, 11)
+        rgba[lo:hi, lo:hi, 3] = 255
+        return rgba
+
+    monkeypatch.setattr(source_truth, "render_svg_to_rgba", rendered_alpha)
+    parent = tmp_path / "parent.svg"
+    candidate = tmp_path / "candidate.svg"
+    parent.write_bytes(_square_svg())
+    candidate.write_bytes(_square_svg("<metadata>alpha-loss</metadata>"))
+    journal = TransformJournal(
+        parent, source, required_metrics={"alpha_fidelity"},
+    )
+    accepted, stage = journal.consider_candidate(
+        "restore_source_dimensions", parent, candidate,
+    )
+
+    assert accepted == parent
+    assert stage["status"] == "rolled_back"
+    assert set(stage["reason_codes"]) & {"alpha_iou_regression", "alpha_mae_regression"}
+    assert stage["required_unmeasured"] == []
+    assert stage["alpha_comparison"]["alpha_iou"] < 0.995
+
+
+def test_alpha_measurement_is_scoped_to_source_dimension_restore(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.fidelity as fidelity
+    import app.source_truth as source_truth
+    from app.transform_journal import TransformJournal
+
+    source = _square_source()
+    monkeypatch.setattr(fidelity, "render_svg_to_rgb", lambda *_args, **_kwargs: source.copy())
+
+    def stable_alpha(_path: Path, width: int, height: int) -> np.ndarray:
+        rgba = np.zeros((height, width, 4), dtype=np.uint8)
+        rgba[24:104, 24:104, :3] = (227, 0, 11)
+        rgba[24:104, 24:104, 3] = 255
+        return rgba
+
+    monkeypatch.setattr(source_truth, "render_svg_to_rgba", stable_alpha)
+    parent = tmp_path / "parent.svg"
+    candidate = tmp_path / "candidate.svg"
+    parent.write_bytes(_square_svg())
+    candidate.write_bytes(_square_svg("<metadata>downstream-change</metadata>"))
+    journal = TransformJournal(parent, source, required_metrics={"alpha_fidelity"})
+    accepted, stage = journal.consider_candidate("boundary_refit", parent, candidate)
+
+    assert accepted == parent
+    assert stage["status"] == "rolled_back"
+    assert "required_metric_unmeasured" in stage["reason_codes"]
+    assert "alpha_stage_metrics_incomplete" in stage["reason_codes"]
+    assert stage["required_unmeasured"] == ["alpha_fidelity"]
+    assert stage["alpha_comparison"] is None
+
+
+def test_alpha_restore_reuses_single_rgba_render_per_artifact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.fidelity as fidelity
+    import app.source_truth as source_truth
+    from app.transform_journal import TransformJournal
+
+    source = _square_source()
+    calls = {"rgb": 0, "rgba": 0}
+
+    def rgb_render(_path: Path, _width: int, _height: int) -> np.ndarray:
+        calls["rgb"] += 1
+        return source.copy()
+
+    def rgba_render(_path: Path, width: int, height: int) -> np.ndarray:
+        calls["rgba"] += 1
+        rgba = np.zeros((height, width, 4), dtype=np.uint8)
+        rgba[24:104, 24:104, :3] = (227, 0, 11)
+        rgba[24:104, 24:104, 3] = 255
+        return rgba
+
+    monkeypatch.setattr(fidelity, "render_svg_to_rgb", rgb_render)
+    monkeypatch.setattr(source_truth, "render_svg_to_rgba", rgba_render)
+    parent = tmp_path / "parent.svg"
+    candidate = tmp_path / "candidate.svg"
+    parent.write_bytes(_square_svg())
+    candidate.write_bytes(_square_svg("<metadata>same-alpha</metadata>"))
+    journal = TransformJournal(
+        parent, source, required_metrics={"alpha_fidelity"},
+    )
+
+    accepted, stage = journal.consider_candidate(
+        "restore_source_dimensions", parent, candidate,
+    )
+
+    assert accepted == candidate
+    assert stage["status"] == "accepted"
+    assert stage["required_unmeasured"] == []
+    assert stage["alpha_comparison"]["alpha_iou"] == pytest.approx(1.0)
+    assert calls == {"rgb": 0, "rgba": 2}
+
+def test_gradient_preserving_restore_and_render_equivalent_topology_alias(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.fidelity as fidelity
+    import app.transform_journal as transform_journal
+    from app.pipeline import _restore_source_dimensions
+    from app.transform_journal import TransformJournal
+
+    source = _square_source()
+    monkeypatch.setattr(fidelity, "render_svg_to_rgb", lambda *_args, **_kwargs: source.copy())
+    path = tmp_path / "gradient-no-viewbox.svg"
+    path.write_bytes(
+        b'<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128">'
+        b'<defs><linearGradient id="g"><stop offset="0" stop-color="#e3000b"/>'
+        b'<stop offset="1" stop-color="#554bad"/></linearGradient></defs>'
+        b'<rect x="24" y="24" width="80" height="80" fill="url(#g)"/></svg>'
+    )
+    journal = TransformJournal(path, source, required_metrics={"gradient_fidelity"})
+    accepted, _report, stage = journal.run_in_place(
+        "restore_source_dimensions", path,
+        lambda candidate: _restore_source_dimensions(
+            candidate, {"width": 128, "height": 128},
+        ),
+    )
+    assert accepted
+    assert stage["status"] == "accepted"
+    assert stage["required_unmeasured"] == []
+    assert stage["render_comparison"]["ssim"] == pytest.approx(1.0)
+    assert "_render_rgb" not in stage["before_metrics"]
+    assert "_render_rgb" not in stage["after_metrics"]
+    assert ET.fromstring(path.read_bytes()).get("viewBox") == "0 0 128 128"
+
+    parent = tmp_path / "parent.svg"
+    candidate = tmp_path / "candidate.svg"
+    parent.write_bytes(_square_svg())
+    candidate.write_bytes(_square_svg("<metadata>candidate</metadata>"))
+
+    def synthetic_measure(data: bytes, _source: np.ndarray, **_kwargs):
+        changed = b"candidate" in data
+        return {
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "byte_size": len(data),
+            "structural_safe": True,
+            "structural_failure_codes": [],
+            "path_count": 1,
+            "node_count": 5,
+            "gradient_definition_count": 0,
+            "required_unmeasured": [],
+            "ssim": 0.99,
+            "edge_f1_1px": 0.995,
+            "seam_ratio": 0.0,
+            "component_delta": 11 if changed else 10,
+            "hole_delta": 0,
+            "_render_rgb": source.copy(),
+        }
+
+    monkeypatch.setattr(transform_journal, "_measure_svg_bytes", synthetic_measure)
+    restore_journal = TransformJournal(parent, source)
+    restored, restore_stage = restore_journal.consider_candidate(
+        "restore_source_dimensions", parent, candidate,
+    )
+    assert restored == candidate
+    assert restore_stage["status"] == "accepted"
+    assert restore_stage["render_comparison"]["ssim"] == pytest.approx(1.0)
+
+    downstream_journal = TransformJournal(parent, source)
+    downstream, downstream_stage = downstream_journal.consider_candidate(
+        "boundary_refit", parent, candidate,
+    )
+    assert downstream == parent
+    assert "topology_component_regression" in downstream_stage["reason_codes"]
+
+
+def test_gradient_render_regression_and_missing_render_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.fidelity as fidelity
+    from app.transform_journal import TransformJournal
+
+    source = _square_source()
+
+    def gradient_render(path: Path, _width: int, _height: int) -> np.ndarray:
+        rendered = source.copy()
+        if b"gradient-loss" in Path(path).read_bytes():
+            rendered[:, 64:] = (0, 0, 0)
+        return rendered
+
+    monkeypatch.setattr(fidelity, "render_svg_to_rgb", gradient_render)
+    parent = tmp_path / "parent.svg"
+    candidate = tmp_path / "candidate.svg"
+    parent.write_bytes(_square_svg())
+    candidate.write_bytes(_square_svg("<metadata>gradient-loss</metadata>"))
+    journal = TransformJournal(
+        parent, source, required_metrics={"gradient_fidelity"},
+    )
+    accepted, stage = journal.consider_candidate(
+        "restore_source_dimensions", parent, candidate,
+    )
+    assert accepted == parent
+    assert set(stage["reason_codes"]) & {
+        "gradient_ssim_regression", "gradient_edge_regression",
+        "gradient_rgb_mae_regression",
+    }
+
+    monkeypatch.setattr(fidelity, "render_svg_to_rgb", lambda *_args, **_kwargs: None)
+    missing_journal = TransformJournal(
+        parent, source, required_metrics={"gradient_fidelity"},
+    )
+    missing, missing_stage = missing_journal.consider_candidate(
+        "restore_source_dimensions", parent, candidate,
+    )
+    assert missing == parent
+    assert "required_metric_unmeasured" in missing_stage["reason_codes"]
+    assert "gradient_stage_metrics_incomplete" in missing_stage["reason_codes"]
+
+
+def test_gradient_measurement_is_scoped_to_source_dimension_restore(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.fidelity as fidelity
+    from app.transform_journal import TransformJournal
+
+    source = _square_source()
+    monkeypatch.setattr(fidelity, "render_svg_to_rgb", lambda *_args, **_kwargs: source.copy())
+    parent = tmp_path / "parent.svg"
+    candidate = tmp_path / "candidate.svg"
+    parent.write_bytes(_square_svg())
+    candidate.write_bytes(_square_svg("<metadata>downstream-gradient</metadata>"))
+    journal = TransformJournal(
+        parent, source, required_metrics={"gradient_fidelity"},
+    )
+    accepted, stage = journal.consider_candidate(
+        "boundary_refit", parent, candidate,
+    )
+    assert accepted == parent
+    assert stage["status"] == "rolled_back"
+    assert stage["required_unmeasured"] == ["gradient_fidelity"]
+    assert "required_metric_unmeasured" in stage["reason_codes"]
+    assert "gradient_stage_metrics_incomplete" in stage["reason_codes"]
+    assert stage["render_comparison"] is None
 
 def test_assertions_are_real() -> None:
     """Bu dosya global FAILS listesine değil gerçek pytest assertion'a dayanır."""
