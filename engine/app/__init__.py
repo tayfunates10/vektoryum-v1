@@ -120,9 +120,17 @@ if not getattr(_pipeline.run_pipeline, "__vektoryum_auto_gate_wrapped__", False)
     _pipeline.run_pipeline = _run_pipeline_with_auto_gate
 
 
-from app.alpha_svg_mask import wrap_run_pipeline_with_alpha_mask
+from app import alpha_svg_mask as _alpha_svg_mask
+from app.alpha_mask_budget import wrap_apply_source_alpha_mask
 
-_pipeline.run_pipeline = wrap_run_pipeline_with_alpha_mask(_pipeline.run_pipeline)
+# The budget guard runs before the vector-mask builder, so pathological alpha
+# planes cannot allocate or serialize an oversized SVG before journal rejection.
+_alpha_svg_mask.apply_source_alpha_mask = wrap_apply_source_alpha_mask(
+    _alpha_svg_mask.apply_source_alpha_mask
+)
+_pipeline.run_pipeline = _alpha_svg_mask.wrap_run_pipeline_with_alpha_mask(
+    _pipeline.run_pipeline
+)
 
 
 from app import final_artifact_evaluator as _final_artifact_evaluator
@@ -153,6 +161,7 @@ if not getattr(
 
 
 del _final_artifact_evaluator
+del _alpha_svg_mask
 del _pipeline
 del _gradient_vectorize
 del _preprocess
