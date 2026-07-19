@@ -75,12 +75,7 @@ def _count_merged_rectangles(
     completed = 0
 
     for y in range(height):
-        del y
-        row = quantized[len(range(height)) - height] if False else None
-        # The deliberately simple index below avoids retaining row views beyond
-        # one iteration while keeping the scan deterministic.
-        row = quantized[_count_merged_rectangles.row_index]
-        _count_merged_rectangles.row_index += 1
+        row = quantized[y]
         current: set[tuple[int, int, int]] = set()
         x = 0
         while x < width:
@@ -104,9 +99,6 @@ def _count_merged_rectangles(
     return completed + len(active)
 
 
-_count_merged_rectangles.row_index = 0
-
-
 def _preflight(svg_path: Path, source_path: Path) -> dict[str, int] | None:
     before_size = Path(svg_path).stat().st_size
     byte_limit = _byte_limit(before_size)
@@ -128,7 +120,6 @@ def _preflight(svg_path: Path, source_path: Path) -> dict[str, int] | None:
         return None
 
     quantized = _quantize_alpha(alpha)
-    _count_merged_rectangles.row_index = 0
     rectangle_count = _count_merged_rectangles(
         quantized,
         hard_limit=rectangle_limit,
@@ -136,7 +127,10 @@ def _preflight(svg_path: Path, source_path: Path) -> dict[str, int] | None:
 
     digits = len(str(max(raster_width, raster_height)))
     rect_upper_bound = 38 + 4 * digits
-    group_upper_bound = 96 * min(_MAX_ALPHA_LEVELS, int(np.unique(quantized).size))
+    group_upper_bound = 96 * min(
+        _MAX_ALPHA_LEVELS,
+        int(np.unique(quantized).size),
+    )
     projected_upper_bound = (
         before_size
         + _FIXED_MARKUP_OVERHEAD
