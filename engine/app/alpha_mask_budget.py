@@ -138,7 +138,7 @@ def _scan_merged_rectangles(
         rectangle_count += 1
         if rectangle_count > hard_limit:
             raise RuntimeError(
-                "source_alpha_mask_geometry_budget_exceeded:"
+                "source_alpha_mask_rectangle_budget_exceeded:"
                 f"{rectangle_count}>{hard_limit}"
             )
         rect_markup_bytes += _rect_markup_size(
@@ -171,7 +171,7 @@ def _scan_merged_rectangles(
 
         if rectangle_count + len(active) > hard_limit:
             raise RuntimeError(
-                "source_alpha_mask_geometry_budget_exceeded:"
+                "source_alpha_mask_rectangle_budget_exceeded:"
                 f"{rectangle_count + len(active)}>{hard_limit}"
             )
 
@@ -273,9 +273,11 @@ def _preflight(svg_path: Path, source_path: Path) -> dict[str, Any] | None:
 
     return {
         "mask_encoding": encoding,
+        "preflight_rectangle_limit": int(rect_count_limit),
         "preflight_rectangle_count": int(rectangle_count),
         "preflight_alpha_level_count": int(group_count),
         "preflight_byte_limit": int(limits["byte_limit"]),
+        "preflight_projected_upper_bound": int(projected),
         "preflight_projected_byte_size": int(projected),
         "preflight_rect_projected_byte_size": int(rect_projected),
         "preflight_path_projected_byte_size": int(path_projected),
