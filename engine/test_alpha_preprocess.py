@@ -5,15 +5,16 @@ import unittest
 from pathlib import Path
 
 import numpy as np
-from PIL import Image, ImageDraw
+from PIL import Image
 
 from app.alpha_preprocess import wrap_gradient_vectorizer, wrap_preprocess_for_mode
+from app.alpha_svg_mask import apply_source_alpha_mask
 from app.final_artifact_evaluator import _thresholds
 from app.source_truth import alpha_plane_metrics, render_svg_to_rgba
 
 
 class AlphaPreprocessUnitTests(unittest.TestCase):
-    def test_transparent_color_preprocess_restores_exact_alpha(self) -> None:
+    def test_transparent_color_preprocess_stages_exact_alpha_contract(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source_path = root / "source.png"
@@ -44,12 +45,18 @@ class AlphaPreprocessUnitTests(unittest.TestCase):
             )
 
             with Image.open(processed_path) as verified_image:
-                self.assertEqual(verified_image.mode, "RGBA")
-                verified = np.asarray(verified_image.convert("RGBA"), dtype=np.uint8)
-            np.testing.assert_array_equal(verified[:, :, 3], source[:, :, 3])
-            self.assertTrue(np.all(verified[source[:, :, 3] == 0, :3] == 0))
-            self.assertEqual(report["source_alpha"]["status"], "preserved")
-            self.assertIn("source_alpha_preserved", report["steps"])
+                self.assertEqual(verified_image.mode, "RGB")
+                verified = np.asarray(verified_image, dtype=np.uint8).copy()
+            self.assertTrue(np.all(verified[source[:, :, 3] == 0] == 0))
+            partial = (source[:, :, 3] > 0) & (source[:, :, 3] < 255)
+            np.testing.assert_array_equal(
+                verified[partial], source[:, :, :3][partial]
+            )
+            self.assertEqual(
+                report["source_alpha"]["status"], "staged_for_vector_mask"
+            )
+            self.assertEqual(report["source_alpha"]["trace_input_mode"], "RGB")
+            self.assertIn("source_alpha_staged", report["steps"])
             self.assertEqual(len(report["source_alpha"]["alpha_sha256"]), 64)
 
     def test_opaque_source_keeps_existing_rgb_output(self) -> None:
@@ -128,17 +135,25 @@ class AlphaPreprocessUnitTests(unittest.TestCase):
 
 
 class AlphaPreprocessProductionIntegrationTests(unittest.TestCase):
-    def test_vtracer_output_does_not_collapse_to_opaque_canvas(self) -> None:
+    def test_vector_mask_repairs_live_opaque_canvas_signature(self) -> None:
         import vtracer
         from app.preprocess import preprocess_for_mode
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source_path = root / "transparent-logo.png"
-            image = Image.new("RGBA", (128, 128), (0, 0, 0, 0))
-            draw = ImageDraw.Draw(image)
-            draw.rectangle((32, 32, 95, 95), fill=(214, 32, 48, 255))
-            image.save(source_path)
+            source = np.zeros((128, 128, 4), dtype=np.uint8)
+            source[31:97, 31:97, :3] = (214, 32, 48)
+            source[31:97, 31:97, 3] = 255
+            source[30, 31:97, :3] = (214, 32, 48)
+            source[97, 31:97, :3] = (214, 32, 48)
+            source[31:97, 30, :3] = (214, 32, 48)
+            source[31:97, 97, :3] = (214, 32, 48)
+            source[30, 31:97, 3] = 128
+            source[97, 31:97, 3] = 128
+            source[31:97, 30, 3] = 128
+            source[31:97, 97, 3] = 128
+            Image.fromarray(source, mode="RGBA").save(source_path)
 
             processed_path, report = preprocess_for_mode(
                 source_path,
@@ -146,11 +161,10 @@ class AlphaPreprocessProductionIntegrationTests(unittest.TestCase):
                 root,
                 analysis={"estimated_color_count": 2},
             )
-            self.assertIn("source_alpha_preserved", report["steps"])
+            self.assertIn("source_alpha_staged", report["steps"])
             with Image.open(processed_path) as processed_image:
-                processed_rgba = np.asarray(
-                    processed_image.convert("RGBA"), dtype=np.uint8
-                ).copy()
+                self.assertEqual(processed_image.mode, "RGB")
+                width, height = processed_image.size
 
             svg_path = root / "candidate.svg"
             vtracer.convert_image_to_svg_py(
@@ -165,22 +179,41 @@ class AlphaPreprocessProductionIntegrationTests(unittest.TestCase):
                 length_threshold=4.0,
                 path_precision=5,
             )
-            rendered = render_svg_to_rgba(
-                svg_path,
-                processed_rgba.shape[1],
-                processed_rgba.shape[0],
+
+            opaque_render = render_svg_to_rgba(svg_path, width, height)
+            self.assertIsNotNone(opaque_render)
+            assert opaque_render is not None
+            opaque_coverage = float(
+                opaque_render[:, :, 3].astype(np.float32).mean() / 255.0
             )
+            self.assertGreaterEqual(opaque_coverage, 0.995)
+
+            mask_report = apply_source_alpha_mask(
+                svg_path, source_path, "logo_color"
+            )
+            self.assertTrue(mask_report["applied"])
+            self.assertEqual(mask_report["status"], "accepted")
+            self.assertGreater(mask_report["mask_path_count"], 0)
+            self.assertNotIn("<image", svg_path.read_text(encoding="utf-8"))
+
+            rendered = render_svg_to_rgba(svg_path, width, height)
             self.assertIsNotNone(rendered)
             assert rendered is not None
+            source_resized = np.asarray(
+                Image.open(source_path).convert("RGBA").resize(
+                    (width, height), Image.Resampling.LANCZOS
+                ),
+                dtype=np.uint8,
+            ).copy()
             metrics = alpha_plane_metrics(
-                processed_rgba[:, :, 3], rendered[:, :, 3]
+                source_resized[:, :, 3], rendered[:, :, 3]
             )
             thresholds = _thresholds("clean_logo", None)
             self.assertGreaterEqual(
-                metrics["alpha_iou"], thresholds["alpha_iou_min"]
+                metrics["alpha_iou"], thresholds["alpha_iou_min"], metrics
             )
             self.assertLessEqual(
-                metrics["alpha_mae"], thresholds["alpha_mae_max"]
+                metrics["alpha_mae"], thresholds["alpha_mae_max"], metrics
             )
             self.assertLess(metrics["render_coverage"], 0.9)
 
