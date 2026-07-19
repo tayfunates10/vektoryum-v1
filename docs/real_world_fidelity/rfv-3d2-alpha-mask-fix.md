@@ -41,19 +41,21 @@ The gradient candidate has the same white-composite assumption and no native sou
 5. Canonicalize fully transparent trace RGB to black and verify the written trace input by read-back.
 6. Preserve a SHA-256 binding for the transformed source alpha in the preprocess report.
 7. Reject the current gradient candidate for transparent sources until that engine has an alpha-aware mask contract; other candidates continue normally.
-8. Before constructing any mask XML, stream-count merged alpha runs and compare both rectangle count and a conservative serialized-size upper bound with the unchanged `TransformJournal` byte-growth budget.
-9. Fail closed before allocation or file mutation when a noisy/checkerboard alpha plane would exceed that budget.
-10. After candidate selection and every SVG mutator, wrap the selected production content in a vector-only SVG mask generated from the transformed source alpha plane.
-11. Encode alpha levels as editable SVG `<g>` groups and vertically merged `<rect>` primitives, without any embedded raster or data URI.
-12. Remove candidate opacity attributes before wrapping so source alpha is applied exactly once.
-13. Render the masked artifact through the production RGBA renderer and accept it only when the unchanged image-class alpha IoU and alpha MAE hard gates pass.
-14. Create an atomic same-directory backup immediately before mask construction. If any post-write render, alpha, journal or publication gate raises, atomically restore the exact original SVG so direct callers and pipeline callers both retain fail-closed file semantics.
-15. Submit the exact masked candidate to the real `TransformJournal`, which enforces structural safety, SSIM, edge, topology and hard path/node/byte complexity gates.
-16. Merge the accepted alpha stage into the existing journal and require a valid SHA chain through the final artifact.
-17. Re-score the exact accepted masked artifact before publication.
-18. Preserve the selected vector-engine candidate identity after finalization. The artifact path, mask report and journal SHA move to the masked SVG, but names such as `geo_standard` or `logo_gradient` remain unchanged because `source_alpha_vector_mask` is a journaled artifact transform, not a new candidate generator.
+8. Before constructing mask XML, safely parse the selected SVG and reproduce the unchanged `TransformJournal` path, node and byte-growth formulas for that exact parent artifact.
+9. Stream-measure vertically merged alpha runs without retaining rectangle tuples or XML nodes.
+10. Use editable `<g>/<rect>` encoding when its projected serialized size fits the unchanged byte gate.
+11. When rect XML does not fit, allow compact per-alpha-level `<path>` encoding only when its projected path count, path-command node count and byte size all fit the unchanged journal limits. No threshold or multiplier is changed.
+12. Fail closed before allocation or file mutation when neither vector encoding is admissible. The noisy/checkerboard case remains rejected.
+13. After candidate selection and every SVG mutator, wrap the selected production content in the authorized vector-only SVG mask generated from the transformed source alpha plane.
+14. Remove candidate opacity attributes before wrapping so source alpha is applied exactly once.
+15. Render the exact masked artifact through the production RGBA renderer and accept it only when the unchanged image-class alpha IoU and alpha MAE hard gates pass.
+16. Create an atomic same-directory backup immediately before mask construction. If any post-write render, alpha, journal or publication gate raises, atomically restore the exact original SVG so direct callers and pipeline callers both retain fail-closed file semantics.
+17. Submit the exact masked candidate to the real `TransformJournal`, which re-enforces structural safety, SSIM, edge, topology and hard path/node/byte complexity gates on the serialized artifact.
+18. Merge the accepted alpha stage into the existing journal and require a valid SHA chain through the final artifact.
+19. Re-score the exact accepted masked artifact before publication.
+20. Preserve the selected vector-engine candidate identity after finalization. The artifact path, mask report and journal SHA move to the masked SVG, but names such as `geo_standard` or `logo_gradient` remain unchanged because `source_alpha_vector_mask` is a journaled artifact transform, not a new candidate generator.
 
-Opaque inputs and non-color modes retain their existing behavior.
+No `<image>`, data URI or embedded raster is introduced. Opaque inputs and non-color modes retain their existing behavior.
 
 ## Validation
 
@@ -63,12 +65,14 @@ The dedicated workflow requires:
 - opaque-input and non-color compatibility tests;
 - proof that non-color outputs bypass the final alpha stage byte-for-byte;
 - fail-closed transparent-gradient behavior;
-- checkerboard/noisy-alpha proof that the preconstruction gate rejects before the SVG bytes change;
+- checkerboard/noisy-alpha proof that an artifact with insufficient journal budget is rejected before the SVG bytes change;
+- adaptive-preflight proof that compact paths are selected only when rect bytes fail but unchanged path, node and byte budgets all pass;
+- render proof that compact-path conversion preserves the same source alpha hard gates;
 - transaction proof that a simulated post-write rejection restores the exact original SVG and removes the rollback file;
 - commit proof that an accepted write persists and removes the rollback file;
 - a real VTracer test that first reproduces the full-canvas opaque signature;
 - application of the final vector-only source-alpha mask to that exact SVG;
-- proof that the mask uses editable `<g>`/`<rect>` primitives and contains no `<image>` element;
+- proof that the normal mask uses editable `<g>/<rect>` primitives, the compact mask uses vector `<path>` elements, and neither contains `<image>`;
 - a real RGBA-render proof against the existing final evaluator's unchanged alpha IoU and alpha MAE thresholds;
 - real `TransformJournal` acceptance and final-SHA chain validation;
 - stable candidate-name proof for alpha-finalized outputs, with fail-closed rejection when the source candidate cannot be bound;
