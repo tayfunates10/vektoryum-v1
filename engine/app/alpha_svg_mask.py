@@ -166,6 +166,22 @@ def _atomic_write_tree(tree: ET.ElementTree, path: Path) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def _journal_source_rgb(image: Image.Image) -> np.ndarray:
+    """Match the pipeline journal's white-composited source RGB contract."""
+    if image.mode in ("RGBA", "LA", "PA") or (
+        image.mode == "P" and "transparency" in image.info
+    ):
+        rgba = np.asarray(image.convert("RGBA"), dtype=np.uint8)
+        alpha = rgba[:, :, 3].astype(np.float32)[:, :, None] / 255.0
+        return np.clip(
+            rgba[:, :, :3].astype(np.float32) * alpha
+            + 255.0 * (1.0 - alpha),
+            0,
+            255,
+        ).astype(np.uint8)
+    return np.asarray(image.convert("RGB"), dtype=np.uint8).copy()
+
+
 def apply_source_alpha_mask(
     svg_path: Path,
     source_path: Path,
@@ -174,6 +190,7 @@ def apply_source_alpha_mask(
     """Attach a vector-only alpha mask and validate it with existing hard gates."""
     svg_path = Path(svg_path)
     before_sha = _sha256(svg_path)
+    before_size = svg_path.stat().st_size
     ET.register_namespace("", _SVG_NS)
     tree = ET.parse(svg_path)
     root = tree.getroot()
@@ -196,6 +213,8 @@ def apply_source_alpha_mask(
             "applied": False,
             "before_sha256": before_sha,
             "after_sha256": before_sha,
+            "before_byte_size": before_size,
+            "after_byte_size": before_size,
         }
 
     quantized, opacity_by_level = _quantize_alpha(source_alpha)
@@ -308,6 +327,8 @@ def apply_source_alpha_mask(
         "schema": "rfv3d2-source-alpha-vector-mask-v1",
         "before_sha256": before_sha,
         "after_sha256": after_sha,
+        "before_byte_size": before_size,
+        "after_byte_size": svg_path.stat().st_size,
         "mask_path_count": path_count,
         "mask_rectangle_count": rectangle_count,
         "mask_raster_width": raster_width,
@@ -319,29 +340,6 @@ def apply_source_alpha_mask(
         "source_coverage": float(metrics["source_coverage"]),
         "render_coverage": float(metrics["render_coverage"]),
     }
-
-
-def _journal_with_alpha_stage(
-    journal: dict[str, Any] | None,
-    report: dict[str, Any],
-) -> dict[str, Any]:
-    updated = dict(journal or {})
-    stages = list(updated.get("stages") or [])
-    stages.append({
-        "stage_id": "source_alpha_vector_mask",
-        "transform_name": "source_alpha_vector_mask",
-        "parent_sha256": report["before_sha256"],
-        "candidate_sha256": report["after_sha256"],
-        "accepted_sha256": report["after_sha256"],
-        "status": "accepted",
-        "reason_codes": ["source_alpha_hard_gates_passed"],
-        "required_unmeasured": [],
-        "metric_deltas": {},
-        "transform_report": report,
-    })
-    updated["stages"] = stages
-    updated["final_accepted_sha256"] = report["after_sha256"]
-    return updated
 
 
 def wrap_run_pipeline_with_alpha_mask(
@@ -402,6 +400,42 @@ def wrap_run_pipeline_with_alpha_mask(
         report = apply_source_alpha_mask(finalized_path, source_path, mode)
 
         from app.pipeline import score_candidate, score_structure_integrity  # noqa: PLC0415
+        from app.transform_journal import (  # noqa: PLC0415
+            TransformJournal,
+            merge_journal_reports,
+        )
+
+        alpha_journal = TransformJournal(
+            parent_path,
+            _journal_source_rgb(image),
+            image_class=_MODE_IMAGE_CLASS[mode],
+            required_metrics=set(),
+        )
+        accepted_path, alpha_stage = alpha_journal.consider_candidate(
+            "source_alpha_vector_mask",
+            parent_path,
+            finalized_path,
+            transform_report=report,
+        )
+        if accepted_path != finalized_path:
+            finalized_path.unlink(missing_ok=True)
+            reasons = ",".join(alpha_stage.get("reason_codes") or ["unknown"])
+            raise RuntimeError(
+                f"source_alpha_mask_transform_gate_rejected:{reasons}"
+            )
+
+        merged_journal = merge_journal_reports(
+            result.get("transform_journal"), alpha_journal.to_dict()
+        )
+        if not merged_journal or not merged_journal.get("chain_valid", True):
+            finalized_path.unlink(missing_ok=True)
+            codes = ",".join(
+                (merged_journal or {}).get("chain_failure_codes") or ["missing"]
+            )
+            raise RuntimeError(f"source_alpha_mask_journal_chain_invalid:{codes}")
+        report["journal_status"] = alpha_stage["status"]
+        report["journal_reasons"] = list(alpha_stage.get("reason_codes") or [])
+        report["journal_chain_valid"] = True
 
         candidate = {
             **best,
@@ -416,6 +450,7 @@ def wrap_run_pipeline_with_alpha_mask(
             mode,
         )
         if rescored is None or not rescored.get("rendered_ok"):
+            finalized_path.unlink(missing_ok=True)
             raise RuntimeError("source_alpha_mask_final_rescore_unmeasured")
 
         result["best"] = {**rescored, "alpha_mask_report": report}
@@ -424,9 +459,7 @@ def wrap_run_pipeline_with_alpha_mask(
             f"{result.get('selection_reason') or 'selected'}+source_alpha_vector_mask"
         )
         result["alpha_mask_report"] = report
-        result["transform_journal"] = _journal_with_alpha_stage(
-            result.get("transform_journal"), report
-        )
+        result["transform_journal"] = merged_journal
         result["structure_report"] = score_structure_integrity(
             finalized_path, source_path
         )
