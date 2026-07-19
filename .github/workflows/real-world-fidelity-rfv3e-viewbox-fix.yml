@@ -32,12 +32,10 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
 
-      # RFV3E_BOOTSTRAP_BEGIN
-      - name: Apply one-shot shared RGBA render patch
+      # RFV3E_PATCH_BEGIN
+      - name: Apply shared RGBA render patch locally
         if: github.event.pull_request.head.repo.full_name == github.repository
         shell: bash
-        env:
-          RFV3E_HEAD_BRANCH: ${{ github.head_ref }}
         run: |
           set -euo pipefail
           python - <<'PY'
@@ -77,6 +75,7 @@ jobs:
               "        else:\n"
               "            rnd = render_svg_to_rgb(path, w, h)\n"
           )
+          print("render anchor count:", production.count(old_render))
           assert production.count(old_render) == 1, "shared RGBA render anchor mismatch"
           production = production.replace(old_render, new_render, 1)
 
@@ -96,6 +95,7 @@ jobs:
               "        else:\n"
               "            render_alpha = np.asarray(render_rgba[:, :, 3], dtype=np.uint8).copy()\n"
           )
+          print("alpha anchor count:", production.count(old_alpha))
           assert production.count(old_alpha) == 1, "alpha scope anchor mismatch"
           production = production.replace(old_alpha, new_alpha, 1)
 
@@ -110,6 +110,7 @@ jobs:
               "            measure_alpha=False,\n"
               "            _allow_topology_refinement=False,\n"
           )
+          print("refinement anchor count:", production.count(old_refine))
           assert production.count(old_refine) == 1, "topology refinement anchor mismatch"
           production = production.replace(old_refine, new_refine, 1)
           compile(production, str(production_path), "exec")
@@ -166,33 +167,9 @@ jobs:
               tests = tests.replace(marker, "\n" + addition + marker, 1)
           compile(tests, str(test_path), "exec")
           test_path.write_text(tests)
-
-          workflow_path = Path(".github/workflows/real-world-fidelity-rfv3e-viewbox-fix.yml")
-          lines = workflow_path.read_text().splitlines(keepends=True)
-          start = next(i for i, line in enumerate(lines) if line.strip() == "# RFV3E_BOOTSTRAP_BEGIN")
-          end = next(i for i, line in enumerate(lines) if line.strip() == "# RFV3E_BOOTSTRAP_END")
-          del lines[start:end + 1]
-          lines = [
-              line for line in lines
-              if not (
-                  line.lstrip().startswith("ref:")
-                  and "github.event.pull_request.head.sha" in line
-              )
-          ]
-          workflow = "".join(lines).replace("  contents: write\n", "  contents: read\n", 1)
-          workflow_path.write_text(workflow)
           PY
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add \
-            .github/workflows/real-world-fidelity-rfv3e-viewbox-fix.yml \
-            engine/app/transform_journal.py \
-            engine/test_transform_journal.py
-          git diff --cached --check
-          git commit -m "RFV-3E: reuse RGBA render within alpha journal"
-          git push origin "HEAD:${RFV3E_HEAD_BRANCH}"
-      # RFV3E_BOOTSTRAP_END
+          git diff --check -- engine/app/transform_journal.py engine/test_transform_journal.py
+      # RFV3E_PATCH_END
 
       - name: Run actions/setup-python@v5
         uses: actions/setup-python@v5
@@ -221,6 +198,47 @@ jobs:
         run: >-
           pytest -q test_transform_journal.py
           -k 'alpha_preserving_viewbox_restore or alpha_plane_regression or unmeasured_alpha or alpha_measurement_is_scoped or alpha_restore_reuses_single_rgba_render'
+
+      # RFV3E_PUBLISH_BEGIN
+      - name: Publish verified shared RGBA render patch
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        shell: bash
+        env:
+          RFV3E_HEAD_BRANCH: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          workflow_path = Path(".github/workflows/real-world-fidelity-rfv3e-viewbox-fix.yml")
+          lines = workflow_path.read_text().splitlines(keepends=True)
+          ranges = []
+          for prefix in ("RFV3E_PATCH", "RFV3E_PUBLISH"):
+              start = next(i for i, line in enumerate(lines) if line.strip() == f"# {prefix}_BEGIN")
+              end = next(i for i, line in enumerate(lines) if line.strip() == f"# {prefix}_END")
+              ranges.append((start, end))
+          for start, end in sorted(ranges, reverse=True):
+              del lines[start:end + 1]
+          lines = [
+              line for line in lines
+              if not (
+                  line.lstrip().startswith("ref:")
+                  and "github.event.pull_request.head.sha" in line
+              )
+          ]
+          workflow = "".join(lines).replace("  contents: write\n", "  contents: read\n", 1)
+          workflow_path.write_text(workflow)
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            .github/workflows/real-world-fidelity-rfv3e-viewbox-fix.yml \
+            engine/app/transform_journal.py \
+            engine/test_transform_journal.py
+          git diff --cached --check
+          git commit -m "RFV-3E: reuse RGBA render within alpha journal"
+          git push origin "HEAD:${RFV3E_HEAD_BRANCH}"
+      # RFV3E_PUBLISH_END
 
       - name: Verify immutable historical diagnostics
         run: |
