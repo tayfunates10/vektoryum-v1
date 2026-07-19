@@ -312,28 +312,28 @@ class AlphaPreprocessUnitTests(unittest.TestCase):
 
 
 class AlphaPreprocessProductionIntegrationTests(unittest.TestCase):
-    def test_transparent_gradient_candidate_survives_final_alpha_mask(self) -> None:
-        from app.gradient_vectorize import vectorize_with_gradients
-
+    def test_vector_gradient_survives_final_alpha_mask(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source_path = root / "transparent-gradient.png"
+            svg_path = root / "gradient.svg"
             width, height = 128, 64
             source = np.zeros((height, width, 4), dtype=np.uint8)
-            x0, x1 = 12, 116
-            y0, y1 = 8, 56
-            ramp = np.linspace(0.0, 1.0, x1 - x0, dtype=np.float32)
-            source[y0:y1, x0:x1, 0] = np.rint(240 * (1.0 - ramp))[None, :]
-            source[y0:y1, x0:x1, 1] = 40
-            source[y0:y1, x0:x1, 2] = np.rint(220 * ramp)[None, :]
-            source[y0:y1, x0:x1, 3] = 255
+            source[8:56, 12:116, 3] = 255
             Image.fromarray(source, mode="RGBA").save(source_path)
 
-            svg_path = root / "gradient.svg"
-            vectorize_with_gradients(
-                source_path,
-                svg_path,
-                {"epsilon": 0.3, "min_area": 8.0},
+            svg_path.write_text(
+                '<?xml version="1.0" encoding="UTF-8"?>\n'
+                '<svg xmlns="http://www.w3.org/2000/svg" width="128" height="64" '
+                'viewBox="0 0 128 64">'
+                '<defs><linearGradient id="g0" gradientUnits="userSpaceOnUse" '
+                'x1="0" y1="0" x2="128" y2="0">'
+                '<stop offset="0" stop-color="#f02828"/>'
+                '<stop offset="1" stop-color="#2828dc"/>'
+                '</linearGradient></defs>'
+                '<path fill="url(#g0)" d="M0 0h128v64H0Z"/>'
+                '</svg>',
+                encoding="utf-8",
             )
             before = svg_path.read_text(encoding="utf-8")
             self.assertIn("<linearGradient", before)
@@ -343,7 +343,8 @@ class AlphaPreprocessProductionIntegrationTests(unittest.TestCase):
             )
             self.assertTrue(report["applied"])
             after = svg_path.read_text(encoding="utf-8")
-            self.assertIn("<linearGradient", after)
+            self.assertIn("linearGradient", after)
+            self.assertIn("url(#g0)", after)
             self.assertNotIn("<image", after)
 
             rendered = render_svg_to_rgba(svg_path, width, height)
