@@ -41,13 +41,15 @@ The gradient candidate has the same white-composite assumption and no native sou
 5. Canonicalize fully transparent trace RGB to black and verify the written trace input by read-back.
 6. Preserve a SHA-256 binding for the transformed source alpha in the preprocess report.
 7. Reject the current gradient candidate for transparent sources until that engine has an alpha-aware mask contract; other candidates continue normally.
-8. After candidate selection and every SVG mutator, wrap the selected production content in a vector-only SVG mask generated from the transformed source alpha plane.
-9. Encode alpha levels as editable SVG `<g>` groups and vertically merged `<rect>` primitives, without any embedded raster or data URI.
-10. Remove candidate opacity attributes before wrapping so source alpha is applied exactly once.
-11. Render the masked artifact through the production RGBA renderer and accept it only when the unchanged image-class alpha IoU and alpha MAE hard gates pass.
-12. Submit the exact masked candidate to the real `TransformJournal`, which enforces structural safety, SSIM, edge, topology and hard path/node/byte complexity gates.
-13. Merge the accepted alpha stage into the existing journal and require a valid SHA chain through the final artifact.
-14. Re-score the exact accepted masked artifact before publication.
+8. Before constructing any mask XML, stream-count merged alpha runs and compare both rectangle count and a conservative serialized-size upper bound with the unchanged `TransformJournal` byte-growth budget.
+9. Fail closed before allocation or file mutation when a noisy/checkerboard alpha plane would exceed that budget.
+10. After candidate selection and every SVG mutator, wrap the selected production content in a vector-only SVG mask generated from the transformed source alpha plane.
+11. Encode alpha levels as editable SVG `<g>` groups and vertically merged `<rect>` primitives, without any embedded raster or data URI.
+12. Remove candidate opacity attributes before wrapping so source alpha is applied exactly once.
+13. Render the masked artifact through the production RGBA renderer and accept it only when the unchanged image-class alpha IoU and alpha MAE hard gates pass.
+14. Submit the exact masked candidate to the real `TransformJournal`, which enforces structural safety, SSIM, edge, topology and hard path/node/byte complexity gates.
+15. Merge the accepted alpha stage into the existing journal and require a valid SHA chain through the final artifact.
+16. Re-score the exact accepted masked artifact before publication.
 
 Opaque inputs and non-color modes retain their existing behavior.
 
@@ -59,6 +61,7 @@ The dedicated workflow requires:
 - opaque-input and non-color compatibility tests;
 - proof that non-color outputs bypass the final alpha stage byte-for-byte;
 - fail-closed transparent-gradient behavior;
+- checkerboard/noisy-alpha proof that the preconstruction gate rejects before the SVG bytes change;
 - a real VTracer test that first reproduces the full-canvas opaque signature;
 - application of the final vector-only source-alpha mask to that exact SVG;
 - proof that the mask uses editable `<g>`/`<rect>` primitives and contains no `<image>` element;
