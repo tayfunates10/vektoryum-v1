@@ -549,6 +549,147 @@ def test_alpha_restore_reuses_single_rgba_render_per_artifact(
     assert stage["alpha_comparison"]["alpha_iou"] == pytest.approx(1.0)
     assert calls == {"rgb": 0, "rgba": 2}
 
+def test_gradient_preserving_restore_and_render_equivalent_topology_alias(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.fidelity as fidelity
+    import app.transform_journal as transform_journal
+    from app.pipeline import _restore_source_dimensions
+    from app.transform_journal import TransformJournal
+
+    source = _square_source()
+    monkeypatch.setattr(fidelity, "render_svg_to_rgb", lambda *_args, **_kwargs: source.copy())
+    path = tmp_path / "gradient-no-viewbox.svg"
+    path.write_bytes(
+        b'<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128">'
+        b'<defs><linearGradient id="g"><stop offset="0" stop-color="#e3000b"/>'
+        b'<stop offset="1" stop-color="#554bad"/></linearGradient></defs>'
+        b'<rect x="24" y="24" width="80" height="80" fill="url(#g)"/></svg>'
+    )
+    journal = TransformJournal(path, source, required_metrics={"gradient_fidelity"})
+    accepted, _report, stage = journal.run_in_place(
+        "restore_source_dimensions", path,
+        lambda candidate: _restore_source_dimensions(
+            candidate, {"width": 128, "height": 128},
+        ),
+    )
+    assert accepted
+    assert stage["status"] == "accepted"
+    assert stage["required_unmeasured"] == []
+    assert stage["render_comparison"]["ssim"] == pytest.approx(1.0)
+    assert "_render_rgb" not in stage["before_metrics"]
+    assert "_render_rgb" not in stage["after_metrics"]
+    assert ET.fromstring(path.read_bytes()).get("viewBox") == "0 0 128 128"
+
+    parent = tmp_path / "parent.svg"
+    candidate = tmp_path / "candidate.svg"
+    parent.write_bytes(_square_svg())
+    candidate.write_bytes(_square_svg("<metadata>candidate</metadata>"))
+
+    def synthetic_measure(data: bytes, _source: np.ndarray, **_kwargs):
+        changed = b"candidate" in data
+        return {
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "byte_size": len(data),
+            "structural_safe": True,
+            "structural_failure_codes": [],
+            "path_count": 1,
+            "node_count": 5,
+            "gradient_definition_count": 0,
+            "required_unmeasured": [],
+            "ssim": 0.99,
+            "edge_f1_1px": 0.995,
+            "seam_ratio": 0.0,
+            "component_delta": 11 if changed else 10,
+            "hole_delta": 0,
+            "_render_rgb": source.copy(),
+        }
+
+    monkeypatch.setattr(transform_journal, "_measure_svg_bytes", synthetic_measure)
+    restore_journal = TransformJournal(parent, source)
+    restored, restore_stage = restore_journal.consider_candidate(
+        "restore_source_dimensions", parent, candidate,
+    )
+    assert restored == candidate
+    assert restore_stage["status"] == "accepted"
+    assert restore_stage["render_comparison"]["ssim"] == pytest.approx(1.0)
+
+    downstream_journal = TransformJournal(parent, source)
+    downstream, downstream_stage = downstream_journal.consider_candidate(
+        "boundary_refit", parent, candidate,
+    )
+    assert downstream == parent
+    assert "topology_component_regression" in downstream_stage["reason_codes"]
+
+
+def test_gradient_render_regression_and_missing_render_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.fidelity as fidelity
+    from app.transform_journal import TransformJournal
+
+    source = _square_source()
+
+    def gradient_render(path: Path, _width: int, _height: int) -> np.ndarray:
+        rendered = source.copy()
+        if b"gradient-loss" in Path(path).read_bytes():
+            rendered[:, 64:] = (0, 0, 0)
+        return rendered
+
+    monkeypatch.setattr(fidelity, "render_svg_to_rgb", gradient_render)
+    parent = tmp_path / "parent.svg"
+    candidate = tmp_path / "candidate.svg"
+    parent.write_bytes(_square_svg())
+    candidate.write_bytes(_square_svg("<metadata>gradient-loss</metadata>"))
+    journal = TransformJournal(
+        parent, source, required_metrics={"gradient_fidelity"},
+    )
+    accepted, stage = journal.consider_candidate(
+        "restore_source_dimensions", parent, candidate,
+    )
+    assert accepted == parent
+    assert set(stage["reason_codes"]) & {
+        "gradient_ssim_regression", "gradient_edge_regression",
+        "gradient_rgb_mae_regression",
+    }
+
+    monkeypatch.setattr(fidelity, "render_svg_to_rgb", lambda *_args, **_kwargs: None)
+    missing_journal = TransformJournal(
+        parent, source, required_metrics={"gradient_fidelity"},
+    )
+    missing, missing_stage = missing_journal.consider_candidate(
+        "restore_source_dimensions", parent, candidate,
+    )
+    assert missing == parent
+    assert "required_metric_unmeasured" in missing_stage["reason_codes"]
+    assert "gradient_stage_metrics_incomplete" in missing_stage["reason_codes"]
+
+
+def test_gradient_measurement_is_scoped_to_source_dimension_restore(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.fidelity as fidelity
+    from app.transform_journal import TransformJournal
+
+    source = _square_source()
+    monkeypatch.setattr(fidelity, "render_svg_to_rgb", lambda *_args, **_kwargs: source.copy())
+    parent = tmp_path / "parent.svg"
+    candidate = tmp_path / "candidate.svg"
+    parent.write_bytes(_square_svg())
+    candidate.write_bytes(_square_svg("<metadata>downstream-gradient</metadata>"))
+    journal = TransformJournal(
+        parent, source, required_metrics={"gradient_fidelity"},
+    )
+    accepted, stage = journal.consider_candidate(
+        "boundary_refit", parent, candidate,
+    )
+    assert accepted == parent
+    assert stage["status"] == "rolled_back"
+    assert stage["required_unmeasured"] == ["gradient_fidelity"]
+    assert "required_metric_unmeasured" in stage["reason_codes"]
+    assert "gradient_stage_metrics_incomplete" in stage["reason_codes"]
+    assert stage["render_comparison"] is None
+
 def test_assertions_are_real() -> None:
     """Bu dosya global FAILS listesine değil gerçek pytest assertion'a dayanır."""
     with pytest.raises(AssertionError):

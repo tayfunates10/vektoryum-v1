@@ -63,6 +63,7 @@ def _measure_svg_bytes(
     max_side: int = 512,
     required_metrics: set[str] | None = None,
     measure_alpha: bool = False,
+    capture_render: bool = False,
     _allow_topology_refinement: bool = True,
 ) -> dict[str, Any]:
     """Stage gate için bounded structural + source-fidelity ölçümü."""
@@ -153,6 +154,23 @@ def _measure_svg_bytes(
     if rnd.shape[:2] != (h, w):
         rnd = cv2.resize(rnd, (w, h), interpolation=cv2.INTER_AREA)
 
+    # Zorunlu coordinate-contract onarımında parent/candidate render'ı özel
+    # cache alanında tutulur. Bu, source-topology AA sınıflandırma gürültüsünü
+    # gerçek render regresyonundan ayırır ve gradient preservation'ı ölçer.
+    # Ham RGB ndarray public journal'a hiçbir zaman serileştirilmez.
+    if capture_render:
+        render_rgb = np.asarray(rnd, dtype=np.uint8).copy()
+        metric['_render_rgb'] = render_rgb
+        metric['render_rgb_sha256'] = hashlib.sha256(
+            np.ascontiguousarray(render_rgb).tobytes()
+        ).hexdigest()
+        if 'gradient_fidelity' in set(required_metrics or ()):
+            metric['gradient_fidelity_status'] = 'measured'
+            metric['required_unmeasured'] = [
+                name for name in metric['required_unmeasured']
+                if name != 'gradient_fidelity'
+            ]
+
     # TransformJournal'ın görevi final source-truth kararını yeniden vermek değil,
     # kabul edilmiş parent artifact'a göre her mutasyonun alpha düzlemini
     # koruduğunu kanıtlamaktır. Parent ve candidate aynı bounded RGBA renderer ile
@@ -217,8 +235,10 @@ def _measure_svg_bytes(
             source_rgb,
             max_side=refined_side,
             required_metrics=required_metrics,
-            # Fine pass only replaces topology fields; alpha was already proved.
+            # Fine pass only replaces topology fields; alpha/render proof was
+            # already completed at the bounded coarse resolution.
             measure_alpha=False,
+            capture_render=False,
             _allow_topology_refinement=False,
         )
         if all(key in refined for key in (
@@ -262,9 +282,9 @@ class TransformJournal:
         self.source_rgb = np.asarray(source_rgb, dtype=np.uint8)
         self.image_class = image_class
         self.required_metrics = set(required_metrics or ())
-        # Alpha measurement is deliberately stage-scoped. The proven defect only
-        # affects the mandatory coordinate-contract repair; opening alpha for every
-        # downstream mutator would change previously fail-closed production scope.
+        # Alpha ve direct render preservation ölçümü yalnız mandatory
+        # coordinate-contract repair'a açılır. Downstream mutatorlar önceki
+        # fail-closed required-metric scope'larını aynen korur.
         self._measurement_stage_id: str | None = None
         self.max_side = min(512, max(256, int(max_side)))
         self.budget_seconds = (
@@ -289,8 +309,9 @@ class TransformJournal:
 
     def _measure(self, data: bytes) -> dict[str, Any]:
         sha = _sha(data)
-        measure_alpha = self._measurement_stage_id == "restore_source_dimensions"
-        cache_key = f"{sha}:alpha={int(measure_alpha)}"
+        capture_render = self._measurement_stage_id == "restore_source_dimensions"
+        measure_alpha = capture_render
+        cache_key = f"{sha}:alpha={int(measure_alpha)}:render={int(capture_render)}"
         if cache_key not in self._cache:
             started = time.perf_counter()
             try:
@@ -298,6 +319,7 @@ class TransformJournal:
                     data, self.source_rgb, max_side=self.max_side,
                     required_metrics=self.required_metrics,
                     measure_alpha=measure_alpha,
+                    capture_render=capture_render,
                 )
             finally:
                 self.evaluation_seconds += time.perf_counter() - started
@@ -327,7 +349,45 @@ class TransformJournal:
             return None
         return _source_truth.alpha_plane_metrics(parent_alpha, candidate_alpha)
 
-    def _decide(self, before: dict[str, Any], after: dict[str, Any]) -> list[str]:
+    @staticmethod
+    def _render_comparison(
+        before: dict[str, Any], after: dict[str, Any],
+    ) -> dict[str, float] | None:
+        parent_rgb = before.get('_render_rgb')
+        candidate_rgb = after.get('_render_rgb')
+        if not isinstance(parent_rgb, np.ndarray) or not isinstance(candidate_rgb, np.ndarray):
+            return None
+        if parent_rgb.shape != candidate_rgb.shape:
+            return None
+        from app.fidelity import _edge_f1, _ssim  # noqa: PLC0415
+
+        parent_gray = cv2.cvtColor(parent_rgb, cv2.COLOR_RGB2GRAY)
+        candidate_gray = cv2.cvtColor(candidate_rgb, cv2.COLOR_RGB2GRAY)
+        diff = np.abs(
+            parent_rgb.astype(np.float32) - candidate_rgb.astype(np.float32)
+        ) / 255.0
+        return {
+            'ssim': float(_ssim(parent_gray, candidate_gray)),
+            'edge_f1_1px': float(_edge_f1(candidate_gray, parent_gray, tolerance=1)),
+            'rgb_mae': float(diff.mean()),
+            'rgb_p95': float(np.percentile(diff, 95)),
+        }
+
+    def _render_equivalent(self, comparison: dict[str, float] | None) -> bool:
+        if comparison is None:
+            return False
+        from app.final_artifact_evaluator import _thresholds  # noqa: PLC0415
+
+        thresholds = _thresholds(self.image_class, None)
+        return bool(
+            float(comparison['ssim']) >= thresholds['ssim_min']
+            and float(comparison['edge_f1_1px']) >= thresholds['edge_f1_min']
+            and float(comparison['rgb_mae']) <= thresholds['alpha_background_mae_max']
+        )
+
+    def _decide(
+        self, before: dict[str, Any], after: dict[str, Any], *, stage_id: str,
+    ) -> list[str]:
         reasons: list[str] = []
         if not after.get("structural_safe"):
             reasons.extend(after.get("structural_failure_codes") or ["structure_failed"])
@@ -340,6 +400,7 @@ class TransformJournal:
         visual_keys = ("ssim", "edge_f1_1px", "seam_ratio", "component_delta", "hole_delta")
         if any(key not in after for key in visual_keys):
             reasons.append("stage_metrics_incomplete")
+        render_comparison = self._render_comparison(before, after)
 
         if "alpha_fidelity" in self.required_metrics:
             alpha_comparison = self._alpha_comparison(before, after)
@@ -356,6 +417,20 @@ class TransformJournal:
                     reasons.append("alpha_iou_regression")
                 if float(alpha_comparison["alpha_mae"]) > alpha_thresholds["alpha_mae_max"]:
                     reasons.append("alpha_mae_regression")
+
+        if 'gradient_fidelity' in self.required_metrics:
+            if render_comparison is None:
+                reasons.append('gradient_stage_metrics_incomplete')
+            else:
+                from app.final_artifact_evaluator import _thresholds  # noqa: PLC0415
+
+                gradient_thresholds = _thresholds(self.image_class, None)
+                if float(render_comparison['ssim']) < gradient_thresholds['ssim_min']:
+                    reasons.append('gradient_ssim_regression')
+                if float(render_comparison['edge_f1_1px']) < gradient_thresholds['edge_f1_min']:
+                    reasons.append('gradient_edge_regression')
+                if float(render_comparison['rgb_mae']) > gradient_thresholds['alpha_background_mae_max']:
+                    reasons.append('gradient_rgb_mae_regression')
         if reasons:
             return list(dict.fromkeys(reasons))
 
@@ -364,7 +439,11 @@ class TransformJournal:
             # Clean/artwork outputunda topoloji önceki kabul edilmiş artifact'tan
             # daha kötü olamaz. Photo sınıfında semantik renk topolojisi güvenilir
             # değildir; complexity ve render kapıları yine uygulanır.
-            if self.image_class != "photo":
+            coordinate_render_equivalent = (
+                stage_id == 'restore_source_dimensions'
+                and self._render_equivalent(render_comparison)
+            )
+            if self.image_class != "photo" and not coordinate_render_equivalent:
                 if after["component_delta"] > before["component_delta"]:
                     reasons.append("topology_component_regression")
                 if after["hole_delta"] > before["hole_delta"]:
@@ -463,12 +542,13 @@ class TransformJournal:
                 after = self._measure(candidate_data)
             finally:
                 self._measurement_stage_id = previous_stage
-            reasons = self._decide(before, after)
+            reasons = self._decide(before, after, stage_id=stage_id)
             accepted = not reasons
             status = "accepted" if accepted else "rolled_back"
 
         accepted_sha = candidate_sha if accepted else parent_sha
         alpha_comparison = self._alpha_comparison(before or {}, after or {})
+        render_comparison = self._render_comparison(before or {}, after or {})
         before_public = (
             _source_truth.public_metric_dict(before) if isinstance(before, dict) else before
         )
@@ -489,6 +569,7 @@ class TransformJournal:
             "before_metrics": before_public,
             "after_metrics": after_public,
             "alpha_comparison": alpha_comparison,
+            "render_comparison": render_comparison,
             "metric_deltas": self._deltas(before or {}, after or {}),
             "complexity_delta": {
                 key: self._deltas(before or {}, after or {}).get(key)
