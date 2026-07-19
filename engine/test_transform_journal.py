@@ -508,6 +508,47 @@ def test_alpha_measurement_is_scoped_to_source_dimension_restore(
     assert stage["alpha_comparison"] is None
 
 
+def test_alpha_restore_reuses_single_rgba_render_per_artifact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.fidelity as fidelity
+    import app.source_truth as source_truth
+    from app.transform_journal import TransformJournal
+
+    source = _square_source()
+    calls = {"rgb": 0, "rgba": 0}
+
+    def rgb_render(_path: Path, _width: int, _height: int) -> np.ndarray:
+        calls["rgb"] += 1
+        return source.copy()
+
+    def rgba_render(_path: Path, width: int, height: int) -> np.ndarray:
+        calls["rgba"] += 1
+        rgba = np.zeros((height, width, 4), dtype=np.uint8)
+        rgba[24:104, 24:104, :3] = (227, 0, 11)
+        rgba[24:104, 24:104, 3] = 255
+        return rgba
+
+    monkeypatch.setattr(fidelity, "render_svg_to_rgb", rgb_render)
+    monkeypatch.setattr(source_truth, "render_svg_to_rgba", rgba_render)
+    parent = tmp_path / "parent.svg"
+    candidate = tmp_path / "candidate.svg"
+    parent.write_bytes(_square_svg())
+    candidate.write_bytes(_square_svg("<metadata>same-alpha</metadata>"))
+    journal = TransformJournal(
+        parent, source, required_metrics={"alpha_fidelity"},
+    )
+
+    accepted, stage = journal.consider_candidate(
+        "restore_source_dimensions", parent, candidate,
+    )
+
+    assert accepted == candidate
+    assert stage["status"] == "accepted"
+    assert stage["required_unmeasured"] == []
+    assert stage["alpha_comparison"]["alpha_iou"] == pytest.approx(1.0)
+    assert calls == {"rgb": 0, "rgba": 2}
+
 def test_assertions_are_real() -> None:
     """Bu dosya global FAILS listesine değil gerçek pytest assertion'a dayanır."""
     with pytest.raises(AssertionError):

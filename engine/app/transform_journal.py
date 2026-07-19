@@ -125,13 +125,26 @@ def _measure_svg_bytes(
     else:
         h, w = h0, w0
 
+    alpha_required = (
+        measure_alpha and "alpha_fidelity" in set(required_metrics or ())
+    )
     render_rgba = None
     with tempfile.TemporaryDirectory(prefix="vektoryum-stage-") as directory:
         path = Path(directory) / "candidate.svg"
         path.write_bytes(render_data)
-        rnd = render_svg_to_rgb(path, w, h)
-        if measure_alpha and "alpha_fidelity" in set(required_metrics or ()):
+        if alpha_required:
             render_rgba = _source_truth.render_svg_to_rgba(path, w, h)
+            if render_rgba is not None:
+                if render_rgba.shape[:2] != (h, w):
+                    render_rgba = _source_truth.resize_rgba(render_rgba, w, h)
+                # The alpha proof already produced a straight RGBA render.
+                # Reuse its white composite for the existing RGB gates.
+                rnd = _source_truth.composite_rgba(render_rgba, 255)
+            else:
+                # Preserve visual diagnostics while alpha stays fail-closed.
+                rnd = render_svg_to_rgb(path, w, h)
+        else:
+            rnd = render_svg_to_rgb(path, w, h)
     if rnd is None:
         metric["required_unmeasured"] = sorted(
             set(metric["required_unmeasured"]) | {"stage_render"}
@@ -146,12 +159,10 @@ def _measure_svg_bytes(
     # ölçülür; ham ndarray yalnız özel cache anahtarında tutulur ve public journal
     # raporuna hiçbir zaman serileştirilmez. Renderer yoksa required metric açıkça
     # unmeasured kalır ve mevcut fail-closed karar yolu candidate'ı reddeder.
-    if measure_alpha and "alpha_fidelity" in set(required_metrics or ()):
+    if alpha_required:
         if render_rgba is None:
             metric["alpha_fidelity_status"] = "unmeasured"
         else:
-            if render_rgba.shape[:2] != (h, w):
-                render_rgba = _source_truth.resize_rgba(render_rgba, w, h)
             render_alpha = np.asarray(render_rgba[:, :, 3], dtype=np.uint8).copy()
             metric["_render_alpha"] = render_alpha
             metric["alpha_fidelity_status"] = "measured"
@@ -206,7 +217,8 @@ def _measure_svg_bytes(
             source_rgb,
             max_side=refined_side,
             required_metrics=required_metrics,
-            measure_alpha=measure_alpha,
+            # Fine pass only replaces topology fields; alpha was already proved.
+            measure_alpha=False,
             _allow_topology_refinement=False,
         )
         if all(key in refined for key in (
