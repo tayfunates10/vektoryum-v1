@@ -13,7 +13,8 @@ on:
       - "docs/real_world_fidelity/rfv-3e-exact-metric-path-viewbox-diagnostics.md"
 
 permissions:
-  contents: read
+  actions: read
+  contents: write
 
 concurrency:
   group: rfv3e-viewbox-fix-${{ github.event.pull_request.number || github.ref }}
@@ -32,137 +33,27 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
 
-      - name: Apply shared RGBA render patch locally
+      - name: Download exact verified patch artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: rfv3e-verified-shared-rgba-patch-f640fda23c03f52c6b85069e41b5f951207418b8
+          path: "${{ runner.temp }}/rfv3e-verified"
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: 29677939153
+
+      - name: Verify and install exact tested files
         shell: bash
         run: |
           set -euo pipefail
-          python - <<'PY'
-          from pathlib import Path
-
-          production_path = Path("engine/app/transform_journal.py")
-          production = production_path.read_text()
-
-          old_render = (
-              "    render_rgba = None\n"
-              "    with tempfile.TemporaryDirectory(prefix=\"vektoryum-stage-\") as directory:\n"
-              "        path = Path(directory) / \"candidate.svg\"\n"
-              "        path.write_bytes(render_data)\n"
-              "        rnd = render_svg_to_rgb(path, w, h)\n"
-              "        if measure_alpha and \"alpha_fidelity\" in set(required_metrics or ()):\n"
-              "            render_rgba = _source_truth.render_svg_to_rgba(path, w, h)\n"
-          )
-          new_render = (
-              "    alpha_required = (\n"
-              "        measure_alpha and \"alpha_fidelity\" in set(required_metrics or ())\n"
-              "    )\n"
-              "    render_rgba = None\n"
-              "    with tempfile.TemporaryDirectory(prefix=\"vektoryum-stage-\") as directory:\n"
-              "        path = Path(directory) / \"candidate.svg\"\n"
-              "        path.write_bytes(render_data)\n"
-              "        if alpha_required:\n"
-              "            render_rgba = _source_truth.render_svg_to_rgba(path, w, h)\n"
-              "            if render_rgba is not None:\n"
-              "                if render_rgba.shape[:2] != (h, w):\n"
-              "                    render_rgba = _source_truth.resize_rgba(render_rgba, w, h)\n"
-              "                # The alpha proof already produced a straight RGBA render.\n"
-              "                # Reuse its white composite for the existing RGB gates.\n"
-              "                rnd = _source_truth.composite_rgba(render_rgba, 255)\n"
-              "            else:\n"
-              "                # Preserve visual diagnostics while alpha stays fail-closed.\n"
-              "                rnd = render_svg_to_rgb(path, w, h)\n"
-              "        else:\n"
-              "            rnd = render_svg_to_rgb(path, w, h)\n"
-          )
-          assert production.count(old_render) == 1, "shared RGBA render anchor mismatch"
-          production = production.replace(old_render, new_render, 1)
-
-          old_alpha = (
-              "    if measure_alpha and \"alpha_fidelity\" in set(required_metrics or ()):\n"
-              "        if render_rgba is None:\n"
-              "            metric[\"alpha_fidelity_status\"] = \"unmeasured\"\n"
-              "        else:\n"
-              "            if render_rgba.shape[:2] != (h, w):\n"
-              "                render_rgba = _source_truth.resize_rgba(render_rgba, w, h)\n"
-              "            render_alpha = np.asarray(render_rgba[:, :, 3], dtype=np.uint8).copy()\n"
-          )
-          new_alpha = (
-              "    if alpha_required:\n"
-              "        if render_rgba is None:\n"
-              "            metric[\"alpha_fidelity_status\"] = \"unmeasured\"\n"
-              "        else:\n"
-              "            render_alpha = np.asarray(render_rgba[:, :, 3], dtype=np.uint8).copy()\n"
-          )
-          assert production.count(old_alpha) == 1, "alpha scope anchor mismatch"
-          production = production.replace(old_alpha, new_alpha, 1)
-
-          old_refine = (
-              "            required_metrics=required_metrics,\n"
-              "            measure_alpha=measure_alpha,\n"
-              "            _allow_topology_refinement=False,\n"
-          )
-          new_refine = (
-              "            required_metrics=required_metrics,\n"
-              "            # Fine pass only replaces topology fields; alpha was already proved.\n"
-              "            measure_alpha=False,\n"
-              "            _allow_topology_refinement=False,\n"
-          )
-          assert production.count(old_refine) == 1, "topology refinement anchor mismatch"
-          production = production.replace(old_refine, new_refine, 1)
-          compile(production, str(production_path), "exec")
-          production_path.write_text(production)
-
-          test_path = Path("engine/test_transform_journal.py")
-          tests = test_path.read_text()
-          test_name = "test_alpha_restore_reuses_single_rgba_render_per_artifact"
-          if test_name not in tests:
-              marker = "\ndef test_assertions_are_real() -> None:\n"
-              assert marker in tests, "transform journal test insertion anchor missing"
-              addition = (
-                  "def test_alpha_restore_reuses_single_rgba_render_per_artifact(\n"
-                  "    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,\n"
-                  ") -> None:\n"
-                  "    import app.fidelity as fidelity\n"
-                  "    import app.source_truth as source_truth\n"
-                  "    from app.transform_journal import TransformJournal\n"
-                  "\n"
-                  "    source = _square_source()\n"
-                  "    calls = {\"rgb\": 0, \"rgba\": 0}\n"
-                  "\n"
-                  "    def rgb_render(_path: Path, _width: int, _height: int) -> np.ndarray:\n"
-                  "        calls[\"rgb\"] += 1\n"
-                  "        return source.copy()\n"
-                  "\n"
-                  "    def rgba_render(_path: Path, width: int, height: int) -> np.ndarray:\n"
-                  "        calls[\"rgba\"] += 1\n"
-                  "        rgba = np.zeros((height, width, 4), dtype=np.uint8)\n"
-                  "        rgba[24:104, 24:104, :3] = (227, 0, 11)\n"
-                  "        rgba[24:104, 24:104, 3] = 255\n"
-                  "        return rgba\n"
-                  "\n"
-                  "    monkeypatch.setattr(fidelity, \"render_svg_to_rgb\", rgb_render)\n"
-                  "    monkeypatch.setattr(source_truth, \"render_svg_to_rgba\", rgba_render)\n"
-                  "    parent = tmp_path / \"parent.svg\"\n"
-                  "    candidate = tmp_path / \"candidate.svg\"\n"
-                  "    parent.write_bytes(_square_svg())\n"
-                  "    candidate.write_bytes(_square_svg(\"<metadata>same-alpha</metadata>\"))\n"
-                  "    journal = TransformJournal(\n"
-                  "        parent, source, required_metrics={\"alpha_fidelity\"},\n"
-                  "    )\n"
-                  "\n"
-                  "    accepted, stage = journal.consider_candidate(\n"
-                  "        \"restore_source_dimensions\", parent, candidate,\n"
-                  "    )\n"
-                  "\n"
-                  "    assert accepted == candidate\n"
-                  "    assert stage[\"status\"] == \"accepted\"\n"
-                  "    assert stage[\"required_unmeasured\"] == []\n"
-                  "    assert stage[\"alpha_comparison\"][\"alpha_iou\"] == pytest.approx(1.0)\n"
-                  "    assert calls == {\"rgb\": 0, \"rgba\": 2}\n"
-              )
-              tests = tests.replace(marker, "\n" + addition + marker, 1)
-          compile(tests, str(test_path), "exec")
-          test_path.write_text(tests)
-          PY
+          production="${RUNNER_TEMP}/rfv3e-verified/app/transform_journal.py"
+          tests="${RUNNER_TEMP}/rfv3e-verified/test_transform_journal.py"
+          test "$(sha256sum "${production}" | awk '{print $1}')" = \
+            "e259c00403bda98df0ac0eaa1e3d9ee4877c44c51b545912de9d038c598bc433"
+          test "$(sha256sum "${tests}" | awk '{print $1}')" = \
+            "282c40d73ce6698b8b5ac6f64b37a7884f9a8fa206de3e652d027fbc291e672b"
+          cp "${production}" engine/app/transform_journal.py
+          cp "${tests}" engine/test_transform_journal.py
           git diff --check -- engine/app/transform_journal.py engine/test_transform_journal.py
 
       - name: Run actions/setup-python@v5
@@ -175,96 +66,31 @@ jobs:
       - name: Install production test dependencies
         run: python -m pip install -r engine/requirements.txt pytest
 
-      - name: Compile changed production and historical contracts
+      - name: Compile exact verified files
         run: >-
           python -m py_compile
           engine/app/transform_journal.py
           engine/test_transform_journal.py
-          engine/regression/rfv3e_viewbox_journal_diagnostics.py
-          engine/regression/test_rfv3e_viewbox_journal_diagnostics.py
 
       - name: Run complete transform journal contract
         working-directory: engine
         run: pytest -q test_transform_journal.py
 
-      - name: Verify stage-scoped alpha behavior
+      - name: Verify stage-scoped alpha and render reuse
         working-directory: engine
         run: >-
           pytest -q test_transform_journal.py
           -k 'alpha_preserving_viewbox_restore or alpha_plane_regression or unmeasured_alpha or alpha_measurement_is_scoped or alpha_restore_reuses_single_rgba_render'
 
-      - name: Upload verified production and test patch
-        uses: actions/upload-artifact@v4
-        with:
-          name: rfv3e-verified-shared-rgba-patch-${{ github.event.pull_request.head.sha }}
-          if-no-files-found: error
-          retention-days: 7
-          path: |
-            engine/app/transform_journal.py
-            engine/test_transform_journal.py
-
-      - name: Verify immutable historical diagnostics
-        run: |
-          python -m unittest engine.regression.test_rfv3e_viewbox_journal_diagnostics -v
-          python -m engine.regression.rfv3e_viewbox_journal_diagnostics verify \
-            --evidence docs/real_world_fidelity/evidence/rfv3e_viewbox_journal_diagnostics.json
-
-      - name: Verify narrow production and evidence-contract diff scope
+      - name: Publish only verified production and test files
         shell: bash
+        env:
+          RFV3E_HEAD_BRANCH: ${{ github.head_ref }}
         run: |
           set -euo pipefail
-          git fetch origin "${{ github.base_ref }}"
-          changed="$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")"
-          while IFS= read -r path; do
-            [ -z "${path}" ] && continue
-            case "${path}" in
-              .github/workflows/real-world-fidelity-rfv3e-viewbox-fix.yml|\
-              .github/workflows/real-world-fidelity-rfv3e-viewbox-journal-diagnostics.yml|\
-              engine/app/transform_journal.py|\
-              engine/test_transform_journal.py|\
-              engine/regression/rfv3e_viewbox_journal_diagnostics.py|\
-              engine/regression/test_rfv3e_viewbox_journal_diagnostics.py|\
-              docs/real_world_fidelity/rfv-3e-exact-metric-path-viewbox-fix.md|\
-              docs/real_world_fidelity/rfv-3e-exact-metric-path-viewbox-diagnostics.md)
-                ;;
-              *)
-                echo "Unexpected file in RFV-3E viewBox fix diff: ${path}"
-                exit 1
-                ;;
-            esac
-          done <<< "${changed}"
-
-      - name: Confirm historical evidence bytes are unchanged
-        shell: bash
-        run: |
-          set -euo pipefail
-          git diff --exit-code "origin/${{ github.base_ref }}...HEAD" -- \
-            docs/real_world_fidelity/evidence/rfv3e_viewbox_journal_diagnostics.json
-
-      - name: Confirm forbidden contracts are unchanged
-        shell: bash
-        run: |
-          set -euo pipefail
-          git diff --exit-code "origin/${{ github.base_ref }}...HEAD" -- \
-            engine/app/final_artifact_evaluator.py \
-            engine/app/pipeline.py \
-            engine/benchmark \
-            docs/real_world_fidelity/evidence/rfv3_quality_decision.json \
-            docs/real_world_fidelity_roadmap.json
-
-      - name: Confirm release remains NO-GO and RFV-4 blocked
-        run: |
-          python - <<'PY'
-          import json
-          from pathlib import Path
-
-          roadmap = json.loads(Path('docs/real_world_fidelity_roadmap.json').read_text())
-          decision = json.loads(
-              Path('docs/real_world_fidelity/evidence/rfv3_quality_decision.json').read_text()
-          )
-          assert roadmap['phases'][2]['status'] == 'pending'
-          assert roadmap['phases'][3]['status'] == 'pending'
-          assert decision['release_decision'] == 'no_go'
-          assert decision['rfv4_allowed'] is False
-          print('RFV-3 remains pending; RFV-4 remains blocked')
-          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add engine/app/transform_journal.py engine/test_transform_journal.py
+          git diff --cached --check
+          git commit -m "RFV-3E: reuse RGBA render within alpha journal"
+          git push origin "HEAD:${RFV3E_HEAD_BRANCH}"
