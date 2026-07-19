@@ -28,6 +28,7 @@ _MODE_IMAGE_CLASS = {
     "logo_color": "clean_logo",
     "photo_poster": "photo",
 }
+_ALPHA_MASK_MODES = frozenset(_MODE_IMAGE_CLASS)
 _ALPHA_STYLE_NAMES = {"opacity", "fill-opacity", "stroke-opacity"}
 
 
@@ -346,7 +347,7 @@ def _journal_with_alpha_stage(
 def wrap_run_pipeline_with_alpha_mask(
     original: Callable[..., dict[str, Any]],
 ) -> Callable[..., dict[str, Any]]:
-    """Finalize the selected SVG with source alpha after every mutator stage."""
+    """Finalize selected color SVGs with source alpha after every mutator stage."""
     if getattr(original, "__vektoryum_alpha_mask_finalized__", False):
         return original
 
@@ -371,6 +372,16 @@ def wrap_run_pipeline_with_alpha_mask(
         if not isinstance(best, dict) or not best.get("svg_path"):
             return result
 
+        mode = str(result.get("mode_used") or trace_mode)
+        if mode not in _ALPHA_MASK_MODES:
+            result["alpha_mask_report"] = {
+                "status": "not_applicable",
+                "applied": False,
+                "reason": "unsupported_non_color_mode",
+                "mode": mode,
+            }
+            return result
+
         source_path = Path(original_path)
         with Image.open(source_path) as source:
             source_alpha = np.asarray(
@@ -380,13 +391,14 @@ def wrap_run_pipeline_with_alpha_mask(
             result["alpha_mask_report"] = {
                 "status": "not_applicable",
                 "applied": False,
+                "reason": "opaque_source",
+                "mode": mode,
             }
             return result
 
         parent_path = Path(best["svg_path"])
         finalized_path = Path(job_dir) / f"{parent_path.stem}_alpha.svg"
         shutil.copy2(parent_path, finalized_path)
-        mode = str(result.get("mode_used") or trace_mode)
         report = apply_source_alpha_mask(finalized_path, source_path, mode)
 
         from app.pipeline import score_candidate, score_structure_integrity  # noqa: PLC0415
