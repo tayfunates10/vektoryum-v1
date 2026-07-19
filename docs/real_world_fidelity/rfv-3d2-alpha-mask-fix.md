@@ -42,11 +42,14 @@ The gradient candidate has the same white-composite assumption and no native sou
 6. Preserve a SHA-256 binding for the transformed source alpha in the preprocess report.
 7. Reject the current gradient candidate for transparent sources until that engine has an alpha-aware mask contract; other candidates continue normally.
 8. After candidate selection and every SVG mutator, wrap the selected production content in a vector-only SVG mask generated from the transformed source alpha plane.
-9. Remove candidate opacity attributes before wrapping so source alpha is applied exactly once.
-10. Render the masked artifact through the production RGBA renderer and accept it only when the unchanged image-class alpha IoU and alpha MAE hard gates pass.
-11. Re-score the exact masked artifact and update the transform journal's final accepted SHA.
+9. Encode alpha levels as editable SVG `<g>` groups and vertically merged `<rect>` primitives, without any embedded raster or data URI.
+10. Remove candidate opacity attributes before wrapping so source alpha is applied exactly once.
+11. Render the masked artifact through the production RGBA renderer and accept it only when the unchanged image-class alpha IoU and alpha MAE hard gates pass.
+12. Submit the exact masked candidate to the real `TransformJournal`, which enforces structural safety, SSIM, edge, topology and hard path/node/byte complexity gates.
+13. Merge the accepted alpha stage into the existing journal and require a valid SHA chain through the final artifact.
+14. Re-score the exact accepted masked artifact before publication.
 
-The mask contains only SVG paths; no `<image>`, data URI or embedded raster is introduced. Opaque inputs and non-color modes retain their existing behavior.
+Opaque inputs and non-color modes retain their existing behavior.
 
 ## Validation
 
@@ -54,11 +57,14 @@ The dedicated workflow requires:
 
 - unit proof that transparent RGB is canonicalized and source alpha is staged deterministically;
 - opaque-input and non-color compatibility tests;
+- proof that non-color outputs bypass the final alpha stage byte-for-byte;
 - fail-closed transparent-gradient behavior;
 - a real VTracer test that first reproduces the full-canvas opaque signature;
 - application of the final vector-only source-alpha mask to that exact SVG;
+- proof that the mask uses editable `<g>`/`<rect>` primitives and contains no `<image>` element;
 - a real RGBA-render proof against the existing final evaluator's unchanged alpha IoU and alpha MAE thresholds;
-- proof that the final SVG contains no `<image>` element;
+- real `TransformJournal` acceptance and final-SHA chain validation;
+- unchanged structural, visual, topology and hard complexity gates;
 - narrow diff scope;
 - unchanged evaluator, source-truth, transform-journal, corpus, measurement policy, retry and release-decision files.
 
