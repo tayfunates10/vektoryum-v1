@@ -1,0 +1,213 @@
+name: Real-world fidelity RFV-3D2 alpha-mask cluster diagnostics
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/real-world-fidelity-rfv3d2-alpha-mask-cluster-diagnostics.yml"
+      - "engine/regression/rfv3d2_alpha_mask_cluster_diagnostics.py"
+      - "engine/regression/test_rfv3d2_alpha_mask_cluster_diagnostics.py"
+      - "docs/real_world_fidelity/evidence/rfv3d2_alpha_mask_cluster_diagnostics.json"
+      - "docs/real_world_fidelity/rfv-3d2-alpha-mask-cluster-diagnostics.md"
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: rfv3d2-alpha-mask-diagnostics-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHONPATH: engine:.
+    steps:
+      - name: Run actions/checkout@v4
+        uses: actions/checkout@v4
+
+      - name: Run actions/setup-python@v5
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: engine/requirements.txt
+
+      - name: Install diagnostic dependencies
+        run: python -m pip install -r engine/requirements.txt
+
+      - name: Compile RFV-3D2 alpha diagnostics
+        run: >-
+          python -m py_compile
+          engine/regression/rfv3d2_alpha_mask_cluster_diagnostics.py
+          engine/regression/test_rfv3d2_alpha_mask_cluster_diagnostics.py
+
+      - name: Test RFV-3D2 alpha diagnostics
+        run: python -m unittest engine.regression.test_rfv3d2_alpha_mask_cluster_diagnostics -v
+
+      - name: Verify committed diagnostic evidence
+        run: >-
+          python -m engine.regression.rfv3d2_alpha_mask_cluster_diagnostics verify
+          --evidence docs/real_world_fidelity/evidence/rfv3d2_alpha_mask_cluster_diagnostics.json
+
+      - name: Confirm diagnostics-only diff scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin "${{ github.base_ref }}"
+          changed="$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")"
+          while IFS= read -r path; do
+            [ -z "${path}" ] && continue
+            case "${path}" in
+              .github/workflows/real-world-fidelity-rfv3d2-alpha-mask-cluster-diagnostics.yml|\
+              engine/regression/rfv3d2_alpha_mask_cluster_diagnostics.py|\
+              engine/regression/test_rfv3d2_alpha_mask_cluster_diagnostics.py|\
+              docs/real_world_fidelity/evidence/rfv3d2_alpha_mask_cluster_diagnostics.json|\
+              docs/real_world_fidelity/rfv-3d2-alpha-mask-cluster-diagnostics.md)
+                ;;
+              *)
+                echo "Unexpected RFV-3D2 diagnostic file: ${path}"
+                exit 1
+                ;;
+            esac
+          done <<< "${changed}"
+
+      - name: Confirm production and policy contracts are unchanged
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --exit-code "origin/${{ github.base_ref }}...HEAD" -- \
+            engine/app \
+            engine/benchmark \
+            engine/regression/rfv3_measurement_policy.json \
+            engine/regression/rfv2_qualification_manifest.json \
+            docs/real_world_fidelity/evidence/rfv3_quality_decision.json \
+            docs/real_world_fidelity_roadmap.json
+
+      - name: Confirm release remains NO-GO and RFV-4 blocked
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          roadmap = json.loads(Path('docs/real_world_fidelity_roadmap.json').read_text())
+          decision = json.loads(Path('docs/real_world_fidelity/evidence/rfv3_quality_decision.json').read_text())
+          assert roadmap['phases'][2]['status'] == 'pending'
+          assert roadmap['phases'][3]['status'] == 'pending'
+          assert decision['release_decision'] == 'no_go'
+          assert decision['rfv4_allowed'] is False
+          PY
+
+  live-alpha-pair:
+    name: live alpha pair (${{ matrix.case_id }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        case_id:
+          - qualification-public-11
+          - qualification-public-17
+          - qualification-public-12
+          - qualification-public-18
+          - qualification-public-14
+    env:
+      PYTHONHASHSEED: "0"
+      PYTHONPATH: engine:.
+      VEKTORYUM_WORKERS: "1"
+      CASE_ID: ${{ matrix.case_id }}
+      SOURCE_RUN_ID: "29683096355"
+      CORPUS_ARTIFACT_ID: "8441210832"
+      CORPUS_ARTIFACT_DIGEST: "sha256:2b768850b11fabf37c2dd761c1c477e0798dd5b709d6a0643bcf402224b67744"
+      SOURCE_HEAD_SHA: "5082e01d9777734e9d9da70a6f8d8d73e7676c30"
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Run actions/checkout@v4
+        uses: actions/checkout@v4
+
+      - name: Run actions/setup-python@v5
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: engine/requirements.txt
+
+      - name: Install system validators
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ghostscript libcairo2
+
+      - name: Install production diagnostic dependencies
+        run: python -m pip install -r engine/requirements.txt
+
+      - name: Verify immutable corpus artifact identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${CORPUS_ARTIFACT_ID}" > "${RUNNER_TEMP}/artifact.json"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          meta = json.loads((Path(os.environ['RUNNER_TEMP']) / 'artifact.json').read_text())
+          assert meta['id'] == int(os.environ['CORPUS_ARTIFACT_ID'])
+          assert meta['name'] == f"rfv3b-corpus-{os.environ['SOURCE_HEAD_SHA']}"
+          assert meta['expired'] is False
+          assert meta['digest'] == os.environ['CORPUS_ARTIFACT_DIGEST']
+          assert meta['workflow_run']['id'] == int(os.environ['SOURCE_RUN_ID'])
+          assert meta['workflow_run']['head_sha'] == os.environ['SOURCE_HEAD_SHA']
+          PY
+
+      - name: Download exact immutable RFV-3B corpus
+        uses: actions/download-artifact@v4
+        with:
+          name: rfv3b-corpus-5082e01d9777734e9d9da70a6f8d8d73e7676c30
+          path: ${{ runner.temp }}/rfv3d2-input
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: 29683096355
+
+      - name: Prepare exact reviewed corpus
+        run: >-
+          python -m engine.regression.rfv3_live_prepare
+          --bundle "${RUNNER_TEMP}/rfv3d2-input/rfv2-public-corpus.tar.gz"
+          --checksums "${RUNNER_TEMP}/rfv3d2-input/bundle-checksums.json"
+          --destination "${RUNNER_TEMP}/rfv3d2-corpus"
+          --evidence-out "${RUNNER_TEMP}/rfv3d2-prepare-${CASE_ID}.json"
+
+      - name: Reproduce selected SVG and diagnose alpha pair
+        run: >-
+          python -m engine.regression.rfv3d2_alpha_mask_cluster_diagnostics live
+          --corpus-root "${RUNNER_TEMP}/rfv3d2-corpus"
+          --case-id "${CASE_ID}"
+          --work-root "${RUNNER_TEMP}/rfv3d2-work"
+          --out "${RUNNER_TEMP}/rfv3d2-alpha-${CASE_ID}.json"
+
+      - name: Require direct opaque-canvas confirmation
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          case_id = os.environ['CASE_ID']
+          payload = json.loads((Path(os.environ['RUNNER_TEMP']) / f'rfv3d2-alpha-{case_id}.json').read_text())
+          assert payload['schema'] == 'vektoryum-rfv3d2-live-alpha-pair-v1'
+          assert payload['case_id'] == case_id
+          assert payload['diagnosis'] == 'opaque_canvas_collapse'
+          assert payload['source']['has_alpha'] is True
+          assert payload['render']['soft_coverage'] >= 0.995
+          assert abs(payload['metrics']['alpha_iou'] - payload['source']['soft_coverage']) <= 1e-4
+          assert payload['production_fix_authorized'] is False
+          assert payload['release_decision'] == 'no_go'
+          assert payload['rfv4_allowed'] is False
+          text = json.dumps(payload, sort_keys=True).lower()
+          for forbidden in ('/home/', '/tmp/', 'authorization:', 'bearer ', 'token=', 'traceback'):
+              assert forbidden not in text
+          PY
+
+      - name: Upload sanitized alpha diagnosis
+        uses: actions/upload-artifact@v4
+        with:
+          name: rfv3d2-alpha-${{ matrix.case_id }}-${{ github.event.pull_request.head.sha }}
+          path: |
+            ${{ runner.temp }}/rfv3d2-alpha-${{ matrix.case_id }}.json
+            ${{ runner.temp }}/rfv3d2-prepare-${{ matrix.case_id }}.json
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
