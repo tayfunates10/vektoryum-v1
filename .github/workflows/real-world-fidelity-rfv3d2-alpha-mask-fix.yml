@@ -1,0 +1,101 @@
+name: Real-world fidelity RFV-3D2 alpha-mask fix
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/real-world-fidelity-rfv3d2-alpha-mask-fix.yml"
+      - "engine/app/__init__.py"
+      - "engine/app/alpha_preprocess.py"
+      - "engine/test_alpha_preprocess.py"
+      - "docs/real_world_fidelity/rfv-3d2-alpha-mask-fix.md"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rfv3d2-alpha-mask-fix-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      PYTHONHASHSEED: "0"
+      PYTHONPATH: engine:.
+      VEKTORYUM_WORKERS: "1"
+    steps:
+      - name: Run actions/checkout@v4
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Run actions/setup-python@v5
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: engine/requirements.txt
+
+      - name: Install production and test dependencies
+        run: python -m pip install -r engine/requirements.txt
+
+      - name: Compile alpha-mask fix
+        run: >-
+          python -m py_compile
+          engine/app/__init__.py
+          engine/app/alpha_preprocess.py
+          engine/test_alpha_preprocess.py
+
+      - name: Run alpha-mask unit and production integration tests
+        run: python -m unittest engine.test_alpha_preprocess -v
+
+      - name: Confirm narrow production-fix diff scope
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          git cat-file -e "${BASE_SHA}^{commit}"
+          git cat-file -e "${HEAD_SHA}^{commit}"
+          changed="$(git diff --name-only "${BASE_SHA}...${HEAD_SHA}")"
+          while IFS= read -r path; do
+            [ -z "${path}" ] && continue
+            case "${path}" in
+              .github/workflows/real-world-fidelity-rfv3d2-alpha-mask-fix.yml|engine/app/__init__.py|engine/app/alpha_preprocess.py|engine/test_alpha_preprocess.py|docs/real_world_fidelity/rfv-3d2-alpha-mask-fix.md) ;;
+              *) echo "Unexpected RFV-3D2 alpha-fix file: ${path}"; exit 1 ;;
+            esac
+          done <<< "${changed}"
+
+      - name: Confirm evaluators policies corpus and retry contracts are unchanged
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: >-
+          git diff --exit-code "${BASE_SHA}...${HEAD_SHA}" --
+          engine/app/final_artifact_evaluator.py
+          engine/app/source_truth.py
+          engine/app/transform_journal.py
+          engine/benchmark
+          engine/regression/rfv3_measurement_policy.json
+          engine/regression/rfv2_qualification_manifest.json
+          docs/real_world_fidelity/evidence/rfv3_quality_decision.json
+          docs/real_world_fidelity_roadmap.json
+
+      - name: Confirm release remains NO-GO and RFV-4 blocked
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          roadmap = json.loads(Path('docs/real_world_fidelity_roadmap.json').read_text())
+          decision = json.loads(
+              Path('docs/real_world_fidelity/evidence/rfv3_quality_decision.json').read_text()
+          )
+          assert roadmap['phases'][2]['status'] == 'pending'
+          assert roadmap['phases'][3]['status'] == 'pending'
+          assert decision['release_decision'] == 'no_go'
+          assert decision['rfv4_allowed'] is False
+          PY
