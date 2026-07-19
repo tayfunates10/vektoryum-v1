@@ -6,6 +6,7 @@ on:
       - ".github/workflows/real-world-fidelity-rfv3d2-alpha-mask-fix.yml"
       - "engine/app/__init__.py"
       - "engine/app/alpha_preprocess.py"
+      - "engine/app/alpha_mask_budget.py"
       - "engine/app/alpha_svg_mask.py"
       - "engine/test_alpha_preprocess.py"
       - "docs/real_world_fidelity/rfv-3d2-alpha-mask-fix.md"
@@ -47,6 +48,7 @@ jobs:
           python -m py_compile
           engine/app/__init__.py
           engine/app/alpha_preprocess.py
+          engine/app/alpha_mask_budget.py
           engine/app/alpha_svg_mask.py
           engine/test_alpha_preprocess.py
 
@@ -66,7 +68,7 @@ jobs:
           while IFS= read -r path; do
             [ -z "${path}" ] && continue
             case "${path}" in
-              .github/workflows/real-world-fidelity-rfv3d2-alpha-mask-fix.yml|engine/app/__init__.py|engine/app/alpha_preprocess.py|engine/app/alpha_svg_mask.py|engine/test_alpha_preprocess.py|docs/real_world_fidelity/rfv-3d2-alpha-mask-fix.md) ;;
+              .github/workflows/real-world-fidelity-rfv3d2-alpha-mask-fix.yml|engine/app/__init__.py|engine/app/alpha_preprocess.py|engine/app/alpha_mask_budget.py|engine/app/alpha_svg_mask.py|engine/test_alpha_preprocess.py|docs/real_world_fidelity/rfv-3d2-alpha-mask-fix.md) ;;
               *) echo "Unexpected RFV-3D2 alpha-fix file: ${path}"; exit 1 ;;
             esac
           done <<< "${changed}"
