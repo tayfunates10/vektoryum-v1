@@ -52,7 +52,8 @@ class AlphaPreprocessUnitTests(unittest.TestCase):
             with Image.open(processed_path) as verified_image:
                 self.assertEqual(verified_image.mode, "RGB")
                 verified = np.asarray(verified_image, dtype=np.uint8).copy()
-            self.assertTrue(np.all(verified[source[:, :, 3] == 0] == 0))
+            transparent = source[:, :, 3] == 0
+            self.assertTrue(np.all(verified[transparent] == 220))
             partial = (source[:, :, 3] > 0) & (source[:, :, 3] < 255)
             np.testing.assert_array_equal(
                 verified[partial], source[:, :, :3][partial]
@@ -61,6 +62,14 @@ class AlphaPreprocessUnitTests(unittest.TestCase):
                 report["source_alpha"]["status"], "staged_for_vector_mask"
             )
             self.assertEqual(report["source_alpha"]["trace_input_mode"], "RGB")
+            self.assertEqual(
+                report["source_alpha"]["trace_background_policy"],
+                "retain_processed_composite",
+            )
+            self.assertEqual(
+                report["source_alpha"]["soft_boundary_rgb_policy"],
+                "straight_source_rgb",
+            )
             self.assertIn("source_alpha_staged", report["steps"])
             self.assertEqual(len(report["source_alpha"]["alpha_sha256"]), 64)
 
@@ -265,7 +274,7 @@ class AlphaPreprocessUnitTests(unittest.TestCase):
                 svg_path.read_text(encoding="utf-8"),
             )
 
-    def test_transparent_gradient_candidate_is_fail_closed(self) -> None:
+    def test_transparent_gradient_candidate_is_allowed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source_path = root / "source.png"
@@ -273,19 +282,17 @@ class AlphaPreprocessUnitTests(unittest.TestCase):
             Image.new("RGBA", (8, 8), (10, 20, 30, 0)).save(source_path)
             called = False
 
-            def gradient(*args, **kwargs):
+            def gradient(input_path, destination, params):
                 nonlocal called
                 called = True
-                del args, kwargs
+                self.assertEqual(Path(input_path), source_path)
+                self.assertEqual(params, {"epsilon": 0.3})
+                Path(destination).write_text("<svg/>", encoding="utf-8")
 
             wrapped = wrap_gradient_vectorizer(gradient)
-            with self.assertRaisesRegex(
-                RuntimeError,
-                "transparent_gradient_candidate_requires_alpha_aware_mask",
-            ):
-                wrapped(source_path, output_path, {})
-            self.assertFalse(called)
-            self.assertFalse(output_path.exists())
+            wrapped(source_path, output_path, {"epsilon": 0.3})
+            self.assertTrue(called)
+            self.assertEqual(output_path.read_text(encoding="utf-8"), "<svg/>")
 
     def test_opaque_gradient_candidate_is_unchanged(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -305,6 +312,52 @@ class AlphaPreprocessUnitTests(unittest.TestCase):
 
 
 class AlphaPreprocessProductionIntegrationTests(unittest.TestCase):
+    def test_transparent_gradient_candidate_survives_final_alpha_mask(self) -> None:
+        from app.gradient_vectorize import vectorize_with_gradients
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_path = root / "transparent-gradient.png"
+            width, height = 128, 64
+            source = np.zeros((height, width, 4), dtype=np.uint8)
+            x0, x1 = 12, 116
+            y0, y1 = 8, 56
+            ramp = np.linspace(0.0, 1.0, x1 - x0, dtype=np.float32)
+            source[y0:y1, x0:x1, 0] = np.rint(240 * (1.0 - ramp))[None, :]
+            source[y0:y1, x0:x1, 1] = 40
+            source[y0:y1, x0:x1, 2] = np.rint(220 * ramp)[None, :]
+            source[y0:y1, x0:x1, 3] = 255
+            Image.fromarray(source, mode="RGBA").save(source_path)
+
+            svg_path = root / "gradient.svg"
+            vectorize_with_gradients(
+                source_path,
+                svg_path,
+                {"epsilon": 0.3, "min_area": 8.0},
+            )
+            before = svg_path.read_text(encoding="utf-8")
+            self.assertIn("<linearGradient", before)
+
+            report = apply_source_alpha_mask(
+                svg_path, source_path, "logo_color"
+            )
+            self.assertTrue(report["applied"])
+            after = svg_path.read_text(encoding="utf-8")
+            self.assertIn("<linearGradient", after)
+            self.assertNotIn("<image", after)
+
+            rendered = render_svg_to_rgba(svg_path, width, height)
+            self.assertIsNotNone(rendered)
+            assert rendered is not None
+            metrics = alpha_plane_metrics(source[:, :, 3], rendered[:, :, 3])
+            thresholds = _thresholds("clean_logo", None)
+            self.assertGreaterEqual(
+                metrics["alpha_iou"], thresholds["alpha_iou_min"], metrics
+            )
+            self.assertLessEqual(
+                metrics["alpha_mae"], thresholds["alpha_mae_max"], metrics
+            )
+
     def test_vector_mask_repairs_live_opaque_canvas_signature(self) -> None:
         import vtracer
         from app.preprocess import preprocess_for_mode
