@@ -1,0 +1,399 @@
+"""Final, vector-only source-alpha mask for selected production SVG artifacts."""
+from __future__ import annotations
+
+import hashlib
+import os
+import re
+import shutil
+import tempfile
+import xml.etree.ElementTree as ET
+from functools import wraps
+from pathlib import Path
+from typing import Any, Callable
+
+import numpy as np
+
+from app.alpha_preprocess import _rgba_from_source_at_size
+from app.source_truth import alpha_plane_metrics, render_svg_to_rgba, resize_rgba
+
+_SVG_NS = "http://www.w3.org/2000/svg"
+_MASK_ID = "vektoryum-source-alpha"
+_MAX_ALPHA_LEVELS = 128
+_MAX_MASK_SIDE = 1600
+_MODE_IMAGE_CLASS = {
+    "geometric_logo": "geometric",
+    "minimal_ai": "clean_logo",
+    "flat_logo": "clean_logo",
+    "logo_color": "illustration",
+    "photo_poster": "photo",
+}
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def _dimension(value: str | None) -> float | None:
+    match = re.fullmatch(
+        r"\s*([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)\s*(?:px)?\s*",
+        str(value or ""),
+    )
+    if not match:
+        return None
+    parsed = float(match.group(1))
+    return parsed if np.isfinite(parsed) and parsed > 0 else None
+
+
+def _viewbox(root: ET.Element) -> tuple[float, float, float, float]:
+    raw = root.get("viewBox") or root.get("viewbox")
+    if raw:
+        parts = [float(value) for value in re.split(r"[\s,]+", raw.strip()) if value]
+        if (
+            len(parts) == 4
+            and all(np.isfinite(value) for value in parts)
+            and parts[2] > 0
+            and parts[3] > 0
+        ):
+            return parts[0], parts[1], parts[2], parts[3]
+    width = _dimension(root.get("width"))
+    height = _dimension(root.get("height"))
+    if width is None or height is None:
+        raise RuntimeError("source_alpha_mask_missing_coordinate_contract")
+    return 0.0, 0.0, width, height
+
+
+def _quantize_alpha(alpha: np.ndarray) -> tuple[np.ndarray, dict[int, float]]:
+    values = np.unique(alpha)
+    nonzero = values[values > 0]
+    if len(nonzero) <= _MAX_ALPHA_LEVELS:
+        quantized = alpha.astype(np.uint8, copy=True)
+        return quantized, {int(value): int(value) / 255.0 for value in nonzero}
+
+    steps = _MAX_ALPHA_LEVELS - 1
+    indexes = np.rint(alpha.astype(np.float32) * steps / 255.0).astype(np.uint8)
+    return indexes, {
+        int(value): int(value) / float(steps)
+        for value in np.unique(indexes)
+        if int(value) > 0
+    }
+
+
+def _merged_rectangles_by_level(
+    quantized: np.ndarray,
+) -> dict[int, list[tuple[int, int, int, int]]]:
+    """Run-length encode equal-alpha pixels and merge identical runs vertically."""
+    height, width = quantized.shape
+    completed: dict[int, list[tuple[int, int, int, int]]] = {}
+    active: dict[tuple[int, int, int], list[int]] = {}
+
+    for y in range(height):
+        row = quantized[y]
+        runs: list[tuple[int, int, int]] = []
+        x = 0
+        while x < width:
+            level = int(row[x])
+            start = x
+            x += 1
+            while x < width and int(row[x]) == level:
+                x += 1
+            if level > 0:
+                runs.append((level, start, x))
+
+        current_keys = {(level, x0, x1) for level, x0, x1 in runs}
+        for key in list(active):
+            if key not in current_keys:
+                level, x0, x1 = key
+                rect = active.pop(key)
+                completed.setdefault(level, []).append(
+                    (x0, rect[0], x1 - x0, rect[1] - rect[0])
+                )
+        for level, x0, x1 in runs:
+            key = (level, x0, x1)
+            if key in active:
+                active[key][1] = y + 1
+            else:
+                active[key] = [y, y + 1]
+
+    for (level, x0, x1), (y0, y1) in active.items():
+        completed.setdefault(level, []).append((x0, y0, x1 - x0, y1 - y0))
+    return completed
+
+
+def _rectangles_path(rectangles: list[tuple[int, int, int, int]]) -> str:
+    return " ".join(
+        f"M{x} {y}h{width}v{height}h-{width}Z"
+        for x, y, width, height in rectangles
+        if width > 0 and height > 0
+    )
+
+
+def _atomic_write_tree(tree: ET.ElementTree, path: Path) -> None:
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=Path(path).parent,
+        prefix=f".{Path(path).name}.",
+        suffix=".alpha.svg",
+    )
+    os.close(descriptor)
+    temporary = Path(temporary_name)
+    try:
+        tree.write(temporary, encoding="utf-8", xml_declaration=True)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def apply_source_alpha_mask(
+    svg_path: Path,
+    source_path: Path,
+    mode: str,
+) -> dict[str, Any]:
+    """Attach a vector-only alpha mask and validate it with existing hard gates."""
+    svg_path = Path(svg_path)
+    before_sha = _sha256(svg_path)
+    ET.register_namespace("", _SVG_NS)
+    tree = ET.parse(svg_path)
+    root = tree.getroot()
+    if root.tag.split("}")[-1].lower() != "svg":
+        raise RuntimeError("source_alpha_mask_root_not_svg")
+
+    view_x, view_y, view_width, view_height = _viewbox(root)
+    mask_width = max(1, int(round(view_width)))
+    mask_height = max(1, int(round(view_height)))
+    scale = min(1.0, _MAX_MASK_SIDE / float(max(mask_width, mask_height)))
+    raster_width = max(1, int(round(mask_width * scale)))
+    raster_height = max(1, int(round(mask_height * scale)))
+    source_rgba = _rgba_from_source_at_size(
+        Path(source_path), (raster_width, raster_height)
+    )
+    source_alpha = np.asarray(source_rgba[:, :, 3], dtype=np.uint8)
+    if bool(np.all(source_alpha == 255)):
+        return {
+            "status": "not_applicable",
+            "applied": False,
+            "before_sha256": before_sha,
+            "after_sha256": before_sha,
+        }
+
+    quantized, opacity_by_level = _quantize_alpha(source_alpha)
+    rectangles = _merged_rectangles_by_level(quantized)
+    if not rectangles:
+        raise RuntimeError("source_alpha_mask_empty_foreground")
+
+    qname = lambda name: f"{{{_SVG_NS}}}{name}"
+    defs = next(
+        (child for child in list(root) if child.tag.split("}")[-1] == "defs"),
+        None,
+    )
+    if defs is None:
+        defs = ET.Element(qname("defs"))
+        root.insert(0, defs)
+    for child in list(defs):
+        if child.get("id") == _MASK_ID:
+            defs.remove(child)
+
+    mask = ET.SubElement(
+        defs,
+        qname("mask"),
+        {
+            "id": _MASK_ID,
+            "maskUnits": "userSpaceOnUse",
+            "maskContentUnits": "userSpaceOnUse",
+            "x": f"{view_x:g}",
+            "y": f"{view_y:g}",
+            "width": f"{view_width:g}",
+            "height": f"{view_height:g}",
+            "style": "mask-type:alpha",
+        },
+    )
+    content = ET.SubElement(mask, qname("g"))
+    sx = view_width / float(raster_width)
+    sy = view_height / float(raster_height)
+    content.set(
+        "transform",
+        f"translate({view_x:g} {view_y:g}) scale({sx:.12g} {sy:.12g})",
+    )
+
+    path_count = 0
+    rectangle_count = 0
+    for level in sorted(rectangles):
+        path_data = _rectangles_path(rectangles[level])
+        if not path_data:
+            continue
+        attributes = {
+            "d": path_data,
+            "fill": "#ffffff",
+            "fill-opacity": f"{opacity_by_level[level]:.8f}".rstrip("0").rstrip("."),
+            "data-vektoryum-alpha-level": str(level),
+        }
+        ET.SubElement(content, qname("path"), attributes)
+        path_count += 1
+        rectangle_count += len(rectangles[level])
+
+    if path_count == 0:
+        raise RuntimeError("source_alpha_mask_no_vector_paths")
+
+    protected = {"defs", "title", "desc", "metadata", "style"}
+    movable = [
+        child for child in list(root)
+        if child.tag.split("}")[-1] not in protected
+    ]
+    if not movable:
+        raise RuntimeError("source_alpha_mask_no_renderable_content")
+    wrapper = ET.Element(
+        qname("g"),
+        {
+            "mask": f"url(#{_MASK_ID})",
+            "data-vektoryum-source-alpha": "vector-mask-v1",
+        },
+    )
+    for child in movable:
+        root.remove(child)
+        wrapper.append(child)
+    root.append(wrapper)
+    _atomic_write_tree(tree, svg_path)
+
+    eval_scale = min(1.0, 512.0 / float(max(raster_width, raster_height)))
+    eval_width = max(1, int(round(raster_width * eval_scale)))
+    eval_height = max(1, int(round(raster_height * eval_scale)))
+    source_eval = resize_rgba(source_rgba, eval_width, eval_height)
+    rendered = render_svg_to_rgba(svg_path, eval_width, eval_height)
+    if rendered is None:
+        raise RuntimeError("source_alpha_mask_render_unmeasured")
+    metrics = alpha_plane_metrics(source_eval[:, :, 3], rendered[:, :, 3])
+
+    from app.final_artifact_evaluator import _thresholds  # noqa: PLC0415
+
+    image_class = _MODE_IMAGE_CLASS.get(mode, "illustration")
+    thresholds = _thresholds(image_class, None)
+    if float(metrics["alpha_iou"]) < float(thresholds["alpha_iou_min"]):
+        raise RuntimeError(
+            "source_alpha_mask_iou_gate_failed:"
+            f"{metrics['alpha_iou']:.6f}<{thresholds['alpha_iou_min']}"
+        )
+    if float(metrics["alpha_mae"]) > float(thresholds["alpha_mae_max"]):
+        raise RuntimeError(
+            "source_alpha_mask_mae_gate_failed:"
+            f"{metrics['alpha_mae']:.6f}>{thresholds['alpha_mae_max']}"
+        )
+
+    after_sha = _sha256(svg_path)
+    return {
+        "status": "accepted",
+        "applied": True,
+        "schema": "rfv3d2-source-alpha-vector-mask-v1",
+        "before_sha256": before_sha,
+        "after_sha256": after_sha,
+        "mask_path_count": path_count,
+        "mask_rectangle_count": rectangle_count,
+        "mask_raster_width": raster_width,
+        "mask_raster_height": raster_height,
+        "alpha_level_count": len(rectangles),
+        "threshold_image_class": image_class,
+        "alpha_iou": float(metrics["alpha_iou"]),
+        "alpha_mae": float(metrics["alpha_mae"]),
+        "source_coverage": float(metrics["source_coverage"]),
+        "render_coverage": float(metrics["render_coverage"]),
+    }
+
+
+def _journal_with_alpha_stage(
+    journal: dict[str, Any] | None,
+    report: dict[str, Any],
+) -> dict[str, Any]:
+    updated = dict(journal or {})
+    stages = list(updated.get("stages") or [])
+    stages.append({
+        "stage_id": "source_alpha_vector_mask",
+        "transform_name": "source_alpha_vector_mask",
+        "parent_sha256": report["before_sha256"],
+        "candidate_sha256": report["after_sha256"],
+        "accepted_sha256": report["after_sha256"],
+        "status": "accepted",
+        "reason_codes": ["source_alpha_hard_gates_passed"],
+        "required_unmeasured": [],
+        "metric_deltas": {},
+        "transform_report": report,
+    })
+    updated["stages"] = stages
+    updated["final_accepted_sha256"] = report["after_sha256"]
+    return updated
+
+
+def wrap_run_pipeline_with_alpha_mask(
+    original: Callable[..., dict[str, Any]],
+) -> Callable[..., dict[str, Any]]:
+    """Finalize the selected SVG with source alpha after every mutator stage."""
+    if getattr(original, "__vektoryum_alpha_mask_finalized__", False):
+        return original
+
+    @wraps(original)
+    def alpha_mask_finalized_pipeline(
+        image,
+        original_path,
+        trace_mode,
+        job_dir,
+        refine=True,
+        edge_cleanup=True,
+    ) -> dict[str, Any]:
+        result = original(
+            image,
+            original_path,
+            trace_mode,
+            job_dir,
+            refine=refine,
+            edge_cleanup=edge_cleanup,
+        )
+        best = result.get("best")
+        if not isinstance(best, dict) or not best.get("svg_path"):
+            return result
+
+        source_path = Path(original_path)
+        with __import__("PIL.Image", fromlist=["Image"]).open(source_path) as source:
+            source_alpha = np.asarray(source.convert("RGBA"), dtype=np.uint8)[:, :, 3]
+        if bool(np.all(source_alpha == 255)):
+            result["alpha_mask_report"] = {"status": "not_applicable", "applied": False}
+            return result
+
+        parent_path = Path(best["svg_path"])
+        finalized_path = Path(job_dir) / f"{parent_path.stem}_alpha.svg"
+        shutil.copy2(parent_path, finalized_path)
+        mode = str(result.get("mode_used") or trace_mode)
+        report = apply_source_alpha_mask(finalized_path, source_path, mode)
+
+        from app.pipeline import score_candidate, score_structure_integrity  # noqa: PLC0415
+
+        candidate = {
+            **best,
+            "name": f"{best.get('name', parent_path.stem)}_alpha",
+            "svg_path": finalized_path,
+            "alpha_mask_report": report,
+        }
+        rescored = score_candidate(
+            candidate,
+            source_path,
+            result.get("analysis") or {},
+            mode,
+        )
+        if rescored is None or not rescored.get("rendered_ok"):
+            raise RuntimeError("source_alpha_mask_final_rescore_unmeasured")
+
+        result["best"] = {**rescored, "alpha_mask_report": report}
+        result["scored"] = [*(result.get("scored") or []), result["best"]]
+        result["selection_reason"] = (
+            f"{result.get('selection_reason') or 'selected'}+source_alpha_vector_mask"
+        )
+        result["alpha_mask_report"] = report
+        result["transform_journal"] = _journal_with_alpha_stage(
+            result.get("transform_journal"), report
+        )
+        result["structure_report"] = score_structure_integrity(
+            finalized_path, source_path
+        )
+        result["refit_info"] = {
+            **(result.get("refit_info") or {}),
+            "source_alpha_vector_mask": report,
+        }
+        return result
+
+    alpha_mask_finalized_pipeline.__vektoryum_alpha_mask_finalized__ = True
+    return alpha_mask_finalized_pipeline
