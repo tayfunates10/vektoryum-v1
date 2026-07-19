@@ -26,6 +26,9 @@ jobs:
     steps:
       - name: Run actions/checkout@v4
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
 
       - name: Run actions/setup-python@v5
         uses: actions/setup-python@v5
@@ -53,10 +56,14 @@ jobs:
 
       - name: Confirm diagnostics-only diff scope
         shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          git fetch origin "${{ github.base_ref }}"
-          changed="$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")"
+          git cat-file -e "${BASE_SHA}^{commit}"
+          git cat-file -e "${HEAD_SHA}^{commit}"
+          changed="$(git diff --name-only "${BASE_SHA}...${HEAD_SHA}")"
           while IFS= read -r path; do
             [ -z "${path}" ] && continue
             case "${path}" in
@@ -75,9 +82,12 @@ jobs:
 
       - name: Confirm production and policy contracts are unchanged
         shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          git diff --exit-code "origin/${{ github.base_ref }}...HEAD" -- \
+          git diff --exit-code "${BASE_SHA}...${HEAD_SHA}" -- \
             engine/app \
             engine/benchmark \
             engine/regression/rfv3_measurement_policy.json \
@@ -124,6 +134,8 @@ jobs:
     steps:
       - name: Run actions/checkout@v4
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Run actions/setup-python@v5
         uses: actions/setup-python@v5
