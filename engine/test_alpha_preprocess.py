@@ -8,7 +8,10 @@ import numpy as np
 from PIL import Image
 
 from app.alpha_preprocess import wrap_gradient_vectorizer, wrap_preprocess_for_mode
-from app.alpha_svg_mask import apply_source_alpha_mask
+from app.alpha_svg_mask import (
+    apply_source_alpha_mask,
+    wrap_run_pipeline_with_alpha_mask,
+)
 from app.final_artifact_evaluator import _thresholds
 from app.source_truth import alpha_plane_metrics, render_svg_to_rgba
 
@@ -77,7 +80,7 @@ class AlphaPreprocessUnitTests(unittest.TestCase):
                 self.assertEqual(verified_image.mode, "RGB")
             self.assertNotIn("source_alpha", report)
 
-    def test_non_color_mode_retains_existing_contract(self) -> None:
+    def test_non_color_mode_retains_existing_preprocess_contract(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source_path = root / "source.png"
@@ -94,6 +97,40 @@ class AlphaPreprocessUnitTests(unittest.TestCase):
             with Image.open(processed_path) as verified_image:
                 self.assertEqual(verified_image.mode, "L")
             self.assertNotIn("source_alpha", report)
+
+    def test_non_color_mode_bypasses_final_alpha_mask(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_path = root / "source.png"
+            svg_path = root / "lineart.svg"
+            Image.new("RGBA", (8, 8), (20, 30, 40, 0)).save(source_path)
+            original_svg = (
+                '<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" '
+                'viewBox="0 0 8 8"><path fill="#000" d="M0 0h8v8H0Z"/></svg>'
+            )
+            svg_path.write_text(original_svg, encoding="utf-8")
+
+            def lineart_pipeline(*args, **kwargs):
+                del args, kwargs
+                return {
+                    "mode_used": "lineart",
+                    "best": {"name": "lineart", "svg_path": svg_path},
+                    "scored": [],
+                }
+
+            wrapped = wrap_run_pipeline_with_alpha_mask(lineart_pipeline)
+            result = wrapped(
+                Image.open(source_path),
+                source_path,
+                "lineart",
+                root,
+            )
+            self.assertEqual(
+                result["alpha_mask_report"]["reason"],
+                "unsupported_non_color_mode",
+            )
+            self.assertFalse(result["alpha_mask_report"]["applied"])
+            self.assertEqual(svg_path.read_text(encoding="utf-8"), original_svg)
 
     def test_transparent_gradient_candidate_is_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -199,12 +236,13 @@ class AlphaPreprocessProductionIntegrationTests(unittest.TestCase):
             rendered = render_svg_to_rgba(svg_path, width, height)
             self.assertIsNotNone(rendered)
             assert rendered is not None
-            source_resized = np.asarray(
-                Image.open(source_path).convert("RGBA").resize(
-                    (width, height), Image.Resampling.LANCZOS
-                ),
-                dtype=np.uint8,
-            ).copy()
+            with Image.open(source_path) as source_image:
+                source_resized = np.asarray(
+                    source_image.convert("RGBA").resize(
+                        (width, height), Image.Resampling.LANCZOS
+                    ),
+                    dtype=np.uint8,
+                ).copy()
             metrics = alpha_plane_metrics(
                 source_resized[:, :, 3], rendered[:, :, 3]
             )
