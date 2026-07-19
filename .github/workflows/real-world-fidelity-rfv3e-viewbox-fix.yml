@@ -43,164 +43,143 @@ jobs:
           python - <<'PY'
           from pathlib import Path
 
-          production_path = Path('engine/app/transform_journal.py')
+          production_path = Path("engine/app/transform_journal.py")
           production = production_path.read_text()
-          old_render = '''    render_rgba = None
-              with tempfile.TemporaryDirectory(prefix="vektoryum-stage-") as directory:
-                  path = Path(directory) / "candidate.svg"
-                  path.write_bytes(render_data)
-                  rnd = render_svg_to_rgb(path, w, h)
-                  if measure_alpha and "alpha_fidelity" in set(required_metrics or ()):
-                      render_rgba = _source_truth.render_svg_to_rgba(path, w, h)
-              if rnd is None:
-                  metric["required_unmeasured"] = sorted(
-                      set(metric["required_unmeasured"]) | {"stage_render"}
-                  )
-                  return metric
-              if rnd.shape[:2] != (h, w):
-                  rnd = cv2.resize(rnd, (w, h), interpolation=cv2.INTER_AREA)
-          '''
-          new_render = '''    alpha_required = (
-                  measure_alpha and "alpha_fidelity" in set(required_metrics or ())
-              )
-              render_rgba = None
-              with tempfile.TemporaryDirectory(prefix="vektoryum-stage-") as directory:
-                  path = Path(directory) / "candidate.svg"
-                  path.write_bytes(render_data)
-                  if alpha_required:
-                      render_rgba = _source_truth.render_svg_to_rgba(path, w, h)
-                      if render_rgba is not None:
-                          if render_rgba.shape[:2] != (h, w):
-                              render_rgba = _source_truth.resize_rgba(render_rgba, w, h)
-                          # The alpha proof already produced a straight RGBA render.
-                          # Reuse its white composite for the existing RGB gates instead
-                          # of invoking a second independent SVG renderer.
-                          rnd = _source_truth.composite_rgba(render_rgba, 255)
-                      else:
-                          # Preserve the existing visual diagnostics while alpha remains
-                          # explicitly unmeasured and therefore fail-closed.
-                          rnd = render_svg_to_rgb(path, w, h)
-                  else:
-                      rnd = render_svg_to_rgb(path, w, h)
-              if rnd is None:
-                  metric["required_unmeasured"] = sorted(
-                      set(metric["required_unmeasured"]) | {"stage_render"}
-                  )
-                  return metric
-              if rnd.shape[:2] != (h, w):
-                  rnd = cv2.resize(rnd, (w, h), interpolation=cv2.INTER_AREA)
-          '''
-          old_alpha = '''    if measure_alpha and "alpha_fidelity" in set(required_metrics or ()):
-                  if render_rgba is None:
-                      metric["alpha_fidelity_status"] = "unmeasured"
-                  else:
-                      if render_rgba.shape[:2] != (h, w):
-                          render_rgba = _source_truth.resize_rgba(render_rgba, w, h)
-                      render_alpha = np.asarray(render_rgba[:, :, 3], dtype=np.uint8).copy()
-          '''
-          new_alpha = '''    if alpha_required:
-                  if render_rgba is None:
-                      metric["alpha_fidelity_status"] = "unmeasured"
-                  else:
-                      render_alpha = np.asarray(render_rgba[:, :, 3], dtype=np.uint8).copy()
-          '''
-          old_refine = '''            required_metrics=required_metrics,
-                      measure_alpha=measure_alpha,
-                      _allow_topology_refinement=False,
-          '''
-          new_refine = '''            required_metrics=required_metrics,
-                      # The fine pass only replaces topology fields. Repeating the
-                      # already-completed alpha proof here wastes the fixed journal
-                      # budget without strengthening the decision.
-                      measure_alpha=False,
-                      _allow_topology_refinement=False,
-          '''
 
-          if old_render in production:
-              production = production.replace(old_render, new_render, 1)
-          else:
-              assert 'alpha_required = (' in production, 'shared RGBA render patch anchor missing'
-          if old_alpha in production:
-              production = production.replace(old_alpha, new_alpha, 1)
-          else:
-              assert 'if alpha_required:' in production, 'alpha scope patch anchor missing'
-          if old_refine in production:
-              production = production.replace(old_refine, new_refine, 1)
-          else:
-              assert 'measure_alpha=False' in production, 'topology alpha reuse patch anchor missing'
-          compile(production, str(production_path), 'exec')
+          old_render = (
+              "    render_rgba = None\n"
+              "    with tempfile.TemporaryDirectory(prefix=\"vektoryum-stage-\") as directory:\n"
+              "        path = Path(directory) / \"candidate.svg\"\n"
+              "        path.write_bytes(render_data)\n"
+              "        rnd = render_svg_to_rgb(path, w, h)\n"
+              "        if measure_alpha and \"alpha_fidelity\" in set(required_metrics or ()):\n"
+              "            render_rgba = _source_truth.render_svg_to_rgba(path, w, h)\n"
+          )
+          new_render = (
+              "    alpha_required = (\n"
+              "        measure_alpha and \"alpha_fidelity\" in set(required_metrics or ())\n"
+              "    )\n"
+              "    render_rgba = None\n"
+              "    with tempfile.TemporaryDirectory(prefix=\"vektoryum-stage-\") as directory:\n"
+              "        path = Path(directory) / \"candidate.svg\"\n"
+              "        path.write_bytes(render_data)\n"
+              "        if alpha_required:\n"
+              "            render_rgba = _source_truth.render_svg_to_rgba(path, w, h)\n"
+              "            if render_rgba is not None:\n"
+              "                if render_rgba.shape[:2] != (h, w):\n"
+              "                    render_rgba = _source_truth.resize_rgba(render_rgba, w, h)\n"
+              "                # The alpha proof already produced a straight RGBA render.\n"
+              "                # Reuse its white composite for the existing RGB gates.\n"
+              "                rnd = _source_truth.composite_rgba(render_rgba, 255)\n"
+              "            else:\n"
+              "                # Preserve visual diagnostics while alpha stays fail-closed.\n"
+              "                rnd = render_svg_to_rgb(path, w, h)\n"
+              "        else:\n"
+              "            rnd = render_svg_to_rgb(path, w, h)\n"
+          )
+          assert production.count(old_render) == 1, "shared RGBA render anchor mismatch"
+          production = production.replace(old_render, new_render, 1)
+
+          old_alpha = (
+              "    if measure_alpha and \"alpha_fidelity\" in set(required_metrics or ()):\n"
+              "        if render_rgba is None:\n"
+              "            metric[\"alpha_fidelity_status\"] = \"unmeasured\"\n"
+              "        else:\n"
+              "            if render_rgba.shape[:2] != (h, w):\n"
+              "                render_rgba = _source_truth.resize_rgba(render_rgba, w, h)\n"
+              "            render_alpha = np.asarray(render_rgba[:, :, 3], dtype=np.uint8).copy()\n"
+          )
+          new_alpha = (
+              "    if alpha_required:\n"
+              "        if render_rgba is None:\n"
+              "            metric[\"alpha_fidelity_status\"] = \"unmeasured\"\n"
+              "        else:\n"
+              "            render_alpha = np.asarray(render_rgba[:, :, 3], dtype=np.uint8).copy()\n"
+          )
+          assert production.count(old_alpha) == 1, "alpha scope anchor mismatch"
+          production = production.replace(old_alpha, new_alpha, 1)
+
+          old_refine = (
+              "            required_metrics=required_metrics,\n"
+              "            measure_alpha=measure_alpha,\n"
+              "            _allow_topology_refinement=False,\n"
+          )
+          new_refine = (
+              "            required_metrics=required_metrics,\n"
+              "            # Fine pass only replaces topology fields; alpha was already proved.\n"
+              "            measure_alpha=False,\n"
+              "            _allow_topology_refinement=False,\n"
+          )
+          assert production.count(old_refine) == 1, "topology refinement anchor mismatch"
+          production = production.replace(old_refine, new_refine, 1)
+          compile(production, str(production_path), "exec")
           production_path.write_text(production)
 
-          test_path = Path('engine/test_transform_journal.py')
+          test_path = Path("engine/test_transform_journal.py")
           tests = test_path.read_text()
-          test_name = 'test_alpha_restore_reuses_single_rgba_render_per_artifact'
+          test_name = "test_alpha_restore_reuses_single_rgba_render_per_artifact"
           if test_name not in tests:
-              marker = '\ndef test_assertions_are_real() -> None:\n'
-              assert marker in tests, 'transform journal test insertion anchor missing'
-              addition = r'''
-          def test_alpha_restore_reuses_single_rgba_render_per_artifact(
-              tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-          ) -> None:
-              import app.fidelity as fidelity
-              import app.source_truth as source_truth
-              from app.transform_journal import TransformJournal
-
-              source = _square_source()
-              calls = {"rgb": 0, "rgba": 0}
-
-              def rgb_render(_path: Path, _width: int, _height: int) -> np.ndarray:
-                  calls["rgb"] += 1
-                  return source.copy()
-
-              def rgba_render(_path: Path, width: int, height: int) -> np.ndarray:
-                  calls["rgba"] += 1
-                  rgba = np.zeros((height, width, 4), dtype=np.uint8)
-                  rgba[24:104, 24:104, :3] = (227, 0, 11)
-                  rgba[24:104, 24:104, 3] = 255
-                  return rgba
-
-              monkeypatch.setattr(fidelity, "render_svg_to_rgb", rgb_render)
-              monkeypatch.setattr(source_truth, "render_svg_to_rgba", rgba_render)
-              parent = tmp_path / "parent.svg"
-              candidate = tmp_path / "candidate.svg"
-              parent.write_bytes(_square_svg())
-              candidate.write_bytes(_square_svg("<metadata>same-alpha</metadata>"))
-              journal = TransformJournal(
-                  parent, source, required_metrics={"alpha_fidelity"},
+              marker = "\ndef test_assertions_are_real() -> None:\n"
+              assert marker in tests, "transform journal test insertion anchor missing"
+              addition = (
+                  "def test_alpha_restore_reuses_single_rgba_render_per_artifact(\n"
+                  "    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,\n"
+                  ") -> None:\n"
+                  "    import app.fidelity as fidelity\n"
+                  "    import app.source_truth as source_truth\n"
+                  "    from app.transform_journal import TransformJournal\n"
+                  "\n"
+                  "    source = _square_source()\n"
+                  "    calls = {\"rgb\": 0, \"rgba\": 0}\n"
+                  "\n"
+                  "    def rgb_render(_path: Path, _width: int, _height: int) -> np.ndarray:\n"
+                  "        calls[\"rgb\"] += 1\n"
+                  "        return source.copy()\n"
+                  "\n"
+                  "    def rgba_render(_path: Path, width: int, height: int) -> np.ndarray:\n"
+                  "        calls[\"rgba\"] += 1\n"
+                  "        rgba = np.zeros((height, width, 4), dtype=np.uint8)\n"
+                  "        rgba[24:104, 24:104, :3] = (227, 0, 11)\n"
+                  "        rgba[24:104, 24:104, 3] = 255\n"
+                  "        return rgba\n"
+                  "\n"
+                  "    monkeypatch.setattr(fidelity, \"render_svg_to_rgb\", rgb_render)\n"
+                  "    monkeypatch.setattr(source_truth, \"render_svg_to_rgba\", rgba_render)\n"
+                  "    parent = tmp_path / \"parent.svg\"\n"
+                  "    candidate = tmp_path / \"candidate.svg\"\n"
+                  "    parent.write_bytes(_square_svg())\n"
+                  "    candidate.write_bytes(_square_svg(\"<metadata>same-alpha</metadata>\"))\n"
+                  "    journal = TransformJournal(\n"
+                  "        parent, source, required_metrics={\"alpha_fidelity\"},\n"
+                  "    )\n"
+                  "\n"
+                  "    accepted, stage = journal.consider_candidate(\n"
+                  "        \"restore_source_dimensions\", parent, candidate,\n"
+                  "    )\n"
+                  "\n"
+                  "    assert accepted == candidate\n"
+                  "    assert stage[\"status\"] == \"accepted\"\n"
+                  "    assert stage[\"required_unmeasured\"] == []\n"
+                  "    assert stage[\"alpha_comparison\"][\"alpha_iou\"] == pytest.approx(1.0)\n"
+                  "    assert calls == {\"rgb\": 0, \"rgba\": 2}\n"
               )
-
-              accepted, stage = journal.consider_candidate(
-                  "restore_source_dimensions", parent, candidate,
-              )
-
-              assert accepted == candidate
-              assert stage["status"] == "accepted"
-              assert stage["required_unmeasured"] == []
-              assert stage["alpha_comparison"]["alpha_iou"] == pytest.approx(1.0)
-              assert calls == {"rgb": 0, "rgba": 2}
-          '''
-              tests = tests.replace(marker, '\n' + addition.strip('\n') + '\n\n' + marker.lstrip('\n'), 1)
-          compile(tests, str(test_path), 'exec')
+              tests = tests.replace(marker, "\n" + addition + marker, 1)
+          compile(tests, str(test_path), "exec")
           test_path.write_text(tests)
 
-          workflow_path = Path('.github/workflows/real-world-fidelity-rfv3e-viewbox-fix.yml')
+          workflow_path = Path(".github/workflows/real-world-fidelity-rfv3e-viewbox-fix.yml")
           lines = workflow_path.read_text().splitlines(keepends=True)
-          start = next(i for i, line in enumerate(lines) if line.strip() == '# RFV3E_BOOTSTRAP_BEGIN')
-          end = next(i for i, line in enumerate(lines) if line.strip() == '# RFV3E_BOOTSTRAP_END')
+          start = next(i for i, line in enumerate(lines) if line.strip() == "# RFV3E_BOOTSTRAP_BEGIN")
+          end = next(i for i, line in enumerate(lines) if line.strip() == "# RFV3E_BOOTSTRAP_END")
           del lines[start:end + 1]
           lines = [
               line for line in lines
               if not (
-                  line.lstrip().startswith('ref:')
-                  and 'github.event.pull_request.head.sha' in line
+                  line.lstrip().startswith("ref:")
+                  and "github.event.pull_request.head.sha" in line
               )
           ]
-          workflow = ''.join(lines).replace('  contents: write\n', '  contents: read\n', 1)
-          workflow = workflow.replace(
-              "-k 'alpha_preserving_viewbox_restore or alpha_plane_regression or unmeasured_alpha or alpha_measurement_is_scoped'",
-              "-k 'alpha_preserving_viewbox_restore or alpha_plane_regression or unmeasured_alpha or alpha_measurement_is_scoped or alpha_restore_reuses_single_rgba_render'",
-              1,
-          )
+          workflow = "".join(lines).replace("  contents: write\n", "  contents: read\n", 1)
           workflow_path.write_text(workflow)
           PY
 
@@ -210,10 +189,7 @@ jobs:
             .github/workflows/real-world-fidelity-rfv3e-viewbox-fix.yml \
             engine/app/transform_journal.py \
             engine/test_transform_journal.py
-          if git diff --cached --quiet; then
-            echo "Shared RGBA render patch already applied"
-            exit 0
-          fi
+          git diff --cached --check
           git commit -m "RFV-3E: reuse RGBA render within alpha journal"
           git push origin "HEAD:${RFV3E_HEAD_BRANCH}"
       # RFV3E_BOOTSTRAP_END
