@@ -122,14 +122,6 @@ def _merged_rectangles_by_level(
     return completed
 
 
-def _rectangles_path(rectangles: list[tuple[int, int, int, int]]) -> str:
-    return " ".join(
-        f"M{x} {y}h{width}v{height}h-{width}Z"
-        for x, y, width, height in rectangles
-        if width > 0 and height > 0
-    )
-
-
 def _strip_content_alpha(element: ET.Element) -> None:
     """Make the source mask the only alpha truth; avoid multiplying alpha twice."""
     for node in element.iter():
@@ -256,24 +248,43 @@ def apply_source_alpha_mask(
         f"translate({view_x:g} {view_y:g}) scale({sx:.12g} {sy:.12g})",
     )
 
-    path_count = 0
+    group_count = 0
     rectangle_count = 0
     for level in sorted(rectangles):
-        path_data = _rectangles_path(rectangles[level])
-        if not path_data:
+        level_rectangles = rectangles[level]
+        if not level_rectangles:
             continue
-        attributes = {
-            "d": path_data,
+        group_attributes = {
             "fill": "#ffffff",
-            "fill-opacity": f"{opacity_by_level[level]:.8f}".rstrip("0").rstrip("."),
             "data-vektoryum-alpha-level": str(level),
         }
-        ET.SubElement(content, qname("path"), attributes)
-        path_count += 1
-        rectangle_count += len(rectangles[level])
+        opacity = float(opacity_by_level[level])
+        if opacity < 1.0:
+            group_attributes["fill-opacity"] = (
+                f"{opacity:.8f}".rstrip("0").rstrip(".")
+            )
+        group = ET.SubElement(content, qname("g"), group_attributes)
+        for x, y, width, height in level_rectangles:
+            if width <= 0 or height <= 0:
+                continue
+            ET.SubElement(
+                group,
+                qname("rect"),
+                {
+                    "x": str(x),
+                    "y": str(y),
+                    "width": str(width),
+                    "height": str(height),
+                },
+            )
+            rectangle_count += 1
+        if len(group):
+            group_count += 1
+        else:
+            content.remove(group)
 
-    if path_count == 0:
-        raise RuntimeError("source_alpha_mask_no_vector_paths")
+    if rectangle_count == 0:
+        raise RuntimeError("source_alpha_mask_no_vector_rectangles")
 
     protected = {"defs", "title", "desc", "metadata", "style"}
     movable = [
@@ -329,7 +340,8 @@ def apply_source_alpha_mask(
         "after_sha256": after_sha,
         "before_byte_size": before_size,
         "after_byte_size": svg_path.stat().st_size,
-        "mask_path_count": path_count,
+        "mask_path_count": 0,
+        "mask_group_count": group_count,
         "mask_rectangle_count": rectangle_count,
         "mask_raster_width": raster_width,
         "mask_raster_height": raster_height,
