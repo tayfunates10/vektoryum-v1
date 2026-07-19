@@ -124,12 +124,17 @@ from app import alpha_svg_mask as _alpha_svg_mask
 from app.alpha_candidate_identity import (
     wrap_run_pipeline_preserving_candidate_identity,
 )
+from app.alpha_mask_adaptive import make_adaptive_apply_source_alpha_mask
 from app.alpha_mask_budget import wrap_apply_source_alpha_mask
 
-# The budget guard runs before the vector-mask builder, so pathological alpha
-# planes cannot allocate or serialize an oversized SVG before journal rejection.
+# The preflight computes the unchanged TransformJournal path/node/byte budgets.
+# Rect encoding remains the default; compact paths are authorized only when the
+# rect bytes do not fit and every compact journal budget does. Rollback wraps
+# both encodings, so no rejected representation can alter the selected artifact.
 _alpha_svg_mask.apply_source_alpha_mask = wrap_apply_source_alpha_mask(
-    _alpha_svg_mask.apply_source_alpha_mask
+    make_adaptive_apply_source_alpha_mask(
+        _alpha_svg_mask.apply_source_alpha_mask
+    )
 )
 _pipeline.run_pipeline = _alpha_svg_mask.wrap_run_pipeline_with_alpha_mask(
     _pipeline.run_pipeline
