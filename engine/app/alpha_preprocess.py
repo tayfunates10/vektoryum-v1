@@ -1,15 +1,15 @@
 """Alpha-safe production bindings for transparent raster inputs.
 
-Color preprocessing still performs its established palette and geometry work on
-white-composited RGB. Before tracing, this module replaces undefined transparent
-RGB with canonical black and restores straight source RGB on partially
-transparent pixels. The trace input remains deliberately opaque RGB: source
-alpha is applied once, after all SVG mutations, by ``app.alpha_svg_mask``.
+Color preprocessing keeps its established white-composited RGB for palette and
+geometry work. Before tracing, this module restores straight source RGB only on
+partially transparent boundary pixels; fully transparent pixels retain the
+preprocessor's background color because their source RGB is undefined and the
+final source-alpha mask removes that background from the published artifact.
 
-Keeping alpha out of the tracer prevents renderer-dependent alpha multiplication
-while the staged hash and read-back proof keep the source plane bound to the job.
-Transparent gradient candidates remain fail-closed until that engine has an
-alpha-aware region/mask contract.
+The trace input remains deliberately opaque RGB. Source alpha is applied once,
+after all SVG mutations, by ``app.alpha_svg_mask``. Gradient candidates are
+allowed to model the original white-composited colors and then pass through the
+same measured final alpha-mask contract as every other color candidate.
 """
 from __future__ import annotations
 
@@ -90,18 +90,20 @@ def _stage_source_alpha(
         return processed_path, report
 
     # Opaque interiors retain the existing quantized/cleaned RGB. Soft boundary
-    # pixels use straight source RGB, and fully transparent pixels are canonical
-    # black. The final vector mask supplies the only alpha plane.
+    # pixels use straight source RGB to prevent white fringes. Fully transparent
+    # pixels retain the existing processed composite: their RGB is invisible in
+    # the source and the final vector mask removes the traced background. This
+    # preserves the established candidate geometry and avoids turning transparent
+    # canvas into a new black artwork region.
     output_rgb = processed_rgb.copy()
     partial = (source_alpha > 0) & (source_alpha < 255)
     transparent = source_alpha == 0
     output_rgb[partial] = source_rgba[:, :, :3][partial]
-    output_rgb[transparent] = 0
 
     _atomic_write_rgb(processed_path, output_rgb)
 
-    # Read-after-write proof: a failed codec/write must never silently return to
-    # the previous white-composited trace input.
+    # Read-after-write proof: a failed codec/write must never silently alter the
+    # trace-background or soft-boundary contract.
     with Image.open(processed_path) as verified_image:
         if verified_image.mode != "RGB":
             raise RuntimeError("source_alpha_trace_input_not_rgb")
@@ -110,8 +112,12 @@ def _stage_source_alpha(
         verified_rgb, output_rgb
     ):
         raise RuntimeError("source_alpha_trace_input_verification_failed")
-    if not bool(np.all(verified_rgb[transparent] == 0)):
-        raise RuntimeError("source_alpha_transparent_rgb_not_canonical")
+    if not np.array_equal(verified_rgb[transparent], processed_rgb[transparent]):
+        raise RuntimeError("source_alpha_trace_background_changed")
+    if not np.array_equal(
+        verified_rgb[partial], source_rgba[:, :, :3][partial]
+    ):
+        raise RuntimeError("source_alpha_soft_boundary_rgb_changed")
 
     alpha_bytes = np.ascontiguousarray(source_alpha).tobytes()
     steps = report.setdefault("steps", [])
@@ -129,6 +135,8 @@ def _stage_source_alpha(
         ),
         "alpha_sha256": hashlib.sha256(alpha_bytes).hexdigest(),
         "trace_input_mode": "RGB",
+        "trace_background_policy": "retain_processed_composite",
+        "soft_boundary_rgb_policy": "straight_source_rgb",
         "finalizer": "rfv3d2-source-alpha-vector-mask-v1",
     }
     return processed_path, report
@@ -171,7 +179,7 @@ def wrap_preprocess_for_mode(
 def wrap_gradient_vectorizer(
     original: Callable[..., None],
 ) -> Callable[..., None]:
-    """Reject transparent gradient inputs until native alpha masking exists."""
+    """Allow transparent gradient candidates under the final alpha-mask contract."""
     if getattr(original, "__vektoryum_alpha_safe__", False):
         return original
 
@@ -181,12 +189,9 @@ def wrap_gradient_vectorizer(
         output_path: Path,
         params: dict[str, Any] | None = None,
     ) -> None:
-        with Image.open(input_path) as source:
-            alpha = np.asarray(source.convert("RGBA"), dtype=np.uint8)[:, :, 3].copy()
-        if bool(np.any(alpha < 255)):
-            raise RuntimeError(
-                "transparent_gradient_candidate_requires_alpha_aware_mask"
-            )
+        # The gradient engine intentionally models the source after white
+        # compositing. The selected artifact is subsequently masked, rendered and
+        # accepted only through the unchanged alpha IoU/MAE and journal gates.
         original(input_path, output_path, params)
 
     alpha_safe_gradient.__vektoryum_alpha_safe__ = True
