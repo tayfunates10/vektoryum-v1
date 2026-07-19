@@ -227,7 +227,43 @@ class AlphaPreprocessUnitTests(unittest.TestCase):
                 result["transform_journal"]["stages"][-1]["stage_id"],
                 "source_alpha_vector_mask",
             )
+            self.assertGreater(
+                result["alpha_mask_report"]["preflight_rectangle_limit"],
+                result["alpha_mask_report"]["preflight_rectangle_count"],
+            )
             self.assertNotEqual(Path(result["best"]["svg_path"]), svg_path)
+
+    def test_noisy_alpha_fails_before_svg_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_path = root / "checkerboard.png"
+            svg_path = root / "selected.svg"
+            source = np.zeros((128, 128, 4), dtype=np.uint8)
+            source[:, :, :3] = (20, 30, 40)
+            yy, xx = np.indices((128, 128))
+            source[:, :, 3] = np.where((xx + yy) % 2 == 0, 255, 0).astype(
+                np.uint8
+            )
+            Image.fromarray(source, mode="RGBA").save(source_path)
+            original_svg = (
+                '<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" '
+                'viewBox="0 0 128 128"><path fill="#141e28" '
+                'd="M0 0h128v128H0Z"/></svg>'
+            )
+            svg_path.write_text(original_svg, encoding="utf-8")
+            before_bytes = svg_path.read_bytes()
+
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "source_alpha_mask_(rectangle|byte)_budget_exceeded",
+            ):
+                apply_source_alpha_mask(svg_path, source_path, "logo_color")
+
+            self.assertEqual(svg_path.read_bytes(), before_bytes)
+            self.assertNotIn(
+                "vektoryum-source-alpha",
+                svg_path.read_text(encoding="utf-8"),
+            )
 
     def test_transparent_gradient_candidate_is_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -330,6 +366,14 @@ class AlphaPreprocessProductionIntegrationTests(unittest.TestCase):
             self.assertEqual(mask_report["mask_path_count"], 0)
             self.assertGreater(mask_report["mask_group_count"], 0)
             self.assertGreater(mask_report["mask_rectangle_count"], 0)
+            self.assertLessEqual(
+                mask_report["preflight_rectangle_count"],
+                mask_report["preflight_rectangle_limit"],
+            )
+            self.assertLessEqual(
+                mask_report["preflight_projected_upper_bound"],
+                mask_report["preflight_byte_limit"],
+            )
             svg_text = svg_path.read_text(encoding="utf-8")
             self.assertNotIn("<image", svg_text)
             self.assertIn("<rect", svg_text)
