@@ -26,31 +26,39 @@ For each case, selected-SVG render alpha coverage was effectively `1.0` and alph
 
 ## Root production path
 
-Color preprocessing converts RGBA to an RGB white composite for palette cleanup and writes that RGB result as the raster tracer input. The source alpha plane is therefore absent before candidate generation. A white canvas that was only a comparison background becomes traceable artwork.
+Color preprocessing converts RGBA to a white-composited RGB image for palette cleanup and writes that RGB result as the raster tracer input. The source alpha plane is absent before candidate generation, so a comparison background becomes traceable artwork.
+
+Sending RGBA directly to the tracer is not sufficient for the existing hard contract: tracer-specific handling of soft alpha can still miss the required `alpha_iou_min=0.995` / `alpha_mae_max=0.005` clean-logo gates. Source alpha must therefore remain an explicit production invariant rather than an engine hint.
 
 The gradient candidate has the same white-composite assumption and no native source-alpha region contract.
 
 ## Narrow fix
 
-1. Keep the existing RGB preprocessing unchanged for opaque pixels.
-2. Resize and transform source RGBA into the exact trace-input coordinate space.
-3. Restore the source alpha plane before VTracer receives the PNG.
-4. Use straight source RGB on partially transparent boundary pixels to avoid white halos on black/checker backgrounds.
-5. Canonicalize fully transparent RGB to zero.
-6. Read the written PNG back and require byte-equivalent alpha; failure raises instead of silently returning to the opaque path.
-7. Reject the current gradient candidate for transparent sources until that engine has an alpha-aware mask contract. Other candidates continue normally.
+1. Keep the established color preprocessing unchanged for fully opaque pixels.
+2. Resize and mirror-transform source RGBA into the exact trace-input coordinate space.
+3. Keep the tracer input deliberately opaque RGB so alpha cannot be multiplied or interpreted differently by individual engines.
+4. Use straight source RGB on partially transparent boundary pixels to prevent white halos.
+5. Canonicalize fully transparent trace RGB to black and verify the written trace input by read-back.
+6. Preserve a SHA-256 binding for the transformed source alpha in the preprocess report.
+7. Reject the current gradient candidate for transparent sources until that engine has an alpha-aware mask contract; other candidates continue normally.
+8. After candidate selection and every SVG mutator, wrap the selected production content in a vector-only SVG mask generated from the transformed source alpha plane.
+9. Remove candidate opacity attributes before wrapping so source alpha is applied exactly once.
+10. Render the masked artifact through the production RGBA renderer and accept it only when the unchanged image-class alpha IoU and alpha MAE hard gates pass.
+11. Re-score the exact masked artifact and update the transform journal's final accepted SHA.
 
-Opaque inputs and non-color modes retain their existing preprocessing behavior.
+The mask contains only SVG paths; no `<image>`, data URI or embedded raster is introduced. Opaque inputs and non-color modes retain their existing behavior.
 
 ## Validation
 
 The dedicated workflow requires:
 
-- unit proof that source alpha is restored exactly;
+- unit proof that transparent RGB is canonicalized and source alpha is staged deterministically;
 - opaque-input and non-color compatibility tests;
 - fail-closed transparent-gradient behavior;
-- a real VTracer plus real RGBA-render integration test;
-- the existing final evaluator's image-class alpha IoU and alpha MAE thresholds, unchanged;
+- a real VTracer test that first reproduces the full-canvas opaque signature;
+- application of the final vector-only source-alpha mask to that exact SVG;
+- a real RGBA-render proof against the existing final evaluator's unchanged alpha IoU and alpha MAE thresholds;
+- proof that the final SVG contains no `<image>` element;
 - narrow diff scope;
 - unchanged evaluator, source-truth, transform-journal, corpus, measurement policy, retry and release-decision files.
 
