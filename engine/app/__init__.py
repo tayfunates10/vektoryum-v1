@@ -121,6 +121,9 @@ if not getattr(_pipeline.run_pipeline, "__vektoryum_auto_gate_wrapped__", False)
 
 
 from app import alpha_svg_mask as _alpha_svg_mask
+from app.alpha_candidate_identity import (
+    wrap_run_pipeline_preserving_candidate_identity,
+)
 from app.alpha_mask_budget import wrap_apply_source_alpha_mask
 
 # The budget guard runs before the vector-mask builder, so pathological alpha
@@ -129,6 +132,12 @@ _alpha_svg_mask.apply_source_alpha_mask = wrap_apply_source_alpha_mask(
     _alpha_svg_mask.apply_source_alpha_mask
 )
 _pipeline.run_pipeline = _alpha_svg_mask.wrap_run_pipeline_with_alpha_mask(
+    _pipeline.run_pipeline
+)
+# Source-alpha finalization is a journaled artifact transform, not a new vector
+# engine candidate. Preserve the selected candidate identity for API/regression
+# consumers while the final SVG path and journal SHA point at the masked artifact.
+_pipeline.run_pipeline = wrap_run_pipeline_preserving_candidate_identity(
     _pipeline.run_pipeline
 )
 
