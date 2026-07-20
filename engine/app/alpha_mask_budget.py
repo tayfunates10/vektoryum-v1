@@ -10,6 +10,7 @@ from functools import wraps
 from pathlib import Path
 from typing import Any, Callable
 
+import cv2
 import numpy as np
 from defusedxml import ElementTree as SafeET
 
@@ -25,15 +26,28 @@ _JOURNAL_BYTE_GROWTH_FACTOR = 3
 _JOURNAL_BYTE_GROWTH_ABSOLUTE = 250_000
 _FIXED_MARKUP_OVERHEAD = 4096
 _MIN_RECT_BYTES = 40
-_PATH_COMMANDS_PER_RECTANGLE = 5
+# Geometry is scanned beyond the verbose-rect budget only so a genuinely compact
+# contour representation can be measured. This is a safety allocation cap, not
+# an acceptance allowance; every accepted artifact still fits the unchanged
+# TransformJournal path/node/byte limits below.
+_MAX_CONTOUR_SCAN_RECTANGLES = 100_000
+_CONTOUR_STROKE_WIDTH = 0.5
+_MAX_COMPACT_CONTOURS = 4096
 _PATH_COMMAND = re.compile(r"[MmLlHhVvCcSsQqTtAaZz]")
 _ALPHA_MASK_ENCODING: ContextVar[str] = ContextVar(
     "vektoryum_alpha_mask_encoding", default="rect"
+)
+_ALPHA_MASK_PLAN: ContextVar[dict[str, Any] | None] = ContextVar(
+    "vektoryum_alpha_mask_plan", default=None
 )
 
 
 def current_alpha_mask_encoding() -> str:
     return _ALPHA_MASK_ENCODING.get()
+
+
+def current_alpha_mask_plan() -> dict[str, Any] | None:
+    return _ALPHA_MASK_PLAN.get()
 
 
 def _local_name(name: str) -> str:
@@ -69,12 +83,21 @@ def _viewbox_size(root: Any) -> tuple[int, int]:
     return max(1, int(round(width))), max(1, int(round(height)))
 
 
-def _quantize_alpha(alpha: np.ndarray) -> np.ndarray:
+def _quantize_alpha(
+    alpha: np.ndarray,
+) -> tuple[np.ndarray, dict[int, float]]:
     values = np.unique(alpha)
-    if int(np.count_nonzero(values)) <= _MAX_ALPHA_LEVELS:
-        return alpha.astype(np.uint8, copy=True)
+    nonzero = values[values > 0]
+    if len(nonzero) <= _MAX_ALPHA_LEVELS:
+        quantized = alpha.astype(np.uint8, copy=True)
+        return quantized, {int(value): int(value) / 255.0 for value in nonzero}
     steps = _MAX_ALPHA_LEVELS - 1
-    return np.rint(alpha.astype(np.float32) * steps / 255.0).astype(np.uint8)
+    indexes = np.rint(alpha.astype(np.float32) * steps / 255.0).astype(np.uint8)
+    return indexes, {
+        int(value): int(value) / float(steps)
+        for value in np.unique(indexes)
+        if int(value) > 0
+    }
 
 
 def _journal_limits(root: Any, before_size: int) -> dict[str, int]:
@@ -114,10 +137,6 @@ def _rect_markup_size(x: int, y: int, width: int, height: int) -> int:
     )
 
 
-def _path_command_size(x: int, y: int, width: int, height: int) -> int:
-    return len(f"M{x} {y}h{width}v{height}h-{width}Z")
-
-
 def _scan_merged_rectangles(
     quantized: np.ndarray,
     *,
@@ -128,10 +147,9 @@ def _scan_merged_rectangles(
     active: dict[tuple[int, int, int], int] = {}
     rectangle_count = 0
     rect_markup_bytes = 0
-    path_command_bytes = 0
 
     def close(level: int, x0: int, x1: int, y0: int, y1: int) -> None:
-        nonlocal rectangle_count, rect_markup_bytes, path_command_bytes
+        nonlocal rectangle_count, rect_markup_bytes
         del level
         rect_width = x1 - x0
         rect_height = y1 - y0
@@ -142,9 +160,6 @@ def _scan_merged_rectangles(
                 f"{rectangle_count}>{hard_limit}"
             )
         rect_markup_bytes += _rect_markup_size(
-            x0, y0, rect_width, rect_height
-        )
-        path_command_bytes += _path_command_size(
             x0, y0, rect_width, rect_height
         )
 
@@ -181,7 +196,162 @@ def _scan_merged_rectangles(
     return {
         "rectangle_count": rectangle_count,
         "rect_markup_bytes": rect_markup_bytes,
-        "path_command_bytes": path_command_bytes,
+    }
+
+
+def _canonical_contour(contour: np.ndarray) -> tuple[tuple[int, int], ...] | None:
+    points = [(int(point[0][0]), int(point[0][1])) for point in contour]
+    if len(points) < 3:
+        return None
+
+    def canonical_direction(values: list[tuple[int, int]]) -> tuple[tuple[int, int], ...]:
+        minimum = min(values)
+        candidates = [index for index, value in enumerate(values) if value == minimum]
+        return min(
+            tuple(values[index:] + values[:index])
+            for index in candidates
+        )
+
+    forward = canonical_direction(points)
+    reverse = canonical_direction(list(reversed(points)))
+    return min(forward, reverse)
+
+
+def _encode_contours(
+    contours: list[tuple[tuple[int, int], ...]],
+) -> str:
+    """Encode disconnected contours as one even-odd walk with doubled bridges.
+
+    Every contour boundary is traversed once and explicitly returned to its start.
+    Consecutive contour starts are connected, then the complete connector chain is
+    retraced in reverse. Those bridge segments therefore have zero even-odd area,
+    while all real boundaries retain their fill. One M and one l command encode an
+    entire alpha level, so the journal node count reflects the compact topology
+    rather than the number of raster runs.
+    """
+    ordered = sorted(contours)
+    if not ordered:
+        return ""
+
+    walk: list[tuple[int, int]] = [ordered[0][0]]
+    starts: list[tuple[int, int]] = []
+    for index, points in enumerate(ordered):
+        start = points[0]
+        if index:
+            walk.append(start)
+        starts.append(start)
+        walk.extend(points[1:])
+        walk.append(start)
+    walk.extend(reversed(starts[:-1]))
+
+    x0, y0 = walk[0]
+    deltas: list[str] = []
+    previous_x, previous_y = x0, y0
+    for x, y in walk[1:]:
+        deltas.extend((str(x - previous_x), str(y - previous_y)))
+        previous_x, previous_y = x, y
+    if not deltas:
+        return ""
+    return f"M{x0} {y0}l" + ",".join(deltas)
+
+
+def _build_contour_plan(
+    quantized: np.ndarray,
+    opacity_by_level: dict[int, float],
+) -> dict[str, Any] | None:
+    """Build a deterministic compact contour plan for measurable soft geometry.
+
+    OpenCV contours model the centers of boundary pixels. A half-pixel opaque
+    stroke, with opacity applied once to the containing group, reconstructs the
+    cell boundary without double-applying the alpha value. Degenerate one/two
+    point islands are omitted when measurable contours exist; the exact unchanged
+    alpha IoU/MAE render gate decides whether that bounded simplification is
+    admissible. A field made only of degenerate islands receives an exact but
+    deliberately expensive square plan, so ordinary checker/noise input still
+    fails the unchanged node/byte budgets while a parent with genuine pre-existing
+    journal capacity remains measurable.
+    """
+    layers: list[dict[str, Any]] = []
+    command_count = 0
+    path_markup_bytes = 0
+    contour_count = 0
+    pruned_contour_count = 0
+
+    for level in sorted(opacity_by_level):
+        mask = (quantized == int(level)).astype(np.uint8) * 255
+        contours, _hierarchy = cv2.findContours(
+            mask,
+            cv2.RETR_CCOMP,
+            cv2.CHAIN_APPROX_SIMPLE,
+        )
+        canonical: list[tuple[tuple[int, int], ...]] = []
+        for contour in contours:
+            normalized = _canonical_contour(contour)
+            if normalized is None:
+                pruned_contour_count += 1
+                continue
+            canonical.append(normalized)
+        if not canonical:
+            continue
+        path_data = _encode_contours(canonical)
+        if not path_data:
+            continue
+        nodes = len(_PATH_COMMAND.findall(path_data))
+        command_count += nodes
+        contour_count += len(canonical)
+        path_markup_bytes += len(path_data.encode("utf-8")) + 320
+        layers.append({
+            "level": int(level),
+            "opacity": float(opacity_by_level[level]),
+            "d": path_data,
+            "contour_count": len(canonical),
+            "command_count": nodes,
+        })
+
+    stroke_width = _CONTOUR_STROKE_WIDTH
+    if (not layers and pruned_contour_count) or contour_count > _MAX_COMPACT_CONTOURS:
+        # Highly fragmented fields must not collapse into an artificially cheap
+        # two-command bridge walk. Re-express them as exact one-cell subpaths with
+        # their historical command cost, then let the unchanged journal limits
+        # decide. This keeps ordinary checker/noise inputs fail-closed while still
+        # permitting a parent that already has genuine structural capacity.
+        layers = []
+        command_count = 0
+        path_markup_bytes = 0
+        contour_count = 0
+        stroke_width = 0.0
+        pruned_contour_count = 0
+        for level in sorted(opacity_by_level):
+            ys, xs = np.nonzero(quantized == int(level))
+            if len(xs) == 0:
+                continue
+            path_data = "".join(
+                f"M{int(x)} {int(y)}h1v1h-1Z"
+                for y, x in zip(ys.tolist(), xs.tolist())
+            )
+            nodes = len(_PATH_COMMAND.findall(path_data))
+            command_count += nodes
+            contour_count += int(len(xs))
+            path_markup_bytes += len(path_data.encode("utf-8")) + 320
+            layers.append({
+                "level": int(level),
+                "opacity": float(opacity_by_level[level]),
+                "d": path_data,
+                "contour_count": int(len(xs)),
+                "command_count": nodes,
+            })
+
+    if not layers:
+        return None
+    return {
+        "schema": "rfv3d2-alpha-contour-plan-v1",
+        "layers": layers,
+        "path_count": len(layers),
+        "command_count": command_count,
+        "path_markup_bytes": path_markup_bytes,
+        "contour_count": contour_count,
+        "pruned_contour_count": pruned_contour_count,
+        "stroke_width": stroke_width,
     }
 
 
@@ -200,9 +370,8 @@ def _preflight(svg_path: Path, source_path: Path) -> dict[str, Any] | None:
     if bool(np.all(alpha == 255)):
         return None
 
-    quantized = _quantize_alpha(alpha)
-    nonzero_levels = {int(value) for value in np.unique(quantized) if int(value) > 0}
-    group_count = len(nonzero_levels)
+    quantized, opacity_by_level = _quantize_alpha(alpha)
+    group_count = len(opacity_by_level)
     if group_count == 0:
         raise RuntimeError("source_alpha_mask_empty_foreground")
 
@@ -211,22 +380,10 @@ def _preflight(svg_path: Path, source_path: Path) -> dict[str, Any] | None:
         raise RuntimeError("source_alpha_mask_byte_budget_unavailable")
     rect_count_limit = max(1, available // _MIN_RECT_BYTES)
 
-    path_count_after = limits["parent_path_count"] + group_count
-    if path_count_after <= limits["path_limit"]:
-        path_node_capacity = max(
-            0,
-            (limits["node_limit"] - limits["parent_node_count"])
-            // _PATH_COMMANDS_PER_RECTANGLE,
-        )
-    else:
-        path_node_capacity = 0
-    hard_geometry_limit = max(rect_count_limit, path_node_capacity)
-    if hard_geometry_limit <= 0:
-        raise RuntimeError("source_alpha_mask_no_admissible_vector_encoding")
-
+    scan_limit = max(rect_count_limit, _MAX_CONTOUR_SCAN_RECTANGLES)
     geometry = _scan_merged_rectangles(
         quantized,
-        hard_limit=hard_geometry_limit,
+        hard_limit=scan_limit,
     )
     rectangle_count = geometry["rectangle_count"]
     group_markup = group_count * 128
@@ -236,33 +393,42 @@ def _preflight(svg_path: Path, source_path: Path) -> dict[str, Any] | None:
         + group_markup
         + geometry["rect_markup_bytes"]
     )
-    path_spaces = max(0, rectangle_count - group_count)
-    path_projected = (
-        before_size
-        + _FIXED_MARKUP_OVERHEAD
-        + group_markup
-        + group_count * 32
-        + geometry["path_command_bytes"]
-        + path_spaces
-    )
-    path_node_after = (
-        limits["parent_node_count"]
-        + rectangle_count * _PATH_COMMANDS_PER_RECTANGLE
-    )
-
     rect_allowed = rect_projected <= limits["byte_limit"]
-    path_allowed = bool(
-        path_count_after <= limits["path_limit"]
-        and path_node_after <= limits["node_limit"]
-        and path_projected <= limits["byte_limit"]
-    )
+
+    contour_plan: dict[str, Any] | None = None
+    path_projected = limits["byte_limit"] + 1
+    path_count_after = limits["parent_path_count"]
+    path_node_after = limits["parent_node_count"]
+    path_allowed = False
+    if not rect_allowed:
+        contour_plan = _build_contour_plan(quantized, opacity_by_level)
+        if contour_plan is not None:
+            path_count_after += int(contour_plan["path_count"])
+            path_node_after += int(contour_plan["command_count"])
+            path_projected = (
+                before_size
+                + _FIXED_MARKUP_OVERHEAD
+                + int(contour_plan["path_markup_bytes"])
+            )
+            path_allowed = bool(
+                path_count_after <= limits["path_limit"]
+                and path_node_after <= limits["node_limit"]
+                and path_projected <= limits["byte_limit"]
+            )
+
     if rect_allowed:
         encoding = "rect"
         projected = rect_projected
-    elif path_allowed:
+        contour_plan = None
+    elif path_allowed and contour_plan is not None:
         encoding = "path"
         projected = path_projected
     else:
+        if contour_plan is None and rectangle_count > rect_count_limit:
+            raise RuntimeError(
+                "source_alpha_mask_rectangle_budget_exceeded:"
+                f"{rectangle_count}>{rect_count_limit}"
+            )
         raise RuntimeError(
             "source_alpha_mask_all_encodings_rejected:"
             f"rect_bytes={rect_projected}/{limits['byte_limit']},"
@@ -273,6 +439,7 @@ def _preflight(svg_path: Path, source_path: Path) -> dict[str, Any] | None:
 
     return {
         "mask_encoding": encoding,
+        "_mask_plan": contour_plan,
         "preflight_rectangle_limit": int(rect_count_limit),
         "preflight_rectangle_count": int(rectangle_count),
         "preflight_alpha_level_count": int(group_count),
@@ -287,6 +454,10 @@ def _preflight(svg_path: Path, source_path: Path) -> dict[str, Any] | None:
         "preflight_parent_node_count": int(limits["parent_node_count"]),
         "preflight_path_node_count_after": int(path_node_after),
         "preflight_node_limit": int(limits["node_limit"]),
+        "preflight_contour_count": int((contour_plan or {}).get("contour_count", 0)),
+        "preflight_pruned_contour_count": int(
+            (contour_plan or {}).get("pruned_contour_count", 0)
+        ),
     }
 
 
@@ -324,7 +495,9 @@ def wrap_apply_source_alpha_mask(
         target = Path(svg_path)
         preflight = _preflight(target, Path(source_path))
         encoding = str((preflight or {}).get("mask_encoding") or "rect")
-        token: Token[str] = _ALPHA_MASK_ENCODING.set(encoding)
+        plan = (preflight or {}).get("_mask_plan")
+        encoding_token: Token[str] = _ALPHA_MASK_ENCODING.set(encoding)
+        plan_token: Token[dict[str, Any] | None] = _ALPHA_MASK_PLAN.set(plan)
         backup = _create_atomic_backup(target)
         try:
             report = original(target, Path(source_path), mode)
@@ -334,10 +507,16 @@ def wrap_apply_source_alpha_mask(
         else:
             backup.unlink(missing_ok=True)
         finally:
-            _ALPHA_MASK_ENCODING.reset(token)
+            _ALPHA_MASK_PLAN.reset(plan_token)
+            _ALPHA_MASK_ENCODING.reset(encoding_token)
 
         if preflight is not None and report.get("applied"):
-            report.update(preflight)
+            public_preflight = {
+                key: value
+                for key, value in preflight.items()
+                if not key.startswith("_")
+            }
+            report.update(public_preflight)
         report["rollback_guard"] = "armed_and_committed"
         return report
 
