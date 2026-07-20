@@ -424,7 +424,12 @@ def _preflight(svg_path: Path, source_path: Path) -> dict[str, Any] | None:
         encoding = "path"
         projected = path_projected
     else:
-        if contour_plan is None and rectangle_count > rect_count_limit:
+        if rectangle_count > rect_count_limit:
+            # Preserve the established fail-closed public error contract when
+            # verbose rect geometry is over budget and no genuinely admissible
+            # compact representation exists. The richer projected values remain
+            # available during preflight debugging, but callers never receive a
+            # misleading path success for checker/noise fields.
             raise RuntimeError(
                 "source_alpha_mask_rectangle_budget_exceeded:"
                 f"{rectangle_count}>{rect_count_limit}"
