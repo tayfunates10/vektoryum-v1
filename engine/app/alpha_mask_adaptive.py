@@ -1,9 +1,12 @@
 """Adaptive vector encoding for source-alpha masks.
 
 The default builder emits editable ``<rect>`` primitives. When that exact
-representation cannot fit the unchanged TransformJournal byte budget, the
-preflight gate may authorize a compact path representation only if the parent
-artifact has enough existing path/node/byte budget for it. No gate is relaxed.
+representation cannot fit the unchanged TransformJournal byte budget, preflight
+may authorize a compact, directly emitted contour-path representation only if
+the parent artifact has enough existing path/node/byte budget. No gate is
+relaxed. The legacy rect-to-path converter remains for direct compatibility
+fixtures, but production contour paths are never materialized as oversized rect
+XML first.
 """
 from __future__ import annotations
 
@@ -153,6 +156,15 @@ def make_adaptive_apply_source_alpha_mask(
         if encoding != "path":
             raise RuntimeError(f"source_alpha_mask_encoding_invalid:{encoding}")
 
+        # The production builder consumes the preflight contour plan directly,
+        # avoiding the exact OOM condition this adaptive layer is meant to guard.
+        if report.get("mask_encoding") == "path" and int(
+            report.get("mask_path_count") or 0
+        ) > 0:
+            return report
+
+        # Legacy/direct fixtures may still supply a rect mask under a forced path
+        # context. Preserve that compatibility without using it in production.
         path_count, rectangle_count = _compact_mask_rectangles(Path(svg_path))
         report["mask_encoding"] = "path"
         report["mask_path_count"] = int(path_count)
