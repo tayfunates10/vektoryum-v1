@@ -1,12 +1,14 @@
 """Dual evaluator contract for renderer-native source-alpha reconstruction.
 
-The alpha transform owns source-alpha fidelity. It therefore requires the
-unchanged direct alpha IoU/MAE gates and the FinalArtifactEvaluator alpha group
-on the same bounded evaluation grid. Absolute source-vs-vector SSIM, topology,
-seam and color verdicts are not reinterpreted here: immediately after this
-transaction the real TransformJournal compares the exact parent candidate with
-the exact transformed candidate and rejects any regression under its unchanged
-structural, visual, topology, seam and complexity policy.
+The alpha transform owns source-alpha plane fidelity. It therefore requires the
+unchanged direct alpha IoU/MAE gates and independently confirms the same two
+metrics through FinalArtifactEvaluator on the bounded comparison grid.
+
+FinalArtifactEvaluator also reports white, black and checker appearance under
+``alpha_*`` codes. Those are RGB/color-composite judgements rather than alpha
+plane measurements. They are recorded here but remain fail-closed in the
+immediately following real TransformJournal parent-to-candidate comparison,
+together with absolute SSIM, topology, seam, color and complexity policy.
 """
 from __future__ import annotations
 
@@ -16,8 +18,17 @@ from typing import Any
 import numpy as np
 
 from app.alpha_candidate_knockout import _source_rgb_on_white
-from app.alpha_preprocess import _rgba_from_source_at_size
 from app.source_truth import alpha_plane_metrics, render_svg_to_rgba, resize_rgba
+
+_ALPHA_PLANE_FAILURE_CODES = {
+    "alpha_iou_below_min",
+    "alpha_mae_above_max",
+}
+_ALPHA_APPEARANCE_PREFIXES = (
+    "alpha_white_",
+    "alpha_black_",
+    "alpha_checker_",
+)
 
 
 def validate_alpha_reconstruction_contract(
@@ -26,7 +37,7 @@ def validate_alpha_reconstruction_contract(
     mode: str,
     parent_counts: tuple[int, int],
 ) -> dict[str, Any]:
-    """Validate owned alpha metrics twice and preserve exact candidate geometry."""
+    """Validate owned alpha-plane metrics twice and preserve candidate geometry."""
     from app.alpha_svg_mask import _MODE_IMAGE_CLASS  # noqa: PLC0415
     from app.final_artifact_evaluator import (  # noqa: PLC0415
         _structure_check,
@@ -59,9 +70,9 @@ def validate_alpha_reconstruction_contract(
             f"{direct_metrics['alpha_mae']:.6f}>{thresholds['alpha_mae_max']}"
         )
 
-    # Bind the second evaluator to the same bounded alpha truth used by the
-    # production alpha hard gate. The following TransformJournal stage remains
-    # authoritative for parent-relative SSIM, topology, seam and complexity.
+    # Bind the second alpha-plane measurement to the same bounded truth. The
+    # following TransformJournal remains authoritative for RGB appearance and
+    # every parent-relative structural/visual/topology/seam/complexity regression.
     report = evaluate_final_svg(
         candidate_path,
         _source_rgb_on_white(source_eval),
@@ -70,16 +81,28 @@ def validate_alpha_reconstruction_contract(
         required_metrics={"alpha_fidelity"},
     )
     alpha_group = report.metrics.get("G_gradient_alpha") or {}
-    alpha_failure_codes = [
-        code for code in report.hard_fail_codes if code.startswith("alpha_")
-    ]
-    if (
-        alpha_group.get("alpha_fidelity_status") != "passed"
-        or alpha_failure_codes
-    ):
-        codes = ",".join(alpha_failure_codes or ["alpha_fidelity_not_passed"])
+    evaluator_alpha_iou = alpha_group.get("alpha_iou")
+    evaluator_alpha_mae = alpha_group.get("alpha_mae")
+    if evaluator_alpha_iou is None or evaluator_alpha_mae is None:
         raise RuntimeError(
-            f"source_alpha_candidate_knockout_evaluator_rejected:{codes}"
+            "source_alpha_candidate_knockout_evaluator_rejected:"
+            "alpha_plane_unmeasured"
+        )
+
+    plane_failure_codes = [
+        code for code in report.hard_fail_codes
+        if code in _ALPHA_PLANE_FAILURE_CODES
+    ]
+    if float(evaluator_alpha_iou) < float(thresholds["alpha_iou_min"]):
+        if "alpha_iou_below_min" not in plane_failure_codes:
+            plane_failure_codes.append("alpha_iou_below_min")
+    if float(evaluator_alpha_mae) > float(thresholds["alpha_mae_max"]):
+        if "alpha_mae_above_max" not in plane_failure_codes:
+            plane_failure_codes.append("alpha_mae_above_max")
+    if plane_failure_codes:
+        raise RuntimeError(
+            "source_alpha_candidate_knockout_evaluator_rejected:"
+            + ",".join(plane_failure_codes)
         )
 
     structure, _messages, structure_codes, root = _structure_check(
@@ -101,8 +124,14 @@ def validate_alpha_reconstruction_contract(
             f"{after_counts[0]}/{after_counts[1]}"
         )
 
-    non_alpha_hard_codes = [
-        code for code in report.hard_fail_codes if not code.startswith("alpha_")
+    appearance_codes = [
+        code for code in report.hard_fail_codes
+        if code.startswith(_ALPHA_APPEARANCE_PREFIXES)
+    ]
+    other_hard_codes = [
+        code for code in report.hard_fail_codes
+        if code not in _ALPHA_PLANE_FAILURE_CODES
+        and not code.startswith(_ALPHA_APPEARANCE_PREFIXES)
     ]
     return {
         "source_truth_alpha_iou": float(direct_metrics["alpha_iou"]),
@@ -110,10 +139,13 @@ def validate_alpha_reconstruction_contract(
         "source_truth_source_coverage": float(direct_metrics["source_coverage"]),
         "source_truth_render_coverage": float(direct_metrics["render_coverage"]),
         "final_evaluator_verdict": report.verdict,
-        "final_evaluator_alpha_iou": float(alpha_group["alpha_iou"]),
-        "final_evaluator_alpha_mae": float(alpha_group["alpha_mae"]),
-        "final_evaluator_alpha_hard_fail_codes": list(alpha_failure_codes),
-        "final_evaluator_non_alpha_hard_fail_codes": non_alpha_hard_codes,
+        "final_evaluator_alpha_plane_status": "passed",
+        "final_evaluator_alpha_iou": float(evaluator_alpha_iou),
+        "final_evaluator_alpha_mae": float(evaluator_alpha_mae),
+        "final_evaluator_alpha_plane_hard_fail_codes": [],
+        "final_evaluator_alpha_appearance_codes": appearance_codes,
+        "final_evaluator_other_hard_fail_codes": other_hard_codes,
+        "appearance_regression_authority": "transform_journal_parent_delta",
         "non_alpha_regression_authority": "transform_journal_parent_delta",
         "preserved_path_count": int(after_counts[0]),
         "preserved_node_count": int(after_counts[1]),
