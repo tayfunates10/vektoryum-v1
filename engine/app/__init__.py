@@ -127,6 +127,9 @@ from app.alpha_candidate_identity import (
 from app.alpha_candidate_knockout import (
     make_candidate_geometry_knockout_fallback,
 )
+from app.alpha_candidate_support import (
+    make_candidate_support_reconstruction_fallback,
+)
 from app.alpha_mask_adaptive import (
     make_adaptive_apply_source_alpha_mask,
     make_rect_fidelity_fallback,
@@ -136,16 +139,19 @@ from app.alpha_mask_budget import wrap_apply_source_alpha_mask
 # The preflight computes the unchanged TransformJournal path/node/byte budgets.
 # Rect encoding remains the default; compact paths are authorized when rect bytes
 # do not fit, or after the exact rect mask render fails alpha fidelity and the same
-# unchanged compact budgets independently admit a contour retry. If both renderer
-# paths still reject an opaque comparison-canvas artifact, the final narrow retry
-# knocks out only the proven canvas candidate and reconstructs source alpha through
-# clip-stratified uses of the unchanged selected candidate geometry. Rollback wraps
+# unchanged compact budgets independently admit a contour retry. An opaque trace
+# canvas is then removed only when renderer probes prove its identity. If clipping
+# the unchanged candidate paint still lacks source-edge support, the smallest
+# same-color stroke painted behind the existing fill is measured and accepted only
+# when both source-truth and exact evaluator alpha contracts pass. Rollback wraps
 # every transaction, so no rejected representation can alter the selected artifact.
-_alpha_svg_mask.apply_source_alpha_mask = make_candidate_geometry_knockout_fallback(
-    make_rect_fidelity_fallback(
-        wrap_apply_source_alpha_mask(
-            make_adaptive_apply_source_alpha_mask(
-                _alpha_svg_mask.apply_source_alpha_mask
+_alpha_svg_mask.apply_source_alpha_mask = make_candidate_support_reconstruction_fallback(
+    make_candidate_geometry_knockout_fallback(
+        make_rect_fidelity_fallback(
+            wrap_apply_source_alpha_mask(
+                make_adaptive_apply_source_alpha_mask(
+                    _alpha_svg_mask.apply_source_alpha_mask
+                )
             )
         )
     )
