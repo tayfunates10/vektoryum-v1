@@ -7,14 +7,15 @@ from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from app import alpha_svg_mask
 from app.alpha_mask_adaptive import (
     _compact_mask_rectangles,
     make_adaptive_apply_source_alpha_mask,
+    make_rect_fidelity_fallback,
 )
-from app.alpha_mask_budget import _preflight
+from app.alpha_mask_budget import _preflight, wrap_apply_source_alpha_mask
 from app.source_truth import alpha_plane_metrics, render_svg_to_rgba
 
 
@@ -40,7 +41,7 @@ class AlphaMaskAdaptiveTests(unittest.TestCase):
                 '<svg xmlns="http://www.w3.org/2000/svg" width="128" '
                 'height="128" viewBox="0 0 128 128">'
                 f'<path fill="#141e28" d="{parent_d}"/>'
-                '</svg>',
+                "</svg>",
                 encoding="utf-8",
             )
 
@@ -81,7 +82,7 @@ class AlphaMaskAdaptiveTests(unittest.TestCase):
                 '<svg xmlns="http://www.w3.org/2000/svg" width="64" '
                 'height="64" viewBox="0 0 64 64">'
                 '<path fill="#d62030" d="M0 0h64v64H0Z"/>'
-                '</svg>',
+                "</svg>",
                 encoding="utf-8",
             )
 
@@ -107,6 +108,71 @@ class AlphaMaskAdaptiveTests(unittest.TestCase):
             metrics = alpha_plane_metrics(source[:, :, 3], rendered[:, :, 3])
             self.assertGreaterEqual(metrics["alpha_iou"], 0.995, metrics)
             self.assertLessEqual(metrics["alpha_mae"], 0.005, metrics)
+
+    def test_rect_alpha_seams_retry_as_budgeted_contours(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_path = root / "rounded-source.png"
+            svg_path = root / "selected.svg"
+            size = 1990
+
+            source_image = Image.new("RGBA", (size, size), (214, 32, 48, 0))
+            alpha = Image.new("L", (size, size), 0)
+            ImageDraw.Draw(alpha).rounded_rectangle(
+                (20, 20, size - 21, size - 21),
+                radius=250,
+                fill=255,
+            )
+            source_image.putalpha(alpha)
+            source_image.save(source_path)
+            svg_path.write_text(
+                f'<svg xmlns="http://www.w3.org/2000/svg" width="{size}" '
+                f'height="{size}" viewBox="0 0 {size} {size}">'
+                f'<path fill="#d62030" d="M0 0h{size}v{size}H0Z"/>'
+                "</svg>",
+                encoding="utf-8",
+            )
+
+            base_builder = inspect.unwrap(alpha_svg_mask.apply_source_alpha_mask)
+            guarded = make_rect_fidelity_fallback(
+                wrap_apply_source_alpha_mask(
+                    make_adaptive_apply_source_alpha_mask(base_builder)
+                )
+            )
+            report = guarded(svg_path, source_path, "logo_color")
+
+            self.assertEqual(report["preflight_mask_encoding"], "rect")
+            self.assertEqual(report["mask_encoding"], "path")
+            self.assertEqual(
+                report["mask_fallback_reason"],
+                "rect_exact_alpha_gate_failure",
+            )
+            self.assertTrue(
+                str(report["mask_fallback_trigger"]).startswith(
+                    "source_alpha_mask_iou_gate_failed:"
+                ),
+                report,
+            )
+            self.assertLessEqual(
+                report["fallback_path_projected_byte_size"],
+                report["fallback_byte_limit"],
+            )
+            self.assertLessEqual(
+                report["fallback_path_count_after"],
+                report["fallback_path_limit"],
+            )
+            self.assertLessEqual(
+                report["fallback_path_node_count_after"],
+                report["fallback_node_limit"],
+            )
+            self.assertGreaterEqual(report["alpha_iou"], 0.995, report)
+            self.assertLessEqual(report["alpha_mae"], 0.005, report)
+            self.assertEqual(report["rollback_guard"], "armed_and_committed")
+
+            svg_text = svg_path.read_text(encoding="utf-8")
+            self.assertIn("<path", svg_text)
+            self.assertNotIn("<rect", svg_text)
+            self.assertNotIn("<image", svg_text)
 
     def test_compaction_requires_existing_rect_mask(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
