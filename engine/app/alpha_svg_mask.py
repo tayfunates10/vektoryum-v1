@@ -1,6 +1,7 @@
 """Final, vector-only source-alpha mask for selected production SVG artifacts."""
 from __future__ import annotations
 
+import copy
 import hashlib
 import os
 import re
@@ -30,10 +31,16 @@ _MODE_IMAGE_CLASS = {
 }
 _ALPHA_MASK_MODES = frozenset(_MODE_IMAGE_CLASS)
 _ALPHA_STYLE_NAMES = {"opacity", "fill-opacity", "stroke-opacity"}
+_GEOMETRY_TAGS = {"path", "rect", "circle", "ellipse", "polygon", "polyline"}
+_UNDERLAY_STROKE_PIXELS = (0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0)
 
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def _local_name(name: str) -> str:
+    return name.rsplit("}", 1)[-1] if "}" in name else name
 
 
 def _dimension(value: str | None) -> float | None:
@@ -174,6 +181,133 @@ def _journal_source_rgb(image: Image.Image) -> np.ndarray:
     return np.asarray(image.convert("RGB"), dtype=np.uint8).copy()
 
 
+def _style_declarations(style: str | None) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for declaration in str(style or "").split(";"):
+        if ":" not in declaration:
+            continue
+        key, value = declaration.split(":", 1)
+        result[key.strip().lower()] = value.strip()
+    return result
+
+
+def _remove_style_keys(node: ET.Element, keys: set[str]) -> None:
+    declarations = _style_declarations(node.get("style"))
+    for key in keys:
+        declarations.pop(key, None)
+    if declarations:
+        node.set("style", ";".join(f"{key}:{value}" for key, value in declarations.items()))
+    else:
+        node.attrib.pop("style", None)
+
+
+def _stroke_clone_geometry(
+    node: ET.Element,
+    stroke_width: float,
+    inherited_fill: str | None = None,
+) -> int:
+    declarations = _style_declarations(node.get("style"))
+    fill = declarations.get("fill", node.get("fill", inherited_fill))
+    if fill is None:
+        fill = "#000000"
+    local = _local_name(str(node.tag)).lower()
+    count = 0
+    if local in _GEOMETRY_TAGS and fill.strip().lower() not in {
+        "none", "transparent", "rgba(0,0,0,0)",
+    }:
+        _remove_style_keys(
+            node,
+            {
+                "stroke", "stroke-width", "stroke-linejoin", "stroke-linecap",
+                "stroke-dasharray", "stroke-dashoffset", "stroke-opacity",
+            },
+        )
+        node.set("stroke", fill)
+        node.set("stroke-width", f"{stroke_width:.8f}".rstrip("0").rstrip("."))
+        node.set("stroke-linejoin", "round")
+        node.set("stroke-linecap", "round")
+        node.attrib.pop("stroke-dasharray", None)
+        node.attrib.pop("stroke-dashoffset", None)
+        node.attrib.pop("stroke-opacity", None)
+        count = 1
+    for child in list(node):
+        count += _stroke_clone_geometry(child, stroke_width, fill)
+    return count
+
+
+def _coverage_underlay(
+    movable: list[ET.Element],
+    stroke_width: float,
+) -> tuple[ET.Element, int]:
+    underlay = ET.Element(
+        f"{{{_SVG_NS}}}g",
+        {
+            "data-vektoryum-alpha-coverage-underlay": "paint-preserving-v1",
+            "pointer-events": "none",
+        },
+    )
+    clone_count = 0
+    for element in movable:
+        cloned = copy.deepcopy(element)
+        count = _stroke_clone_geometry(cloned, stroke_width)
+        if count:
+            underlay.append(cloned)
+            clone_count += count
+    if clone_count == 0:
+        raise RuntimeError("source_alpha_coverage_underlay_no_painted_geometry")
+    return underlay, clone_count
+
+
+def _alpha_passes(metrics: dict[str, float], thresholds: dict[str, Any]) -> bool:
+    return bool(
+        float(metrics["alpha_iou"]) >= float(thresholds["alpha_iou_min"])
+        and float(metrics["alpha_mae"]) <= float(thresholds["alpha_mae_max"])
+    )
+
+
+def _alpha_diagnostics(
+    source_alpha: np.ndarray,
+    rendered_alpha: np.ndarray,
+) -> dict[str, int]:
+    source_positive = source_alpha > 0
+    rendered_positive = rendered_alpha > 0
+    return {
+        "missing_source_alpha_pixel_count": int(
+            np.count_nonzero(source_positive & ~rendered_positive)
+        ),
+        "extra_alpha_pixel_count": int(
+            np.count_nonzero(~source_positive & rendered_positive)
+        ),
+    }
+
+
+def _render_mask_only(
+    root: ET.Element,
+    defs: ET.Element,
+    eval_width: int,
+    eval_height: int,
+) -> np.ndarray | None:
+    probe_root = ET.Element(root.tag, dict(root.attrib))
+    probe_root.append(copy.deepcopy(defs))
+    probe = ET.SubElement(
+        probe_root,
+        f"{{{_SVG_NS}}}rect",
+        {
+            "x": str(_viewbox(root)[0]),
+            "y": str(_viewbox(root)[1]),
+            "width": str(_viewbox(root)[2]),
+            "height": str(_viewbox(root)[3]),
+            "fill": "#ffffff",
+            "mask": f"url(#{_MASK_ID})",
+        },
+    )
+    del probe
+    with tempfile.TemporaryDirectory(prefix="vektoryum-alpha-mask-probe-") as directory:
+        path = Path(directory) / "mask-probe.svg"
+        ET.ElementTree(probe_root).write(path, encoding="utf-8", xml_declaration=True)
+        return render_svg_to_rgba(path, eval_width, eval_height)
+
+
 def apply_source_alpha_mask(
     svg_path: Path,
     source_path: Path,
@@ -186,7 +320,7 @@ def apply_source_alpha_mask(
     ET.register_namespace("", _SVG_NS)
     tree = ET.parse(svg_path)
     root = tree.getroot()
-    if root.tag.split("}")[-1].lower() != "svg":
+    if _local_name(str(root.tag)).lower() != "svg":
         raise RuntimeError("source_alpha_mask_root_not_svg")
 
     view_x, view_y, view_width, view_height = _viewbox(root)
@@ -209,14 +343,42 @@ def apply_source_alpha_mask(
             "after_byte_size": before_size,
         }
 
+    eval_scale = min(1.0, 512.0 / float(max(raster_width, raster_height)))
+    eval_width = max(1, int(round(raster_width * eval_scale)))
+    eval_height = max(1, int(round(raster_height * eval_scale)))
+    source_eval = resize_rgba(source_rgba, eval_width, eval_height)
+    candidate_render = render_svg_to_rgba(svg_path, eval_width, eval_height)
+    if candidate_render is None:
+        raise RuntimeError("source_alpha_candidate_support_unmeasured")
+    candidate_support = alpha_plane_metrics(
+        source_eval[:, :, 3], candidate_render[:, :, 3]
+    )
+
+    from app.alpha_mask_budget import (  # noqa: PLC0415
+        current_alpha_mask_encoding,
+        current_alpha_mask_plan,
+    )
+
+    encoding = current_alpha_mask_encoding()
+    contour_plan = current_alpha_mask_plan()
     quantized, opacity_by_level = _quantize_alpha(source_alpha)
-    rectangles = _merged_rectangles_by_level(quantized)
-    if not rectangles:
-        raise RuntimeError("source_alpha_mask_empty_foreground")
+    rectangles: dict[int, list[tuple[int, int, int, int]]] = {}
+    direct_path = bool(
+        encoding == "path" and contour_plan and contour_plan.get("layers")
+    )
+    if encoding == "rect" or (encoding == "path" and not direct_path):
+        # A forced path context without a preflight plan is retained only for
+        # legacy/direct unit fixtures; production preflight always supplies the
+        # bounded direct contour plan and never materializes oversized rect XML.
+        rectangles = _merged_rectangles_by_level(quantized)
+        if not rectangles:
+            raise RuntimeError("source_alpha_mask_empty_foreground")
+    elif encoding != "path":
+        raise RuntimeError(f"source_alpha_mask_encoding_invalid:{encoding}")
 
     qname = lambda name: f"{{{_SVG_NS}}}{name}"
     defs = next(
-        (child for child in list(root) if child.tag.split("}")[-1] == "defs"),
+        (child for child in list(root) if _local_name(str(child.tag)) == "defs"),
         None,
     )
     if defs is None:
@@ -250,46 +412,83 @@ def apply_source_alpha_mask(
 
     group_count = 0
     rectangle_count = 0
-    for level in sorted(rectangles):
-        level_rectangles = rectangles[level]
-        if not level_rectangles:
-            continue
-        group_attributes = {
-            "fill": "#ffffff",
-            "data-vektoryum-alpha-level": str(level),
-        }
-        opacity = float(opacity_by_level[level])
-        if opacity < 1.0:
-            group_attributes["fill-opacity"] = (
-                f"{opacity:.8f}".rstrip("0").rstrip(".")
-            )
-        group = ET.SubElement(content, qname("g"), group_attributes)
-        for x, y, width, height in level_rectangles:
-            if width <= 0 or height <= 0:
+    path_count = 0
+    if not direct_path:
+        for level in sorted(rectangles):
+            level_rectangles = rectangles[level]
+            if not level_rectangles:
                 continue
+            group_attributes = {
+                "fill": "#ffffff",
+                "data-vektoryum-alpha-level": str(level),
+            }
+            opacity = float(opacity_by_level[level])
+            if opacity < 1.0:
+                group_attributes["fill-opacity"] = (
+                    f"{opacity:.8f}".rstrip("0").rstrip(".")
+                )
+            group = ET.SubElement(content, qname("g"), group_attributes)
+            for x, y, width, height in level_rectangles:
+                if width <= 0 or height <= 0:
+                    continue
+                ET.SubElement(
+                    group,
+                    qname("rect"),
+                    {
+                        "x": str(x),
+                        "y": str(y),
+                        "width": str(width),
+                        "height": str(height),
+                    },
+                )
+                rectangle_count += 1
+            if len(group):
+                group_count += 1
+            else:
+                content.remove(group)
+        if rectangle_count == 0:
+            raise RuntimeError("source_alpha_mask_no_vector_rectangles")
+    else:
+        stroke_width = float(contour_plan.get("stroke_width", 0.5))
+        for layer in contour_plan["layers"]:
+            opacity = float(layer["opacity"])
+            group_attributes = {
+                "opacity": f"{opacity:.8f}".rstrip("0").rstrip("."),
+                "data-vektoryum-alpha-level": str(layer["level"]),
+                "data-vektoryum-alpha-contours": str(layer["contour_count"]),
+            }
+            group = ET.SubElement(content, qname("g"), group_attributes)
             ET.SubElement(
                 group,
-                qname("rect"),
+                qname("path"),
                 {
-                    "x": str(x),
-                    "y": str(y),
-                    "width": str(width),
-                    "height": str(height),
+                    "fill": "#ffffff",
+                    "stroke": "#ffffff",
+                    "stroke-width": f"{stroke_width:g}",
+                    "stroke-linejoin": "miter",
+                    "stroke-linecap": "square",
+                    "fill-rule": "evenodd",
+                    "d": str(layer["d"]),
                 },
             )
-            rectangle_count += 1
-        if len(group):
             group_count += 1
-        else:
-            content.remove(group)
+            path_count += 1
+        if path_count == 0:
+            raise RuntimeError("source_alpha_mask_no_vector_paths")
 
-    if rectangle_count == 0:
-        raise RuntimeError("source_alpha_mask_no_vector_rectangles")
+    mask_only_render = _render_mask_only(
+        root, defs, eval_width, eval_height
+    )
+    if mask_only_render is None:
+        raise RuntimeError("source_alpha_mask_only_render_unmeasured")
+    mask_only_metrics = alpha_plane_metrics(
+        source_eval[:, :, 3], mask_only_render[:, :, 3]
+    )
 
     protected = {"defs", "title", "desc", "metadata", "style"}
     movable = [
         child for child in list(root)
-        if child.tag.split("}")[-1] not in protected
+        if _local_name(str(child.tag)) not in protected
     ]
     if not movable:
         raise RuntimeError("source_alpha_mask_no_renderable_content")
@@ -307,10 +506,6 @@ def apply_source_alpha_mask(
     root.append(wrapper)
     _atomic_write_tree(tree, svg_path)
 
-    eval_scale = min(1.0, 512.0 / float(max(raster_width, raster_height)))
-    eval_width = max(1, int(round(raster_width * eval_scale)))
-    eval_height = max(1, int(round(raster_height * eval_scale)))
-    source_eval = resize_rgba(source_rgba, eval_width, eval_height)
     rendered = render_svg_to_rgba(svg_path, eval_width, eval_height)
     if rendered is None:
         raise RuntimeError("source_alpha_mask_render_unmeasured")
@@ -320,6 +515,40 @@ def apply_source_alpha_mask(
 
     image_class = _MODE_IMAGE_CLASS.get(mode, "clean_logo")
     thresholds = _thresholds(image_class, None)
+    underlay_width_pixels = 0.0
+    underlay_clone_count = 0
+    if not _alpha_passes(metrics, thresholds):
+        # A mask can remove excess candidate coverage but cannot create support
+        # where the selected vector candidate stopped just inside a source edge.
+        # Add the selected candidate's own paint behind itself, never an arbitrary
+        # canvas color, and choose the smallest measured expansion that passes the
+        # unchanged hard alpha gates. The original candidate remains above it.
+        for width_pixels in _UNDERLAY_STROKE_PIXELS:
+            for child in list(wrapper):
+                if child.get("data-vektoryum-alpha-coverage-underlay"):
+                    wrapper.remove(child)
+            width_user = width_pixels * max(sx, sy)
+            underlay, clone_count = _coverage_underlay(movable, width_user)
+            wrapper.insert(0, underlay)
+            _atomic_write_tree(tree, svg_path)
+            attempted = render_svg_to_rgba(svg_path, eval_width, eval_height)
+            if attempted is None:
+                continue
+            attempted_metrics = alpha_plane_metrics(
+                source_eval[:, :, 3], attempted[:, :, 3]
+            )
+            if _alpha_passes(attempted_metrics, thresholds):
+                rendered = attempted
+                metrics = attempted_metrics
+                underlay_width_pixels = float(width_pixels)
+                underlay_clone_count = int(clone_count)
+                break
+        else:
+            for child in list(wrapper):
+                if child.get("data-vektoryum-alpha-coverage-underlay"):
+                    wrapper.remove(child)
+            _atomic_write_tree(tree, svg_path)
+
     if float(metrics["alpha_iou"]) < float(thresholds["alpha_iou_min"]):
         raise RuntimeError(
             "source_alpha_mask_iou_gate_failed:"
@@ -332,7 +561,7 @@ def apply_source_alpha_mask(
         )
 
     after_sha = _sha256(svg_path)
-    return {
+    report: dict[str, Any] = {
         "status": "accepted",
         "applied": True,
         "schema": "rfv3d2-source-alpha-vector-mask-v1",
@@ -340,18 +569,29 @@ def apply_source_alpha_mask(
         "after_sha256": after_sha,
         "before_byte_size": before_size,
         "after_byte_size": svg_path.stat().st_size,
-        "mask_path_count": 0,
+        "mask_encoding": "path" if direct_path else "rect",
+        "mask_path_count": path_count,
         "mask_group_count": group_count,
         "mask_rectangle_count": rectangle_count,
         "mask_raster_width": raster_width,
         "mask_raster_height": raster_height,
-        "alpha_level_count": len(rectangles),
+        "alpha_level_count": group_count,
         "threshold_image_class": image_class,
         "alpha_iou": float(metrics["alpha_iou"]),
         "alpha_mae": float(metrics["alpha_mae"]),
         "source_coverage": float(metrics["source_coverage"]),
         "render_coverage": float(metrics["render_coverage"]),
+        "mask_only_alpha_iou": float(mask_only_metrics["alpha_iou"]),
+        "mask_only_alpha_mae": float(mask_only_metrics["alpha_mae"]),
+        "candidate_support_iou": float(candidate_support["alpha_iou"]),
+        "candidate_support_mae": float(candidate_support["alpha_mae"]),
+        "coverage_underlay_width_pixels": underlay_width_pixels,
+        "coverage_underlay_clone_count": underlay_clone_count,
     }
+    report.update(
+        _alpha_diagnostics(source_eval[:, :, 3], rendered[:, :, 3])
+    )
+    return report
 
 
 def wrap_run_pipeline_with_alpha_mask(
