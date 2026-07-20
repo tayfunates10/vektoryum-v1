@@ -11,6 +11,7 @@ XML first.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import xml.etree.ElementTree as ET
 from functools import wraps
 from pathlib import Path
@@ -179,3 +180,126 @@ def make_adaptive_apply_source_alpha_mask(
 
     adaptive.__vektoryum_adaptive_encoding__ = True
     return adaptive
+
+
+def _contour_fallback_plan(
+    svg_path: Path,
+    source_path: Path,
+) -> tuple[dict[str, Any], dict[str, int]]:
+    """Build and budget-check a contour plan after a rect alpha-gate failure."""
+    from defusedxml import ElementTree as SafeET  # noqa: PLC0415
+    from app.alpha_mask_budget import (  # noqa: PLC0415
+        _FIXED_MARKUP_OVERHEAD,
+        _MAX_MASK_SIDE,
+        _build_contour_plan,
+        _journal_limits,
+        _quantize_alpha,
+        _viewbox_size,
+    )
+
+    target = Path(svg_path)
+    before_size = target.stat().st_size
+    root = SafeET.fromstring(target.read_bytes())
+    limits = _journal_limits(root, before_size)
+    width, height = _viewbox_size(root)
+    scale = min(1.0, _MAX_MASK_SIDE / float(max(width, height)))
+    raster_width = max(1, int(round(width * scale)))
+    raster_height = max(1, int(round(height * scale)))
+    rgba = _rgba_from_source_at_size(
+        Path(source_path), (raster_width, raster_height)
+    )
+    quantized, opacity_by_level = _quantize_alpha(
+        np.asarray(rgba[:, :, 3], dtype=np.uint8)
+    )
+    plan = _build_contour_plan(quantized, opacity_by_level)
+    if plan is None:
+        raise RuntimeError("source_alpha_mask_contour_fallback_unavailable")
+
+    path_count_after = limits["parent_path_count"] + int(plan["path_count"])
+    path_node_after = limits["parent_node_count"] + int(plan["command_count"])
+    path_projected = (
+        before_size
+        + _FIXED_MARKUP_OVERHEAD
+        + int(plan["path_markup_bytes"])
+    )
+    if not (
+        path_count_after <= limits["path_limit"]
+        and path_node_after <= limits["node_limit"]
+        and path_projected <= limits["byte_limit"]
+    ):
+        raise RuntimeError(
+            "source_alpha_mask_contour_fallback_budget_rejected:"
+            f"path_bytes={path_projected}/{limits['byte_limit']},"
+            f"path_count={path_count_after}/{limits['path_limit']},"
+            f"path_nodes={path_node_after}/{limits['node_limit']}"
+        )
+    return plan, {
+        "fallback_path_projected_byte_size": int(path_projected),
+        "fallback_path_count_after": int(path_count_after),
+        "fallback_path_node_count_after": int(path_node_after),
+        "fallback_path_limit": int(limits["path_limit"]),
+        "fallback_node_limit": int(limits["node_limit"]),
+        "fallback_byte_limit": int(limits["byte_limit"]),
+    }
+
+
+def make_rect_fidelity_fallback(
+    guarded_builder: Callable[[Path, Path, str], dict[str, Any]],
+) -> Callable[[Path, Path, str], dict[str, Any]]:
+    """Retry a rejected rect mask as a budget-admissible contour mask.
+
+    The ordinary guarded builder remains the first and preferred path. It rolls
+    back before raising. Only exact alpha IoU/MAE rejection activates this second
+    transaction, and the retry calls the unwrapped production builder under a
+    verified path plan so no threshold or journal budget is relaxed.
+    """
+    if getattr(guarded_builder, "__vektoryum_rect_fidelity_fallback__", False):
+        return guarded_builder
+    base_builder = inspect.unwrap(guarded_builder)
+
+    @wraps(guarded_builder)
+    def fallback(svg_path: Path, source_path: Path, mode: str) -> dict[str, Any]:
+        target = Path(svg_path)
+        source = Path(source_path)
+        try:
+            return guarded_builder(target, source, mode)
+        except RuntimeError as first_error:
+            trigger = str(first_error)
+            if not trigger.startswith((
+                "source_alpha_mask_iou_gate_failed:",
+                "source_alpha_mask_mae_gate_failed:",
+            )):
+                raise
+
+        from app.alpha_mask_budget import (  # noqa: PLC0415
+            _ALPHA_MASK_ENCODING,
+            _ALPHA_MASK_PLAN,
+            _create_atomic_backup,
+            _restore_atomic_backup,
+        )
+
+        plan, measurements = _contour_fallback_plan(target, source)
+        encoding_token = _ALPHA_MASK_ENCODING.set("path")
+        plan_token = _ALPHA_MASK_PLAN.set(plan)
+        backup = _create_atomic_backup(target)
+        try:
+            report = base_builder(target, source, mode)
+        except BaseException:
+            _restore_atomic_backup(backup, target)
+            raise
+        else:
+            backup.unlink(missing_ok=True)
+        finally:
+            _ALPHA_MASK_PLAN.reset(plan_token)
+            _ALPHA_MASK_ENCODING.reset(encoding_token)
+
+        report.update(measurements)
+        report["mask_encoding"] = "path"
+        report["preflight_mask_encoding"] = "rect"
+        report["mask_fallback_reason"] = "rect_exact_alpha_gate_failure"
+        report["mask_fallback_trigger"] = trigger
+        report["rollback_guard"] = "armed_and_committed"
+        return report
+
+    fallback.__vektoryum_rect_fidelity_fallback__ = True
+    return fallback
