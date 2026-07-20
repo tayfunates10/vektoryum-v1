@@ -124,6 +124,7 @@ from app import alpha_svg_mask as _alpha_svg_mask
 from app.alpha_candidate_identity import (
     wrap_run_pipeline_preserving_candidate_identity,
 )
+from app import alpha_candidate_knockout as _alpha_candidate_knockout
 from app.alpha_candidate_knockout import (
     make_candidate_geometry_knockout_fallback,
 )
@@ -131,11 +132,21 @@ from app import alpha_candidate_support as _alpha_candidate_support
 from app.alpha_candidate_support_compact import (
     build_compact_native_use_reconstruction_tree,
 )
+from app.alpha_candidate_validation import (
+    validate_alpha_reconstruction_contract,
+)
 
-# Keep the support transaction/evaluator contract in one module while selecting
-# the shorter, byte-budget-safe native-grid geometry encoder at runtime.
+# Keep transaction code stable while binding the renderer-native compact encoder
+# and the dual alpha-evaluator contract. Visual/topology/seam regressions remain
+# fail-closed in the following real TransformJournal parent-delta stage.
 _alpha_candidate_support._build_native_use_reconstruction_tree = (
     build_compact_native_use_reconstruction_tree
+)
+_alpha_candidate_knockout._validate_reconstruction = (
+    validate_alpha_reconstruction_contract
+)
+_alpha_candidate_support._validate_reconstruction = (
+    validate_alpha_reconstruction_contract
 )
 from app.alpha_candidate_support import (  # noqa: E402
     make_candidate_support_reconstruction_fallback,
@@ -206,6 +217,7 @@ if not getattr(
 
 del _final_artifact_evaluator
 del _alpha_candidate_support
+del _alpha_candidate_knockout
 del _alpha_svg_mask
 del _pipeline
 del _gradient_vectorize
