@@ -59,19 +59,33 @@ class CandidateSupportReconstructionTests(unittest.TestCase):
 
             self.assertTrue(report["applied"])
             self.assertEqual(
-                report["mask_encoding"], "candidate_support_reconstruction"
+                report["mask_encoding"], "candidate_support_native_grid_use"
+            )
+            self.assertEqual(
+                report["schema"], "rfv3d2-candidate-support-reconstruction-v2"
             )
             self.assertGreaterEqual(report["source_truth_alpha_iou"], 0.995)
             self.assertLessEqual(report["source_truth_alpha_mae"], 0.005)
             self.assertGreater(report["candidate_support_stroke_width_pixels"], 0)
+            self.assertGreater(report["reconstruction_rect_symbol_count"], 0)
+            self.assertGreater(report["reconstruction_use_count"], 0)
+            self.assertEqual(report["renderer_requested_alpha_width"], 96)
+            self.assertEqual(report["renderer_requested_alpha_height"], 64)
+            self.assertEqual(report["renderer_native_alpha_width"], 96)
+            self.assertEqual(report["renderer_native_alpha_height"], 64)
             self.assertEqual(
                 report["preflight_parent_path_count"], report["preserved_path_count"]
             )
             self.assertEqual(
                 report["preflight_parent_node_count"], report["preserved_node_count"]
             )
+            self.assertLessEqual(
+                report["after_byte_size"], report["preflight_byte_limit"]
+            )
             text = svg_path.read_bytes()
             self.assertIn(original_path_data, text)
+            self.assertIn(b"native-grid-use-v1", text)
+            self.assertIn(b"<use", text)
             self.assertNotIn(b"<image", text.lower())
             self.assertNotIn(b"data:image", text.lower())
 
