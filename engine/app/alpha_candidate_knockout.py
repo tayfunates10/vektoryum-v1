@@ -225,7 +225,6 @@ def _build_reconstruction_tree(
     raster_height, raster_width = quantized.shape
     sx = view_width / float(raster_width)
     sy = view_height / float(raster_height)
-    transform = f"translate({view_x:g} {view_y:g}) scale({sx:.12g} {sy:.12g})"
 
     clip_count = 0
     rectangle_count = 0
@@ -244,17 +243,24 @@ def _build_reconstruction_tree(
                 "data-vektoryum-alpha-level": str(level),
             },
         )
-        clip_geometry = ET.SubElement(clip, qname("g"), {"transform": transform})
         for x, y, width, height in level_rectangles:
             if width <= 0 or height <= 0:
                 continue
+            # Resvg supports a stricter clipPath subset than Cairo. Emit exact
+            # user-space rectangles directly instead of nesting a transformed
+            # group inside clipPath so both evaluator renderers agree.
             ET.SubElement(
-                clip_geometry,
+                clip,
                 qname("rect"),
-                {"x": str(x), "y": str(y), "width": str(width), "height": str(height)},
+                {
+                    "x": f"{view_x + x * sx:.12g}",
+                    "y": f"{view_y + y * sy:.12g}",
+                    "width": f"{width * sx:.12g}",
+                    "height": f"{height * sy:.12g}",
+                },
             )
             rectangle_count += 1
-        if len(clip_geometry) == 0:
+        if len(clip) == 0:
             defs.remove(clip)
             continue
         clip_count += 1
