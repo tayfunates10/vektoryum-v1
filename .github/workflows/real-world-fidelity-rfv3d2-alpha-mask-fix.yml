@@ -7,11 +7,13 @@ on:
       - ".github/workflows/real-world-fidelity-rfv3d2-alpha-mask-fix.yml"
       - "engine/app/__init__.py"
       - "engine/app/alpha_candidate_identity.py"
+      - "engine/app/alpha_candidate_knockout.py"
       - "engine/app/alpha_mask_adaptive.py"
       - "engine/app/alpha_preprocess.py"
       - "engine/app/alpha_mask_budget.py"
       - "engine/app/alpha_svg_mask.py"
       - "engine/test_alpha_candidate_identity.py"
+      - "engine/test_alpha_candidate_knockout.py"
       - "engine/test_alpha_mask_adaptive.py"
       - "engine/test_alpha_mask_transaction.py"
       - "engine/test_alpha_preprocess.py"
@@ -54,11 +56,13 @@ jobs:
           python -m py_compile
           engine/app/__init__.py
           engine/app/alpha_candidate_identity.py
+          engine/app/alpha_candidate_knockout.py
           engine/app/alpha_mask_adaptive.py
           engine/app/alpha_preprocess.py
           engine/app/alpha_mask_budget.py
           engine/app/alpha_svg_mask.py
           engine/test_alpha_candidate_identity.py
+          engine/test_alpha_candidate_knockout.py
           engine/test_alpha_mask_adaptive.py
           engine/test_alpha_mask_transaction.py
           engine/test_alpha_preprocess.py
@@ -67,6 +71,7 @@ jobs:
         run: >-
           python -m unittest
           engine.test_alpha_candidate_identity
+          engine.test_alpha_candidate_knockout
           engine.test_alpha_mask_adaptive
           engine.test_alpha_mask_transaction
           engine.test_alpha_preprocess
@@ -85,7 +90,7 @@ jobs:
           while IFS= read -r path; do
             [ -z "${path}" ] && continue
             case "${path}" in
-              .github/workflows/exact-final-svg.yml|.github/workflows/real-world-fidelity-rfv3d2-alpha-mask-fix.yml|engine/app/__init__.py|engine/app/alpha_candidate_identity.py|engine/app/alpha_mask_adaptive.py|engine/app/alpha_preprocess.py|engine/app/alpha_mask_budget.py|engine/app/alpha_svg_mask.py|engine/test_alpha_candidate_identity.py|engine/test_alpha_mask_adaptive.py|engine/test_alpha_mask_transaction.py|engine/test_alpha_preprocess.py|docs/real_world_fidelity/rfv-3d2-alpha-mask-fix.md) ;;
+              .github/workflows/exact-final-svg.yml|.github/workflows/real-world-fidelity-rfv3d2-alpha-mask-fix.yml|engine/app/__init__.py|engine/app/alpha_candidate_identity.py|engine/app/alpha_candidate_knockout.py|engine/app/alpha_mask_adaptive.py|engine/app/alpha_preprocess.py|engine/app/alpha_mask_budget.py|engine/app/alpha_svg_mask.py|engine/test_alpha_candidate_identity.py|engine/test_alpha_candidate_knockout.py|engine/test_alpha_mask_adaptive.py|engine/test_alpha_mask_transaction.py|engine/test_alpha_preprocess.py|docs/real_world_fidelity/rfv-3d2-alpha-mask-fix.md) ;;
               *) echo "Unexpected RFV-3D2 alpha-fix file: ${path}"; exit 1 ;;
             esac
           done <<< "${changed}"
