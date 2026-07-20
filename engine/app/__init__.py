@@ -124,6 +124,9 @@ from app import alpha_svg_mask as _alpha_svg_mask
 from app.alpha_candidate_identity import (
     wrap_run_pipeline_preserving_candidate_identity,
 )
+from app.alpha_candidate_knockout import (
+    make_candidate_geometry_knockout_fallback,
+)
 from app.alpha_mask_adaptive import (
     make_adaptive_apply_source_alpha_mask,
     make_rect_fidelity_fallback,
@@ -133,12 +136,17 @@ from app.alpha_mask_budget import wrap_apply_source_alpha_mask
 # The preflight computes the unchanged TransformJournal path/node/byte budgets.
 # Rect encoding remains the default; compact paths are authorized when rect bytes
 # do not fit, or after the exact rect mask render fails alpha fidelity and the same
-# unchanged compact budgets independently admit a contour retry. Rollback wraps
-# both transactions, so no rejected representation can alter the selected artifact.
-_alpha_svg_mask.apply_source_alpha_mask = make_rect_fidelity_fallback(
-    wrap_apply_source_alpha_mask(
-        make_adaptive_apply_source_alpha_mask(
-            _alpha_svg_mask.apply_source_alpha_mask
+# unchanged compact budgets independently admit a contour retry. If both renderer
+# paths still reject an opaque comparison-canvas artifact, the final narrow retry
+# knocks out only the proven canvas candidate and reconstructs source alpha through
+# clip-stratified uses of the unchanged selected candidate geometry. Rollback wraps
+# every transaction, so no rejected representation can alter the selected artifact.
+_alpha_svg_mask.apply_source_alpha_mask = make_candidate_geometry_knockout_fallback(
+    make_rect_fidelity_fallback(
+        wrap_apply_source_alpha_mask(
+            make_adaptive_apply_source_alpha_mask(
+                _alpha_svg_mask.apply_source_alpha_mask
+            )
         )
     )
 )
