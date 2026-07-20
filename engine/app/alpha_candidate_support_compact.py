@@ -8,15 +8,14 @@ from __future__ import annotations
 
 import copy
 import xml.etree.ElementTree as ET
-from typing import Any
 
 import numpy as np
 
 from app.alpha_candidate_knockout import _local_name, _viewbox
+from app.alpha_candidate_paint_selection import expand_non_canvas_paint
 from app.alpha_candidate_support import (
     _PROTECTED_ROOT_TAGS,
     _SVG_NS,
-    _expand_candidate_paint,
     _merged_rectangles_by_level,
     _strip_content_alpha,
 )
@@ -36,7 +35,7 @@ def build_compact_native_use_reconstruction_tree(
     quantized: np.ndarray,
     opacity_by_level: dict[int, float],
     stroke_width: float,
-) -> tuple[ET.Element, dict[str, int]]:
+) -> tuple[ET.Element, dict[str, int | list[int] | None]]:
     """Build exact native-grid clips with short reusable rectangle references."""
     root = copy.deepcopy(original_root)
     original_children = list(original_root)
@@ -82,9 +81,13 @@ def build_compact_native_use_reconstruction_tree(
         root.remove(child)
         _strip_content_alpha(child)
         paint.append(child)
-    expanded_count = _expand_candidate_paint(paint, stroke_width)
+    expanded_count, canvas_matched_skip_count, canvas_rgb = expand_non_canvas_paint(
+        paint,
+        stroke_width,
+        target_canvas,
+    )
     if expanded_count <= 0:
-        raise RuntimeError("source_alpha_candidate_support_no_fill_geometry")
+        raise RuntimeError("source_alpha_candidate_support_no_contrasting_fill_geometry")
 
     rectangles = _merged_rectangles_by_level(quantized)
     if not rectangles:
@@ -178,5 +181,7 @@ def build_compact_native_use_reconstruction_tree(
         "reconstruction_use_count": int(use_count),
         "reconstruction_rect_symbol_count": int(len(symbol_by_size)),
         "candidate_support_expanded_geometry_count": int(expanded_count),
+        "candidate_support_canvas_matched_skip_count": int(canvas_matched_skip_count),
+        "candidate_support_canvas_rgb": list(canvas_rgb) if canvas_rgb is not None else None,
         "reconstruction_compact_id_prefix_length": int(len(prefix)),
     }
