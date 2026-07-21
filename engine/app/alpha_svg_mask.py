@@ -34,23 +34,13 @@ _ALPHA_STYLE_NAMES = {"opacity", "fill-opacity", "stroke-opacity"}
 _GEOMETRY_TAGS = {"path", "rect", "circle", "ellipse", "polygon", "polyline"}
 _UNDERLAY_STROKE_PIXELS = (0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0)
 
-# Ölçek-stabil painter maskesinin onarabildiği journal reddi sınıfları. Painter,
-# kuantize alfayı dikişsiz union-konturlarıyla yeniden inşa eder; bu, bileşen/delik
-# topolojisini ve iç AA dikişlerini düzeltir, dolayısıyla bu geometri hatalarının
-# yol açtığı SSIM/edge düşüşlerini de giderir. Painter yeniden inşası ardından TAZE
-# bir journal aynı DEĞİŞMEMİŞ kapılarla ölçer; onaramazsa fail-closed kalınır.
+# Ölçek-stabil painter maskesinin onarabildiği journal reddi sınıfları: yalnız
+# doğrudan geometri reddleri — bileşen/delik topolojisi ve iç AA dikişleri.
+# Painter kuantize alfayı dikişsiz union-konturlarıyla yeniden inşa eder; ardından
+# TAZE bir journal aynı DEĞİŞMEMİŞ kapılarla ölçer, onaramazsa fail-closed kalınır.
+# Yalnız zaten reddedilmiş vakalarda çalışır; geçen (kabul edilen) vakalara
+# dokunmaz. SSIM/edge/renk/karmaşıklık gibi başka reddler fail-closed bırakılır.
 _PAINTER_GEOMETRY_REJECTION_CODES = {"seam_regression"}
-_PAINTER_INDUCED_REJECTION_CODES = {"ssim_regression", "edge_f1_regression"}
-
-
-def _is_painter_retryable_reason(reason: str) -> bool:
-    """Painter'ın onarabildiği bir journal reddi kodu mu?"""
-    text = str(reason)
-    return (
-        text.startswith("topology_")
-        or text in _PAINTER_GEOMETRY_REJECTION_CODES
-        or text in _PAINTER_INDUCED_REJECTION_CODES
-    )
 
 
 def _is_painter_geometry_reason(reason: str) -> bool:
@@ -695,15 +685,12 @@ def wrap_run_pipeline_with_alpha_mask(
         )
         if accepted_path != finalized_path:
             first_reasons = list(alpha_stage.get("reason_codes") or ["unknown"])
-            # Painter yalnız onarabildiği geometri-sınıfı reddlerinde denenir:
-            # TÜM kodlar painter-onarılabilir OLMALI (aksi halde renk/karmaşıklık
-            # gibi painter'ın gideremeyeceği bir hata gizlenmemeli) VE en az bir
-            # doğrudan geometri reddi (topoloji ya da dikiş) bulunmalı (salt
-            # SSIM/edge reddinde painter maskesi bir şey değiştirmez).
-            painter_eligible = (
-                bool(first_reasons)
-                and all(_is_painter_retryable_reason(r) for r in first_reasons)
-                and any(_is_painter_geometry_reason(r) for r in first_reasons)
+            # Painter yalnız doğrudan geometri reddlerinde (topoloji ya da dikiş)
+            # denenir: TÜM kodlar geometri reddi OLMALI. Böylece SSIM/edge/renk/
+            # karmaşıklık gibi painter'ın gideremeyeceği bir hata gizlenmez ve
+            # değişiklik yalnız zaten reddedilmiş topoloji/seam vakalarında çalışır.
+            painter_eligible = bool(first_reasons) and all(
+                _is_painter_geometry_reason(reason) for reason in first_reasons
             )
             if not painter_eligible:
                 finalized_path.unlink(missing_ok=True)
