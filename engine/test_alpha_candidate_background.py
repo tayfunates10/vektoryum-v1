@@ -115,6 +115,17 @@ class BackgroundClassifierTests(unittest.TestCase):
         self.assertEqual(status, "absent")
         self.assertIsNone(element)
 
+    def test_partial_background_is_absent_not_ambiguous(self) -> None:
+        # Şeffaf bölgeyi kısmen dolduran ama 3 kapıyı geçmeyen tek eleman
+        # (kenara bir tarafta değmiyor) belirsizlik ÜRETMEZ: knockout yok,
+        # Case B (absent). Gerçek RFV traces bu yüzden ambiguous'a düşmemeli.
+        source = _center_opaque_source()
+        # Sol yarıyı kaplayan yarım background: border_ring tam kaplanmaz.
+        root = _root(_rect(0, 0, 40, 64, "#ffffff"), _path(_CENTER_SQ, "#000000"))
+        status, element = classify_comparison_background(root, source, 64, 64)
+        self.assertEqual(status, "absent")
+        self.assertIsNone(element)
+
     def test_two_full_backgrounds_are_ambiguous(self) -> None:
         root = _root(
             _rect(0, 0, 64, 64, "#ffffff"),

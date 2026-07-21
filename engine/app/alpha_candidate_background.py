@@ -44,9 +44,6 @@ _COVERED_ALPHA = 128  # bir pikselin "kaplandı" sayılması için asgari alfa
 _BACKGROUND_TRANSPARENT_FILL_MIN = 0.90
 _BACKGROUND_BORDER_RING_MIN = 0.90
 _BACKGROUND_CANVAS_COVERAGE_MIN = 0.85
-# Bir adayın "belirsiz" değil "yok" sayılabilmesi için şeffaf bölgeyi bu kadar bile
-# doldurmaması gerekir; arada kalan (kısmi tuval) durum belirsizdir.
-_BACKGROUND_TRANSPARENT_FILL_ABSENT_MAX = 0.60
 
 
 def _border_ring_mask(height: int, width: int) -> np.ndarray:
@@ -102,8 +99,13 @@ def classify_comparison_background(
 
     ring = _border_ring_mask(eval_height, eval_width)
 
+    # Yalnız 3 geometri kapısını da geçen elemanlar "güçlü background" adayıdır.
+    # Şeffaf bölgeyi kısmen dolduran (eşik altı) elemanlar background sayılmaz ve
+    # tek başına belirsizlik üretmez: knockout yapılmaz, Case B (knockout'suz
+    # reconstruction) güvenli varsayılan olur. Belirsizlik yalnız BİRDEN ÇOK güçlü
+    # tam-tuval background bulunduğunda (hangisinin kazınacağı gerçekten belirsiz)
+    # ortaya çıkar; o zaman tahmin edilmez ve fail-closed kalınır.
     backgrounds: list[ET.Element] = []
-    partial_fill = False
     for child in list(root):
         if _local_name(str(child.tag)).lower() not in _RENDERABLE_TAGS:
             continue
@@ -119,13 +121,9 @@ def classify_comparison_background(
             and canvas_coverage >= _BACKGROUND_CANVAS_COVERAGE_MIN
         ):
             backgrounds.append(child)
-        elif transparent_fill > _BACKGROUND_TRANSPARENT_FILL_ABSENT_MAX:
-            # Şeffaf bölgeyi kısmen dolduran (arada kalan) eleman: ne temiz
-            # background ne de temiz artwork. Tahmin etme.
-            partial_fill = True
 
-    if len(backgrounds) == 1 and not partial_fill:
+    if len(backgrounds) >= 2:
+        return ("ambiguous", None)
+    if len(backgrounds) == 1:
         return ("proven", backgrounds[0])
-    if len(backgrounds) == 0 and not partial_fill:
-        return ("absent", None)
-    return ("ambiguous", None)
+    return ("absent", None)
