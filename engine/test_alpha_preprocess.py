@@ -39,7 +39,12 @@ class AlphaPreprocessUnitTests(unittest.TestCase):
 
             def opaque_preprocess(*args, **kwargs):
                 del args, kwargs
-                Image.new("RGB", (4, 4), (220, 220, 220)).save(output_path)
+                # Quantized trace image: gray field with the object colour present
+                # in the palette (the opaque object column). The soft boundary must
+                # snap to that palette colour, never the transparent-gray field.
+                processed = np.full((4, 4, 3), 220, dtype=np.uint8)
+                processed[:, 3, :] = (180, 20, 30)
+                Image.fromarray(processed, mode="RGB").save(output_path)
                 return output_path, {"mode": "logo_color", "steps": ["stub"]}
 
             wrapped = wrap_preprocess_for_mode(opaque_preprocess)
@@ -54,10 +59,19 @@ class AlphaPreprocessUnitTests(unittest.TestCase):
                 verified = np.asarray(verified_image, dtype=np.uint8).copy()
             transparent = source[:, :, 3] == 0
             self.assertTrue(np.all(verified[transparent] == 220))
+            # Soft boundary pixels adopt the nearest trace-palette colour (the
+            # object red), which prevents white fringes without introducing any
+            # colour outside the quantized trace palette (no de-quantization).
             partial = (source[:, :, 3] > 0) & (source[:, :, 3] < 255)
-            np.testing.assert_array_equal(
-                verified[partial], source[:, :, :3][partial]
+            self.assertTrue(
+                np.all(verified[partial] == np.array([180, 20, 30], dtype=np.uint8))
             )
+            trace_palette = {(220, 220, 220), (180, 20, 30)}
+            output_palette = {
+                tuple(int(v) for v in color)
+                for color in np.unique(verified.reshape(-1, 3), axis=0)
+            }
+            self.assertTrue(output_palette.issubset(trace_palette))
             self.assertEqual(
                 report["source_alpha"]["status"], "staged_for_vector_mask"
             )
@@ -68,7 +82,7 @@ class AlphaPreprocessUnitTests(unittest.TestCase):
             )
             self.assertEqual(
                 report["source_alpha"]["soft_boundary_rgb_policy"],
-                "straight_source_rgb",
+                "palette_snapped_source_rgb",
             )
             self.assertIn("source_alpha_staged", report["steps"])
             self.assertEqual(len(report["source_alpha"]["alpha_sha256"]), 64)
@@ -309,6 +323,55 @@ class AlphaPreprocessUnitTests(unittest.TestCase):
             wrapped = wrap_gradient_vectorizer(gradient)
             wrapped(source_path, output_path, {"epsilon": 0.3})
             self.assertEqual(output_path.read_text(encoding="utf-8"), "<svg/>")
+
+    def test_soft_boundary_never_dequantizes_trace_palette(self) -> None:
+        # Regresyon: LANCZOS ile yumuşatılan sert alfa kenarındaki soft piksellere
+        # ham (kuantize edilmemiş) kaynak RGB enjekte edilirse iz girişi
+        # kuantasyondan çıkar ve VTracer renk bantları tek düz dolguya çöker
+        # (seed-05 gradyan fidelity 96->53). Palete snap bunu önler: soft sınır
+        # yalnız kuantize iz paletindeki renkleri alır.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_path = root / "source.png"
+            output_path = root / "processed.png"
+
+            # 8 sütunlu düz gradyan bandı; üst/alt satırlar tamamen şeffaf.
+            source = np.zeros((8, 8, 4), dtype=np.uint8)
+            ramp = np.linspace(20, 240, 8).astype(np.uint8)
+            source[:, :, 0] = ramp[None, :]
+            source[:, :, 1] = 60
+            source[:, :, 2] = ramp[None, :][:, ::-1]
+            source[:, :, 3] = 255
+            source[0, :, 3] = 0
+            source[-1, :, 3] = 0
+            Image.fromarray(source, mode="RGBA").save(source_path)
+
+            # Kuantize edilmiş iz görüntüsü: yalnız 4 renk bandı.
+            def quantized_preprocess(*args, **kwargs):
+                del args, kwargs
+                bands = np.zeros((8, 8, 3), dtype=np.uint8)
+                palette = [(40, 60, 220), (100, 60, 160),
+                           (160, 60, 100), (220, 60, 40)]
+                for index, color in enumerate(palette):
+                    bands[:, index * 2 : index * 2 + 2, :] = color
+                Image.fromarray(bands, mode="RGB").save(output_path)
+                return output_path, {"mode": "logo_color", "steps": ["stub"]}
+
+            wrapped = wrap_preprocess_for_mode(quantized_preprocess)
+            processed_path, _report = wrapped(source_path, "logo_color", root)
+
+            with Image.open(processed_path) as verified_image:
+                verified = np.asarray(verified_image.convert("RGB"), dtype=np.uint8)
+            trace_palette = {
+                (40, 60, 220), (100, 60, 160), (160, 60, 100), (220, 60, 40)
+            }
+            output_palette = {
+                tuple(int(v) for v in color)
+                for color in np.unique(verified.reshape(-1, 3), axis=0)
+            }
+            # Soft sınır kaynak RGB'si palete snap edildiğinden yeni renk oluşmaz.
+            self.assertTrue(output_palette.issubset(trace_palette))
+            self.assertLessEqual(len(output_palette), len(trace_palette))
 
 
 class AlphaPreprocessProductionIntegrationTests(unittest.TestCase):

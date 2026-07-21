@@ -47,6 +47,34 @@ def _rgba_from_source_at_size(source_path: Path, size: tuple[int, int]) -> np.nd
     return np.asarray(_symmetrize_if_mirror(rgba, {"steps": []}), dtype=np.uint8)
 
 
+def _snap_to_trace_palette(colors: np.ndarray, trace_rgb: np.ndarray) -> np.ndarray:
+    """Snap each RGB in ``colors`` to the nearest colour already in ``trace_rgb``.
+
+    The trace image is the quantized/cleaned RGB whose small palette drives
+    VTracer colour layering. Soft-boundary source pixels are mapped onto that
+    exact palette so the anti-fringe repair never introduces new colours and the
+    established banding is preserved. Deterministic: ties resolve to the first
+    palette entry in lexicographic ``(r, g, b)`` order.
+    """
+    colors = np.asarray(colors, dtype=np.uint8).reshape(-1, 3)
+    if colors.size == 0:
+        return colors.astype(np.uint8)
+    palette = np.unique(
+        np.asarray(trace_rgb, dtype=np.uint8).reshape(-1, 3), axis=0
+    ).astype(np.int32)
+    snapped = np.empty_like(colors, dtype=np.uint8)
+    query = colors.astype(np.int32)
+    # Bounded-memory chunks keep the pairwise distance matrix small for images
+    # with many soft-boundary pixels.
+    for start in range(0, len(query), 4096):
+        chunk = query[start : start + 4096][:, None, :]
+        distances = ((chunk - palette[None, :, :]) ** 2).sum(axis=2)
+        snapped[start : start + 4096] = palette[distances.argmin(axis=1)].astype(
+            np.uint8
+        )
+    return snapped
+
+
 def _atomic_write_rgb(path: Path, rgb: np.ndarray) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -89,13 +117,23 @@ def _stage_source_alpha(
         return processed_path, report
 
     # Opaque interiors retain the existing quantized/cleaned RGB. Soft boundary
-    # pixels use straight source RGB to prevent white fringes. Fully transparent
-    # pixels retain the existing processed composite: their RGB is invisible in
-    # the source and the final vector mask removes the traced background.
+    # pixels adopt the straight source color but SNAPPED to the nearest color
+    # already present in the quantized/cleaned trace image. This keeps the
+    # anti-fringe intent (a real object color, never the white composite) while
+    # preserving the trace palette: un-snapped straight RGB re-injects the full
+    # continuous source ramp at supersampled hard edges (a 2x LANCZOS band edge
+    # becomes 0<alpha<255), de-quantizing the trace input and collapsing VTracer
+    # colour banding (gradient bands merge into a single flat fill). Fully
+    # transparent pixels retain the existing processed composite: their RGB is
+    # invisible in the source and the final vector mask removes the traced
+    # background.
     output_rgb = processed_rgb.copy()
     partial = (source_alpha > 0) & (source_alpha < 255)
     transparent = source_alpha == 0
-    output_rgb[partial] = source_rgba[:, :, :3][partial]
+    boundary_rgb = _snap_to_trace_palette(
+        source_rgba[:, :, :3][partial], processed_rgb
+    )
+    output_rgb[partial] = boundary_rgb
 
     _atomic_write_rgb(processed_path, output_rgb)
 
@@ -111,9 +149,7 @@ def _stage_source_alpha(
         raise RuntimeError("source_alpha_trace_input_verification_failed")
     if not np.array_equal(verified_rgb[transparent], processed_rgb[transparent]):
         raise RuntimeError("source_alpha_trace_background_changed")
-    if not np.array_equal(
-        verified_rgb[partial], source_rgba[:, :, :3][partial]
-    ):
+    if not np.array_equal(verified_rgb[partial], boundary_rgb):
         raise RuntimeError("source_alpha_soft_boundary_rgb_changed")
 
     alpha_bytes = np.ascontiguousarray(source_alpha).tobytes()
@@ -133,7 +169,7 @@ def _stage_source_alpha(
         "alpha_sha256": hashlib.sha256(alpha_bytes).hexdigest(),
         "trace_input_mode": "RGB",
         "trace_background_policy": "retain_processed_composite",
-        "soft_boundary_rgb_policy": "straight_source_rgb",
+        "soft_boundary_rgb_policy": "palette_snapped_source_rgb",
         "finalizer": "rfv3d2-source-alpha-vector-mask-v1",
     }
     return processed_path, report
