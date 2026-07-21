@@ -78,12 +78,19 @@ def _painter_loops(
 
 def build_painter_reconstruction_tree(
     original_root: ET.Element,
-    canvas_element: ET.Element,
+    canvas_element: ET.Element | None,
     quantized: np.ndarray,
     opacity_by_level: dict[int, float],
     stroke_width: float,
 ) -> tuple[ET.Element, dict[str, int]]:
-    """Knockout the comparison canvas and mask the stroked paint once."""
+    """Mask the stroked paint once, knocking out a comparison canvas if given.
+
+    ``canvas_element`` is a border-connected comparison background proven by
+    :func:`app.alpha_candidate_background.classify_comparison_background`. When it
+    is ``None`` (no background trace) the candidate paint is preserved as-is and
+    source alpha is reconstructed over it without any knockout (canvas-independent
+    path). Colour is never inspected here.
+    """
     from app.alpha_candidate_knockout import _local_name, _unique_id, _viewbox  # noqa: PLC0415
     from app.alpha_candidate_support import (  # noqa: PLC0415
         _PROTECTED_ROOT_TAGS,
@@ -93,9 +100,11 @@ def build_painter_reconstruction_tree(
 
     qname = lambda name: f"{{{_SVG_NS}}}{name}"
     root = copy.deepcopy(original_root)
-    canvas_index = list(original_root).index(canvas_element)
-    target_canvas = list(root)[canvas_index]
-    root.remove(target_canvas)
+    knocked_out_canvas = False
+    if canvas_element is not None:
+        canvas_index = list(original_root).index(canvas_element)
+        target_canvas = list(root)[canvas_index]
+        root.remove(target_canvas)
 
     defs = next(
         (
@@ -108,15 +117,17 @@ def build_painter_reconstruction_tree(
     if defs is None:
         defs = ET.Element(qname("defs"))
         root.insert(0, defs)
-    archive = ET.SubElement(
-        defs,
-        qname("g"),
-        {
-            "data-vektoryum-candidate-geometry-knockout": "comparison-canvas-v1",
-            "display": "none",
-        },
-    )
-    archive.append(target_canvas)
+    if canvas_element is not None:
+        archive = ET.SubElement(
+            defs,
+            qname("g"),
+            {
+                "data-vektoryum-candidate-geometry-knockout": "comparison-canvas-v1",
+                "display": "none",
+            },
+        )
+        archive.append(target_canvas)
+        knocked_out_canvas = True
 
     paint_id = _unique_id(root, "vektoryum-alpha-candidate-paint")
     paint = ET.SubElement(
@@ -206,6 +217,7 @@ def build_painter_reconstruction_tree(
     return root, {
         "reconstruction_loop_count": int(len(loops)),
         "candidate_support_expanded_geometry_count": int(expanded_count),
+        "comparison_canvas_knocked_out": bool(knocked_out_canvas),
     }
 
 
@@ -351,8 +363,10 @@ def apply_candidate_painter_reconstruction(
     mode: str,
 ) -> dict[str, Any]:
     """Build, validate and atomically publish the painter reconstruction."""
+    from app.alpha_candidate_background import (  # noqa: PLC0415
+        classify_comparison_background,
+    )
     from app.alpha_candidate_knockout import (  # noqa: PLC0415
-        _comparison_canvas_candidate,
         _local_name,
         _path_node_counts,
         _render_root,
@@ -395,9 +409,15 @@ def apply_candidate_painter_reconstruction(
             "source_alpha_candidate_painter_parent_not_collapsed:"
             f"{collapsed_coverage:.6f}<0.98"
         )
-    canvas = _comparison_canvas_candidate(
+    # Renk-agnostik sınıflandırma: A (kanıtlı border-connected background → yalnız
+    # onu knockout), B (background yok → canvas_not_proven yerine knockout'suz
+    # reconstruction), C (belirsiz → tahmin etme, çağıran orijinali birebir geri
+    # yükler). "canvas_not_proven" crash'i artık üretilmez.
+    background_status, canvas = classify_comparison_background(
         original_root, grid_rgba, grid_width, grid_height
     )
+    if background_status == "ambiguous":
+        raise RuntimeError("source_alpha_candidate_painter_background_ambiguous")
     limits = _journal_limits(original_root, before_size)
 
     with Image.open(source) as source_image:
@@ -446,6 +466,8 @@ def apply_candidate_painter_reconstruction(
             "before_byte_size": int(before_size),
             "after_byte_size": int(target.stat().st_size),
             "mask_encoding": "candidate_painter_luminance_mask",
+            "comparison_background_status": background_status,
+            "comparison_background_color_agnostic": True,
             "candidate_support_stroke_width_pixels": float(stroke_width),
             "candidate_geometry_preserved": True,
             "candidate_path_data_preserved": True,
