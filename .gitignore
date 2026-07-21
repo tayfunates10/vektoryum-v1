@@ -40,6 +40,3 @@ vector_jobs/
 vektoryum_data/
 .dev.env.json
 .dev.pid
-
-# RFV-3B corpus and other local-only artifacts (never committed)
-.local/
