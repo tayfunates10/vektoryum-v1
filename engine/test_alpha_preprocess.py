@@ -82,7 +82,7 @@ class AlphaPreprocessUnitTests(unittest.TestCase):
             )
             self.assertEqual(
                 report["source_alpha"]["soft_boundary_rgb_policy"],
-                "palette_snapped_source_rgb",
+                "palette_snapped_edge_straight_translucent",
             )
             self.assertIn("source_alpha_staged", report["steps"])
             self.assertEqual(len(report["source_alpha"]["alpha_sha256"]), 64)
@@ -372,6 +372,54 @@ class AlphaPreprocessUnitTests(unittest.TestCase):
             # Soft sınır kaynak RGB'si palete snap edildiğinden yeni renk oluşmaz.
             self.assertTrue(output_palette.issubset(trace_palette))
             self.assertLessEqual(len(output_palette), len(trace_palette))
+
+    def test_large_translucent_region_keeps_straight_rgb(self) -> None:
+        # Regresyon (seed-07): büyük düzgün yarı-saydam bölge (opak komşusu yok)
+        # palete snap EDİLMEMELİ. Snap edilirse tek global maske alfayı ikinci kez
+        # uygular (çift-kompozit) ve üst üste binen saydam objelerin RGB'si yıkanır.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_path = root / "source.png"
+            output_path = root / "processed.png"
+
+            # Merkezi 12x12 yarı-saydam obje (a=128), çevresi şeffaf. Opak (a=255)
+            # piksel YOK → tüm partial pikseller "büyük yarı-saydam bölge".
+            source = np.zeros((24, 24, 4), dtype=np.uint8)
+            straight = (40, 160, 255)
+            source[6:18, 6:18, :3] = straight
+            source[6:18, 6:18, 3] = 128
+            Image.fromarray(source, mode="RGBA").save(source_path)
+
+            # İz görüntüsü kaynağı beyaza kompozitler: obje bölgesi yıkanmış renk.
+            composite = np.rint(
+                np.array(straight, dtype=np.float32) * (128.0 / 255.0)
+                + 255.0 * (1.0 - 128.0 / 255.0)
+            ).astype(np.uint8)
+
+            def composited_preprocess(*args, **kwargs):
+                del args, kwargs
+                processed = np.full((24, 24, 3), 255, dtype=np.uint8)
+                processed[6:18, 6:18, :] = composite
+                Image.fromarray(processed, mode="RGB").save(output_path)
+                return output_path, {"mode": "logo_color", "steps": ["stub"]}
+
+            wrapped = wrap_preprocess_for_mode(composited_preprocess)
+            processed_path, report = wrapped(source_path, "logo_color", root)
+
+            with Image.open(processed_path) as verified_image:
+                verified = np.asarray(verified_image.convert("RGB"), dtype=np.uint8)
+            interior = verified[9:15, 9:15]
+            # İç bölge DÜZ kaynak RGB olmalı (kompozit/yıkanmış değil).
+            self.assertTrue(np.all(interior == np.array(straight, dtype=np.uint8)))
+            self.assertFalse(
+                np.array_equal(
+                    interior[0, 0], np.asarray(composite, dtype=np.uint8)
+                )
+            )
+            self.assertEqual(
+                report["source_alpha"]["soft_boundary_rgb_policy"],
+                "palette_snapped_edge_straight_translucent",
+            )
 
 
 class AlphaPreprocessProductionIntegrationTests(unittest.TestCase):
