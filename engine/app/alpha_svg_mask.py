@@ -670,11 +670,55 @@ def wrap_run_pipeline_with_alpha_mask(
             transform_report=report,
         )
         if accepted_path != finalized_path:
-            finalized_path.unlink(missing_ok=True)
-            reasons = ",".join(alpha_stage.get("reason_codes") or ["unknown"])
-            raise RuntimeError(
-                f"source_alpha_mask_transform_gate_rejected:{reasons}"
+            first_reasons = list(alpha_stage.get("reason_codes") or ["unknown"])
+            topology_only = bool(first_reasons) and all(
+                str(reason).startswith("topology_") for reason in first_reasons
             )
+            if not topology_only:
+                finalized_path.unlink(missing_ok=True)
+                raise RuntimeError(
+                    "source_alpha_mask_transform_gate_rejected:"
+                    + ",".join(first_reasons)
+                )
+
+            # Yalnız kanıtlanmış topoloji reddi: ölçek-stabil painter maskesiyle
+            # aynı parent'tan yeniden inşa et ve TAZE bir journal aşamasında
+            # aynı değişmemiş kapılarla yeniden ölç. Painter da reddedilirse
+            # fail-closed kalınır ve seçili SVG değişmeden bırakılır.
+            from app.alpha_candidate_painter import (  # noqa: PLC0415
+                apply_candidate_painter_reconstruction,
+            )
+
+            shutil.copy2(parent_path, finalized_path)
+            try:
+                report = apply_candidate_painter_reconstruction(
+                    finalized_path, source_path, mode
+                )
+            except BaseException:
+                finalized_path.unlink(missing_ok=True)
+                raise
+            alpha_journal = TransformJournal(
+                parent_path,
+                _journal_source_rgb(image),
+                image_class=_MODE_IMAGE_CLASS[mode],
+                required_metrics=set(),
+            )
+            accepted_path, alpha_stage = alpha_journal.consider_candidate(
+                "source_alpha_vector_mask",
+                parent_path,
+                finalized_path,
+                transform_report=report,
+            )
+            if accepted_path != finalized_path:
+                finalized_path.unlink(missing_ok=True)
+                retry_reasons = ",".join(
+                    alpha_stage.get("reason_codes") or ["unknown"]
+                )
+                raise RuntimeError(
+                    f"source_alpha_mask_transform_gate_rejected:{retry_reasons}"
+                )
+            report["mask_fallback_reason"] = "journal_topology_rejection"
+            report["mask_fallback_trigger"] = ",".join(first_reasons)
 
         merged_journal = merge_journal_reports(
             result.get("transform_journal"), alpha_journal.to_dict()
