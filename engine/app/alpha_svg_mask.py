@@ -712,6 +712,17 @@ def wrap_run_pipeline_with_alpha_mask(
                 report = apply_candidate_painter_reconstruction(
                     finalized_path, source_path, mode
                 )
+            except Exception as painter_error:
+                # Painter bu adayı yeniden inşa edemedi (ör. knock-out için
+                # kanıtlanabilir beyaz tam-tuval yok: canvas_not_proven). Değişiklik
+                # zaten reddedilmiş vakayı ASLA kötüleştirmemeli; painter iç hatasıyla
+                # çökmek yerine ORİJİNAL journal reddine fail-closed dön (parent SVG
+                # değişmez). Painter'ın onarabildiği vakalar aşağıda kabul edilir.
+                finalized_path.unlink(missing_ok=True)
+                raise RuntimeError(
+                    "source_alpha_mask_transform_gate_rejected:"
+                    + ",".join(first_reasons)
+                ) from painter_error
             except BaseException:
                 finalized_path.unlink(missing_ok=True)
                 raise
