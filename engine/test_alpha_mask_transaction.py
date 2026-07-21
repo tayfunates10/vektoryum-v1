@@ -8,6 +8,62 @@ import numpy as np
 from PIL import Image
 
 from app.alpha_mask_budget import wrap_apply_source_alpha_mask
+from app.alpha_svg_mask import (
+    _is_painter_geometry_reason,
+    _is_painter_retryable_reason,
+)
+
+
+class AlphaPainterRetryEligibilityTests(unittest.TestCase):
+    """Journal reddi kodlarına göre painter yeniden-inşa tetiklemesi.
+
+    Painter yalnız onarabildiği geometri-sınıfı reddlerinde denenir: TÜM kodlar
+    painter-onarılabilir olmalı VE en az bir doğrudan geometri reddi (topoloji ya
+    da dikiş) bulunmalı. Aksi halde fail-closed kalınır (painter renk/karmaşıklık
+    ya da salt SSIM/edge reddini gideremez).
+    """
+
+    def _eligible(self, reasons: list[str]) -> bool:
+        return (
+            bool(reasons)
+            and all(_is_painter_retryable_reason(r) for r in reasons)
+            and any(_is_painter_geometry_reason(r) for r in reasons)
+        )
+
+    def test_pure_seam_regression_triggers_painter(self) -> None:
+        self.assertTrue(self._eligible(["seam_regression"]))
+
+    def test_topology_only_still_triggers_painter(self) -> None:
+        self.assertTrue(
+            self._eligible(
+                ["topology_component_regression", "topology_hole_regression"]
+            )
+        )
+
+    def test_topology_with_induced_ssim_edge_triggers_painter(self) -> None:
+        # Gerçek RFV vakası: topoloji reddi + onun tetiklediği SSIM/edge düşüşü.
+        self.assertTrue(
+            self._eligible(
+                [
+                    "topology_component_regression",
+                    "ssim_regression",
+                    "edge_f1_regression",
+                ]
+            )
+        )
+
+    def test_pure_ssim_regression_fails_closed(self) -> None:
+        # Geometri reddi yok; painter maskesi bir şey değiştirmez → fail-closed.
+        self.assertFalse(self._eligible(["ssim_regression"]))
+        self.assertFalse(self._eligible(["ssim_regression", "edge_f1_regression"]))
+
+    def test_non_repairable_reason_fails_closed(self) -> None:
+        # Painter'ın gideremeyeceği bir kod (ör. renk/karmaşıklık) gizlenemez.
+        self.assertFalse(
+            self._eligible(["seam_regression", "color_regression"])
+        )
+        self.assertFalse(self._eligible(["path_count_regression"]))
+        self.assertFalse(self._eligible([]))
 
 
 class AlphaMaskTransactionTests(unittest.TestCase):

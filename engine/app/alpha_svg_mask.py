@@ -34,6 +34,30 @@ _ALPHA_STYLE_NAMES = {"opacity", "fill-opacity", "stroke-opacity"}
 _GEOMETRY_TAGS = {"path", "rect", "circle", "ellipse", "polygon", "polyline"}
 _UNDERLAY_STROKE_PIXELS = (0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0)
 
+# Ölçek-stabil painter maskesinin onarabildiği journal reddi sınıfları. Painter,
+# kuantize alfayı dikişsiz union-konturlarıyla yeniden inşa eder; bu, bileşen/delik
+# topolojisini ve iç AA dikişlerini düzeltir, dolayısıyla bu geometri hatalarının
+# yol açtığı SSIM/edge düşüşlerini de giderir. Painter yeniden inşası ardından TAZE
+# bir journal aynı DEĞİŞMEMİŞ kapılarla ölçer; onaramazsa fail-closed kalınır.
+_PAINTER_GEOMETRY_REJECTION_CODES = {"seam_regression"}
+_PAINTER_INDUCED_REJECTION_CODES = {"ssim_regression", "edge_f1_regression"}
+
+
+def _is_painter_retryable_reason(reason: str) -> bool:
+    """Painter'ın onarabildiği bir journal reddi kodu mu?"""
+    text = str(reason)
+    return (
+        text.startswith("topology_")
+        or text in _PAINTER_GEOMETRY_REJECTION_CODES
+        or text in _PAINTER_INDUCED_REJECTION_CODES
+    )
+
+
+def _is_painter_geometry_reason(reason: str) -> bool:
+    """Painter'ı tetikleyen doğrudan geometri reddi (topoloji ya da dikiş) mi?"""
+    text = str(reason)
+    return text.startswith("topology_") or text in _PAINTER_GEOMETRY_REJECTION_CODES
+
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
@@ -671,17 +695,24 @@ def wrap_run_pipeline_with_alpha_mask(
         )
         if accepted_path != finalized_path:
             first_reasons = list(alpha_stage.get("reason_codes") or ["unknown"])
-            topology_only = bool(first_reasons) and all(
-                str(reason).startswith("topology_") for reason in first_reasons
+            # Painter yalnız onarabildiği geometri-sınıfı reddlerinde denenir:
+            # TÜM kodlar painter-onarılabilir OLMALI (aksi halde renk/karmaşıklık
+            # gibi painter'ın gideremeyeceği bir hata gizlenmemeli) VE en az bir
+            # doğrudan geometri reddi (topoloji ya da dikiş) bulunmalı (salt
+            # SSIM/edge reddinde painter maskesi bir şey değiştirmez).
+            painter_eligible = (
+                bool(first_reasons)
+                and all(_is_painter_retryable_reason(r) for r in first_reasons)
+                and any(_is_painter_geometry_reason(r) for r in first_reasons)
             )
-            if not topology_only:
+            if not painter_eligible:
                 finalized_path.unlink(missing_ok=True)
                 raise RuntimeError(
                     "source_alpha_mask_transform_gate_rejected:"
                     + ",".join(first_reasons)
                 )
 
-            # Yalnız kanıtlanmış topoloji reddi: ölçek-stabil painter maskesiyle
+            # Painter-onarılabilir geometri reddi: ölçek-stabil painter maskesiyle
             # aynı parent'tan yeniden inşa et ve TAZE bir journal aşamasında
             # aynı değişmemiş kapılarla yeniden ölç. Painter da reddedilirse
             # fail-closed kalınır ve seçili SVG değişmeden bırakılır.
@@ -717,7 +748,7 @@ def wrap_run_pipeline_with_alpha_mask(
                 raise RuntimeError(
                     f"source_alpha_mask_transform_gate_rejected:{retry_reasons}"
                 )
-            report["mask_fallback_reason"] = "journal_topology_rejection"
+            report["mask_fallback_reason"] = "journal_geometry_rejection"
             report["mask_fallback_trigger"] = ",".join(first_reasons)
 
         merged_journal = merge_journal_reports(
