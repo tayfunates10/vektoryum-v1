@@ -516,12 +516,18 @@ def wrap_apply_source_alpha_mask(
             _ALPHA_MASK_ENCODING.reset(encoding_token)
 
         if preflight is not None and report.get("applied"):
+            # Üretici, admissible "rect" bağlamında ikili maskeyi render-eş bir
+            # clipPath'e daraltmış olabilir; preflight'ın kaba "rect" etiketi bu
+            # daha özgül alt-kodlamayı ezmemeli.
+            builder_encoding = report.get("mask_encoding")
             public_preflight = {
                 key: value
                 for key, value in preflight.items()
                 if not key.startswith("_")
             }
             report.update(public_preflight)
+            if builder_encoding == "clip":
+                report["mask_encoding"] = "clip"
         report["rollback_guard"] = "armed_and_committed"
         return report
 

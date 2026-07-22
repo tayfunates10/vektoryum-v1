@@ -152,7 +152,10 @@ def make_adaptive_apply_source_alpha_mask(
             report["mask_encoding"] = "not_applicable"
             return report
         if encoding == "rect":
-            report["mask_encoding"] = "rect"
+            # Üretici, ikili (tek tam-opak seviye) maskeyi render-eş bir clipPath
+            # olarak yayınlamış olabilir; bu kompakt alt-kodlamayı koru.
+            if report.get("mask_encoding") != "clip":
+                report["mask_encoding"] = "rect"
             return report
         if encoding != "path":
             raise RuntimeError(f"source_alpha_mask_encoding_invalid:{encoding}")

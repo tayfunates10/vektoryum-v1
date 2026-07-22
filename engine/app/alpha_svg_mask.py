@@ -390,6 +390,29 @@ def apply_source_alpha_mask(
     elif encoding != "path":
         raise RuntimeError(f"source_alpha_mask_encoding_invalid:{encoding}")
 
+    # FAZ 2 — kompakt kayıpsız kodlama: kaynak alfa BİNARY (tek, tam-opak seviye)
+    # ve maske içeriği kimlik dönüşümündeyse (raster == viewBox, kayma yok) sert
+    # `<mask>` yerine render-EŞ bir `<clipPath>` kullanılabilir. clipPath, aynı
+    # rect geometrisini `<path>` EKLEMEDEN taşır; maske sarmalayıcı boilerplate'ini
+    # (mask-type/units/level-grupları) düşürerek byte'ı azaltır ve seviye başına
+    # opaklık taşımadığı için YALNIZ ikili maskede geçerlidir. Kısmî alfa (seed-07)
+    # veya ölçeklenmiş/kaydırılmış içerik bu koşulu geçemez → maske yolunda kalır.
+    # Kabul, değişmemiş alfa IoU/MAE (+ SSIM/edge) kapılarına bağlıdır: byte
+    # kazancı ölçüm-kapılıdır, eşik gevşetmesi değildir.
+    use_clip_mask = False
+    if (not direct_path) and len(rectangles) == 1:
+        clip_level = next(iter(rectangles))
+        level_opacity = float(opacity_by_level.get(clip_level, 0.0))
+        clip_sx = view_width / float(raster_width)
+        clip_sy = view_height / float(raster_height)
+        identity_transform = (
+            abs(float(view_x)) < 1e-9
+            and abs(float(view_y)) < 1e-9
+            and abs(clip_sx - 1.0) < 1e-9
+            and abs(clip_sy - 1.0) < 1e-9
+        )
+        use_clip_mask = level_opacity >= 1.0 and identity_transform
+
     qname = lambda name: f"{{{_SVG_NS}}}{name}"
     defs = next(
         (child for child in list(root) if _local_name(str(child.tag)) == "defs"),
@@ -499,6 +522,28 @@ def apply_source_alpha_mask(
         source_eval[:, :, 3], mask_only_render[:, :, 3]
     )
 
+    if use_clip_mask:
+        # Ölçülmüş sert maskeyi render-eş bir clipPath'e dönüştür. clipPath
+        # doğrudan `<g>` çocuğu KABUL ETMEZ; kimlik dönüşümünde raster koordinatı
+        # kullanıcı koordinatına eşit olduğundan rect'ler olduğu gibi taşınır.
+        clip_path = ET.Element(
+            qname("clipPath"),
+            {"id": _MASK_ID, "clipPathUnits": "userSpaceOnUse"},
+        )
+        clip_rectangles = 0
+        for level_group in list(content):
+            for rect in list(level_group):
+                if _local_name(str(rect.tag)) == "rect":
+                    clip_path.append(rect)
+                    clip_rectangles += 1
+        if clip_rectangles == 0:
+            raise RuntimeError("source_alpha_clip_no_vector_rectangles")
+        defs.remove(mask)
+        defs.append(clip_path)
+        wrapper_reference = ("clip-path", f"url(#{_MASK_ID})")
+    else:
+        wrapper_reference = ("mask", f"url(#{_MASK_ID})")
+
     protected = {"defs", "title", "desc", "metadata", "style"}
     movable = [
         child for child in list(root)
@@ -509,7 +554,7 @@ def apply_source_alpha_mask(
     wrapper = ET.Element(
         qname("g"),
         {
-            "mask": f"url(#{_MASK_ID})",
+            wrapper_reference[0]: wrapper_reference[1],
             "data-vektoryum-source-alpha": "vector-mask-v1",
         },
     )
@@ -583,7 +628,7 @@ def apply_source_alpha_mask(
         "after_sha256": after_sha,
         "before_byte_size": before_size,
         "after_byte_size": svg_path.stat().st_size,
-        "mask_encoding": "path" if direct_path else "rect",
+        "mask_encoding": "clip" if use_clip_mask else ("path" if direct_path else "rect"),
         "mask_path_count": path_count,
         "mask_group_count": group_count,
         "mask_rectangle_count": rectangle_count,
