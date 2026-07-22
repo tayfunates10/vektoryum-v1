@@ -76,12 +76,85 @@ def _painter_loops(
     return loops
 
 
+def _painter_polygon_children(
+    loops: list[tuple[float, list[tuple[int, int]], int]],
+    qname,
+) -> list[ET.Element]:
+    """One opaque grayscale ``<polygon>`` per contour loop (overpaint order)."""
+    children: list[ET.Element] = []
+    for _area, corners, gray in loops:
+        children.append(
+            ET.Element(
+                qname("polygon"),
+                {
+                    "points": " ".join(f"{x},{y}" for x, y in corners),
+                    "fill": f"rgb({gray},{gray},{gray})",
+                },
+            )
+        )
+    return children
+
+
+def _painter_rect_children(
+    quantized: np.ndarray,
+    opacity_by_level: dict[int, float],
+    qname,
+) -> tuple[list[ET.Element], int]:
+    """Run-length ``<rect>`` decomposition of each level's cells, grouped by gray.
+
+    Levels partition the grid, so painting each level's exact merged rectangles at
+    its own gray over the opaque black base reproduces the quantized alpha plane —
+    render-identical to the polygon overpaint but often far fewer bytes when a mask
+    has tens of thousands of jagged contour loops. ``<rect>`` (like ``<polygon>``)
+    is not counted by ``path_count``, so the candidate identity invariant holds.
+    The level-0 (transparent) cells are left to the black base, exactly as the
+    polygon encoding paints them black.
+    """
+    from app.alpha_svg_mask import _merged_rectangles_by_level  # noqa: PLC0415
+
+    children: list[ET.Element] = []
+    rect_count = 0
+    rectangles = _merged_rectangles_by_level(quantized)
+    for level in sorted(rectangles):
+        level_rectangles = rectangles[level]
+        if not level_rectangles:
+            continue
+        gray = (
+            int(round(float(opacity_by_level.get(level, 0.0)) * 255))
+            if level > 0
+            else 0
+        )
+        group = ET.Element(qname("g"), {"fill": f"rgb({gray},{gray},{gray})"})
+        for x, y, width, height in level_rectangles:
+            if width <= 0 or height <= 0:
+                continue
+            ET.SubElement(
+                group,
+                qname("rect"),
+                {
+                    "x": str(x),
+                    "y": str(y),
+                    "width": str(width),
+                    "height": str(height),
+                },
+            )
+        if len(group):
+            children.append(group)
+            rect_count += len(group)
+    return children, rect_count
+
+
+def _serialized_children_size(children: list[ET.Element]) -> int:
+    return sum(len(ET.tostring(child)) for child in children)
+
+
 def build_painter_reconstruction_tree(
     original_root: ET.Element,
     canvas_element: ET.Element | None,
     quantized: np.ndarray,
     opacity_by_level: dict[int, float],
     stroke_width: float,
+    mask_encoding: str = "polygon",
 ) -> tuple[ET.Element, dict[str, int]]:
     """Mask the stroked paint once, knocking out a comparison canvas if given.
 
@@ -194,15 +267,30 @@ def build_painter_reconstruction_tree(
             "fill": "rgb(0,0,0)",
         },
     )
-    for _area, corners, gray in loops:
-        ET.SubElement(
-            content,
-            qname("polygon"),
-            {
-                "points": " ".join(f"{x},{y}" for x, y in corners),
-                "fill": f"rgb({gray},{gray},{gray})",
-            },
+    # Luminance mask iki path_count-güvenli (aday kimliği korunur), aynı
+    # native-grid alfa düzlemini üreten kodlamadan biriyle yazılır:
+    #   * "polygon" — döngü başına union-kontur <polygon>. İç kenarı yoktur, bu
+    #     yüzden mask ölçeklendiğinde (journal'ın değerlendirme çözünürlüğü)
+    #     dikiş üretmez; VARSAYILAN ve render-güvenli kodlamadır.
+    #   * "rect" — seviye başına gruplanmış run-length <rect>. Çok daha kompakt
+    #     ama tuğlalar arasında çok sayıda İÇ kenar taşır; ölçeklenince bu
+    #     kenarlarda AA dikişleri oluşup seam/ssim/edge kapılarını düşürebilir.
+    #     Bu yüzden yalnızca polygon byte bütçesine SIĞMADIĞINDA fallback olarak
+    #     çağrılır (çağıran katman kontrol eder), geçen vakaları bozmaz.
+    chosen_encoding = "polygon"
+    rect_count = 0
+    if mask_encoding == "rect":
+        mask_children, rect_count = _painter_rect_children(
+            quantized, opacity_by_level, qname
         )
+        if mask_children:
+            chosen_encoding = "rect"
+        else:  # rect üretilemezse asla boş maske bırakma; polygon'a düş
+            mask_children = _painter_polygon_children(loops, qname)
+    else:
+        mask_children = _painter_polygon_children(loops, qname)
+    for child in mask_children:
+        content.append(child)
 
     layer = ET.SubElement(
         root,
@@ -216,6 +304,8 @@ def build_painter_reconstruction_tree(
     )
     return root, {
         "reconstruction_loop_count": int(len(loops)),
+        "reconstruction_mask_encoding": chosen_encoding,
+        "reconstruction_rect_count": int(rect_count),
         "candidate_support_expanded_geometry_count": int(expanded_count),
         "comparison_canvas_knocked_out": bool(knocked_out_canvas),
     }
@@ -424,24 +514,43 @@ def apply_candidate_painter_reconstruction(
         source_size = source_image.size
     source_rgba_full = _rgba_from_source_at_size(source, source_size)
 
+    byte_limit = int(limits["byte_limit"])
     last_error: RuntimeError | None = None
     for stroke_width in _PAINTER_STROKE_PIXELS:
-        candidate_root, geometry = build_painter_reconstruction_tree(
-            original_root,
-            canvas,
-            quantized,
-            opacity_by_level,
-            stroke_width,
-        )
-        temporary = _write_tree_to_temp(candidate_root, target)
-        try:
-            projected_size = temporary.stat().st_size
-            if projected_size > int(limits["byte_limit"]):
+        # Render-güvenli polygon önce denenir; yalnız polygon byte bütçesini
+        # aşarsa daha kompakt rect fallback'i denenir. Böylece polygon'un sığdığı
+        # (ve geçen) vakalarda rect'in ölçekli dikişleri devreye girmez.
+        candidate_root = None
+        geometry = None
+        temporary = None
+        for encoding in ("polygon", "rect"):
+            probe_root, probe_geometry = build_painter_reconstruction_tree(
+                original_root,
+                canvas,
+                quantized,
+                opacity_by_level,
+                stroke_width,
+                mask_encoding=encoding,
+            )
+            probe_temp = _write_tree_to_temp(probe_root, target)
+            probe_size = probe_temp.stat().st_size
+            if probe_size > byte_limit:
                 last_error = RuntimeError(
                     "source_alpha_candidate_painter_byte_budget_rejected:"
-                    f"{projected_size}>{limits['byte_limit']}"
+                    f"{probe_size}>{byte_limit}"
                 )
+                probe_temp.unlink(missing_ok=True)
+                # polygon sığmadıysa rect'i dene; rect kodlamasıysa bu stroke biter
                 continue
+            candidate_root, geometry, temporary = (
+                probe_root,
+                probe_geometry,
+                probe_temp,
+            )
+            break
+        if temporary is None:
+            continue  # her iki kodlama da bu stroke'ta bütçeyi aştı
+        try:
             try:
                 validation = validate_painter_reconstruction(
                     temporary,
