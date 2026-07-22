@@ -154,6 +154,122 @@ def _painter_rect_children(
     return children, rect_count
 
 
+def _rectilinear_subpaths(
+    loops: list[list[tuple[int, int]]],
+) -> tuple[str, int]:
+    """Hücre-kenarı döngülerini kompakt dikdörtgensel `d` (relatif h/v) olarak kodla.
+
+    ``trace_cell_contours`` hücre KÖŞELERİni verir (ardışık köşeler eksen-hizalı),
+    bu yüzden dolgu piksel kenarına tam oturur (polygon kodlaması gibi alfa-tam) —
+    piksel MERKEZİni izleyen (yarım-piksel eksik dolan) kontur kodlayıcısından
+    farkı budur. Her döngü ``M x0 y0`` + relatif ``h``/``v`` + ``Z``; tek path
+    içinde birleşir, delikler even-odd ile çözülür. Tek koordinatlı h/v komutları
+    polygon'un "x,y" çiftlerinin ~yarısı byte tutar.
+    """
+    parts: list[str] = []
+    nodes = 0
+    for corners in loops:
+        if len(corners) < 3:
+            continue
+        x0, y0 = corners[0]
+        segment = [f"M{x0} {y0}"]
+        previous_x, previous_y = x0, y0
+        for x, y in corners[1:]:
+            if y == previous_y and x != previous_x:
+                segment.append(f"h{x - previous_x}")
+            elif x == previous_x and y != previous_y:
+                segment.append(f"v{y - previous_y}")
+            else:
+                segment.append(f"L{x} {y}")
+            previous_x, previous_y = x, y
+        segment.append("Z")
+        parts.append("".join(segment))
+        nodes += len(corners) + 1
+    return "".join(parts), nodes
+
+
+def _painter_contour_children(
+    quantized: np.ndarray,
+    opacity_by_level: dict[int, float],
+    qname,
+) -> tuple[list[ET.Element], dict[str, int]] | None:
+    """Seviye başına tek grouped-evenodd `<path>` (hücre-kenarı union) maske çocuğu.
+
+    Painter'ın polygon kodlamasıyla AYNI hücre-kenarı geometrisini (``trace_cell_
+    contours``) kullanır → dolgu alfa-tam; ama döngü başına ayrı ``<polygon>``
+    yerine SEVİYE başına tek even-odd ``<path>`` (kompakt relatif h/v). İç kenar
+    yoktur (rect'in aksine) → journal değerlendirme çözünürlüğüne ölçeklenince AA
+    dikişi üretmez. `<path>` maske geometrisi maske alt-ağacındadır
+    (ROLE_MASK_DEFINITION → sanat parmak izinden hariç); toplam path/node/byte
+    değişmemiş journal sınırlarınca bağlanır.
+    """
+    children: list[ET.Element] = []
+    total_loops = 0
+    total_nodes = 0
+    for level in sorted(int(value) for value in opacity_by_level):
+        if level <= 0:
+            continue
+        gray = int(round(float(opacity_by_level[level]) * 255))
+        if gray <= 0:
+            continue
+        loops = trace_cell_contours(quantized == level)
+        if not loops:
+            continue
+        path_data, nodes = _rectilinear_subpaths(loops)
+        if not path_data:
+            continue
+        children.append(
+            ET.Element(
+                qname("path"),
+                {
+                    "fill": f"rgb({gray},{gray},{gray})",
+                    "fill-rule": "evenodd",
+                    "d": path_data,
+                },
+            )
+        )
+        total_loops += len(loops)
+        total_nodes += nodes
+    if not children:
+        return None
+    return children, {
+        "contour_path_count": int(len(children)),
+        "contour_command_count": int(total_nodes),
+        "contour_loop_count": int(total_loops),
+    }
+
+
+def _requantize_alpha(
+    alpha: np.ndarray, max_levels: int
+) -> tuple[np.ndarray, dict[int, float]]:
+    """Kaynak alfayı ≤ ``max_levels`` düzeye deterministik yeniden nicele.
+
+    Şeffaf (alfa=0) her zaman düzey 0'dır. Pozitif alfalar [1,255] üzerinde
+    (max_levels-1) düzgün kovaya bölünür; her kovanın temsili opaklığı, o kovadaki
+    alfaların ORTALAMASIdır (round-trip gri = round(mean_alpha)). Daha kaba
+    nicemleme daha küçük kodlama verir; kabul YALNIZ değişmemiş alfa IoU/MAE
+    kapıları geçerse — kalite düşürerek testi geçme yoktur.
+    """
+    alpha = np.asarray(alpha, dtype=np.uint8)
+    quantized = np.zeros(alpha.shape, dtype=np.int32)
+    opacity_by_level: dict[int, float] = {0: 0.0}
+    positive = alpha > 0
+    if not bool(positive.any()):
+        return quantized, opacity_by_level
+    bucket_count = max(1, int(max_levels) - 1)
+    buckets = np.clip(
+        ((alpha.astype(np.int32) - 1) * bucket_count) // 255 + 1, 1, bucket_count
+    )
+    buckets[~positive] = 0
+    for bucket in range(1, bucket_count + 1):
+        selected = buckets == bucket
+        if not bool(selected.any()):
+            continue
+        opacity_by_level[bucket] = float(alpha[selected].mean()) / 255.0
+        quantized[selected] = bucket
+    return quantized, opacity_by_level
+
+
 def _serialized_children_size(children: list[ET.Element]) -> int:
     return sum(len(ET.tostring(child)) for child in children)
 
@@ -293,7 +409,21 @@ def build_painter_reconstruction_tree(
     #     çağrılır (çağıran katman kontrol eder), geçen vakaları bozmaz.
     chosen_encoding = "polygon"
     rect_count = 0
-    if mask_encoding == "rect":
+    contour_stats: dict[str, int] = {}
+    if mask_encoding == "contour":
+        # Grouped-evenodd: seviye başına tek even-odd <path> (bridge-walk union).
+        # İç kenar yok → ölçekli dikiş yok (polygon gibi), ama karmaşık maskede
+        # çok daha kompakt. FAZ 3A kimlik modeli maske alt-ağacını sanat parmak
+        # izinden dışladığı için bu <path>'ler artık kabul edilebilir.
+        contour_result = _painter_contour_children(
+            quantized, opacity_by_level, qname
+        )
+        if contour_result is not None:
+            mask_children, contour_stats = contour_result
+            chosen_encoding = "contour"
+        else:  # kontur üretilemezse asla boş maske bırakma; polygon'a düş
+            mask_children = _painter_polygon_children(loops, qname)
+    elif mask_encoding == "rect":
         mask_children, rect_count = _painter_rect_children(
             quantized, opacity_by_level, qname
         )
@@ -323,6 +453,7 @@ def build_painter_reconstruction_tree(
         "reconstruction_rect_count": int(rect_count),
         "candidate_support_expanded_geometry_count": int(expanded_count),
         "comparison_canvas_knocked_out": bool(knocked_out_canvas),
+        **contour_stats,
     }
 
 
@@ -566,26 +697,41 @@ def apply_candidate_painter_reconstruction(
     source_rgba_full = _rgba_from_source_at_size(source, source_size)
 
     byte_limit = int(limits["byte_limit"])
+
+    # FAZ 3B — painter kompakt encoding turnuvası. Zincir sabit öncelik sırasında:
+    # sert-güvenli polygon önce (dikiş-en-güvenli); yalnız byte bütçesini aşınca
+    # giderek daha kompakt VE rect'ten daha dikiş-güvenli grouped-evenodd contour
+    # (bridge-walk union, iç kenar yok) ve niceleme fallback'leri; rect son çare.
+    # Her adayın byte'ı render ETMEDEN preflight edilir; bütçeyi aşan aday
+    # render edilmeden elenir. Bütçeye giren aday, değişmemiş tam kapı bataryasından
+    # geçmelidir (native+bounded alfa IoU/MAE, evaluator alfa grubu, sanat parmak
+    # izi, yapı/sayım). Niceleme YALNIZ alfa kapıları geçerse kabul edilir — kalite
+    # düşürerek testi geçme yoktur. Polygon'un sığdığı vakalarda dikiş davranışı
+    # değişmez (turnuva ilk adayı seçer).
+    encoding_chain: list[tuple[str, str, np.ndarray, dict[int, float]]] = [
+        ("polygon", "polygon", quantized, opacity_by_level),
+        ("contour", "contour", quantized, opacity_by_level),
+    ]
+    for target_levels in (128, 64, 32):
+        requant, requant_opacity = _requantize_alpha(grid_alpha, target_levels)
+        encoding_chain.append(
+            (f"contour-q{target_levels}", "contour", requant, requant_opacity)
+        )
+    encoding_chain.append(("rect", "rect", quantized, opacity_by_level))
+
     last_error: RuntimeError | None = None
     for stroke_width in _PAINTER_STROKE_PIXELS:
-        # Render-güvenli polygon önce denenir; yalnız polygon byte bütçesini
-        # aşarsa daha kompakt rect fallback'i denenir. Böylece polygon'un sığdığı
-        # (ve geçen) vakalarda rect'in ölçekli dikişleri devreye girmez.
-        candidate_root = None
-        geometry = None
-        temporary = None
-        selected_txn = ""
-        for encoding in ("polygon", "rect"):
+        for label, mask_encoding, spec_quant, spec_opacity in encoding_chain:
             txn = alpha_transaction_id(
-                parent_sha256, source_alpha_sha256, mode, encoding
+                parent_sha256, source_alpha_sha256, mode, label
             )
             probe_root, probe_geometry = build_painter_reconstruction_tree(
                 original_root,
                 canvas,
-                quantized,
-                opacity_by_level,
+                spec_quant,
+                spec_opacity,
                 stroke_width,
-                mask_encoding=encoding,
+                mask_encoding=mask_encoding,
                 transaction_id=txn,
             )
             probe_temp = _write_tree_to_temp(probe_root, target)
@@ -593,67 +739,54 @@ def apply_candidate_painter_reconstruction(
             if probe_size > byte_limit:
                 last_error = RuntimeError(
                     "source_alpha_candidate_painter_byte_budget_rejected:"
-                    f"{probe_size}>{byte_limit}"
+                    f"{label}:{probe_size}>{byte_limit}"
                 )
                 probe_temp.unlink(missing_ok=True)
-                # polygon sığmadıysa rect'i dene; rect kodlamasıysa bu stroke biter
                 continue
-            candidate_root, geometry, temporary, selected_txn = (
-                probe_root,
-                probe_geometry,
-                probe_temp,
-                txn,
+            parent_artwork_fp = artwork_fingerprint(
+                original_root, txn, excluded_from_parent
             )
-            break
-        if temporary is None:
-            continue  # her iki kodlama da bu stroke'ta bütçeyi aştı
-        parent_artwork_fp = artwork_fingerprint(
-            original_root, selected_txn, excluded_from_parent
-        )
-        try:
             try:
                 validation = validate_painter_reconstruction(
-                    temporary,
+                    probe_temp,
                     source_rgba_full,
                     grid_alpha,
                     mode,
                     parent_counts,
-                    transaction_id=selected_txn,
+                    transaction_id=txn,
                     parent_artwork_fingerprint=parent_artwork_fp,
                 )
             except RuntimeError as exc:
                 last_error = exc
+                probe_temp.unlink(missing_ok=True)
                 continue
-            os.replace(temporary, target)
-            temporary = None
-        finally:
-            if temporary is not None:
-                temporary.unlink(missing_ok=True)
+            os.replace(probe_temp, target)
 
-        return {
-            "status": "accepted",
-            "applied": True,
-            "schema": "rfv3d2-candidate-painter-reconstruction-v1",
-            "before_byte_size": int(before_size),
-            "after_byte_size": int(target.stat().st_size),
-            "mask_encoding": "candidate_painter_luminance_mask",
-            "comparison_background_status": background_status,
-            "comparison_background_color_agnostic": True,
-            "candidate_support_stroke_width_pixels": float(stroke_width),
-            "candidate_geometry_preserved": True,
-            "candidate_path_data_preserved": True,
-            "trace_rgb_bytes_preserved": True,
-            "candidate_identity_preserved": True,
-            "painter_grid_width": int(grid_width),
-            "painter_grid_height": int(grid_height),
-            "preflight_parent_path_count": int(parent_counts[0]),
-            "preflight_parent_node_count": int(parent_counts[1]),
-            "preflight_path_limit": int(limits["path_limit"]),
-            "preflight_node_limit": int(limits["node_limit"]),
-            "preflight_byte_limit": int(limits["byte_limit"]),
-            **geometry,
-            **validation,
-        }
+            return {
+                "status": "accepted",
+                "applied": True,
+                "schema": "rfv3d2-candidate-painter-reconstruction-v1",
+                "before_byte_size": int(before_size),
+                "after_byte_size": int(target.stat().st_size),
+                "mask_encoding": "candidate_painter_luminance_mask",
+                "painter_encoding_label": label,
+                "comparison_background_status": background_status,
+                "comparison_background_color_agnostic": True,
+                "candidate_support_stroke_width_pixels": float(stroke_width),
+                "candidate_geometry_preserved": True,
+                "candidate_path_data_preserved": True,
+                "trace_rgb_bytes_preserved": True,
+                "candidate_identity_preserved": True,
+                "painter_grid_width": int(grid_width),
+                "painter_grid_height": int(grid_height),
+                "preflight_parent_path_count": int(parent_counts[0]),
+                "preflight_parent_node_count": int(parent_counts[1]),
+                "preflight_path_limit": int(limits["path_limit"]),
+                "preflight_node_limit": int(limits["node_limit"]),
+                "preflight_byte_limit": int(limits["byte_limit"]),
+                **probe_geometry,
+                **validation,
+            }
 
     raise last_error or RuntimeError(
         "source_alpha_candidate_painter_no_admissible_reconstruction"

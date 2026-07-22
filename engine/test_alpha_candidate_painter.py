@@ -439,8 +439,9 @@ class PainterMaskEncodingTests(unittest.TestCase):
             yy, xx = np.mgrid[0:height, 0:width].astype(np.float32)
             # Her yerde yarı-saydam, çok seviyeli (alpha hiç 0 değil → tam saydam
             # bölge yok → classify "absent" → Case B: parent paint korunur ve
-            # luminance mask ile maskelenir). Karmaşık maske → çok döngü/seviye,
-            # ama byte bütçesine sığacak kadar (rect kodlaması seçilir).
+            # luminance mask ile maskelenir). Karmaşık maske → çok döngü/seviye;
+            # FAZ 3B turnuvası polygon bütçeyi aşınca kompakt grouped-evenodd
+            # contour'u seçer (rect'ten küçük ve dikiş-güvenli).
             alpha = (
                 120.0 + 55.0 * np.sin(xx / 9.0) * np.cos(yy / 10.0)
             ).clip(25, 250)
@@ -459,18 +460,19 @@ class PainterMaskEncodingTests(unittest.TestCase):
             report = apply_candidate_painter_reconstruction(
                 svg_path, source_path, "logo_color"
             )
-            self.assertEqual(report["reconstruction_mask_encoding"], "rect")
+            self.assertIn(
+                report["reconstruction_mask_encoding"], {"contour", "rect"}
+            )
             self.assertLessEqual(
                 report["after_byte_size"], report["preflight_byte_limit"]
             )
-            # Aday kimliği: mask <rect>/<g> path_count'a sayılmaz.
+            # FAZ 3A/3B kimlik modeli: grouped-evenodd contour <path> maskeleri
+            # toplam path/node sayısına GİREBİLİR (maske alt-ağacı), fakat SANAT
+            # eserinin geometri+renk kimliği (parmak izi) korunur. Kör toplam-sayım
+            # eşitliği artık kimlik ölçütü değildir.
+            self.assertTrue(report["artwork_identity_preserved"])
             self.assertEqual(
-                report["preflight_parent_path_count"],
-                report["preserved_path_count"],
-            )
-            self.assertEqual(
-                report["preflight_parent_node_count"],
-                report["preserved_node_count"],
+                report["artwork_identity_authority"], "provenance_fingerprint"
             )
             self.assertTrue(report["candidate_identity_preserved"])
             self.assertGreaterEqual(report["painter_native_alpha_iou"], 0.995)
