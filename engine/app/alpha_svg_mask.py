@@ -608,6 +608,107 @@ def apply_source_alpha_mask(
     return report
 
 
+def _source_alpha_already_satisfied(
+    parent_path: Path,
+    source_path: Path,
+    mode: str,
+) -> dict[str, Any] | None:
+    """Return a byte-identical no-op report when the selected SVG already
+    reproduces the source alpha, else ``None`` (fail-closed to normal masking).
+
+    The alpha transform must never run when the winning candidate already carries
+    the correct transparency: applying a redundant vector mask only grows bytes and
+    path/node counts (seed-01/seed-03 style regressions). This is proven purely by
+    MEASUREMENT — never by file name or mode — and is fail-closed: a no-op is
+    admissible ONLY when, at every measured render size, the unchanged image-class
+    ``alpha_iou``/``alpha_mae`` hard gates pass AND the parent shows no
+    opaque-canvas-collapse (a nearly fully opaque render over the source-transparent
+    region — the exact defect this mask exists to repair). Any unmeasurable render
+    fails closed so the normal masking path runs; no opaque-background artifact is
+    ever published.
+    """
+    from app.final_artifact_evaluator import _thresholds  # noqa: PLC0415
+
+    parent_path = Path(parent_path)
+    try:
+        root = ET.parse(parent_path).getroot()
+    except ET.ParseError:
+        return None
+    if _local_name(str(root.tag)).lower() != "svg":
+        return None
+
+    _view_x, _view_y, view_width, view_height = _viewbox(root)
+    mask_width = max(1, int(round(view_width)))
+    mask_height = max(1, int(round(view_height)))
+    native_scale = min(1.0, _MAX_MASK_SIDE / float(max(mask_width, mask_height)))
+    native_width = max(1, int(round(mask_width * native_scale)))
+    native_height = max(1, int(round(mask_height * native_scale)))
+
+    source_native = _rgba_from_source_at_size(
+        Path(source_path), (native_width, native_height)
+    )
+    source_alpha_native = np.asarray(source_native[:, :, 3], dtype=np.uint8)
+    if bool(np.all(source_alpha_native == 255)):
+        return None
+
+    image_class = _MODE_IMAGE_CLASS.get(mode, "clean_logo")
+    thresholds = _thresholds(image_class, None)
+
+    # Bounded evaluator size (512) + renderer-native size (viewBox, capped). Both
+    # sides of every comparison pass through the same INTER_AREA downscale.
+    eval_scale = min(1.0, 512.0 / float(max(native_width, native_height)))
+    eval_width = max(1, int(round(native_width * eval_scale)))
+    eval_height = max(1, int(round(native_height * eval_scale)))
+    render_sizes: list[tuple[int, int]] = [(eval_width, eval_height)]
+    if (native_width, native_height) not in render_sizes:
+        render_sizes.append((native_width, native_height))
+
+    min_iou = 1.0
+    max_mae = 0.0
+    max_coverage = 0.0
+    for width, height in render_sizes:
+        rendered = render_svg_to_rgba(parent_path, width, height)
+        if rendered is None:
+            return None
+        if (width, height) == (native_width, native_height):
+            source_at = source_native
+        else:
+            source_at = resize_rgba(source_native, width, height)
+        metrics = alpha_plane_metrics(source_at[:, :, 3], rendered[:, :, 3])
+        if not _alpha_passes(metrics, thresholds):
+            return None
+        coverage = float(
+            np.asarray(rendered[:, :, 3], dtype=np.float32).mean() / 255.0
+        )
+        if coverage >= 0.98:  # opaque-canvas-collapse signature → mask required
+            return None
+        min_iou = min(min_iou, float(metrics["alpha_iou"]))
+        max_mae = max(max_mae, float(metrics["alpha_mae"]))
+        max_coverage = max(max_coverage, coverage)
+
+    parent_sha = _sha256(parent_path)
+    parent_size = int(parent_path.stat().st_size)
+    return {
+        "status": "alpha_already_satisfied_noop",
+        "applied": False,
+        "schema": "rfv3d2-source-alpha-vector-mask-v1",
+        "mode": mode,
+        "threshold_image_class": image_class,
+        "before_sha256": parent_sha,
+        "after_sha256": parent_sha,
+        "before_byte_size": parent_size,
+        "after_byte_size": parent_size,
+        "noop_render_sizes": [[int(w), int(h)] for w, h in render_sizes],
+        "noop_min_alpha_iou": min_iou,
+        "noop_max_alpha_mae": max_mae,
+        "noop_max_render_coverage": max_coverage,
+        "noop_alpha_iou_min": float(thresholds["alpha_iou_min"]),
+        "noop_alpha_mae_max": float(thresholds["alpha_mae_max"]),
+        "candidate_identity_preserved": True,
+        "candidate_path_data_preserved": True,
+    }
+
+
 def wrap_run_pipeline_with_alpha_mask(
     original: Callable[..., dict[str, Any]],
 ) -> Callable[..., dict[str, Any]]:
@@ -661,6 +762,15 @@ def wrap_run_pipeline_with_alpha_mask(
             return result
 
         parent_path = Path(best["svg_path"])
+        noop_report = _source_alpha_already_satisfied(parent_path, source_path, mode)
+        if noop_report is not None:
+            # Ölçüm-kapılı byte-identical no-op: seçili SVG kaynak alfayı ZATEN
+            # doğru üretiyor (alfa IoU/MAE geçti, opak-tuval-collapse yok). Gereksiz
+            # vektör maske eklemek yalnız byte/path/node büyütür. Fail-open DEĞİL:
+            # opak arka planlı sonuç yayımlanmaz; parent şeffaflığı zaten taşır.
+            # Parent SVG byte/SHA/candidate-kimliği değişmeden korunur.
+            result["alpha_mask_report"] = noop_report
+            return result
         finalized_path = Path(job_dir) / f"{parent_path.stem}_alpha.svg"
         shutil.copy2(parent_path, finalized_path)
         report = apply_source_alpha_mask(finalized_path, source_path, mode)
