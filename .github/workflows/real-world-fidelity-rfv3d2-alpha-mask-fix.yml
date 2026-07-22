@@ -14,6 +14,7 @@ on:
       - "engine/app/alpha_candidate_support_compact.py"
       - "engine/app/alpha_candidate_validation.py"
       - "engine/app/alpha_candidate_painter.py"
+      - "engine/app/alpha_artwork_identity.py"
       - "engine/app/alpha_mask_contour.py"
       - "engine/app/alpha_mask_adaptive.py"
       - "engine/app/alpha_preprocess.py"
@@ -31,6 +32,7 @@ on:
       - "engine/test_alpha_preprocess.py"
       - "engine/test_alpha_noop_preflight.py"
       - "engine/test_alpha_clip_encoding.py"
+      - "engine/test_alpha_artwork_identity.py"
       - "docs/real_world_fidelity/rfv-3d2-alpha-mask-fix.md"
 
 permissions:
@@ -77,6 +79,7 @@ jobs:
           engine/app/alpha_candidate_support_compact.py
           engine/app/alpha_candidate_validation.py
           engine/app/alpha_candidate_painter.py
+          engine/app/alpha_artwork_identity.py
           engine/app/alpha_mask_contour.py
           engine/app/alpha_mask_adaptive.py
           engine/app/alpha_preprocess.py
@@ -112,6 +115,7 @@ jobs:
             engine.test_alpha_preprocess \
             engine.test_alpha_noop_preflight \
             engine.test_alpha_clip_encoding \
+            engine.test_alpha_artwork_identity \
             -v > alpha-mask-tests.log 2>&1
           status=$?
           cat alpha-mask-tests.log
@@ -139,7 +143,7 @@ jobs:
           while IFS= read -r path; do
             [ -z "${path}" ] && continue
             case "${path}" in
-              .github/workflows/exact-final-svg.yml|.github/workflows/real-world-fidelity-rfv3d2-alpha-mask-fix.yml|engine/app/__init__.py|engine/app/alpha_candidate_background.py|engine/app/alpha_candidate_identity.py|engine/app/alpha_candidate_knockout.py|engine/app/alpha_candidate_paint_selection.py|engine/app/alpha_candidate_support.py|engine/app/alpha_candidate_support_compact.py|engine/app/alpha_candidate_validation.py|engine/app/alpha_candidate_painter.py|engine/app/alpha_mask_contour.py|engine/app/alpha_mask_adaptive.py|engine/app/alpha_preprocess.py|engine/app/alpha_mask_budget.py|engine/app/alpha_svg_mask.py|engine/test_alpha_candidate_identity.py|engine/test_alpha_candidate_knockout.py|engine/test_alpha_candidate_paint_selection.py|engine/test_alpha_candidate_support.py|engine/test_alpha_candidate_validation.py|engine/test_alpha_candidate_painter.py|engine/test_alpha_candidate_background.py|engine/test_alpha_mask_adaptive.py|engine/test_alpha_mask_transaction.py|engine/test_alpha_preprocess.py|engine/test_alpha_noop_preflight.py|engine/test_alpha_clip_encoding.py|docs/real_world_fidelity/rfv-3d2-alpha-mask-fix.md) ;;
+              .github/workflows/exact-final-svg.yml|.github/workflows/real-world-fidelity-rfv3d2-alpha-mask-fix.yml|engine/app/__init__.py|engine/app/alpha_candidate_background.py|engine/app/alpha_candidate_identity.py|engine/app/alpha_candidate_knockout.py|engine/app/alpha_candidate_paint_selection.py|engine/app/alpha_candidate_support.py|engine/app/alpha_candidate_support_compact.py|engine/app/alpha_candidate_validation.py|engine/app/alpha_candidate_painter.py|engine/app/alpha_artwork_identity.py|engine/app/alpha_mask_contour.py|engine/app/alpha_mask_adaptive.py|engine/app/alpha_preprocess.py|engine/app/alpha_mask_budget.py|engine/app/alpha_svg_mask.py|engine/test_alpha_candidate_identity.py|engine/test_alpha_candidate_knockout.py|engine/test_alpha_candidate_paint_selection.py|engine/test_alpha_candidate_support.py|engine/test_alpha_candidate_validation.py|engine/test_alpha_candidate_painter.py|engine/test_alpha_candidate_background.py|engine/test_alpha_mask_adaptive.py|engine/test_alpha_mask_transaction.py|engine/test_alpha_preprocess.py|engine/test_alpha_noop_preflight.py|engine/test_alpha_clip_encoding.py|engine/test_alpha_artwork_identity.py|docs/real_world_fidelity/rfv-3d2-alpha-mask-fix.md) ;;
               *) echo "Unexpected RFV-3D2 alpha-fix file: ${path}"; exit 1 ;;
             esac
           done <<< "${changed}"

@@ -33,6 +33,7 @@ TransformJournal stage that follows.
 from __future__ import annotations
 
 import copy
+import hashlib
 import os
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -42,6 +43,15 @@ import cv2
 import numpy as np
 from PIL import Image
 
+from app.alpha_artwork_identity import (
+    ROLE_ARTWORK_CONTAINER,
+    ROLE_CANVAS_KNOCKOUT,
+    ROLE_MASK_APPLICATION,
+    ROLE_MASK_DEFINITION,
+    alpha_transaction_id,
+    artwork_fingerprint,
+    tag_transform_node,
+)
 from app.alpha_mask_contour import loop_signed_area, trace_cell_contours
 from app.alpha_preprocess import _rgba_from_source_at_size
 from app.source_truth import alpha_plane_metrics, render_svg_to_rgba, resize_rgba
@@ -155,6 +165,7 @@ def build_painter_reconstruction_tree(
     opacity_by_level: dict[int, float],
     stroke_width: float,
     mask_encoding: str = "polygon",
+    transaction_id: str = "",
 ) -> tuple[ET.Element, dict[str, int]]:
     """Mask the stroked paint once, knocking out a comparison canvas if given.
 
@@ -199,6 +210,7 @@ def build_painter_reconstruction_tree(
                 "display": "none",
             },
         )
+        tag_transform_node(archive, ROLE_CANVAS_KNOCKOUT, transaction_id)
         archive.append(target_canvas)
         knocked_out_canvas = True
 
@@ -208,6 +220,7 @@ def build_painter_reconstruction_tree(
         qname("g"),
         {"id": paint_id, "data-vektoryum-alpha-candidate-paint": "preserved-v1"},
     )
+    tag_transform_node(paint, ROLE_ARTWORK_CONTAINER, transaction_id)
     movable = [
         child
         for child in list(root)
@@ -244,6 +257,7 @@ def build_painter_reconstruction_tree(
             "data-vektoryum-source-alpha-reconstruction": "painter-luminance-v1",
         },
     )
+    tag_transform_node(mask, ROLE_MASK_DEFINITION, transaction_id)
     content = ET.SubElement(mask, qname("g"))
     content.set(
         "transform",
@@ -297,6 +311,7 @@ def build_painter_reconstruction_tree(
         qname("g"),
         {"data-vektoryum-source-alpha-reconstruction": "painter-luminance-v1"},
     )
+    tag_transform_node(layer, ROLE_MASK_APPLICATION, transaction_id)
     ET.SubElement(
         layer,
         qname("use"),
@@ -317,6 +332,8 @@ def validate_painter_reconstruction(
     grid_alpha: np.ndarray,
     mode: str,
     parent_counts: tuple[int, int],
+    transaction_id: str = "",
+    parent_artwork_fingerprint: str | None = None,
 ) -> dict[str, Any]:
     """Fail-closed dual-scale alpha validation with unchanged thresholds.
 
@@ -420,7 +437,21 @@ def validate_painter_reconstruction(
         int(structure.get("path_count") or 0),
         int(structure.get("node_count") or 0),
     )
-    if after_counts != parent_counts:
+    # FAZ 3A — kör toplam-sayım eşitliği yerine provenance-farkında sanat kimliği.
+    # Transform-owned maske/destek geometrisi (bu transaction'a etiketli) sanat
+    # parmak izinden dışlanır; sanat eserinin geometri+renk kimliği parent ile
+    # BİREBİR aynı olmalı. Toplam karmaşıklık (byte/path/node) ve görünüm
+    # (SSIM/edge/seam/topology) değişmemiş journal kapılarınca bağlanmaya devam
+    # eder — bu bir bypass değil, kimliğin iki ayrı sözleşmeye bölünmesidir.
+    if parent_artwork_fingerprint is not None:
+        candidate_fingerprint = artwork_fingerprint(root, transaction_id)
+        if candidate_fingerprint != parent_artwork_fingerprint:
+            raise RuntimeError(
+                "source_alpha_candidate_painter_artwork_identity_changed:"
+                f"{parent_artwork_fingerprint[:12]}!={candidate_fingerprint[:12]}"
+            )
+    elif after_counts != parent_counts:
+        # Geriye dönük güvenli varsayılan: parmak izi verilmediyse eski sözleşme.
         raise RuntimeError(
             "source_alpha_candidate_painter_candidate_geometry_changed:"
             f"{parent_counts[0]}/{parent_counts[1]}->"
@@ -444,6 +475,14 @@ def validate_painter_reconstruction(
         "non_alpha_regression_authority": "transform_journal_parent_delta",
         "preserved_path_count": int(after_counts[0]),
         "preserved_node_count": int(after_counts[1]),
+        "parent_path_count": int(parent_counts[0]),
+        "parent_node_count": int(parent_counts[1]),
+        "artwork_identity_preserved": True,
+        "artwork_identity_authority": (
+            "provenance_fingerprint"
+            if parent_artwork_fingerprint is not None
+            else "total_count_equality"
+        ),
     }
 
 
@@ -510,6 +549,18 @@ def apply_candidate_painter_reconstruction(
         raise RuntimeError("source_alpha_candidate_painter_background_ambiguous")
     limits = _journal_limits(original_root, before_size)
 
+    # FAZ 3A — deterministik işlem kimliği + parent sanat parmak izi. Kimlik,
+    # parent SVG SHA + kaynak alfa SHA + mod + kodlamadan türetilir (rastgele
+    # UUID YOK → artifact SHA deterministik). Parent parmak izi, knockout
+    # edilecek kanıtlı karşılaştırma-tuvalini dışlar (meşru arka-plan çıkarımı
+    # kimlik ihlali sayılmaz); aday tarafta o tuval arşive taşınıp maske olarak
+    # işaretlidir.
+    parent_sha256 = hashlib.sha256(before_bytes).hexdigest()
+    source_alpha_sha256 = hashlib.sha256(
+        np.ascontiguousarray(grid_alpha).tobytes()
+    ).hexdigest()
+    excluded_from_parent = (canvas,) if canvas is not None else ()
+
     with Image.open(source) as source_image:
         source_size = source_image.size
     source_rgba_full = _rgba_from_source_at_size(source, source_size)
@@ -523,7 +574,11 @@ def apply_candidate_painter_reconstruction(
         candidate_root = None
         geometry = None
         temporary = None
+        selected_txn = ""
         for encoding in ("polygon", "rect"):
+            txn = alpha_transaction_id(
+                parent_sha256, source_alpha_sha256, mode, encoding
+            )
             probe_root, probe_geometry = build_painter_reconstruction_tree(
                 original_root,
                 canvas,
@@ -531,6 +586,7 @@ def apply_candidate_painter_reconstruction(
                 opacity_by_level,
                 stroke_width,
                 mask_encoding=encoding,
+                transaction_id=txn,
             )
             probe_temp = _write_tree_to_temp(probe_root, target)
             probe_size = probe_temp.stat().st_size
@@ -542,14 +598,18 @@ def apply_candidate_painter_reconstruction(
                 probe_temp.unlink(missing_ok=True)
                 # polygon sığmadıysa rect'i dene; rect kodlamasıysa bu stroke biter
                 continue
-            candidate_root, geometry, temporary = (
+            candidate_root, geometry, temporary, selected_txn = (
                 probe_root,
                 probe_geometry,
                 probe_temp,
+                txn,
             )
             break
         if temporary is None:
             continue  # her iki kodlama da bu stroke'ta bütçeyi aştı
+        parent_artwork_fp = artwork_fingerprint(
+            original_root, selected_txn, excluded_from_parent
+        )
         try:
             try:
                 validation = validate_painter_reconstruction(
@@ -558,6 +618,8 @@ def apply_candidate_painter_reconstruction(
                     grid_alpha,
                     mode,
                     parent_counts,
+                    transaction_id=selected_txn,
+                    parent_artwork_fingerprint=parent_artwork_fp,
                 )
             except RuntimeError as exc:
                 last_error = exc
