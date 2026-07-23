@@ -34,19 +34,46 @@ _ALPHA_STYLE_NAMES = {"opacity", "fill-opacity", "stroke-opacity"}
 _GEOMETRY_TAGS = {"path", "rect", "circle", "ellipse", "polygon", "polyline"}
 _UNDERLAY_STROKE_PIXELS = (0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0)
 
-# Ölçek-stabil painter maskesinin onarabildiği journal reddi sınıfları: yalnız
-# doğrudan geometri reddleri — bileşen/delik topolojisi ve iç AA dikişleri.
-# Painter kuantize alfayı dikişsiz union-konturlarıyla yeniden inşa eder; ardından
-# TAZE bir journal aynı DEĞİŞMEMİŞ kapılarla ölçer, onaramazsa fail-closed kalınır.
-# Yalnız zaten reddedilmiş vakalarda çalışır; geçen (kabul edilen) vakalara
-# dokunmaz. SSIM/edge/renk/karmaşıklık gibi başka reddler fail-closed bırakılır.
-_PAINTER_GEOMETRY_REJECTION_CODES = {"seam_regression"}
+# FAZ 3C — ölçek-stabil painter maskesinin DENEYEBİLECEĞİ journal reddi sınıfları.
+# Painter kuantize alfayı dikişsiz union-konturlarıyla yeniden inşa eder; bu yalnız
+# bileşen/delik topolojisi ve iç AA dikişlerini DEĞİL, ölçekli AA kaynaklı SSIM ve
+# edge-F1 regresyonlarını da onarabilir (maske dikişleri kaybolunca appearance
+# düzelebilir). Bu yüzden DENEME kapsamı bu doğrudan-geometri/ölçek-AA sınıflarına
+# genişletildi. KABUL eşikleri DEĞİŞMEZ: painter çıktısı TAZE bir journal'da aynı
+# DEĞİŞMEMİŞ SSIM/edge/seam/topoloji/byte/path/node kapılarından geçmeden kabul
+# edilmez — edge/SSIM nedeniyle çağrılan painter aynı edge/SSIM kapısını geçmek
+# ZORUNDADIR. Yalnız zaten reddedilmiş vakalarda çalışır; geçen (kabul edilen)
+# vakalara dokunmaz. Renk/palet/karmaşıklık/byte gibi painter'ın gideremeyeceği
+# kodlar kapsam DIŞIdır ve fail-closed korunur (hata gizlenmez).
+_PAINTER_GEOMETRY_REJECTION_CODES = {
+    "seam_regression",
+    "edge_f1_regression",
+    "ssim_regression",
+}
 
 
 def _is_painter_geometry_reason(reason: str) -> bool:
-    """Painter'ı tetikleyen doğrudan geometri reddi (topoloji ya da dikiş) mi?"""
+    """Painter deneme kapsamındaki doğrudan geometri/ölçek-AA reddi mi?
+
+    Kapsam: ``topology_*`` (bileşen/delik) + ``seam_regression`` + ``edge_f1_
+    regression`` + ``ssim_regression``. Painter yalnız bu sınıfları DENER; kabul
+    değişmemiş kapıların çağıran tarafındaki yeniden ölçümüne bağlıdır.
+    """
     text = str(reason)
     return text.startswith("topology_") or text in _PAINTER_GEOMETRY_REJECTION_CODES
+
+
+def _painter_retry_eligible(reason_codes) -> bool:
+    """TÜM journal reddi kodları painter deneme kapsamındaysa (ve en az bir kod
+    varsa) painter yeniden-inşası DENENİR.
+
+    Kapsam dışı tek bir kod (renk/palet/path_count/node/byte gibi painter'ın
+    gideremeyeceği bir red) bile varsa fail-closed kalınır: painter o hatayı
+    onaramaz ve karışık bir geometri reddi altında gizlenmemelidir. Bu yalnız
+    DENEME uygunluğudur; kabul eşikleri değişmez.
+    """
+    reasons = list(reason_codes or [])
+    return bool(reasons) and all(_is_painter_geometry_reason(r) for r in reasons)
 
 
 def _sha256(path: Path) -> str:
@@ -840,13 +867,12 @@ def wrap_run_pipeline_with_alpha_mask(
         )
         if accepted_path != finalized_path:
             first_reasons = list(alpha_stage.get("reason_codes") or ["unknown"])
-            # Painter yalnız doğrudan geometri reddlerinde (topoloji ya da dikiş)
-            # denenir: TÜM kodlar geometri reddi OLMALI. Böylece SSIM/edge/renk/
-            # karmaşıklık gibi painter'ın gideremeyeceği bir hata gizlenmez ve
-            # değişiklik yalnız zaten reddedilmiş topoloji/seam vakalarında çalışır.
-            painter_eligible = bool(first_reasons) and all(
-                _is_painter_geometry_reason(reason) for reason in first_reasons
-            )
+            # FAZ 3C — painter deneme kapsamı: TÜM kodlar doğrudan geometri/ölçek-AA
+            # reddi (topoloji/seam/edge_f1/ssim) OLMALI. Renk/palet/karmaşıklık gibi
+            # painter'ın gideremeyeceği bir kod varsa fail-closed kalınır (gizlenmez).
+            # Kapsam genişledi ama KABUL değişmedi: aşağıdaki TAZE journal aynı edge/
+            # SSIM/seam/topoloji kapılarını uygular; painter yalnız hepsini geçerse kabul.
+            painter_eligible = _painter_retry_eligible(first_reasons)
             if not painter_eligible:
                 finalized_path.unlink(missing_ok=True)
                 raise RuntimeError(
