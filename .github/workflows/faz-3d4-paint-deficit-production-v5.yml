@@ -1,0 +1,360 @@
+name: FAZ 3D4 paint deficit production v5
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/faz-3d4-paint-deficit-production-v5.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: faz-3d4-paint-deficit-production-v5-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  verify-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      PYTHONPATH: engine:.
+      PYTHONHASHSEED: "0"
+      VEKTORYUM_WORKERS: "1"
+      TARGET_BRANCH: agent/rfv-3d3-canvas-independent-alpha-mask
+      SOURCE_COMMIT: 8eb30de2c7256abe36fedaaddcb2d9f9655e4faf
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TARGET_BRANCH }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: engine/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ghostscript libcairo2
+          python -m pip install -q -r engine/requirements.txt pytest httpx
+
+      - name: Materialize production module and line-based painter integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          git show "${SOURCE_COMMIT}:.github/workflows/faz-3d4-paint-deficit-production.yml" > /tmp/source-workflow.yml
+          python - <<'PY'
+          from pathlib import Path
+          import copy
+          import textwrap
+
+          workflow = Path('/tmp/source-workflow.yml').read_text(encoding='utf-8')
+
+          def extract_cat(path: str) -> str:
+              marker = f"cat > {path} <<'PY'\n"
+              body = workflow.split(marker, 1)[1].split("\n          PY", 1)[0]
+              return textwrap.dedent(body)
+
+          module_path = Path('engine/app/alpha_candidate_paint_deficit.py')
+          test_path = Path('engine/test_alpha_painter_paint_deficit.py')
+          module_path.write_text(extract_cat(str(module_path)), encoding='utf-8')
+
+          test_text = extract_cat(str(test_path))
+          old_test = '''tree2, report2 = build_paint_deficit_reconstruction_tree(
+                      copy.deepcopy(root), list(copy.deepcopy(root))[0], source, "txn-fixed"
+                  )'''
+          new_test = '''root2 = copy.deepcopy(root)
+                  canvas2 = list(root2)[0]
+                  tree2, report2 = build_paint_deficit_reconstruction_tree(
+                      root2, canvas2, source, "txn-fixed"
+                  )'''
+          if old_test not in test_text:
+              raise SystemExit('determinism test anchor missing')
+          test_path.write_text(test_text.replace(old_test, new_test, 1), encoding='utf-8')
+
+          painter = Path('engine/app/alpha_candidate_painter.py')
+          lines = painter.read_text(encoding='utf-8').splitlines()
+
+          # Add paint-deficit to primary failure selection without changing priorities
+          # of existing exact and quantized candidates.
+          validated_quantized = next(
+              i for i, line in enumerate(lines)
+              if line.strip() == 'or _validated("quantized")'
+          )
+          if not any('_validated("paint_deficit")' in line for line in lines):
+              lines.insert(validated_quantized + 1, '        or _validated("paint_deficit")')
+
+          smallest_quantized = next(
+              i for i, line in enumerate(lines)
+              if line.strip() == 'or _smallest_byte_rejected("quantized")'
+          )
+          if not any('_smallest_byte_rejected("paint_deficit")' in line for line in lines):
+              lines.insert(
+                  smallest_quantized + 1,
+                  '        or _smallest_byte_rejected("paint_deficit")',
+              )
+
+          # Locate the try block immediately after the local _evaluate_phase function.
+          phase_start = next(
+              i for i, line in enumerate(lines)
+              if line.startswith('    def _evaluate_phase(')
+          )
+          try_index = None
+          for i in range(phase_start + 1, len(lines) - 1):
+              if lines[i] == '    try:' and 'Kademe 1' in lines[i + 1]:
+                  try_index = i
+                  break
+          if try_index is None:
+              raise SystemExit('phase try insertion point missing')
+
+          function_text = r'''
+    def _evaluate_paint_deficit() -> list[Any] | None:
+        from app.alpha_candidate_paint_deficit import (  # noqa: PLC0415
+            build_paint_deficit_reconstruction_tree,
+        )
+
+        label = "paint-deficit-q24"
+        txn = alpha_transaction_id(parent_sha256, source_alpha_sha256, mode, label)
+        entry: dict[str, Any] = {
+            "stroke_width": 0.0,
+            "encoding_label": label,
+            "encoding_family": "paint_deficit",
+            "exact_or_quantized": "paint_deficit",
+            "source_alpha_level_count": int(source_level_count),
+            "encoded_alpha_level_count": 24,
+            "actual_serialized_bytes": None,
+            "byte_limit": int(byte_limit),
+            "projected_path_count": int(parent_counts[0]),
+            "actual_path_count": None,
+            "path_limit": int(limits["path_limit"]),
+            "projected_node_count": int(parent_counts[1]),
+            "actual_node_count": None,
+            "node_limit": int(limits["node_limit"]),
+            "preflight_status": None,
+            "validation_started": False,
+            "validation_stage": None,
+            "status": None,
+            "exact_error_code": "",
+            "native_alpha_iou": None,
+            "native_alpha_mae": None,
+            "bounded_alpha_iou": None,
+            "bounded_alpha_mae": None,
+            "evaluator_alpha_iou": None,
+            "evaluator_alpha_mae": None,
+            "artwork_fingerprint_match": None,
+            "journal_gate_started": False,
+            "journal_passed": None,
+            "journal_reason_codes": [],
+        }
+        try:
+            probe_root, probe_geometry = build_paint_deficit_reconstruction_tree(
+                original_root, canvas, grid_rgba, txn
+            )
+        except RuntimeError as exc:
+            entry["preflight_status"] = "not_constructed"
+            entry["validation_stage"] = "paint_deficit_geometry"
+            entry["status"] = "geometry_rejected"
+            entry["exact_error_code"] = str(exc)
+            attempts.append(entry)
+            return None
+
+        probe_temp = _write_tree_to_temp(probe_root, target)
+        probe_size = int(probe_temp.stat().st_size)
+        entry["actual_serialized_bytes"] = probe_size
+        entry["encoded_alpha_level_count"] = int(
+            probe_geometry.get("encoded_alpha_level_count", 24)
+        )
+        if probe_size > byte_limit:
+            entry["preflight_status"] = "over_budget"
+            entry["status"] = "byte_rejected"
+            entry["exact_error_code"] = (
+                "source_alpha_candidate_painter_byte_budget_rejected:"
+                f"{label}:{probe_size}>{byte_limit}"
+            )
+            attempts.append(entry)
+            probe_temp.unlink(missing_ok=True)
+            return None
+
+        entry["preflight_status"] = "within_budget"
+        entry["validation_started"] = True
+        parent_artwork_fp = artwork_fingerprint(
+            original_root, txn, excluded_from_parent
+        )
+        assessment = _assess_painter_candidate(
+            probe_temp,
+            source_rgba_full,
+            grid_alpha,
+            mode,
+            parent_counts,
+            transaction_id=txn,
+            parent_artwork_fingerprint=parent_artwork_fp,
+        )
+        for field in (
+            "validation_stage",
+            "status",
+            "exact_error_code",
+            "native_alpha_iou",
+            "native_alpha_mae",
+            "bounded_alpha_iou",
+            "bounded_alpha_mae",
+            "evaluator_alpha_iou",
+            "evaluator_alpha_mae",
+            "artwork_fingerprint_match",
+            "actual_path_count",
+            "actual_node_count",
+        ):
+            entry[field] = assessment[field]
+        if assessment["status"] != "accepted":
+            attempts.append(entry)
+            probe_temp.unlink(missing_ok=True)
+            return None
+
+        entry["journal_gate_started"] = True
+        journal_passed, journal_codes = _run_painter_geometry_journal(
+            parent_journal_path,
+            probe_temp,
+            journal_source_rgb,
+            journal_image_class,
+            assessment["report"],
+        )
+        entry["journal_passed"] = bool(journal_passed)
+        entry["journal_reason_codes"] = list(journal_codes)
+        if not journal_passed:
+            entry["status"] = "geometry_rejected"
+            entry["validation_stage"] = "journal_geometry"
+            entry["exact_error_code"] = (
+                "source_alpha_candidate_painter_journal_geometry_rejected:"
+                + ",".join(journal_codes)
+            )
+            attempts.append(entry)
+            probe_temp.unlink(missing_ok=True)
+            return None
+
+        attempts.append(entry)
+        return [
+            probe_size,
+            int(assessment["actual_path_count"] or 0),
+            int(assessment["actual_node_count"] or 0),
+            0,
+            probe_temp,
+            probe_geometry,
+            dict(assessment["report"] or {}),
+            label,
+            0.0,
+        ]
+'''.strip('\n').splitlines()
+
+          if not any(line.startswith('    def _evaluate_paint_deficit(') for line in lines):
+              lines[try_index:try_index] = function_text + ['']
+
+          # Insert the candidate after every existing exact/quantized phase fails.
+          quantized_call = next(
+              i for i, line in enumerate(lines)
+              if line.strip() == 'winner = _evaluate_phase(quantized_specs)'
+          )
+          following = lines[quantized_call + 1 : quantized_call + 3]
+          if not any('_evaluate_paint_deficit()' in line for line in following):
+              lines[quantized_call + 1 : quantized_call + 1] = [
+                  '        if winner is None:',
+                  '            winner = _evaluate_paint_deficit()',
+              ]
+
+          painter.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+          PY
+
+          git diff --check
+          python -m py_compile \
+            engine/app/alpha_candidate_paint_deficit.py \
+            engine/app/alpha_candidate_painter.py \
+            engine/test_alpha_painter_paint_deficit.py
+
+      - name: Run focused painter contracts
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m unittest \
+            engine.test_alpha_painter_paint_deficit \
+            engine.test_alpha_candidate_painter \
+            engine.test_alpha_painter_encoding \
+            engine.test_alpha_painter_ledger \
+            engine.test_alpha_painter_retry \
+            engine.test_alpha_painter_reconstruction_fidelity \
+            engine.test_alpha_painter_stroke_continuation \
+            -v 2>&1 | tee faz3d4-paint-deficit-focused.log
+
+      - name: Run complete alpha suite
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m unittest \
+            engine.test_alpha_candidate_identity \
+            engine.test_alpha_candidate_knockout \
+            engine.test_alpha_candidate_paint_selection \
+            engine.test_alpha_candidate_support \
+            engine.test_alpha_candidate_validation \
+            engine.test_alpha_candidate_painter \
+            engine.test_alpha_candidate_background \
+            engine.test_alpha_mask_adaptive \
+            engine.test_alpha_mask_transaction \
+            engine.test_alpha_preprocess \
+            engine.test_alpha_noop_preflight \
+            engine.test_alpha_clip_encoding \
+            engine.test_alpha_artwork_identity \
+            engine.test_alpha_painter_encoding \
+            engine.test_alpha_painter_ledger \
+            engine.test_alpha_painter_retry \
+            engine.test_alpha_painter_reconstruction_fidelity \
+            engine.test_alpha_painter_stroke_continuation \
+            engine.test_alpha_painter_paint_deficit \
+            -v 2>&1 | tee faz3d4-paint-deficit-alpha.log
+
+      - name: Require Class Reklam and gradient acceptance
+        working-directory: engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          python test_visual_regression.py \
+            --case class_reklam \
+            --case gradient_logo \
+            --require-baseline \
+            --out-dir regression/faz3d4-paint-deficit-production-v5 \
+            > regression/faz3d4-paint-deficit-production-v5.log 2>&1
+          cat regression/faz3d4-paint-deficit-production-v5.log
+          grep -F "PASS class_reklam" regression/faz3d4-paint-deficit-production-v5.log
+          grep -F "PASS gradient_logo" regression/faz3d4-paint-deficit-production-v5.log
+
+      - name: Commit accepted production code and clean temporary workflows
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/faz-3d4-*.yml
+          rm -rf engine/regression/faz3d4-paint-deficit-production-v5
+          rm -f \
+            faz3d4-paint-deficit-focused.log \
+            faz3d4-paint-deficit-alpha.log \
+            engine/regression/faz3d4-paint-deficit-production-v5.log
+          git add -A \
+            .github/workflows \
+            engine/app/alpha_candidate_paint_deficit.py \
+            engine/app/alpha_candidate_painter.py \
+            engine/test_alpha_painter_paint_deficit.py
+          test -z "$(git status --porcelain --untracked-files=no | grep -E 'engine/regression/faz3d4|\.github/workflows/faz-3d4-' || true)"
+          git -c user.name='Vektoryum CI' -c user.email='actions@github.com' commit \
+            -m 'fix: overlay measured paint deficits under source alpha' \
+            -m 'Add a generic vector-only q24 paint-deficit fallback after existing painter encodings fail. It repairs source-foreground pixels rendered white by preserved artwork, uses a deterministic dominant source palette and compact rectangles, and remains fail-closed behind unchanged alpha, TransformJournal, complexity, topology, SSIM, Edge F1 and seam gates.'
+          git push origin "HEAD:${TARGET_BRANCH}"
+
+      - name: Upload safe logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: faz3d4-paint-deficit-production-v5-${{ github.run_id }}
+          path: |
+            faz3d4-paint-deficit-focused.log
+            faz3d4-paint-deficit-alpha.log
+            engine/regression/faz3d4-paint-deficit-production-v5.log
+          if-no-files-found: warn
+          retention-days: 7
