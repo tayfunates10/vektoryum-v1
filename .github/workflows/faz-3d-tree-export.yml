@@ -1,0 +1,34 @@
+name: FAZ 3D base tree export
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/faz-3d-tree-export.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+
+      - name: Export commit and tree identity
+        shell: bash
+        run: |
+          printf '%s\n' "$(git rev-parse HEAD)" > faz3d-head-sha.txt
+          printf '%s\n' "$(git rev-parse 'HEAD^{tree}')" > faz3d-tree-sha.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: faz3d-tree-${{ github.run_id }}
+          path: |
+            faz3d-head-sha.txt
+            faz3d-tree-sha.txt
+          if-no-files-found: error
+          retention-days: 1
