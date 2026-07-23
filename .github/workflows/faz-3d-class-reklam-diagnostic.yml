@@ -123,6 +123,9 @@ jobs:
                 entry for entry in ledgers[0]
                 if entry["encoding_family"] == "polygon"
             ]
+            self.assertEqual(
+                [entry["stroke_width"] for entry in polygon], [1.0, 1.5, 2.0]
+            )
             failed = [
                 entry for entry in polygon
                 if entry["stroke_width"] == 1.5
@@ -140,15 +143,15 @@ jobs:
                 ["topology_hole_regression", "seam_regression"],
             )
             self.assertEqual(len(passed), 1)
-            self.assertGreaterEqual(len(calls), 2)
+            self.assertEqual(len(calls), 2)
 
-    def test_18_noneligible_journal_rejection_stops_stroke_search(self) -> None:
+    def test_18_noneligible_journal_rejection_stops_and_rolls_back(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "s.png"
             svg = root / "c.svg"
             _simple_soft_disc_source(source)
-            _covering_parent(svg, 96)
+            original = _covering_parent(svg, 96)
             calls: list[int] = []
 
             def journal(*_args, **_kwargs):
@@ -166,6 +169,8 @@ jobs:
                 )
 
             self.assertIsInstance(error, RuntimeError)
+            self.assertIn("node_complexity_explosion", str(error))
+            self.assertEqual(svg.read_bytes(), original)
             polygon_validated = [
                 entry for entry in ledgers[0]
                 if entry["encoding_family"] == "polygon"
@@ -174,6 +179,86 @@ jobs:
             self.assertEqual(
                 [entry["stroke_width"] for entry in polygon_validated], [1.5]
             )
+            self.assertEqual(len(calls), 3)
+
+    def test_19_mixed_reason_set_is_not_retry_eligible(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "s.png"
+            svg = root / "c.svg"
+            _simple_soft_disc_source(source)
+            original = _covering_parent(svg, 96)
+            calls: list[int] = []
+
+            def journal(*_args, **_kwargs):
+                calls.append(len(calls))
+                return False, [
+                    "topology_hole_regression",
+                    "node_complexity_explosion",
+                ]
+
+            with patch(
+                "app.alpha_candidate_painter._run_painter_geometry_journal",
+                side_effect=journal,
+            ):
+                _report, ledgers, error = _capture_attempts(
+                    lambda: apply_candidate_painter_reconstruction(
+                        svg, source, "logo_color"
+                    )
+                )
+
+            self.assertIsInstance(error, RuntimeError)
+            self.assertIn("node_complexity_explosion", str(error))
+            self.assertEqual(svg.read_bytes(), original)
+            polygon_validated = [
+                entry for entry in ledgers[0]
+                if entry["encoding_family"] == "polygon"
+                and entry["validation_started"]
+            ]
+            self.assertEqual(
+                [entry["stroke_width"] for entry in polygon_validated], [1.5]
+            )
+            self.assertEqual(len(calls), 3)
+
+    def test_20_retry_path_is_deterministic(self) -> None:
+        def run_once(root: Path):
+            source = root / "s.png"
+            svg = root / "c.svg"
+            _simple_soft_disc_source(source)
+            _covering_parent(svg, 96)
+            calls: list[int] = []
+
+            def journal(*_args, **_kwargs):
+                calls.append(len(calls))
+                if len(calls) == 1:
+                    return False, ["topology_hole_regression", "seam_regression"]
+                return True, []
+
+            with patch(
+                "app.alpha_candidate_painter._run_painter_geometry_journal",
+                side_effect=journal,
+            ):
+                report, ledgers, error = _capture_attempts(
+                    lambda: apply_candidate_painter_reconstruction(
+                        svg, source, "logo_color"
+                    )
+                )
+            self.assertIsNone(error)
+            return (
+                hashlib.sha256(svg.read_bytes()).hexdigest(),
+                report["painter_encoding_label"],
+                report["candidate_support_stroke_width_pixels"],
+                report["painter_attempts_sha256"],
+                ledgers[0],
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "first"
+            second = root / "second"
+            first.mkdir()
+            second.mkdir()
+            self.assertEqual(run_once(first), run_once(second))
 '''
           test_path.write_text(test.replace(marker, block + marker))
           PY
@@ -223,12 +308,12 @@ jobs:
             engine/test_alpha_painter_ledger.py
           git -c user.name='Vektoryum CI' -c user.email='actions@github.com' commit \
             -m 'fix: continue painter stroke search after eligible journal rejection' \
-            -m 'Retry only when every journal reason remains inside the unchanged FAZ 3C topology/seam/SSIM/edge scope. Noneligible complexity or policy reasons still stop fail-closed. Thresholds, evaluator, TransformJournal, corpus, repeat, retry and timeout remain unchanged.'
+            -m 'Retry only when every journal reason remains inside the unchanged FAZ 3C topology/seam/SSIM/edge scope. Noneligible complexity or policy reasons still stop fail-closed. Retry eligibility, retry count, stroke list, thresholds, evaluator, TransformJournal, corpus, repeat, shard and timeout remain unchanged. Output remains deterministic vector-only with byte-identical rollback.'
           printf '\nfaz3d-alpha-tests.log\nengine/regression/faz3d-stroke-retry.log\nengine/regression/faz3d-stroke-retry-output/\n' >> .git/info/exclude
           test -z "$(git status --porcelain)"
           git push origin "HEAD:${TARGET_BRANCH}"
 
-      - name: Upload verification logs
+      - name: Upload safe verification logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -236,6 +321,5 @@ jobs:
           path: |
             faz3d-alpha-tests.log
             engine/regression/faz3d-stroke-retry.log
-            engine/regression/faz3d-stroke-retry-output
           if-no-files-found: warn
           retention-days: 7
