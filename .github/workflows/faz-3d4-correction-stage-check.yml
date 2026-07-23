@@ -1,0 +1,47 @@
+name: FAZ 3D4 residual correction staging check
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/faz-3d4-correction-stage-check.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    env:
+      TEST_BRANCH: agent/faz3d4-residual-test
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/rfv-3d3-canvas-independent-alpha-mask
+          fetch-depth: 0
+      - name: Build safe correction summary
+        shell: bash
+        run: |
+          set +e
+          git fetch origin "${TEST_BRANCH}:refs/remotes/origin/${TEST_BRANCH}" >/tmp/fetch.log 2>&1
+          : > /tmp/corr.b64
+          for part in 00 01 02; do
+            git show "origin/${TEST_BRANCH}:engine/regression/residual_corr_${part}.txt" > "/tmp/${part}.txt" 2>"/tmp/${part}.err"
+            echo "part_${part}_bytes=$(wc -c < /tmp/${part}.txt)" >> correction-stage-summary.txt
+            cat "/tmp/${part}.txt" >> /tmp/corr.b64
+          done
+          base64 --decode --ignore-garbage /tmp/corr.b64 > /tmp/corr.patch 2>/tmp/decode.err
+          git apply --check /tmp/corr.patch >/tmp/apply.log 2>&1
+          {
+            echo "joined_bytes=$(wc -c < /tmp/corr.b64)"
+            echo "patch_bytes=$(wc -c < /tmp/corr.patch)"
+            echo "patch_sha=$(sha256sum /tmp/corr.patch | cut -d' ' -f1)"
+            echo "apply_status=$?"
+            echo "apply=$(tail -4 /tmp/apply.log | tr '\n' ';')"
+          } >> correction-stage-summary.txt
+          cat correction-stage-summary.txt
+          exit 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: correction-stage-summary-${{ github.run_id }}
+          path: correction-stage-summary.txt
+          retention-days: 2
