@@ -1,0 +1,54 @@
+name: FAZ 3D4 production materialize debug
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/faz-3d4-production-materialize-debug.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/rfv-3d3-canvas-independent-alpha-mask
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Extract and run production materialize step
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import textwrap
+
+          text = Path(
+              '.github/workflows/faz-3d4-paint-deficit-production.yml'
+          ).read_text(encoding='utf-8')
+          marker = '      - name: Materialize generic paint-deficit production code\n'
+          section = text.split(marker, 1)[1].split(
+              '\n      - name: Run focused painter contracts', 1
+          )[0]
+          run_body = section.split('        run: |\n', 1)[1]
+          Path('/tmp/materialize.sh').write_text(textwrap.dedent(run_body))
+          PY
+          set +e
+          bash /tmp/materialize.sh > /tmp/materialize.log 2>&1
+          status=$?
+          set -e
+          {
+            echo "exit_code=${status}"
+            tail -120 /tmp/materialize.log
+          } > materialize-error-tail.txt
+          exit 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: faz3d4-materialize-debug-${{ github.run_id }}
+          path: materialize-error-tail.txt
+          retention-days: 3
