@@ -1,0 +1,89 @@
+name: FAZ 3D4 paint deficit compact v6
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/faz-3d4-paint-deficit-compact-v6.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      PYTHONPATH: engine:.
+      PYTHONHASHSEED: "0"
+      VEKTORYUM_WORKERS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/rfv-3d3-canvas-independent-alpha-mask
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: engine/requirements.txt
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ghostscript libcairo2
+          python -m pip install -q -r engine/requirements.txt pytest httpx
+      - name: Build compact-overlay script
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import textwrap
+
+          workflow = Path('.github/workflows/faz-3d4-paint-deficit-overlay-v5.yml').read_text()
+          start = "python - <<'PY'\n"
+          end = "\n          PY\n          python -m py_compile /tmp/seam_isolation_v3.py"
+          builder = textwrap.dedent(workflow.split(start, 1)[1].split(end, 1)[0])
+          exec(compile(builder, '<v5-builder>', 'exec'))
+
+          path = Path('/tmp/seam_isolation_v3.py')
+          script = path.read_text()
+          old = 'strategies = {"source_rgb_q32": strategies["source_rgb_q32"]}'
+          new = '''strategies = {
+              "source_nearest_opaque_8": nearest_palette(source_rgba[:, :, :3], palette8),
+              "source_nearest_opaque_16": nearest_palette(source_rgba[:, :, :3], palette16),
+          }'''
+          if old not in script:
+              raise SystemExit('v5 strategy selector missing')
+          script = script.replace(old, new, 1)
+          script = script.replace(
+              'for support_encoding in ("polygon",):',
+              'for support_encoding in ("rect", "polygon"):',
+              1,
+          )
+          script = script.replace(
+              '"schema": "faz3d4-paint-deficit-overlay-v5"',
+              '"schema": "faz3d4-paint-deficit-compact-v6"',
+              1,
+          )
+          path.write_text(script)
+          PY
+          python -m py_compile /tmp/seam_isolation_v3.py
+      - name: Run compact overlay variants
+        shell: bash
+        run: |
+          set +e
+          python /tmp/seam_isolation_v3.py > paint-v6.log 2>&1
+          status=$?
+          set -e
+          tail -220 paint-v6.log > paint-v6-tail.txt
+          echo "exit_code=${status}" >> paint-v6-tail.txt
+          exit 0
+      - name: Upload scalar-only result
+        uses: actions/upload-artifact@v4
+        with:
+          name: faz3d4-paint-deficit-compact-v6-${{ github.run_id }}
+          path: |
+            faz3d4-hidden-rgb-shadow.json
+            paint-v6-tail.txt
+          if-no-files-found: warn
+          retention-days: 7
