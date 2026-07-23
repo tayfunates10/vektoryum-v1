@@ -1,0 +1,124 @@
+name: FAZ 3D final test-gated executor
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/faz-3d-finalize-executor.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: faz-3d-final-executor-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  execute:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      PYTHONHASHSEED: "0"
+      PYTHONPATH: engine:.
+      VEKTORYUM_WORKERS: "1"
+      TARGET_BRANCH: agent/rfv-3d3-canvas-independent-alpha-mask
+      EXECUTOR_COMMIT_MESSAGE: "chore: run final FAZ 3D test-gated executor"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/rfv-3d3-canvas-independent-alpha-mask
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: engine/requirements.txt
+
+      - name: Install production and test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ghostscript libcairo2
+          python -m pip install -q -r engine/requirements.txt pytest httpx
+
+      - name: Apply narrow production and test patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git log -1 --pretty=%s)" = "${EXECUTOR_COMMIT_MESSAGE}"
+          python engine/regression/faz3d_finalize_stroke_continuation.py
+          python -m py_compile \
+            engine/app/alpha_candidate_painter.py \
+            engine/test_alpha_painter_stroke_continuation.py
+
+      - name: Run targeted continuation contracts
+        run: >-
+          python -m unittest
+          engine.test_alpha_painter_stroke_continuation
+          engine.test_alpha_painter_retry
+          engine.test_alpha_painter_reconstruction_fidelity
+          -v
+
+      - name: Run complete alpha suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest \
+            engine.test_alpha_candidate_identity \
+            engine.test_alpha_candidate_knockout \
+            engine.test_alpha_candidate_paint_selection \
+            engine.test_alpha_candidate_support \
+            engine.test_alpha_candidate_validation \
+            engine.test_alpha_candidate_painter \
+            engine.test_alpha_candidate_background \
+            engine.test_alpha_mask_adaptive \
+            engine.test_alpha_mask_transaction \
+            engine.test_alpha_preprocess \
+            engine.test_alpha_noop_preflight \
+            engine.test_alpha_clip_encoding \
+            engine.test_alpha_artwork_identity \
+            engine.test_alpha_painter_encoding \
+            engine.test_alpha_painter_ledger \
+            engine.test_alpha_painter_retry \
+            engine.test_alpha_painter_reconstruction_fidelity \
+            engine.test_alpha_painter_stroke_continuation \
+            -v > faz3d-alpha-tests.log 2>&1
+          cat faz3d-alpha-tests.log
+
+      - name: Run Class Reklam and gradient sentinels
+        working-directory: engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          python test_visual_regression.py \
+            --case class_reklam \
+            --case gradient_logo \
+            --require-baseline \
+            --out-dir regression/faz3d-final-sentinels \
+            > regression/faz3d-final-sentinels.log 2>&1
+          cat regression/faz3d-final-sentinels.log
+
+      - name: Commit and push verified code only
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add \
+            engine/app/alpha_candidate_painter.py \
+            engine/test_alpha_painter_stroke_continuation.py
+          git -c user.name='Vektoryum CI' -c user.email='actions@github.com' commit \
+            -m 'fix: continue painter stroke search after eligible journal rejection' \
+            -m 'Retry only when every journal reason remains inside the unchanged FAZ 3C topology/seam/SSIM/edge scope. Noneligible complexity or policy reasons still stop fail-closed. Retry eligibility, retry count, stroke list, thresholds, evaluator, TransformJournal, corpus, repeat, shard and timeout remain unchanged. Output remains deterministic vector-only with byte-identical rollback.'
+          printf '\nfaz3d-alpha-tests.log\nengine/regression/faz3d-final-sentinels.log\nengine/regression/faz3d-final-sentinels/\n' >> .git/info/exclude
+          test -z "$(git status --porcelain)"
+          git push origin "HEAD:${TARGET_BRANCH}"
+
+      - name: Upload safe scalar logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: faz3d-final-executor-${{ github.run_id }}
+          path: |
+            faz3d-alpha-tests.log
+            engine/regression/faz3d-final-sentinels.log
+          if-no-files-found: warn
+          retention-days: 7
