@@ -34,7 +34,9 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 import os
+import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
@@ -457,7 +459,20 @@ def build_painter_reconstruction_tree(
     }
 
 
-def validate_painter_reconstruction(
+_PAINTER_ASSESS_STATUSES = (
+    "byte_rejected",
+    "render_rejected",
+    "native_alpha_rejected",
+    "bounded_alpha_rejected",
+    "evaluator_rejected",
+    "structure_rejected",
+    "identity_rejected",
+    "geometry_rejected",
+    "accepted",
+)
+
+
+def _assess_painter_candidate(
     candidate_path: Path,
     source_rgba_full: np.ndarray,
     grid_alpha: np.ndarray,
@@ -466,17 +481,13 @@ def validate_painter_reconstruction(
     transaction_id: str = "",
     parent_artwork_fingerprint: str | None = None,
 ) -> dict[str, Any]:
-    """Fail-closed dual-scale alpha validation with unchanged thresholds.
+    """Fail-closed dual-scale alfa değerlendirmesi — YAPILANDIRILMIŞ sonuç döner.
 
-    The direct gate renders once at the reconstruction's native grid — where
-    the geometry is pixel-aligned and must reproduce the staged alpha plane —
-    and compares the bounded evaluation view through the same INTER_AREA
-    downscale the source reference uses, so both sides of the comparison pass
-    through identical filters. Thresholds are the existing image-class hard
-    gates; nothing is loosened. FinalArtifactEvaluator then independently
-    confirms the alpha plane against the full-resolution source, exactly like
-    the established dual contract, and appearance/topology/seam stay owned by
-    the following real TransformJournal parent-delta stage.
+    Kapı hatasında exception ATMAZ; her aşamanın gerçek sayısal metriğini ve
+    kesin red aşamasını/kodunu kaydeder ki FAZ 3B.1 encoding attempt ledger'ı
+    gerçek red nedenini taşısın (son denemenin ötekini ezmesi engellenir). Sıra
+    ve EŞİKLER değişmemiştir: native alfa → bounded alfa → evaluator alfa →
+    structure → artwork identity. Görünüm/topoloji/seam TransformJournal'a aittir.
     """
     from app.alpha_svg_mask import _MODE_IMAGE_CLASS  # noqa: PLC0415
     from app.alpha_candidate_knockout import _source_rgb_on_white  # noqa: PLC0415
@@ -491,23 +502,52 @@ def validate_painter_reconstruction(
     iou_min = float(thresholds["alpha_iou_min"])
     mae_max = float(thresholds["alpha_mae_max"])
 
+    result: dict[str, Any] = {
+        "status": None,
+        "validation_stage": None,
+        "exact_error_code": "",
+        "native_alpha_iou": None,
+        "native_alpha_mae": None,
+        "bounded_alpha_iou": None,
+        "bounded_alpha_mae": None,
+        "evaluator_alpha_iou": None,
+        "evaluator_alpha_mae": None,
+        "artwork_fingerprint_match": None,
+        "actual_path_count": None,
+        "actual_node_count": None,
+        "report": None,
+    }
+
     grid_height, grid_width = grid_alpha.shape
     native = render_svg_to_rgba(candidate_path, grid_width, grid_height)
     if native is None:
-        raise RuntimeError("source_alpha_candidate_painter_render_unmeasured")
+        result["status"] = "render_rejected"
+        result["validation_stage"] = "render"
+        result["exact_error_code"] = (
+            "source_alpha_candidate_painter_render_unmeasured"
+        )
+        return result
     if native.shape[:2] != (grid_height, grid_width):
         native = resize_rgba(native, grid_width, grid_height)
     native_metrics = alpha_plane_metrics(grid_alpha, native[:, :, 3])
+    result["native_alpha_iou"] = float(native_metrics["alpha_iou"])
+    result["native_alpha_mae"] = float(native_metrics["alpha_mae"])
     if float(native_metrics["alpha_iou"]) < iou_min:
-        raise RuntimeError(
+        result["status"] = "native_alpha_rejected"
+        result["validation_stage"] = "native_alpha"
+        result["exact_error_code"] = (
             "source_alpha_candidate_painter_native_iou_gate_failed:"
             f"{native_metrics['alpha_iou']:.6f}<{iou_min}"
         )
+        return result
     if float(native_metrics["alpha_mae"]) > mae_max:
-        raise RuntimeError(
+        result["status"] = "native_alpha_rejected"
+        result["validation_stage"] = "native_alpha"
+        result["exact_error_code"] = (
             "source_alpha_candidate_painter_native_mae_gate_failed:"
             f"{native_metrics['alpha_mae']:.6f}>{mae_max}"
         )
+        return result
 
     source_height, source_width = source_rgba_full.shape[:2]
     eval_scale = min(1.0, _PAINTER_EVAL_SIDE / float(max(source_width, source_height)))
@@ -518,16 +558,24 @@ def validate_painter_reconstruction(
         native[:, :, 3], (eval_width, eval_height), interpolation=cv2.INTER_AREA
     )
     direct_metrics = alpha_plane_metrics(source_eval[:, :, 3], rendered_eval_alpha)
+    result["bounded_alpha_iou"] = float(direct_metrics["alpha_iou"])
+    result["bounded_alpha_mae"] = float(direct_metrics["alpha_mae"])
     if float(direct_metrics["alpha_iou"]) < iou_min:
-        raise RuntimeError(
+        result["status"] = "bounded_alpha_rejected"
+        result["validation_stage"] = "bounded_alpha"
+        result["exact_error_code"] = (
             "source_alpha_candidate_painter_iou_gate_failed:"
             f"{direct_metrics['alpha_iou']:.6f}<{iou_min}"
         )
+        return result
     if float(direct_metrics["alpha_mae"]) > mae_max:
-        raise RuntimeError(
+        result["status"] = "bounded_alpha_rejected"
+        result["validation_stage"] = "bounded_alpha"
+        result["exact_error_code"] = (
             "source_alpha_candidate_painter_mae_gate_failed:"
             f"{direct_metrics['alpha_mae']:.6f}>{mae_max}"
         )
+        return result
 
     report = evaluate_final_svg(
         candidate_path,
@@ -539,10 +587,17 @@ def validate_painter_reconstruction(
     alpha_group = report.metrics.get("G_gradient_alpha") or {}
     evaluator_alpha_iou = alpha_group.get("alpha_iou")
     evaluator_alpha_mae = alpha_group.get("alpha_mae")
+    if evaluator_alpha_iou is not None:
+        result["evaluator_alpha_iou"] = float(evaluator_alpha_iou)
+    if evaluator_alpha_mae is not None:
+        result["evaluator_alpha_mae"] = float(evaluator_alpha_mae)
     if evaluator_alpha_iou is None or evaluator_alpha_mae is None:
-        raise RuntimeError(
+        result["status"] = "evaluator_rejected"
+        result["validation_stage"] = "evaluator"
+        result["exact_error_code"] = (
             "source_alpha_candidate_painter_evaluator_rejected:alpha_plane_unmeasured"
         )
+        return result
     plane_failure_codes = [
         code for code in report.hard_fail_codes if code in _ALPHA_PLANE_FAILURE_CODES
     ]
@@ -551,45 +606,61 @@ def validate_painter_reconstruction(
     if float(evaluator_alpha_mae) > mae_max and "alpha_mae_above_max" not in plane_failure_codes:
         plane_failure_codes.append("alpha_mae_above_max")
     if plane_failure_codes:
-        raise RuntimeError(
+        result["status"] = "evaluator_rejected"
+        result["validation_stage"] = "evaluator"
+        result["exact_error_code"] = (
             "source_alpha_candidate_painter_evaluator_rejected:"
             + ",".join(plane_failure_codes)
         )
+        return result
 
     structure, _messages, structure_codes, root = _structure_check(
         Path(candidate_path).read_bytes()
     )
     if structure_codes or root is None:
-        raise RuntimeError(
+        result["status"] = "structure_rejected"
+        result["validation_stage"] = "structure"
+        result["exact_error_code"] = (
             "source_alpha_candidate_painter_structure_failed:"
             + ",".join(structure_codes or ["parse_failed"])
         )
+        return result
     after_counts = (
         int(structure.get("path_count") or 0),
         int(structure.get("node_count") or 0),
     )
+    result["actual_path_count"] = int(after_counts[0])
+    result["actual_node_count"] = int(after_counts[1])
     # FAZ 3A — kör toplam-sayım eşitliği yerine provenance-farkında sanat kimliği.
-    # Transform-owned maske/destek geometrisi (bu transaction'a etiketli) sanat
-    # parmak izinden dışlanır; sanat eserinin geometri+renk kimliği parent ile
-    # BİREBİR aynı olmalı. Toplam karmaşıklık (byte/path/node) ve görünüm
-    # (SSIM/edge/seam/topology) değişmemiş journal kapılarınca bağlanmaya devam
-    # eder — bu bir bypass değil, kimliğin iki ayrı sözleşmeye bölünmesidir.
     if parent_artwork_fingerprint is not None:
         candidate_fingerprint = artwork_fingerprint(root, transaction_id)
-        if candidate_fingerprint != parent_artwork_fingerprint:
-            raise RuntimeError(
+        result["artwork_fingerprint_match"] = bool(
+            candidate_fingerprint == parent_artwork_fingerprint
+        )
+        if not result["artwork_fingerprint_match"]:
+            result["status"] = "identity_rejected"
+            result["validation_stage"] = "identity"
+            result["exact_error_code"] = (
                 "source_alpha_candidate_painter_artwork_identity_changed:"
                 f"{parent_artwork_fingerprint[:12]}!={candidate_fingerprint[:12]}"
             )
+            return result
     elif after_counts != parent_counts:
-        # Geriye dönük güvenli varsayılan: parmak izi verilmediyse eski sözleşme.
-        raise RuntimeError(
+        result["artwork_fingerprint_match"] = False
+        result["status"] = "identity_rejected"
+        result["validation_stage"] = "identity"
+        result["exact_error_code"] = (
             "source_alpha_candidate_painter_candidate_geometry_changed:"
             f"{parent_counts[0]}/{parent_counts[1]}->"
             f"{after_counts[0]}/{after_counts[1]}"
         )
+        return result
+    else:
+        result["artwork_fingerprint_match"] = True
 
-    return {
+    result["status"] = "accepted"
+    result["validation_stage"] = "accepted"
+    result["report"] = {
         "painter_native_alpha_iou": float(native_metrics["alpha_iou"]),
         "painter_native_alpha_mae": float(native_metrics["alpha_mae"]),
         "source_truth_alpha_iou": float(direct_metrics["alpha_iou"]),
@@ -615,6 +686,142 @@ def validate_painter_reconstruction(
             else "total_count_equality"
         ),
     }
+    return result
+
+
+def validate_painter_reconstruction(
+    candidate_path: Path,
+    source_rgba_full: np.ndarray,
+    grid_alpha: np.ndarray,
+    mode: str,
+    parent_counts: tuple[int, int],
+    transaction_id: str = "",
+    parent_artwork_fingerprint: str | None = None,
+) -> dict[str, Any]:
+    """Fail-closed dual-scale alpha validation with unchanged thresholds.
+
+    Thin sarmalayıcı: yapılandırılmış değerlendirmeyi çağırır ve kabul edilmeyen
+    adayı aynı kesin hata koduyla reddeder (dış sözleşme korunur).
+    """
+    assessment = _assess_painter_candidate(
+        candidate_path,
+        source_rgba_full,
+        grid_alpha,
+        mode,
+        parent_counts,
+        transaction_id,
+        parent_artwork_fingerprint,
+    )
+    if assessment["status"] != "accepted":
+        raise RuntimeError(assessment["exact_error_code"])
+    return dict(assessment["report"] or {})
+
+
+_PAINTER_ERROR_PREFIX = "source_alpha_candidate_painter_"
+
+
+def _run_painter_geometry_journal(
+    parent_path: Path,
+    candidate_path: Path,
+    journal_source_rgb: np.ndarray,
+    image_class: str,
+    transform_report: Any,
+) -> tuple[bool, list[str]]:
+    """Adayı, aşağı-akış ile AYNI değişmemiş TransformJournal geometri kapılarından
+    (SSIM/edge/seam/topology/node/byte) geçir. Kabul edilirse (True, []); aksi halde
+    (False, reason_codes). Böylece turnuva 'en küçük byte' seçimini YALNIZ bütün
+    kapıları geçen adaylar arasında yapar; contour gibi byte-küçük ama seam/node
+    reddi alan aday seçilmez (class_reklam regresyonunu önler). Journal DEĞİŞTİRİLMEZ,
+    yalnızca kullanılır."""
+    from app.transform_journal import TransformJournal  # noqa: PLC0415
+
+    journal = TransformJournal(
+        Path(parent_path),
+        journal_source_rgb,
+        image_class=image_class,
+        required_metrics=set(),
+    )
+    accepted_path, stage = journal.consider_candidate(
+        "source_alpha_painter_candidate",
+        Path(parent_path),
+        Path(candidate_path),
+        transform_report=transform_report,
+    )
+    if Path(accepted_path) == Path(candidate_path):
+        return True, []
+    return False, [str(code) for code in (stage.get("reason_codes") or ["unknown"])]
+
+
+def _short_error_code(error_code: str) -> str:
+    if error_code.startswith(_PAINTER_ERROR_PREFIX):
+        return error_code[len(_PAINTER_ERROR_PREFIX):]
+    return error_code
+
+
+def _emit_painter_attempts(attempts: list[dict[str, Any]]) -> str:
+    """Güvenli sayısal telemetriyi deterministik JSON satırı olarak stderr'e yaz.
+
+    Ham SVG / path ``d`` / kaynak byte'ı İÇERMEZ; yalnız sayısal metrik, enum ve
+    hata kodu. Deterministik: sort_keys, sabit liste sırası, locale-bağımsız
+    sayı formatı, rastgele ID yok → aynı girdi aynı SHA.
+    """
+    payload = json.dumps(attempts, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    print(
+        f"source_alpha_candidate_painter_attempts={payload}",
+        file=sys.stderr,
+        flush=True,
+    )
+    return digest
+
+
+def _painter_primary_error(
+    attempts: list[dict[str, Any]], attempts_sha: str
+) -> str:
+    """Öncelikli ana hata — son deneme (rect byte) daha anlamlıyı EZMEZ.
+
+    Öncelik: (1) bütçeye girip validation başlatan İLK exact aday hatası,
+    (2) İLK quantized validation hatası, (3) en küçük byte'lı byte-rejected exact,
+    (4) en küçük byte'lı byte-rejected quantized, (5) no_admissible_reconstruction.
+    """
+    def _validated(family: str) -> dict[str, Any] | None:
+        for entry in attempts:
+            if (
+                entry.get("exact_or_quantized") == family
+                and entry.get("validation_started")
+                and entry.get("status") != "accepted"
+            ):
+                return entry
+        return None
+
+    def _smallest_byte_rejected(family: str) -> dict[str, Any] | None:
+        candidates = [
+            entry
+            for entry in attempts
+            if entry.get("exact_or_quantized") == family
+            and entry.get("status") == "byte_rejected"
+        ]
+        if not candidates:
+            return None
+        return min(candidates, key=lambda e: int(e["actual_serialized_bytes"]))
+
+    primary = (
+        _validated("exact")
+        or _validated("quantized")
+        or _smallest_byte_rejected("exact")
+        or _smallest_byte_rejected("quantized")
+    )
+    if primary is not None:
+        label = primary["encoding_label"]
+        code = _short_error_code(str(primary["exact_error_code"]))
+        return (
+            "source_alpha_candidate_painter_no_admissible_reconstruction:"
+            f"primary={label}:{code};attempts_sha256={attempts_sha}"
+        )
+    return (
+        "source_alpha_candidate_painter_no_admissible_reconstruction:"
+        f"primary=none:no_candidate;attempts_sha256={attempts_sha}"
+    )
 
 
 def apply_candidate_painter_reconstruction(
@@ -696,58 +903,131 @@ def apply_candidate_painter_reconstruction(
         source_size = source_image.size
     source_rgba_full = _rgba_from_source_at_size(source, source_size)
 
+    # Aşağı-akış TransformJournal ile AYNI beyaz-kompozit kaynak RGB'si + aynı
+    # image_class: turnuva her alfa-geçen adayı, seçmeden ÖNCE değişmemiş geometri
+    # kapılarından (SSIM/edge/seam/topology/node/byte) geçirir. Parent bytes ayrı
+    # bir geçici dosyaya yazılır (target kazanan ile ezilecek).
+    from app.alpha_svg_mask import _MODE_IMAGE_CLASS as _JOURNAL_MODE_CLASS  # noqa: PLC0415
+
+    _src_alpha = source_rgba_full[:, :, 3:4].astype(np.float32) / 255.0
+    journal_source_rgb = np.clip(
+        source_rgba_full[:, :, :3].astype(np.float32) * _src_alpha
+        + 255.0 * (1.0 - _src_alpha),
+        0,
+        255,
+    ).astype(np.uint8)
+    journal_image_class = _JOURNAL_MODE_CLASS.get(mode, "clean_logo")
+    parent_journal_path = target.parent / f".{target.name}.painter-parent.svg"
+    parent_journal_path.write_bytes(before_bytes)
+
     byte_limit = int(limits["byte_limit"])
 
-    # FAZ 3B — painter kompakt encoding turnuvası. Zincir sabit öncelik sırasında:
-    # sert-güvenli polygon önce (dikiş-en-güvenli); yalnız byte bütçesini aşınca
-    # giderek daha kompakt VE rect'ten daha dikiş-güvenli grouped-evenodd contour
-    # (bridge-walk union, iç kenar yok) ve niceleme fallback'leri; rect son çare.
-    # Her adayın byte'ı render ETMEDEN preflight edilir; bütçeyi aşan aday
-    # render edilmeden elenir. Bütçeye giren aday, değişmemiş tam kapı bataryasından
-    # geçmelidir (native+bounded alfa IoU/MAE, evaluator alfa grubu, sanat parmak
-    # izi, yapı/sayım). Niceleme YALNIZ alfa kapıları geçerse kabul edilir — kalite
-    # düşürerek testi geçme yoktur. Polygon'un sığdığı vakalarda dikiş davranışı
-    # değişmez (turnuva ilk adayı seçer).
-    encoding_chain: list[tuple[str, str, np.ndarray, dict[int, float]]] = [
-        ("polygon", "polygon", quantized, opacity_by_level),
-        ("contour", "contour", quantized, opacity_by_level),
+    # FAZ 3B / 3B.1 — painter kompakt encoding turnuvası + attempt ledger.
+    # ÜÇ KADEMELİ seçim (render-güvenli varsayılan politikası):
+    #   Kademe 1 (sayı-koruyan, render-güvenli): polygon + rect. Maskeleri
+    #     <polygon>/<rect> ile yazılır → path_count'a SAYILMAZ (aday kimliği ham
+    #     sayıyla da korunur); iç-kenarsız polygon yukarı-ölçekte referans-sadıktır,
+    #     rect ise journal seam kapısıyla bağlıdır. Bu kademede bütçeye SIĞAN ve TÜM
+    #     değişmemiş kapıları geçen adaylardan kazanan: en küçük byte → en az path →
+    #     en az node → sabit sıra.
+    #   Kademe 2 (kompakt, sayı-şişiren): contour. Maskesi <path> ile yazılır →
+    #     path/node SAYILIR ve kesirli-ölçekte polygon'dan az sadıktır; YALNIZ hiçbir
+    #     Kademe-1 adayı bütçeye sığmadığında (ör. public-05: polygon+rect >bütçe)
+    #     devreye girer. Journal geometri kapısı burada da nihai yetkidir.
+    #   Kademe 3 (quantized): contour-q128/64/32 — yalnız hiçbir exact geçmezse.
+    # Her (stroke, encoding) denemesi yapılandırılmış ledger'a yazılır; hiçbir aday
+    # kabul edilmezse ana hata öncelikle seçilir (son rect byte hatası daha anlamlıyı
+    # EZMEZ).
+    source_level_count = len([lvl for lvl in opacity_by_level if int(lvl) > 0])
+    count_preserving_specs: list[tuple[str, str, str, np.ndarray, dict[int, float]]] = [
+        ("polygon", "polygon", "exact", quantized, opacity_by_level),
+        ("rect", "rect", "exact", quantized, opacity_by_level),
     ]
+    compact_specs: list[tuple[str, str, str, np.ndarray, dict[int, float]]] = [
+        ("contour", "contour", "exact", quantized, opacity_by_level),
+    ]
+    quantized_specs: list[tuple[str, str, str, np.ndarray, dict[int, float]]] = []
     for target_levels in (128, 64, 32):
         requant, requant_opacity = _requantize_alpha(grid_alpha, target_levels)
-        encoding_chain.append(
-            (f"contour-q{target_levels}", "contour", requant, requant_opacity)
+        quantized_specs.append(
+            (f"contour-q{target_levels}", "contour", "quantized", requant, requant_opacity)
         )
-    encoding_chain.append(("rect", "rect", quantized, opacity_by_level))
 
-    last_error: RuntimeError | None = None
-    for stroke_width in _PAINTER_STROKE_PIXELS:
-        for label, mask_encoding, spec_quant, spec_opacity in encoding_chain:
-            txn = alpha_transaction_id(
-                parent_sha256, source_alpha_sha256, mode, label
-            )
-            probe_root, probe_geometry = build_painter_reconstruction_tree(
-                original_root,
-                canvas,
-                spec_quant,
-                spec_opacity,
-                stroke_width,
-                mask_encoding=mask_encoding,
-                transaction_id=txn,
-            )
-            probe_temp = _write_tree_to_temp(probe_root, target)
-            probe_size = probe_temp.stat().st_size
-            if probe_size > byte_limit:
-                last_error = RuntimeError(
-                    "source_alpha_candidate_painter_byte_budget_rejected:"
-                    f"{label}:{probe_size}>{byte_limit}"
+    attempts: list[dict[str, Any]] = []
+
+    def _evaluate_phase(
+        specs: list[tuple[str, str, str, np.ndarray, dict[int, float]]],
+    ) -> list[Any] | None:
+        best: list[Any] | None = None
+        for order, (label, mask_encoding, family, spec_quant, spec_opacity) in enumerate(specs):
+            encoded_levels = len([lvl for lvl in spec_opacity if int(lvl) > 0])
+            accepted: list[Any] | None = None
+            for stroke_width in _PAINTER_STROKE_PIXELS:
+                txn = alpha_transaction_id(
+                    parent_sha256, source_alpha_sha256, mode, label
                 )
-                probe_temp.unlink(missing_ok=True)
-                continue
-            parent_artwork_fp = artwork_fingerprint(
-                original_root, txn, excluded_from_parent
-            )
-            try:
-                validation = validate_painter_reconstruction(
+                probe_root, probe_geometry = build_painter_reconstruction_tree(
+                    original_root,
+                    canvas,
+                    spec_quant,
+                    spec_opacity,
+                    stroke_width,
+                    mask_encoding=mask_encoding,
+                    transaction_id=txn,
+                )
+                probe_temp = _write_tree_to_temp(probe_root, target)
+                probe_size = int(probe_temp.stat().st_size)
+                added_paths = int(probe_geometry.get("contour_path_count", 0))
+                added_nodes = int(probe_geometry.get("contour_command_count", 0))
+                entry: dict[str, Any] = {
+                    "stroke_width": float(stroke_width),
+                    "encoding_label": label,
+                    "encoding_family": mask_encoding,
+                    "exact_or_quantized": family,
+                    "source_alpha_level_count": int(source_level_count),
+                    "encoded_alpha_level_count": int(encoded_levels),
+                    "actual_serialized_bytes": probe_size,
+                    "byte_limit": int(byte_limit),
+                    "projected_path_count": int(parent_counts[0] + added_paths),
+                    "actual_path_count": None,
+                    "path_limit": int(limits["path_limit"]),
+                    "projected_node_count": (
+                        int(parent_counts[1] + added_nodes) if added_nodes else None
+                    ),
+                    "actual_node_count": None,
+                    "node_limit": int(limits["node_limit"]),
+                    "preflight_status": None,
+                    "validation_started": False,
+                    "validation_stage": None,
+                    "status": None,
+                    "exact_error_code": "",
+                    "native_alpha_iou": None,
+                    "native_alpha_mae": None,
+                    "bounded_alpha_iou": None,
+                    "bounded_alpha_mae": None,
+                    "evaluator_alpha_iou": None,
+                    "evaluator_alpha_mae": None,
+                    "artwork_fingerprint_match": None,
+                    "journal_gate_started": False,
+                    "journal_passed": None,
+                    "journal_reason_codes": [],
+                }
+                if probe_size > byte_limit:
+                    entry["preflight_status"] = "over_budget"
+                    entry["status"] = "byte_rejected"
+                    entry["exact_error_code"] = (
+                        "source_alpha_candidate_painter_byte_budget_rejected:"
+                        f"{label}:{probe_size}>{byte_limit}"
+                    )
+                    attempts.append(entry)
+                    probe_temp.unlink(missing_ok=True)
+                    continue
+                entry["preflight_status"] = "within_budget"
+                entry["validation_started"] = True
+                parent_artwork_fp = artwork_fingerprint(
+                    original_root, txn, excluded_from_parent
+                )
+                assessment = _assess_painter_candidate(
                     probe_temp,
                     source_rgba_full,
                     grid_alpha,
@@ -756,38 +1036,126 @@ def apply_candidate_painter_reconstruction(
                     transaction_id=txn,
                     parent_artwork_fingerprint=parent_artwork_fp,
                 )
-            except RuntimeError as exc:
-                last_error = exc
+                for field in (
+                    "validation_stage",
+                    "status",
+                    "exact_error_code",
+                    "native_alpha_iou",
+                    "native_alpha_mae",
+                    "bounded_alpha_iou",
+                    "bounded_alpha_mae",
+                    "evaluator_alpha_iou",
+                    "evaluator_alpha_mae",
+                    "artwork_fingerprint_match",
+                    "actual_path_count",
+                    "actual_node_count",
+                ):
+                    entry[field] = assessment[field]
+                if assessment["status"] == "accepted":
+                    # Alfa geçti → seçmeden ÖNCE aşağı-akışla AYNI geometri
+                    # kapılarından (seam/node/topology/SSIM/edge/byte) geçir.
+                    entry["journal_gate_started"] = True
+                    journal_passed, journal_codes = _run_painter_geometry_journal(
+                        parent_journal_path,
+                        probe_temp,
+                        journal_source_rgb,
+                        journal_image_class,
+                        assessment["report"],
+                    )
+                    entry["journal_passed"] = bool(journal_passed)
+                    entry["journal_reason_codes"] = list(journal_codes)
+                    if journal_passed:
+                        attempts.append(entry)
+                        accepted = [
+                            probe_size,
+                            int(assessment["actual_path_count"] or 0),
+                            int(assessment["actual_node_count"] or 0),
+                            order,
+                            probe_temp,
+                            probe_geometry,
+                            dict(assessment["report"] or {}),
+                            label,
+                            float(stroke_width),
+                        ]
+                        break  # bu encoding için en küçük geçen stroke yeterli
+                    # Alfa geçti ama journal geometri kapısı reddetti (ör. contour'un
+                    # seam/node patlaması) → seçilmez; en küçük byte politikası YALNIZ
+                    # tüm kapıları geçen adaylar arasında çalışır (class_reklam korunur).
+                    entry["status"] = "geometry_rejected"
+                    entry["validation_stage"] = "journal_geometry"
+                    entry["exact_error_code"] = (
+                        "source_alpha_candidate_painter_journal_geometry_rejected:"
+                        + ",".join(journal_codes)
+                    )
+                    attempts.append(entry)
+                    probe_temp.unlink(missing_ok=True)
+                    # Journal geometri reddi maske-kaynaklıdır (node/seam) ve stroke'tan
+                    # bağımsızdır → bu encoding için diğer stroke'ları deneme (maliyet).
+                    break
+                attempts.append(entry)
                 probe_temp.unlink(missing_ok=True)
-                continue
-            os.replace(probe_temp, target)
+            if accepted is not None:
+                if best is None or tuple(accepted[:4]) < tuple(best[:4]):
+                    if best is not None:
+                        Path(best[4]).unlink(missing_ok=True)
+                    best = accepted
+                else:
+                    Path(accepted[4]).unlink(missing_ok=True)
+        return best
 
-            return {
-                "status": "accepted",
-                "applied": True,
-                "schema": "rfv3d2-candidate-painter-reconstruction-v1",
-                "before_byte_size": int(before_size),
-                "after_byte_size": int(target.stat().st_size),
-                "mask_encoding": "candidate_painter_luminance_mask",
-                "painter_encoding_label": label,
-                "comparison_background_status": background_status,
-                "comparison_background_color_agnostic": True,
-                "candidate_support_stroke_width_pixels": float(stroke_width),
-                "candidate_geometry_preserved": True,
-                "candidate_path_data_preserved": True,
-                "trace_rgb_bytes_preserved": True,
-                "candidate_identity_preserved": True,
-                "painter_grid_width": int(grid_width),
-                "painter_grid_height": int(grid_height),
-                "preflight_parent_path_count": int(parent_counts[0]),
-                "preflight_parent_node_count": int(parent_counts[1]),
-                "preflight_path_limit": int(limits["path_limit"]),
-                "preflight_node_limit": int(limits["node_limit"]),
-                "preflight_byte_limit": int(limits["byte_limit"]),
-                **probe_geometry,
-                **validation,
-            }
+    try:
+        # Kademe 1 → Kademe 2 → Kademe 3: render-güvenli sayı-koruyan kodlamalar
+        # bütçeye sığdığında tercih; contour yalnız onlar sığmadığında; quantized
+        # yalnız hiçbir exact geçmezse.
+        winner = _evaluate_phase(count_preserving_specs)
+        if winner is None:
+            winner = _evaluate_phase(compact_specs)
+        if winner is None:
+            winner = _evaluate_phase(quantized_specs)
+    finally:
+        parent_journal_path.unlink(missing_ok=True)
 
-    raise last_error or RuntimeError(
-        "source_alpha_candidate_painter_no_admissible_reconstruction"
-    )
+    if winner is not None:
+        (
+            _w_bytes,
+            _w_path,
+            _w_node,
+            _w_order,
+            w_temp,
+            w_geometry,
+            w_report,
+            w_label,
+            w_stroke,
+        ) = winner
+        os.replace(w_temp, target)
+        attempts_sha = _emit_painter_attempts(attempts)
+        return {
+            "status": "accepted",
+            "applied": True,
+            "schema": "rfv3d2-candidate-painter-reconstruction-v1",
+            "before_byte_size": int(before_size),
+            "after_byte_size": int(target.stat().st_size),
+            "mask_encoding": "candidate_painter_luminance_mask",
+            "painter_encoding_label": w_label,
+            "painter_attempts_sha256": attempts_sha,
+            "painter_attempt_count": int(len(attempts)),
+            "comparison_background_status": background_status,
+            "comparison_background_color_agnostic": True,
+            "candidate_support_stroke_width_pixels": float(w_stroke),
+            "candidate_geometry_preserved": True,
+            "candidate_path_data_preserved": True,
+            "trace_rgb_bytes_preserved": True,
+            "candidate_identity_preserved": True,
+            "painter_grid_width": int(grid_width),
+            "painter_grid_height": int(grid_height),
+            "preflight_parent_path_count": int(parent_counts[0]),
+            "preflight_parent_node_count": int(parent_counts[1]),
+            "preflight_path_limit": int(limits["path_limit"]),
+            "preflight_node_limit": int(limits["node_limit"]),
+            "preflight_byte_limit": int(limits["byte_limit"]),
+            **w_geometry,
+            **w_report,
+        }
+
+    attempts_sha = _emit_painter_attempts(attempts)
+    raise RuntimeError(_painter_primary_error(attempts, attempts_sha))

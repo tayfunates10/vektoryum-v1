@@ -136,22 +136,22 @@ class CandidatePainterReconstructionTests(unittest.TestCase):
             self.assertLessEqual(
                 report["after_byte_size"], report["preflight_byte_limit"]
             )
+            # FAZ 3A/3B.1: grouped-evenodd contour maske <path>'leri toplam sayıya
+            # girebilir; kör sayım eşitliği değil, SANAT kimliği (parmak izi) korunur.
+            self.assertTrue(report["artwork_identity_preserved"])
             self.assertEqual(
-                report["preflight_parent_path_count"],
-                report["preserved_path_count"],
-            )
-            self.assertEqual(
-                report["preflight_parent_node_count"],
-                report["preserved_node_count"],
+                report["artwork_identity_authority"], "provenance_fingerprint"
             )
 
             text = svg_path.read_bytes()
             self.assertIn(b'M23 19H105V77H23Z', text)
             self.assertIn(b"painter-luminance-v1", text)
-            # Luminance mask iki render-eşdeğer vektör kodlamasından biriyle yazılır
-            # (döngü başına <polygon> ya da seviye başına gruplanmış <rect>); ikisi de
-            # gri rgb() fill kullanır ve raster içermez.
-            self.assertIn(report["reconstruction_mask_encoding"], ("polygon", "rect"))
+            # Luminance mask render-eşdeğer vektör kodlamalarından biriyle yazılır
+            # (döngü başına <polygon>, seviye başına gruplanmış <rect> veya seviye
+            # başına grouped-evenodd <path>); hepsi gri rgb() fill, raster yok.
+            self.assertIn(
+                report["reconstruction_mask_encoding"], ("polygon", "rect", "contour")
+            )
             self.assertIn(b'fill="rgb(', text)
             self.assertNotIn(b"<image", text.lower())
             self.assertNotIn(b"data:image", text.lower())

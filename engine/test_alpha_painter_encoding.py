@@ -1,10 +1,12 @@
-"""FAZ 3B — painter kompakt encoding turnuvası testleri.
+"""FAZ 3B / 3B.1 — painter kompakt encoding turnuvası testleri.
 
-Sabit öncelik zinciri: polygon → contour (grouped-evenodd) → contour-q128/64/32
-→ rect. Her aday byte preflight'tan geçer; bütçeyi aşan render edilmeden elenir.
-Bütçeye giren aday değişmemiş tam kapı bataryasından geçmelidir; kazanan zincirdeki
-İLK geçen (polygon sığarsa dikiş-güvenli polygon korunur, byte-zorlandığında daha
-kompakt VE dikiş-güvenli contour seçilir). Niceleme YALNIZ alfa kapıları geçerse.
+Üç kademeli seçim (render-güvenli varsayılan): Kademe 1 sayı-koruyan {polygon, rect}
+(maskeleri path_count'a sayılmaz), Kademe 2 kompakt {contour} (yalnız Kademe 1 bütçeye
+sığmazsa), Kademe 3 quantized {contour-q128/64/32} (yalnız hiçbir exact geçmezse). Her
+aday byte preflight'tan geçer; bütçeyi aşan render edilmeden elenir. Bütçeye giren aday
+değişmemiş tam kapı bataryasından (alfa + journal geometri) geçmelidir; kademedeki geçen
+adaylardan en küçük byte kazanır. Böylece basit vakada render-güvenli sayı-koruyan kodlama
+korunur; contour yalnız byte-zorlamalı karmaşık maskeler için ayrılır.
 """
 from __future__ import annotations
 
@@ -87,7 +89,7 @@ class PainterEncodingTournamentTests(unittest.TestCase):
         self.assertEqual(opacity[0], 0.0)
         self.assertTrue(bool((quant[alpha == 0] == 0).all()))
 
-    def test_simple_source_keeps_seam_safe_polygon(self) -> None:
+    def test_simple_source_selects_smallest_passing_exact(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "s.png"
@@ -96,69 +98,49 @@ class PainterEncodingTournamentTests(unittest.TestCase):
             _covering_parent(svg, 96)
             report = apply_candidate_painter_reconstruction(svg, source, "logo_color")
             self.assertTrue(report["applied"])
-            # Polygon bütçeye sığar → zincirin ilk (dikiş-güvenli) adayı seçilir.
-            self.assertEqual(report["painter_encoding_label"], "polygon")
+            # FAZ 3B.1 seçim politikası: bütçeye giren+geçen exact adaylardan EN
+            # KÜÇÜK byte seçilir (quantized değil). Basit kaynakta bir exact geçer.
+            self.assertIn(
+                report["painter_encoding_label"], {"polygon", "contour", "rect"}
+            )
             self.assertGreaterEqual(report["painter_native_alpha_iou"], 0.995)
+            self.assertTrue(report["artwork_identity_preserved"])
 
-    def test_complex_source_selects_compact_contour_under_budget(self) -> None:
+    def test_node_heavy_source_contour_geometry_rejected_not_rect_byte(self) -> None:
+        # Çok bileşenli kaynak: polygon byte'ı aşar, grouped-evenodd contour
+        # BÜTÇEYE GİRER ama <path> node sayısı journal node kapısını patlatır
+        # (node_complexity_explosion). FAZ 3B.1: ana hata contour'un GERÇEK journal
+        # reddi olmalı — son rect byte hatası bunu EZMEMELİ.
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "s.png"
             svg = root / "c.svg"
             _complex_multi_glyph_source(source)
-            before = _covering_parent(svg, _COMPLEX_SIDE)
-            report = apply_candidate_painter_reconstruction(svg, source, "logo_color")
-            self.assertTrue(report["applied"])
-            # Polygon bütçeyi aşar → kompakt grouped-evenodd contour seçilir.
-            self.assertIn(
-                report["painter_encoding_label"],
-                {"contour", "contour-q128", "contour-q64", "contour-q32"},
-            )
-            self.assertEqual(report["reconstruction_mask_encoding"], "contour")
-            # Final byte, journal byte bütçesinin altında.
-            self.assertLessEqual(
-                report["after_byte_size"], report["preflight_byte_limit"]
-            )
-            # Alfa kapıları geçti, sanat kimliği korundu.
-            self.assertGreaterEqual(report["painter_native_alpha_iou"], 0.995)
-            self.assertLessEqual(report["painter_native_alpha_mae"], 0.005)
-            self.assertTrue(report["artwork_identity_preserved"])
-            self.assertEqual(
-                report["artwork_identity_authority"], "provenance_fingerprint"
-            )
-            # <path> maske geometrisi eklendi ama sanat kimliği değişmedi.
-            data = svg.read_bytes()
-            self.assertIn(b'fill-rule="evenodd"', data)
+            original = _covering_parent(svg, _COMPLEX_SIDE)
+            with self.assertRaises(RuntimeError) as context:
+                apply_candidate_painter_reconstruction(svg, source, "logo_color")
+            message = str(context.exception)
+            self.assertIn("no_admissible_reconstruction", message)
+            self.assertIn("primary=contour", message)
+            self.assertIn("attempts_sha256=", message)
+            # Yanıltıcı 'rect:...>...' byte hatası ANA hata OLMAMALI.
+            self.assertNotIn("primary=rect", message)
+            # Fail-closed: orijinal SVG byte-birebir korunur.
+            self.assertEqual(svg.read_bytes(), original)
 
-    def test_complex_source_is_deterministic_sha(self) -> None:
+    def test_deterministic_sha_on_succeeding_source(self) -> None:
         def run(directory: str) -> str:
             root = Path(directory)
             source = root / "s.png"
             svg = root / "c.svg"
-            _complex_multi_glyph_source(source)
-            _covering_parent(svg, _COMPLEX_SIDE)
-            apply_candidate_painter_reconstruction(svg, source, "logo_color")
+            _simple_soft_disc_source(source)
+            _covering_parent(svg, 96)
+            report = apply_candidate_painter_reconstruction(svg, source, "logo_color")
+            self.assertTrue(report["applied"])
             return hashlib.sha256(svg.read_bytes()).hexdigest()
 
         with tempfile.TemporaryDirectory() as d1, tempfile.TemporaryDirectory() as d2:
             self.assertEqual(run(d1), run(d2))
-
-    def test_contour_mask_paths_excluded_from_artwork_identity(self) -> None:
-        # contour <path> maskeleri path_count'u artırır ama sanat parmak izi
-        # değişmez (maske alt-ağacı FAZ 3A ile hariç). preserved != parent path
-        # sayısı olabilir; kimlik yine de korunur.
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            source = root / "s.png"
-            svg = root / "c.svg"
-            _complex_multi_glyph_source(source)
-            _covering_parent(svg, _COMPLEX_SIDE)
-            report = apply_candidate_painter_reconstruction(svg, source, "logo_color")
-            self.assertTrue(report["artwork_identity_preserved"])
-            # Maske path'leri toplam sayıya girer (parent'tan fazla) ama kimlik aynı.
-            self.assertGreater(
-                report["preserved_path_count"], report["parent_path_count"]
-            )
 
 
 if __name__ == "__main__":
