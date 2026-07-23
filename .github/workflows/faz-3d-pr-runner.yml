@@ -40,9 +40,9 @@ jobs:
       - name: Execute test-gated FAZ 3D plan
         shell: bash
         run: |
-          set -euo pipefail
+          set -o pipefail
           test "$(git branch --show-current)" = "${TARGET_BRANCH}"
-          python - <<'PY'
+          python - <<'PY' 2>&1 | tee faz3d-pr-executor.log
           from __future__ import annotations
 
           import os
@@ -75,3 +75,12 @@ jobs:
                   env=os.environ.copy(),
               )
           PY
+
+      - name: Upload complete executor log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: faz3d-pr-executor-${{ github.run_id }}
+          path: faz3d-pr-executor.log
+          if-no-files-found: error
+          retention-days: 7
