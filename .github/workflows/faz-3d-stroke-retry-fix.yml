@@ -1,0 +1,253 @@
+name: FAZ 3D journal-eligible stroke retry fix
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/faz-3d-stroke-retry-fix.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: faz-3d-stroke-retry-fix-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      PYTHONHASHSEED: "0"
+      PYTHONPATH: engine:.
+      VEKTORYUM_WORKERS: "1"
+      TARGET_BRANCH: agent/rfv-3d3-canvas-independent-alpha-mask
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/rfv-3d3-canvas-independent-alpha-mask
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: engine/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ghostscript libcairo2
+          python -m pip install -r engine/requirements.txt pytest httpx
+
+      - name: Apply journal-eligible stroke continuation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('engine/app/alpha_candidate_painter.py')
+          text = path.read_text()
+          old = 'from app.alpha_svg_mask import _quantize_alpha  # noqa: PLC0415\n'
+          new = (
+              'from app.alpha_svg_mask import (  # noqa: PLC0415\n'
+              '    _painter_retry_eligible,\n'
+              '    _quantize_alpha,\n'
+              ')\n'
+          )
+          assert text.count(old) == 1
+          text = text.replace(old, new)
+
+          old = '''                    # Journal geometri reddi maske-kaynaklıdır (node/seam) ve stroke'tan
+                    # bağımsızdır → bu encoding için diğer stroke'ları deneme (maliyet).
+                    break
+'''
+          new = '''                    # FAZ 3C sözleşmesi: topology/seam/SSIM/edge-F1 reddi
+                    # destek genişliğine ve ölçekli AA'ya bağlı olabilir. TÜM journal
+                    # kodları retry-eligible ise aynı encoding'in bir sonraki mevcut
+                    # stroke adayını dene. Node/path/byte/palet gibi kapsam dışı tek
+                    # kod varsa erken kesme korunur; fail-open veya eşik değişikliği yok.
+                    if _painter_retry_eligible(journal_codes):
+                        continue
+                    break
+'''
+          assert text.count(old) == 1
+          text = text.replace(old, new)
+          path.write_text(text)
+          PY
+
+      - name: Add deterministic retry regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('engine/test_alpha_painter_ledger.py')
+          text = path.read_text()
+          text = text.replace(
+              'import unittest\n',
+              'import unittest\nfrom unittest.mock import patch\n',
+              1,
+          )
+          marker = '\n\nclass PainterEncodingEquivalenceTests(unittest.TestCase):\n'
+          assert marker in text
+          block = r'''
+
+    def test_17_retry_eligible_journal_rejection_tries_next_stroke(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "s.png"
+            svg = root / "c.svg"
+            _simple_soft_disc_source(source)
+            _covering_parent(svg, 96)
+            calls: list[int] = []
+
+            def journal(*_args, **_kwargs):
+                calls.append(len(calls))
+                if len(calls) == 1:
+                    return False, ["topology_hole_regression", "seam_regression"]
+                return True, []
+
+            with patch(
+                "app.alpha_candidate_painter._run_painter_geometry_journal",
+                side_effect=journal,
+            ):
+                report, ledgers, error = _capture_attempts(
+                    lambda: apply_candidate_painter_reconstruction(
+                        svg, source, "logo_color"
+                    )
+                )
+
+            self.assertIsNone(error)
+            self.assertTrue(report["applied"])
+            polygon = [
+                entry for entry in ledgers[0]
+                if entry["encoding_family"] == "polygon"
+            ]
+            failed = [
+                entry for entry in polygon
+                if entry["stroke_width"] == 1.5
+                and entry["status"] == "geometry_rejected"
+            ]
+            passed = [
+                entry for entry in polygon
+                if entry["stroke_width"] == 2.0
+                and entry["status"] == "accepted"
+                and entry["journal_passed"]
+            ]
+            self.assertEqual(len(failed), 1)
+            self.assertEqual(
+                failed[0]["journal_reason_codes"],
+                ["topology_hole_regression", "seam_regression"],
+            )
+            self.assertEqual(len(passed), 1)
+            self.assertGreaterEqual(len(calls), 2)
+
+    def test_18_noneligible_journal_rejection_stops_stroke_search(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "s.png"
+            svg = root / "c.svg"
+            _simple_soft_disc_source(source)
+            _covering_parent(svg, 96)
+            calls: list[int] = []
+
+            def journal(*_args, **_kwargs):
+                calls.append(len(calls))
+                return False, ["node_complexity_explosion"]
+
+            with patch(
+                "app.alpha_candidate_painter._run_painter_geometry_journal",
+                side_effect=journal,
+            ):
+                _report, ledgers, error = _capture_attempts(
+                    lambda: apply_candidate_painter_reconstruction(
+                        svg, source, "logo_color"
+                    )
+                )
+
+            self.assertIsInstance(error, RuntimeError)
+            polygon_validated = [
+                entry for entry in ledgers[0]
+                if entry["encoding_family"] == "polygon"
+                and entry["validation_started"]
+            ]
+            self.assertEqual(
+                [entry["stroke_width"] for entry in polygon_validated], [1.5]
+            )
+'''
+          text = text.replace(marker, block + marker)
+          path.write_text(text)
+          PY
+
+      - name: Run targeted and complete alpha suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            engine/app/alpha_candidate_painter.py \
+            engine/test_alpha_painter_ledger.py
+          python -m unittest \
+            engine.test_alpha_painter_ledger \
+            engine.test_alpha_painter_retry \
+            engine.test_alpha_painter_reconstruction_fidelity \
+            -v
+          python -m unittest \
+            engine.test_alpha_candidate_identity \
+            engine.test_alpha_candidate_knockout \
+            engine.test_alpha_candidate_paint_selection \
+            engine.test_alpha_candidate_support \
+            engine.test_alpha_candidate_validation \
+            engine.test_alpha_candidate_painter \
+            engine.test_alpha_candidate_background \
+            engine.test_alpha_mask_adaptive \
+            engine.test_alpha_mask_transaction \
+            engine.test_alpha_preprocess \
+            engine.test_alpha_noop_preflight \
+            engine.test_alpha_clip_encoding \
+            engine.test_alpha_artwork_identity \
+            engine.test_alpha_painter_encoding \
+            engine.test_alpha_painter_ledger \
+            engine.test_alpha_painter_retry \
+            engine.test_alpha_painter_reconstruction_fidelity \
+            -v | tee faz3d-alpha-tests.log
+
+      - name: Run Class Reklam and gradient sentinels
+        working-directory: engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          python test_visual_regression.py \
+            --case class_reklam \
+            --case gradient_logo \
+            --require-baseline \
+            --out-dir regression/faz3d-stroke-retry-output \
+            2>&1 | tee regression/faz3d-stroke-retry.log
+
+      - name: Commit and push non-workflow fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add \
+            engine/app/alpha_candidate_painter.py \
+            engine/test_alpha_painter_ledger.py
+          git -c user.name='Vektoryum CI' -c user.email='actions@github.com' commit \
+            -m 'fix: continue painter stroke search after eligible journal rejection' \
+            -m 'Retry only when every journal reason remains inside the unchanged FAZ 3C topology/seam/SSIM/edge scope. Noneligible complexity or policy reasons still stop fail-closed. Thresholds, evaluator, TransformJournal, corpus, repeat, retry and timeout remain unchanged.'
+          printf '\nfaz3d-alpha-tests.log\nengine/regression/faz3d-stroke-retry.log\nengine/regression/faz3d-stroke-retry-output/\n' >> .git/info/exclude
+          test -z "$(git status --porcelain)"
+          git push origin "HEAD:${TARGET_BRANCH}"
+
+      - name: Upload verification logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: faz3d-stroke-retry-${{ github.run_id }}
+          path: |
+            faz3d-alpha-tests.log
+            engine/regression/faz3d-stroke-retry.log
+            engine/regression/faz3d-stroke-retry-output
+          if-no-files-found: warn
+          retention-days: 7
