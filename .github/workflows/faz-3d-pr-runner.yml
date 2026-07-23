@@ -77,6 +77,18 @@ jobs:
               if not command or name in skipped:
                   continue
 
+              if name == 'Commit fix and remove executor workflows':
+                  for temporary in (
+                      '.github/workflows/faz-3d-pr-runner.yml',
+                      '.github/workflows/faz-3d-underpaint-stroke-diagnostic.yml',
+                  ):
+                      subprocess.run(['git', 'rm', '-f', temporary], check=True)
+
+              if name == 'Push diagnostic and fix commits':
+                  exclude = Path('.git/info/exclude')
+                  with exclude.open('a', encoding='utf-8') as handle:
+                      handle.write('\nfaz3d-alpha-tests.log\nfaz3d-pr-executor.log\n')
+
               print(f'\n=== {name} ===', flush=True)
               run(command)
 
@@ -198,13 +210,6 @@ jobs:
                       fix_doc.read_text()
                       + '''\n## Underpaint support preflight\n\nFor a proven comparison canvas, the existing 1.0px support candidate is recorded\nin the deterministic attempt ledger but is not admitted to alpha/journal\nvalidation: a 1.0px stroke expands only 0.5px per side and the renderer evidence\nshows a source-hole delta of -3. The next existing candidate, 1.5px, keeps alpha\nIoU at 1.0, passes the unchanged journal and restores the existing topology\nsentinel. Byte-rejected encodings still record all four stroke candidates, so the\nFAZ 3B.1 observability and primary-error contracts are preserved.\n'''
                   )
-
-              if name == 'Commit fix and remove executor workflows':
-                  for temporary in (
-                      '.github/workflows/faz-3d-pr-runner.yml',
-                      '.github/workflows/faz-3d-underpaint-stroke-diagnostic.yml',
-                  ):
-                      subprocess.run(['git', 'rm', '-f', temporary], check=True)
 
           PY
 
