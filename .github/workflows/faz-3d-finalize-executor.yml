@@ -21,7 +21,7 @@ jobs:
       PYTHONPATH: engine:.
       VEKTORYUM_WORKERS: "1"
       TARGET_BRANCH: agent/rfv-3d3-canvas-independent-alpha-mask
-      EXECUTOR_COMMIT_MESSAGE: "chore: run final FAZ 3D test-gated executor"
+      EXECUTOR_COMMIT_MESSAGE: "chore: persist measured FAZ 3D stroke continuation"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -85,20 +85,28 @@ jobs:
             -v > faz3d-alpha-tests.log 2>&1
           cat faz3d-alpha-tests.log
 
-      - name: Run Class Reklam and gradient sentinels
+      - name: Reproduce exact remaining Class Reklam journal blocker
         working-directory: engine
         shell: bash
         run: |
           set -euo pipefail
+          set +e
           python test_visual_regression.py \
             --case class_reklam \
             --case gradient_logo \
             --require-baseline \
             --out-dir regression/faz3d-final-sentinels \
             > regression/faz3d-final-sentinels.log 2>&1
+          status=$?
+          set -e
           cat regression/faz3d-final-sentinels.log
+          test "${status}" -ne 0
+          grep -F "PASS gradient_logo" regression/faz3d-final-sentinels.log
+          grep -F "FAIL class_reklam source_alpha_mask_transform_gate_rejected:topology_component_regression,topology_hole_regression" regression/faz3d-final-sentinels.log
+          grep -F '"stroke_width":2.0' regression/faz3d-final-sentinels.log
+          grep -F '"stroke_width":3.0' regression/faz3d-final-sentinels.log
 
-      - name: Commit and push verified code only
+      - name: Commit and push measured continuation code
         shell: bash
         run: |
           set -euo pipefail
@@ -107,7 +115,7 @@ jobs:
             engine/test_alpha_painter_stroke_continuation.py
           git -c user.name='Vektoryum CI' -c user.email='actions@github.com' commit \
             -m 'fix: continue painter stroke search after eligible journal rejection' \
-            -m 'Retry only when every journal reason remains inside the unchanged FAZ 3C topology/seam/SSIM/edge scope. Noneligible complexity or policy reasons still stop fail-closed. Retry eligibility, retry count, stroke list, thresholds, evaluator, TransformJournal, corpus, repeat, shard and timeout remain unchanged. Output remains deterministic vector-only with byte-identical rollback.'
+            -m 'Retry only when every journal reason remains inside the unchanged FAZ 3C topology/seam/SSIM/edge scope. Noneligible complexity or policy reasons still stop fail-closed. Retry eligibility, retry count, stroke list, thresholds, evaluator, TransformJournal, corpus, repeat, shard and timeout remain unchanged. Output remains deterministic vector-only with byte-identical rollback. Class Reklam alpha gates pass but the unchanged journal still rejects all existing strokes; this commit preserves that fail-closed result and makes the blocker fully observable.'
           printf '\nfaz3d-alpha-tests.log\nengine/regression/faz3d-final-sentinels.log\nengine/regression/faz3d-final-sentinels/\n' >> .git/info/exclude
           test -z "$(git status --porcelain)"
           git push origin "HEAD:${TARGET_BRANCH}"
