@@ -1,0 +1,113 @@
+name: FAZ 3D underpaint stroke diagnostic
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/faz-3d-underpaint-stroke-diagnostic.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PYTHONHASHSEED: "0"
+      PYTHONPATH: engine:.
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: engine/requirements.txt
+
+      - run: python -m pip install -q -r engine/requirements.txt
+
+      - name: Measure support stroke ladder
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY' | tee faz3d-stroke-diagnostic.json
+          import json
+          import tempfile
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          from PIL import Image
+
+          from app.alpha_candidate_painter import build_painter_reconstruction_tree
+          from app.alpha_candidate_knockout import _path_node_counts
+          from app.alpha_svg_mask import _journal_source_rgb, _quantize_alpha
+          from app.final_artifact_evaluator import _classify, _derive_palette, _topology_signature
+          from app.fidelity import render_svg_to_rgb
+          from app.source_truth import alpha_plane_metrics, render_svg_to_rgba
+          from app.transform_journal import TransformJournal
+          from engine.test_alpha_candidate_painter import _covering_candidate, _soft_ring_source
+
+          rows = []
+          with tempfile.TemporaryDirectory() as directory:
+              root_dir = Path(directory)
+              source_path = root_dir / 'source.png'
+              parent_path = root_dir / 'parent.svg'
+              source = _soft_ring_source(source_path)
+              original = _covering_candidate(parent_path)
+              original_root = ET.fromstring(original)
+              quantized, opacity = _quantize_alpha(source[:, :, 3])
+              with Image.open(source_path) as image:
+                  journal_source = _journal_source_rgb(image)
+              palette = _derive_palette(journal_source)
+              source_topology = _topology_signature(
+                  _classify(journal_source, palette), len(palette), 6
+              )
+              for stroke in (1.0, 1.5, 2.0, 3.0):
+                  # canvas=None retains the full-canvas node in the masked paint and
+                  # is render-equivalent to the proposed underpaint placement.
+                  tree, stats = build_painter_reconstruction_tree(
+                      original_root, None, quantized, opacity, stroke,
+                      mask_encoding='polygon', transaction_id=f'probe-{stroke}'
+                  )
+                  candidate = root_dir / f'candidate-{stroke}.svg'
+                  candidate.write_bytes(ET.tostring(tree, encoding='utf-8', xml_declaration=True))
+                  rgba = render_svg_to_rgba(candidate, 128, 96)
+                  rgb = render_svg_to_rgb(candidate, 128, 96)
+                  metrics = alpha_plane_metrics(source[:, :, 3], rgba[:, :, 3])
+                  topology = _topology_signature(
+                      _classify(rgb, palette), len(palette), 6
+                  )
+                  journal = TransformJournal(
+                      parent_path, journal_source, image_class='clean_logo', required_metrics=set()
+                  )
+                  accepted, stage = journal.consider_candidate(
+                      'source_alpha_painter_candidate', parent_path, candidate,
+                      transform_report={'status': 'probe'}
+                  )
+                  rows.append({
+                      'stroke_width': stroke,
+                      'alpha_iou': metrics['alpha_iou'],
+                      'alpha_mae': metrics['alpha_mae'],
+                      'source_components': source_topology['components'],
+                      'source_holes': source_topology['holes'],
+                      'render_components': topology['components'],
+                      'render_holes': topology['holes'],
+                      'component_delta': topology['components'] - source_topology['components'],
+                      'hole_delta': topology['holes'] - source_topology['holes'],
+                      'journal_passed': accepted == candidate,
+                      'journal_reason_codes': list(stage.get('reason_codes') or []),
+                      'serialized_bytes': candidate.stat().st_size,
+                      'path_count': _path_node_counts(tree)[0],
+                      **stats,
+                  })
+          print(json.dumps({'schema':'vektoryum-faz3d-underpaint-stroke-v1','rows':rows}, sort_keys=True, indent=2))
+          PY
+
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: faz3d-underpaint-stroke-${{ github.run_id }}
+          path: faz3d-stroke-diagnostic.json
+          retention-days: 7
