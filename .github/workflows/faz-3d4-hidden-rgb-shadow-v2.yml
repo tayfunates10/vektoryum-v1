@@ -1,0 +1,85 @@
+name: FAZ 3D4 hidden RGB shadow matrix v2
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/faz-3d4-hidden-rgb-shadow-v2.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      PYTHONPATH: engine:.
+      PYTHONHASHSEED: "0"
+      VEKTORYUM_WORKERS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/rfv-3d3-canvas-independent-alpha-mask
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: engine/requirements.txt
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ghostscript libcairo2
+          python -m pip install -q -r engine/requirements.txt pytest httpx
+      - name: Extract corrected shadow script
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import textwrap
+
+          workflow = Path('.github/workflows/faz-3d4-hidden-rgb-shadow.yml').read_text()
+          start = "cat > /tmp/hidden_rgb_shadow.py <<'PY'\n"
+          end = "\n          PY\n          python /tmp/hidden_rgb_shadow.py"
+          script = textwrap.dedent(workflow.split(start, 1)[1].split(end, 1)[0])
+          old = '''def pipeline_without_alpha():
+              fn = pipeline.run_pipeline
+              while fn is not None:
+                  if getattr(fn, "__vektoryum_auto_gate_wrapped__", False):
+                      return fn
+                  fn = getattr(fn, "__wrapped__", None)
+              raise RuntimeError("auto-gate pipeline wrapper not found")'''
+          new = '''def pipeline_without_alpha():
+              fn = pipeline.run_pipeline
+              matches = []
+              while fn is not None:
+                  if getattr(fn, "__vektoryum_auto_gate_wrapped__", False):
+                      matches.append(fn)
+                  fn = getattr(fn, "__wrapped__", None)
+              if not matches:
+                  raise RuntimeError("auto-gate pipeline wrapper not found")
+              return matches[-1]'''
+          if old not in script:
+              raise SystemExit('pipeline unwrap block not found')
+          Path('/tmp/hidden_rgb_shadow.py').write_text(script.replace(old, new, 1))
+          PY
+      - name: Measure corrected source-hidden-RGB variants
+        shell: bash
+        run: |
+          set +e
+          python /tmp/hidden_rgb_shadow.py > shadow-run.log 2>&1
+          status=$?
+          set -e
+          tail -160 shadow-run.log > shadow-error-tail.txt
+          echo "exit_code=${status}" >> shadow-error-tail.txt
+          test -f faz3d4-hidden-rgb-shadow.json || true
+      - name: Upload scalar-only result
+        uses: actions/upload-artifact@v4
+        with:
+          name: faz3d4-hidden-rgb-shadow-v2-${{ github.run_id }}
+          path: |
+            faz3d4-hidden-rgb-shadow.json
+            shadow-error-tail.txt
+          if-no-files-found: warn
+          retention-days: 7
