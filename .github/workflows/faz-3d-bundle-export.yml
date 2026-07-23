@@ -1,0 +1,94 @@
+name: FAZ 3D verified bundle export
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/faz-3d-bundle-export.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: faz-3d-bundle-export-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      PYTHONHASHSEED: "0"
+      PYTHONPATH: engine:.
+      VEKTORYUM_WORKERS: "1"
+      TARGET_BRANCH: agent/rfv-3d3-canvas-independent-alpha-mask
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/rfv-3d3-canvas-independent-alpha-mask
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: engine/requirements.txt
+
+      - name: Install executor parser
+        run: python -m pip install -q pyyaml
+
+      - name: Re-run verified plan without Git push
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess
+          import yaml
+
+          workflow = yaml.safe_load(
+              Path('.github/workflows/faz-3d-pr-runner.yml').read_text()
+          )
+          command = next(
+              step['run']
+              for step in workflow['jobs']['execute']['steps']
+              if step.get('name') == 'Execute final test-gated FAZ 3D plan'
+          )
+          command = command.replace(
+              "skipped = {'Confirm exact starting branch'}",
+              "skipped = {'Confirm exact starting branch', 'Push diagnostic and fix commits'}",
+          )
+          subprocess.run(
+              command,
+              shell=True,
+              executable='/bin/bash',
+              check=True,
+          )
+          PY
+
+      - name: Write deletion manifest
+        shell: bash
+        run: |
+          cat > faz3d-delete-paths.txt <<'EOF'
+          .github/workflows/faz-3d-apply-fix.yml
+          .github/workflows/faz-3d-mask-semantics-diagnostic.yml
+          .github/workflows/faz-3d-underpaint-stroke-diagnostic.yml
+          .github/workflows/faz-3d-pr-runner.yml
+          .github/workflows/faz-3d-bundle-export.yml
+          EOF
+
+      - name: Upload exact verified files
+        uses: actions/upload-artifact@v4
+        with:
+          name: faz3d-verified-bundle-${{ github.run_id }}
+          path: |
+            engine/app/alpha_artwork_identity.py
+            engine/app/alpha_candidate_painter.py
+            engine/test_alpha_painter_reconstruction_fidelity.py
+            .github/workflows/real-world-fidelity-rfv3d2-alpha-mask-fix.yml
+            docs/real_world_fidelity/faz-3d-painter-alpha-reconstruction-diagnostics.md
+            docs/real_world_fidelity/evidence/faz3d_painter_alpha_reconstruction_diagnostics.json
+            docs/real_world_fidelity/faz-3d-painter-alpha-reconstruction-fix.md
+            faz3d-delete-paths.txt
+            faz3d-alpha-tests.log
+          if-no-files-found: error
+          retention-days: 7
