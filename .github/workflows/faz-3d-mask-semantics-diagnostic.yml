@@ -34,7 +34,7 @@ jobs:
       - name: Install production renderer dependencies
         run: python -m pip install -q -r engine/requirements.txt
 
-      - name: Measure mask transfer functions with production renderer
+      - name: Measure painter mask and coverage semantics
         shell: bash
         run: |
           set -euo pipefail
@@ -45,11 +45,16 @@ jobs:
           import importlib.util
           import json
           import tempfile
+          import xml.etree.ElementTree as ET
           from pathlib import Path
 
-          from app.source_truth import render_svg_to_rgba
+          import numpy as np
+
+          from app.alpha_candidate_painter import build_painter_reconstruction_tree
+          from app.source_truth import alpha_plane_metrics, render_svg_to_rgba
 
           GRAYS = (0, 1, 32, 64, 128, 192, 254, 255)
+          SVG_NS = "http://www.w3.org/2000/svg"
 
           def svg_for(gray: int, declaration: str) -> bytes:
               mask_attrs = 'maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse" x="0" y="0" width="64" height="64"'
@@ -63,7 +68,7 @@ jobs:
                   mask_attrs += ' style="mask-type:alpha"'
               elif declaration != "implicit":
                   raise ValueError(declaration)
-              return f'''<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+              return f'''<svg xmlns="{SVG_NS}" width="64" height="64" viewBox="0 0 64 64">
                 <defs>
                   <mask id="m" {mask_attrs}>
                     <rect x="0" y="0" width="64" height="64" fill="rgb(0,0,0)"/>
@@ -73,61 +78,85 @@ jobs:
                 <rect x="0" y="0" width="64" height="64" fill="rgb(255,0,0)" mask="url(#m)"/>
               </svg>'''.encode("utf-8")
 
-          def render_alpha(gray: int, declaration: str) -> int:
+          def render_bytes(data: bytes) -> np.ndarray:
               with tempfile.TemporaryDirectory() as td:
                   path = Path(td) / "probe.svg"
-                  path.write_bytes(svg_for(gray, declaration))
+                  path.write_bytes(data)
                   rgba = render_svg_to_rgba(path, 64, 64)
               if rgba is None:
                   raise RuntimeError("production_renderer_unavailable")
-              return int(rgba[32, 32, 3])
+              return rgba
 
-          def srgb_to_linear_byte(gray: int) -> float:
-              value = gray / 255.0
-              linear = value / 12.92 if value <= 0.04045 else ((value + 0.055) / 1.055) ** 2.4
-              return linear * 255.0
+          def render_alpha(gray: int, declaration: str) -> int:
+              return int(render_bytes(svg_for(gray, declaration))[32, 32, 3])
 
           modes = ("implicit", "attr-luminance", "style-luminance", "attr-alpha", "style-alpha")
           transfer = {mode: {str(g): render_alpha(g, mode) for g in GRAYS} for mode in modes}
-          implicit = transfer["implicit"]
-          candidates = {
-              "attr-luminance": transfer["attr-luminance"],
-              "style-luminance": transfer["style-luminance"],
-          }
-          working_luminance = next(
-              (
-                  name
-                  for name, values in candidates.items()
-                  if values["0"] <= 3 and values["255"] >= 252 and values["128"] < 250
-              ),
-              None,
+          transfer_is_direct = all(transfer["implicit"][str(g)] == g for g in GRAYS)
+
+          q = lambda name: f"{{{SVG_NS}}}{name}"
+          root = ET.Element(q("svg"), {"width": "64", "height": "64", "viewBox": "0 0 64 64"})
+          canvas = ET.SubElement(root, q("rect"), {
+              "x": "0", "y": "0", "width": "64", "height": "64", "fill": "#ffffff"
+          })
+          ET.SubElement(root, q("circle"), {
+              "cx": "32", "cy": "32", "r": "12", "fill": "#d02020"
+          })
+
+          yy, xx = np.indices((64, 64))
+          source_support = ((xx - 32) ** 2 + (yy - 32) ** 2 <= 24 ** 2)
+          grid_alpha = np.where(source_support, 255, 0).astype(np.uint8)
+          quantized = source_support.astype(np.int32)
+          opacity_by_level = {0: 0.0, 1: 1.0}
+
+          def render_tree(tree: ET.Element) -> np.ndarray:
+              ET.register_namespace("", SVG_NS)
+              return render_bytes(ET.tostring(tree, encoding="utf-8", xml_declaration=True))
+
+          knocked_tree, knocked_stats = build_painter_reconstruction_tree(
+              root, canvas, quantized, opacity_by_level, 1.0,
+              mask_encoding="polygon", transaction_id="faz3d-diagnostic-knockout"
           )
+          retained_tree, retained_stats = build_painter_reconstruction_tree(
+              root, None, quantized, opacity_by_level, 1.0,
+              mask_encoding="polygon", transaction_id="faz3d-diagnostic-retained"
+          )
+          knocked_metrics = alpha_plane_metrics(grid_alpha, render_tree(knocked_tree)[:, :, 3])
+          retained_metrics = alpha_plane_metrics(grid_alpha, render_tree(retained_tree)[:, :, 3])
 
-          direct_error = None
-          linear_error = None
-          if working_luminance:
-              values = candidates[working_luminance]
-              direct_error = sum(abs(values[str(g)] - g) for g in GRAYS) / len(GRAYS)
-              linear_error = sum(abs(values[str(g)] - srgb_to_linear_byte(g)) for g in GRAYS) / len(GRAYS)
-
-          if implicit["0"] >= 252 and implicit["128"] >= 252 and working_luminance:
-              root_cause = "implicit_mask_type_resolves_to_alpha_semantics"
-          elif working_luminance and linear_error is not None and direct_error is not None and linear_error + 2.0 < direct_error:
-              root_cause = "luminance_srgb_transfer_mismatch"
-          elif not working_luminance:
-              root_cause = "renderer_luminance_mask_unsupported"
+          if not transfer_is_direct:
+              root_cause = "mask_transfer_not_linear"
+          elif knocked_metrics["alpha_iou"] < 0.5 and retained_metrics["alpha_iou"] >= 0.995:
+              root_cause = "canvas_knockout_removes_required_alpha_support"
           else:
-              root_cause = "unexpected_mask_transfer"
+              root_cause = "coverage_mechanism_not_proven"
 
           payload = {
-              "schema": "vektoryum-faz3d-mask-semantics-v1",
+              "schema": "vektoryum-faz3d-mask-semantics-v2",
               "source_commit": "${{ github.event.pull_request.head.sha }}",
               "renderer": "resvg_py" if importlib.util.find_spec("resvg_py") else "cairosvg",
               "gray_values": list(GRAYS),
               "transfer": transfer,
-              "working_luminance_declaration": working_luminance,
-              "direct_mean_abs_error": direct_error,
-              "linear_mean_abs_error": linear_error,
+              "implicit_luminance_transfer_is_byte_exact": transfer_is_direct,
+              "synthetic": {
+                  "grid_width": 64,
+                  "grid_height": 64,
+                  "source_support_pixels": int(source_support.sum()),
+                  "canvas_knockout": {
+                      "alpha_iou": knocked_metrics["alpha_iou"],
+                      "alpha_mae": knocked_metrics["alpha_mae"],
+                      "source_coverage": knocked_metrics["source_coverage"],
+                      "render_coverage": knocked_metrics["render_coverage"],
+                      "comparison_canvas_knocked_out": knocked_stats["comparison_canvas_knocked_out"],
+                  },
+                  "canvas_retained_inside_mask": {
+                      "alpha_iou": retained_metrics["alpha_iou"],
+                      "alpha_mae": retained_metrics["alpha_mae"],
+                      "source_coverage": retained_metrics["source_coverage"],
+                      "render_coverage": retained_metrics["render_coverage"],
+                      "comparison_canvas_knocked_out": retained_stats["comparison_canvas_knocked_out"],
+                  },
+              },
               "root_cause": root_cause,
           }
           canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
