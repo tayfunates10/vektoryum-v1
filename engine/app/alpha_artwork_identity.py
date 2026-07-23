@@ -50,6 +50,7 @@ ROLE_MASK_DEFINITION = "alpha-mask-definition"
 ROLE_MASK_GEOMETRY = "alpha-mask-geometry"
 ROLE_MASK_APPLICATION = "alpha-mask-application"
 ROLE_CANVAS_KNOCKOUT = "comparison-canvas-knockout"
+ROLE_CANVAS_UNDERPAINT = "comparison-canvas-underpaint"
 
 _SKIP_SUBTREE_ROLES = frozenset(
     {
@@ -57,6 +58,7 @@ _SKIP_SUBTREE_ROLES = frozenset(
         ROLE_MASK_GEOMETRY,
         ROLE_MASK_APPLICATION,
         ROLE_CANVAS_KNOCKOUT,
+        ROLE_CANVAS_UNDERPAINT,
     }
 )
 

@@ -47,7 +47,7 @@ from PIL import Image
 
 from app.alpha_artwork_identity import (
     ROLE_ARTWORK_CONTAINER,
-    ROLE_CANVAS_KNOCKOUT,
+    ROLE_CANVAS_UNDERPAINT,
     ROLE_MASK_APPLICATION,
     ROLE_MASK_DEFINITION,
     alpha_transaction_id,
@@ -61,6 +61,12 @@ from app.source_truth import alpha_plane_metrics, render_svg_to_rgba, resize_rgb
 _SVG_NS = "http://www.w3.org/2000/svg"
 _PAINTER_GRID_MAX_SIDE = 1600
 _PAINTER_STROKE_PIXELS = (1.0, 1.5, 2.0, 3.0)
+# A proven full-canvas underpaint supplies alpha support but can expose its own
+# comparison colour through an uncovered one-pixel AA fringe. The measured
+# existing 1.5px candidate is the smallest support width that preserves the
+# unchanged source-topology sentinel; this is an encoding preflight, not a
+# quality-threshold change.
+_PAINTER_UNDERPAINT_MIN_STROKE_PIXELS = 1.5
 _PAINTER_EVAL_SIDE = 512.0
 _ALPHA_PLANE_FAILURE_CODES = {"alpha_iou_below_min", "alpha_mae_above_max"}
 
@@ -285,13 +291,14 @@ def build_painter_reconstruction_tree(
     mask_encoding: str = "polygon",
     transaction_id: str = "",
 ) -> tuple[ET.Element, dict[str, int]]:
-    """Mask the stroked paint once, knocking out a comparison canvas if given.
+    """Mask candidate paint once, retaining a proven canvas only as underpaint.
 
     ``canvas_element`` is a border-connected comparison background proven by
-    :func:`app.alpha_candidate_background.classify_comparison_background`. When it
-    is ``None`` (no background trace) the candidate paint is preserved as-is and
-    source alpha is reconstructed over it without any knockout (canvas-independent
-    path). Colour is never inspected here.
+    :func:`app.alpha_candidate_background.classify_comparison_background`. It is
+    moved into the same source-alpha-masked paint group and tagged transform-owned.
+    This preserves full source-positive alpha support without leaving an unmasked
+    opaque canvas. When it is ``None`` the candidate paint is preserved as-is.
+    Colour is never inspected here.
     """
     from app.alpha_candidate_knockout import _local_name, _unique_id, _viewbox  # noqa: PLC0415
     from app.alpha_candidate_support import (  # noqa: PLC0415
@@ -302,11 +309,10 @@ def build_painter_reconstruction_tree(
 
     qname = lambda name: f"{{{_SVG_NS}}}{name}"
     root = copy.deepcopy(original_root)
-    knocked_out_canvas = False
+    target_canvas = None
     if canvas_element is not None:
         canvas_index = list(original_root).index(canvas_element)
         target_canvas = list(root)[canvas_index]
-        root.remove(target_canvas)
 
     defs = next(
         (
@@ -319,18 +325,6 @@ def build_painter_reconstruction_tree(
     if defs is None:
         defs = ET.Element(qname("defs"))
         root.insert(0, defs)
-    if canvas_element is not None:
-        archive = ET.SubElement(
-            defs,
-            qname("g"),
-            {
-                "data-vektoryum-candidate-geometry-knockout": "comparison-canvas-v1",
-                "display": "none",
-            },
-        )
-        tag_transform_node(archive, ROLE_CANVAS_KNOCKOUT, transaction_id)
-        archive.append(target_canvas)
-        knocked_out_canvas = True
 
     paint_id = _unique_id(root, "vektoryum-alpha-candidate-paint")
     paint = ET.SubElement(
@@ -349,6 +343,12 @@ def build_painter_reconstruction_tree(
         raise RuntimeError("source_alpha_candidate_painter_no_paint")
     for child in movable:
         root.remove(child)
+        if child is target_canvas:
+            tag_transform_node(child, ROLE_CANVAS_UNDERPAINT, transaction_id)
+            child.set(
+                "data-vektoryum-candidate-geometry-underpaint",
+                "comparison-canvas-v1",
+            )
         _strip_content_alpha(child)
         paint.append(child)
     expanded_count = _expand_candidate_paint(paint, stroke_width)
@@ -454,7 +454,8 @@ def build_painter_reconstruction_tree(
         "reconstruction_mask_encoding": chosen_encoding,
         "reconstruction_rect_count": int(rect_count),
         "candidate_support_expanded_geometry_count": int(expanded_count),
-        "comparison_canvas_knocked_out": bool(knocked_out_canvas),
+        "comparison_canvas_knocked_out": False,
+        "comparison_canvas_retained_under_mask": bool(target_canvas is not None),
         **contour_stats,
     }
 
@@ -1023,6 +1024,21 @@ def apply_candidate_painter_reconstruction(
                     probe_temp.unlink(missing_ok=True)
                     continue
                 entry["preflight_status"] = "within_budget"
+                if (
+                    canvas is not None
+                    and float(stroke_width)
+                    < _PAINTER_UNDERPAINT_MIN_STROKE_PIXELS
+                ):
+                    entry["validation_stage"] = "underpaint_support"
+                    entry["status"] = "geometry_rejected"
+                    entry["exact_error_code"] = (
+                        "source_alpha_candidate_painter_underpaint_support_insufficient:"
+                        f"{stroke_width:g}<"
+                        f"{_PAINTER_UNDERPAINT_MIN_STROKE_PIXELS:g}"
+                    )
+                    attempts.append(entry)
+                    probe_temp.unlink(missing_ok=True)
+                    continue
                 entry["validation_started"] = True
                 parent_artwork_fp = artwork_fingerprint(
                     original_root, txn, excluded_from_parent
