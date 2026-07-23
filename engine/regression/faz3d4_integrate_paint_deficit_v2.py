@@ -63,13 +63,13 @@ def _anchor_candidate_to_existing_artwork() -> None:
 
     test_path = Path("engine/test_alpha_painter_paint_deficit.py")
     test_text = test_path.read_text(encoding="utf-8")
-    anchor = "                  return root, canvas\n"
-    addition = '''                  ET.SubElement(
-                      root,
-                      qname("rect"),
-                      {"x": "2", "y": "0", "width": "1", "height": "4", "fill": "white"},
-                  )
-                  return root, canvas
+    anchor = "        return root, canvas\n"
+    addition = '''        ET.SubElement(
+            root,
+            qname("rect"),
+            {"x": "2", "y": "0", "width": "1", "height": "4", "fill": "white"},
+        )
+        return root, canvas
 '''
     if anchor not in test_text:
         raise RuntimeError("paint-deficit test artwork anchor missing")
