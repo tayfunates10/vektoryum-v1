@@ -51,9 +51,12 @@ jobs:
 
           import yaml
 
-          workflow = yaml.safe_load(
-              Path('.github/workflows/faz-3d-apply-fix.yml').read_text()
+          source = Path('.github/workflows/faz-3d-apply-fix.yml').read_text()
+          source = source.replace(
+              "    if: github.event.head_commit.message == 'chore: execute FAZ 3D canvas-underpaint fix'\n",
+              "    if: true\n",
           )
+          workflow = yaml.safe_load(source)
           steps = workflow['jobs']['apply']['steps']
           skipped = {'Confirm exact starting branch'}
           for step in steps:
