@@ -1,0 +1,259 @@
+name: FAZ 3D4 paint deficit production v2
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/faz-3d4-paint-deficit-production-v2.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: faz-3d4-paint-deficit-production-v2-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  verify-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      PYTHONPATH: engine:.
+      PYTHONHASHSEED: "0"
+      VEKTORYUM_WORKERS: "1"
+      TARGET_BRANCH: agent/rfv-3d3-canvas-independent-alpha-mask
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TARGET_BRANCH }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: engine/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ghostscript libcairo2
+          python -m pip install -q -r engine/requirements.txt pytest httpx
+
+      - name: Materialize production files and patch painter robustly
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import textwrap
+
+          workflow = Path(
+              ".github/workflows/faz-3d4-paint-deficit-production.yml"
+          ).read_text(encoding="utf-8")
+
+          def extract_cat(path: str) -> str:
+              marker = f"cat > {path} <<'PY'\n"
+              body = workflow.split(marker, 1)[1].split("\n          PY", 1)[0]
+              return textwrap.dedent(body)
+
+          module_path = Path("engine/app/alpha_candidate_paint_deficit.py")
+          test_path = Path("engine/test_alpha_painter_paint_deficit.py")
+          module_path.write_text(
+              extract_cat(str(module_path)), encoding="utf-8"
+          )
+          test_text = extract_cat(str(test_path))
+          old_test = '''tree2, report2 = build_paint_deficit_reconstruction_tree(
+                      copy.deepcopy(root), list(copy.deepcopy(root))[0], source, "txn-fixed"
+                  )'''
+          new_test = '''root2 = copy.deepcopy(root)
+                  canvas2 = list(root2)[0]
+                  tree2, report2 = build_paint_deficit_reconstruction_tree(
+                      root2, canvas2, source, "txn-fixed"
+                  )'''
+          if old_test not in test_text:
+              raise SystemExit("determinism test repair anchor missing")
+          test_path.write_text(
+              test_text.replace(old_test, new_test, 1), encoding="utf-8"
+          )
+
+          patch_marker = "          python - <<'PY'\n"
+          patch_script = textwrap.dedent(
+              workflow.split(patch_marker, 1)[1].split(
+                  "\n          PY\n\n          git diff --check", 1
+              )[0]
+          )
+          wrong_primary = '''old_primary = \'\'\'        _validated("exact")
+              or _validated("quantized")
+              or _smallest_byte_rejected("exact")
+              or _smallest_byte_rejected("quantized")\'\'\''''
+          correct_primary = '''old_primary = \'\'\'        _validated("exact")
+              or _validated("quantized")
+              or _smallest_byte_rejected("exact")
+              or _smallest_byte_rejected("quantized")\'\'\''''
+          # Normalize the actual source anchors directly; the assignment text itself
+          # is retained, but its values are replaced below before execution.
+          patch_script = patch_script.replace(
+              '''phase_anchor = \'\'\'        return best
+
+              try:
+                  # Kademe 1 → Kademe 2 → Kademe 3: render-güvenli sayı-koruyan kodlamalar\'\'\'''',
+              '''phase_anchor = \'\'\'        return best
+
+    try:
+        # Kademe 1 → Kademe 2 → Kademe 3: render-güvenli sayı-koruyan kodlamalar\'\'\'''',
+              1,
+          )
+          patch_script = patch_script.replace(
+              '''winner_anchor = \'\'\'        if winner is None:
+                  winner = _evaluate_phase(quantized_specs)
+              finally:\'\'\'''',
+              '''winner_anchor = \'\'\'        if winner is None:
+            winner = _evaluate_phase(quantized_specs)
+    finally:\'\'\'''',
+              1,
+          )
+          patch_script = patch_script.replace(
+              '''winner_replace = \'\'\'        if winner is None:
+                  winner = _evaluate_phase(quantized_specs)
+              if winner is None:
+                  winner = _evaluate_paint_deficit()
+              finally:\'\'\'''',
+              '''winner_replace = \'\'\'        if winner is None:
+            winner = _evaluate_phase(quantized_specs)
+        if winner is None:
+            winner = _evaluate_paint_deficit()
+    finally:\'\'\'''',
+              1,
+          )
+          # phase_insert's embedded function also inherited YAML-visible extra
+          # indentation. Dedent only the code introduced between return-best and try.
+          old_phase_prefix = '''phase_insert = \'\'\'        return best
+
+              def _evaluate_paint_deficit()'''
+          new_phase_prefix = '''phase_insert = \'\'\'        return best
+
+    def _evaluate_paint_deficit()'''
+          if old_phase_prefix not in patch_script:
+              raise SystemExit("phase insert prefix repair anchor missing")
+          patch_script = patch_script.replace(
+              old_phase_prefix, new_phase_prefix, 1
+          )
+          # The function body is six spaces too deep in the stored literal. Repair
+          # it as a block without changing strings or data.
+          start = patch_script.index(
+              "    def _evaluate_paint_deficit()", patch_script.index("phase_insert")
+          )
+          end = patch_script.index(
+              "\n              try:\n                  # Kademe 1", start
+          )
+          block = patch_script[start:end]
+          lines = block.splitlines()
+          repaired = [lines[0]]
+          for line in lines[1:]:
+              repaired.append(line[6:] if line.startswith("      ") else line)
+          repaired_block = "\n".join(repaired)
+          patch_script = patch_script[:start] + repaired_block + patch_script[end:]
+          patch_script = patch_script.replace(
+              '''\n              try:
+                  # Kademe 1 → Kademe 2 → Kademe 3: render-güvenli sayı-koruyan kodlamalar\'\'\'''',
+              '''\n    try:
+        # Kademe 1 → Kademe 2 → Kademe 3: render-güvenli sayı-koruyan kodlamalar\'\'\'''',
+              1,
+          )
+          exec(compile(patch_script, "<paint-deficit-patch>", "exec"))
+          PY
+
+          git diff --check
+          python -m py_compile \
+            engine/app/alpha_candidate_paint_deficit.py \
+            engine/app/alpha_candidate_painter.py \
+            engine/test_alpha_painter_paint_deficit.py
+
+      - name: Run focused paint-deficit and painter contracts
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m unittest \
+            engine.test_alpha_painter_paint_deficit \
+            engine.test_alpha_candidate_painter \
+            engine.test_alpha_painter_encoding \
+            engine.test_alpha_painter_ledger \
+            engine.test_alpha_painter_retry \
+            engine.test_alpha_painter_reconstruction_fidelity \
+            engine.test_alpha_painter_stroke_continuation \
+            -v 2>&1 | tee faz3d4-paint-deficit-focused.log
+
+      - name: Run complete alpha suite
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m unittest \
+            engine.test_alpha_candidate_identity \
+            engine.test_alpha_candidate_knockout \
+            engine.test_alpha_candidate_paint_selection \
+            engine.test_alpha_candidate_support \
+            engine.test_alpha_candidate_validation \
+            engine.test_alpha_candidate_painter \
+            engine.test_alpha_candidate_background \
+            engine.test_alpha_mask_adaptive \
+            engine.test_alpha_mask_transaction \
+            engine.test_alpha_preprocess \
+            engine.test_alpha_noop_preflight \
+            engine.test_alpha_clip_encoding \
+            engine.test_alpha_artwork_identity \
+            engine.test_alpha_painter_encoding \
+            engine.test_alpha_painter_ledger \
+            engine.test_alpha_painter_retry \
+            engine.test_alpha_painter_reconstruction_fidelity \
+            engine.test_alpha_painter_stroke_continuation \
+            engine.test_alpha_painter_paint_deficit \
+            -v 2>&1 | tee faz3d4-paint-deficit-alpha.log
+
+      - name: Require Class Reklam and gradient acceptance
+        working-directory: engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          python test_visual_regression.py \
+            --case class_reklam \
+            --case gradient_logo \
+            --require-baseline \
+            --out-dir regression/faz3d4-paint-deficit-production-v2 \
+            > regression/faz3d4-paint-deficit-production-v2.log 2>&1
+          cat regression/faz3d4-paint-deficit-production-v2.log
+          grep -F "PASS class_reklam" regression/faz3d4-paint-deficit-production-v2.log
+          grep -F "PASS gradient_logo" regression/faz3d4-paint-deficit-production-v2.log
+
+      - name: Commit accepted production candidate and clean diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/faz-3d4-*.yml
+          rm -rf engine/regression/faz3d4-paint-deficit-production-v2
+          rm -f \
+            faz3d4-paint-deficit-focused.log \
+            faz3d4-paint-deficit-alpha.log \
+            engine/regression/faz3d4-paint-deficit-production-v2.log
+          git add -A \
+            .github/workflows \
+            engine/app/alpha_candidate_paint_deficit.py \
+            engine/app/alpha_candidate_painter.py \
+            engine/test_alpha_painter_paint_deficit.py
+          test -z "$(git status --porcelain --untracked-files=no | grep -E 'engine/regression/faz3d4|\.github/workflows/faz-3d4-' || true)"
+          git -c user.name='Vektoryum CI' -c user.email='actions@github.com' commit \
+            -m 'fix: overlay measured paint deficits under source alpha' \
+            -m 'Add a generic vector-only q24 paint-deficit fallback after existing painter encodings fail. It repairs source-foreground pixels rendered white by preserved artwork, uses a deterministic dominant source palette and compact rectangles, and is accepted only by unchanged alpha, TransformJournal, complexity, topology, SSIM, Edge F1 and seam gates. Remove temporary FAZ 3D4 diagnostic workflows.'
+          git push origin "HEAD:${TARGET_BRANCH}"
+
+      - name: Upload safe scalar logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: faz3d4-paint-deficit-production-v2-${{ github.run_id }}
+          path: |
+            faz3d4-paint-deficit-focused.log
+            faz3d4-paint-deficit-alpha.log
+            engine/regression/faz3d4-paint-deficit-production-v2.log
+          if-no-files-found: warn
+          retention-days: 7
