@@ -1,4 +1,4 @@
-name: FAZ 3D final test-gated executor
+name: FAZ 3D formatting normalizer
 
 on:
   pull_request:
@@ -8,20 +8,14 @@ on:
 permissions:
   contents: write
 
-concurrency:
-  group: faz-3d-final-executor-${{ github.event.pull_request.number }}
-  cancel-in-progress: false
-
 jobs:
-  execute:
+  normalize:
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 20
     env:
-      PYTHONHASHSEED: "0"
       PYTHONPATH: engine:.
-      VEKTORYUM_WORKERS: "1"
       TARGET_BRANCH: agent/rfv-3d3-canvas-independent-alpha-mask
-      EXECUTOR_COMMIT_MESSAGE: "chore: persist measured FAZ 3D stroke continuation"
+      EXECUTOR_COMMIT_MESSAGE: "chore: normalize painter retry import formatting"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -35,98 +29,41 @@ jobs:
           cache: pip
           cache-dependency-path: engine/requirements.txt
 
-      - name: Install production and test dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ghostscript libcairo2
-          python -m pip install -q -r engine/requirements.txt pytest httpx
-
-      - name: Apply narrow production and test patch
+      - name: Normalize import and verify contracts
         shell: bash
         run: |
           set -euo pipefail
           test "$(git log -1 --pretty=%s)" = "${EXECUTOR_COMMIT_MESSAGE}"
-          python engine/regression/faz3d_finalize_stroke_continuation.py
-          python -m py_compile \
-            engine/app/alpha_candidate_painter.py \
-            engine/test_alpha_painter_stroke_continuation.py
+          python - <<'PY'
+          from pathlib import Path
 
-      - name: Run targeted continuation contracts
-        run: >-
-          python -m unittest
-          engine.test_alpha_painter_stroke_continuation
-          engine.test_alpha_painter_retry
-          engine.test_alpha_painter_reconstruction_fidelity
-          -v
-
-      - name: Run complete alpha suite
-        shell: bash
-        run: |
-          set -euo pipefail
+          path = Path('engine/app/alpha_candidate_painter.py')
+          text = path.read_text()
+          old = '''    from app.alpha_svg_mask import (  # noqa: PLC0415
+    _painter_retry_eligible,
+    _quantize_alpha,
+)
+'''
+          new = '''    from app.alpha_svg_mask import (  # noqa: PLC0415
+        _painter_retry_eligible,
+        _quantize_alpha,
+    )
+'''
+          if text.count(old) != 1:
+              raise RuntimeError('unexpected painter retry import formatting')
+          path.write_text(text.replace(old, new))
+          PY
+          python -m py_compile engine/app/alpha_candidate_painter.py
           python -m unittest \
-            engine.test_alpha_candidate_identity \
-            engine.test_alpha_candidate_knockout \
-            engine.test_alpha_candidate_paint_selection \
-            engine.test_alpha_candidate_support \
-            engine.test_alpha_candidate_validation \
-            engine.test_alpha_candidate_painter \
-            engine.test_alpha_candidate_background \
-            engine.test_alpha_mask_adaptive \
-            engine.test_alpha_mask_transaction \
-            engine.test_alpha_preprocess \
-            engine.test_alpha_noop_preflight \
-            engine.test_alpha_clip_encoding \
-            engine.test_alpha_artwork_identity \
-            engine.test_alpha_painter_encoding \
-            engine.test_alpha_painter_ledger \
-            engine.test_alpha_painter_retry \
-            engine.test_alpha_painter_reconstruction_fidelity \
             engine.test_alpha_painter_stroke_continuation \
-            -v > faz3d-alpha-tests.log 2>&1
-          cat faz3d-alpha-tests.log
+            engine.test_alpha_painter_retry \
+            -v
 
-      - name: Reproduce exact remaining Class Reklam journal blocker
-        working-directory: engine
+      - name: Commit normalized production file
         shell: bash
         run: |
           set -euo pipefail
-          set +e
-          python test_visual_regression.py \
-            --case class_reklam \
-            --case gradient_logo \
-            --require-baseline \
-            --out-dir regression/faz3d-final-sentinels \
-            > regression/faz3d-final-sentinels.log 2>&1
-          status=$?
-          set -e
-          cat regression/faz3d-final-sentinels.log
-          test "${status}" -ne 0
-          grep -F "PASS gradient_logo" regression/faz3d-final-sentinels.log
-          grep -F "FAIL class_reklam source_alpha_mask_transform_gate_rejected:topology_component_regression,topology_hole_regression" regression/faz3d-final-sentinels.log
-          grep -F '"stroke_width":2.0' regression/faz3d-final-sentinels.log
-          grep -F '"stroke_width":3.0' regression/faz3d-final-sentinels.log
-
-      - name: Commit and push measured continuation code
-        shell: bash
-        run: |
-          set -euo pipefail
-          git add \
-            engine/app/alpha_candidate_painter.py \
-            engine/test_alpha_painter_stroke_continuation.py
+          git add engine/app/alpha_candidate_painter.py
           git -c user.name='Vektoryum CI' -c user.email='actions@github.com' commit \
-            -m 'fix: continue painter stroke search after eligible journal rejection' \
-            -m 'Retry only when every journal reason remains inside the unchanged FAZ 3C topology/seam/SSIM/edge scope. Noneligible complexity or policy reasons still stop fail-closed. Retry eligibility, retry count, stroke list, thresholds, evaluator, TransformJournal, corpus, repeat, shard and timeout remain unchanged. Output remains deterministic vector-only with byte-identical rollback. Class Reklam alpha gates pass but the unchanged journal still rejects all existing strokes; this commit preserves that fail-closed result and makes the blocker fully observable.'
-          printf '\nfaz3d-alpha-tests.log\nengine/regression/faz3d-final-sentinels.log\nengine/regression/faz3d-final-sentinels/\n' >> .git/info/exclude
-          test -z "$(git status --porcelain)"
+            -m 'style: normalize painter retry import formatting'
           git push origin "HEAD:${TARGET_BRANCH}"
-
-      - name: Upload safe scalar logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: faz3d-final-executor-${{ github.run_id }}
-          path: |
-            faz3d-alpha-tests.log
-            engine/regression/faz3d-final-sentinels.log
-          if-no-files-found: warn
-          retention-days: 7
