@@ -1,0 +1,144 @@
+name: FAZ 3D4 first measured fixes
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/faz-3d4-first-fix-executor.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: faz-3d4-first-fix-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  verify-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      PYTHONHASHSEED: "0"
+      PYTHONPATH: engine:.
+      VEKTORYUM_WORKERS: "1"
+      TARGET_BRANCH: agent/rfv-3d3-canvas-independent-alpha-mask
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/rfv-3d3-canvas-independent-alpha-mask
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: engine/requirements.txt
+
+      - name: Install production and test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ghostscript libcairo2
+          python -m pip install -q -r engine/requirements.txt pytest httpx
+
+      - name: Apply measured narrow patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 -d engine/regression/faz3d4_first_patch.b64 > /tmp/faz3d4-first.patch
+          git apply --check /tmp/faz3d4-first.patch
+          git apply /tmp/faz3d4-first.patch
+          git diff --check
+          python -m py_compile \
+            engine/app/alpha_candidate_painter.py \
+            engine/app/alpha_svg_mask.py \
+            engine/test_alpha_noop_preflight.py \
+            engine/test_alpha_painter_encoding.py
+
+      - name: Run focused no-op and contour contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest \
+            engine.test_alpha_noop_preflight \
+            engine.test_alpha_painter_encoding \
+            engine.test_alpha_painter_ledger \
+            engine.test_alpha_painter_retry \
+            engine.test_alpha_painter_reconstruction_fidelity \
+            engine.test_alpha_painter_stroke_continuation \
+            -v 2>&1 | tee faz3d4-focused-tests.log
+
+      - name: Run complete alpha contract suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest \
+            engine.test_alpha_candidate_identity \
+            engine.test_alpha_candidate_knockout \
+            engine.test_alpha_candidate_paint_selection \
+            engine.test_alpha_candidate_support \
+            engine.test_alpha_candidate_validation \
+            engine.test_alpha_candidate_painter \
+            engine.test_alpha_candidate_background \
+            engine.test_alpha_mask_adaptive \
+            engine.test_alpha_mask_transaction \
+            engine.test_alpha_preprocess \
+            engine.test_alpha_noop_preflight \
+            engine.test_alpha_clip_encoding \
+            engine.test_alpha_artwork_identity \
+            engine.test_alpha_painter_encoding \
+            engine.test_alpha_painter_ledger \
+            engine.test_alpha_painter_retry \
+            engine.test_alpha_painter_reconstruction_fidelity \
+            engine.test_alpha_painter_stroke_continuation \
+            -v 2>&1 | tee faz3d4-alpha-tests.log
+
+      - name: Measure Class Reklam and gradient sentinels
+        working-directory: engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          python test_visual_regression.py \
+            --case class_reklam \
+            --case gradient_logo \
+            --require-baseline \
+            --out-dir regression/faz3d4-first-sentinels \
+            > regression/faz3d4-first-sentinels.log 2>&1
+          status=$?
+          set -e
+          cat regression/faz3d4-first-sentinels.log
+          grep -F "PASS gradient_logo" regression/faz3d4-first-sentinels.log
+          if [ "${status}" -eq 0 ]; then
+            grep -F "PASS class_reklam" regression/faz3d4-first-sentinels.log
+          else
+            grep -F "FAIL class_reklam source_alpha_mask_transform_gate_rejected:" regression/faz3d4-first-sentinels.log
+          fi
+
+      - name: Commit and push verified first fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add \
+            engine/app/alpha_candidate_painter.py \
+            engine/app/alpha_svg_mask.py \
+            engine/test_alpha_noop_preflight.py \
+            engine/test_alpha_painter_encoding.py
+          git -c user.name='Vektoryum CI' -c user.email='actions@github.com' commit \
+            -m 'fix: strengthen alpha no-op proof and compact contour nodes' \
+            -m 'Require native, bounded and unchanged FinalArtifactEvaluator alpha gates before byte-identical no-op. Remove only duplicate/collinear rectilinear contour nodes, preserving rendered geometry. Thresholds, TransformJournal, retry policy, stroke list, corpus, benchmark, repeat, shards and timeout remain unchanged.'
+          rm -rf engine/regression/faz3d4-first-sentinels
+          rm -f faz3d4-focused-tests.log faz3d4-alpha-tests.log engine/regression/faz3d4-first-sentinels.log
+          test -z "$(git status --porcelain --untracked-files=no)"
+          git push origin "HEAD:${TARGET_BRANCH}"
+
+      - name: Upload safe scalar logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: faz3d4-first-fix-${{ github.run_id }}
+          path: |
+            faz3d4-focused-tests.log
+            faz3d4-alpha-tests.log
+            engine/regression/faz3d4-first-sentinels.log
+          if-no-files-found: warn
+          retention-days: 7
