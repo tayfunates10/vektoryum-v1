@@ -1,9 +1,7 @@
 name: FAZ 3D mask semantics diagnostic
 
 on:
-  push:
-    branches:
-      - agent/rfv-3d3-canvas-independent-alpha-mask
+  pull_request:
     paths:
       - ".github/workflows/faz-3d-mask-semantics-diagnostic.yml"
 
@@ -11,12 +9,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: faz-3d-mask-semantics-${{ github.ref }}
+  group: faz-3d-mask-semantics-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
   diagnose:
-    if: github.event.head_commit.message == 'test: prove painter mask renderer semantics'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -25,7 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
 
       - uses: actions/setup-python@v5
@@ -45,12 +42,10 @@ jobs:
           from __future__ import annotations
 
           import hashlib
+          import importlib.util
           import json
-          import math
           import tempfile
           from pathlib import Path
-
-          import numpy as np
 
           from app.source_truth import render_svg_to_rgba
 
@@ -79,10 +74,9 @@ jobs:
               </svg>'''.encode("utf-8")
 
           def render_alpha(gray: int, declaration: str) -> int:
-              data = svg_for(gray, declaration)
               with tempfile.TemporaryDirectory() as td:
                   path = Path(td) / "probe.svg"
-                  path.write_bytes(data)
+                  path.write_bytes(svg_for(gray, declaration))
                   rgba = render_svg_to_rgba(path, 64, 64)
               if rgba is None:
                   raise RuntimeError("production_renderer_unavailable")
@@ -95,17 +89,19 @@ jobs:
 
           modes = ("implicit", "attr-luminance", "style-luminance", "attr-alpha", "style-alpha")
           transfer = {mode: {str(g): render_alpha(g, mode) for g in GRAYS} for mode in modes}
-
           implicit = transfer["implicit"]
           candidates = {
               "attr-luminance": transfer["attr-luminance"],
               "style-luminance": transfer["style-luminance"],
           }
-          working_luminance = None
-          for name, values in candidates.items():
-              if values["0"] <= 3 and values["255"] >= 252 and values["128"] < 250:
-                  working_luminance = name
-                  break
+          working_luminance = next(
+              (
+                  name
+                  for name, values in candidates.items()
+                  if values["0"] <= 3 and values["255"] >= 252 and values["128"] < 250
+              ),
+              None,
+          )
 
           direct_error = None
           linear_error = None
@@ -125,8 +121,8 @@ jobs:
 
           payload = {
               "schema": "vektoryum-faz3d-mask-semantics-v1",
-              "source_commit": "${{ github.sha }}",
-              "renderer": "resvg_py" if __import__("importlib").util.find_spec("resvg_py") else "cairosvg",
+              "source_commit": "${{ github.event.pull_request.head.sha }}",
+              "renderer": "resvg_py" if importlib.util.find_spec("resvg_py") else "cairosvg",
               "gray_values": list(GRAYS),
               "transfer": transfer,
               "working_luminance_declaration": working_luminance,
