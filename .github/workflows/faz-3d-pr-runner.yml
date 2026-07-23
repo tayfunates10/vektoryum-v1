@@ -145,14 +145,48 @@ jobs:
                       'engine/test_alpha_painter_reconstruction_fidelity.py'
                   )
                   text = test_path.read_text()
-                  old = '''                  _root_node, _canvas, alpha, tree, _stats = self._build(\n                      viewbox=(5.5, -2.25, 91.75, 47.5)\n                  )\n                  rendered = _render_tree(tree, 64, 64)\n'''
-                  new = '''                  _root_node, _canvas, alpha, tree, _stats = self._build(\n                      viewbox=(5.5, -2.25, 91.75, 47.5)\n                  )\n                  # Explicitly test anisotropic cell-edge mapping. Without `none`,\n                  # SVG's default meet behaviour letterboxes this intentionally\n                  # mismatched viewport and changes the reference support itself.\n                  tree.set("preserveAspectRatio", "none")\n                  rendered = _render_tree(tree, 64, 64)\n'''
-                  assert text.count(old) == 1
-                  text = text.replace(old, new)
-                  old = '''                      self.assertTrue(report["comparison_canvas_retained_under_mask"])\n                      self.assertFalse(report["comparison_canvas_knocked_out"])\n                      self.assertGreaterEqual(report["painter_native_alpha_iou"], 0.995)\n'''
-                  new = '''                      self.assertTrue(report["comparison_canvas_retained_under_mask"])\n                      self.assertFalse(report["comparison_canvas_knocked_out"])\n                      self.assertGreaterEqual(\n                          report["candidate_support_stroke_width_pixels"], 1.5\n                      )\n                      self.assertGreaterEqual(report["painter_native_alpha_iou"], 0.995)\n'''
-                  assert text.count(old) == 1
-                  text = text.replace(old, new)
+
+                  fractional_marker = (
+                      'def test_fractional_nonzero_viewbox_uses_cell_edge_mapping'
+                  )
+                  before, fractional = text.split(fractional_marker, 1)
+                  rendered_token = 'rendered = _render_tree(tree, 64, 64)'
+                  rendered_index = fractional.index(rendered_token)
+                  line_start = fractional.rfind('\n', 0, rendered_index) + 1
+                  indent = fractional[line_start:rendered_index]
+                  fractional = (
+                      fractional[:line_start]
+                      + indent
+                      + '# Explicit anisotropic mapping; default meet would letterbox.\n'
+                      + indent
+                      + 'tree.set("preserveAspectRatio", "none")\n'
+                      + fractional[line_start:]
+                  )
+                  text = before + fractional_marker + fractional
+
+                  end_marker = (
+                      'def test_end_to_end_sparse_artwork_uses_masked_canvas_support'
+                  )
+                  before, end_to_end = text.split(end_marker, 1)
+                  alpha_assert = (
+                      'self.assertGreaterEqual('
+                      'report["painter_native_alpha_iou"], 0.995)'
+                  )
+                  assert_index = end_to_end.index(alpha_assert)
+                  line_start = end_to_end.rfind('\n', 0, assert_index) + 1
+                  indent = end_to_end[line_start:assert_index]
+                  insertion = (
+                      indent
+                      + 'self.assertGreaterEqual(\n'
+                      + indent
+                      + '    report["candidate_support_stroke_width_pixels"], 1.5\n'
+                      + indent
+                      + ')\n'
+                  )
+                  end_to_end = (
+                      end_to_end[:line_start] + insertion + end_to_end[line_start:]
+                  )
+                  text = before + end_marker + end_to_end
                   test_path.write_text(text)
 
               if name == 'Update alpha contract workflow and fix documentation':
@@ -166,8 +200,6 @@ jobs:
                   )
 
               if name == 'Commit fix and remove executor workflows':
-                  # This branch-only runner and both temporary diagnostic executors
-                  # must not survive in the final tree.
                   for temporary in (
                       '.github/workflows/faz-3d-pr-runner.yml',
                       '.github/workflows/faz-3d-underpaint-stroke-diagnostic.yml',
