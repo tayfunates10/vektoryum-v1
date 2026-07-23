@@ -1,0 +1,150 @@
+name: FAZ 3D mask semantics diagnostic
+
+on:
+  push:
+    branches:
+      - agent/rfv-3d3-canvas-independent-alpha-mask
+    paths:
+      - ".github/workflows/faz-3d-mask-semantics-diagnostic.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: faz-3d-mask-semantics-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  diagnose:
+    if: github.event.head_commit.message == 'test: prove painter mask renderer semantics'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PYTHONHASHSEED: "0"
+      PYTHONPATH: engine:.
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: engine/requirements.txt
+
+      - name: Install production renderer dependencies
+        run: python -m pip install -q -r engine/requirements.txt
+
+      - name: Measure mask transfer functions with production renderer
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY' | tee faz3d-mask-semantics.json
+          from __future__ import annotations
+
+          import hashlib
+          import json
+          import math
+          import tempfile
+          from pathlib import Path
+
+          import numpy as np
+
+          from app.source_truth import render_svg_to_rgba
+
+          GRAYS = (0, 1, 32, 64, 128, 192, 254, 255)
+
+          def svg_for(gray: int, declaration: str) -> bytes:
+              mask_attrs = 'maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse" x="0" y="0" width="64" height="64"'
+              if declaration == "attr-luminance":
+                  mask_attrs += ' mask-type="luminance"'
+              elif declaration == "attr-alpha":
+                  mask_attrs += ' mask-type="alpha"'
+              elif declaration == "style-luminance":
+                  mask_attrs += ' style="mask-type:luminance"'
+              elif declaration == "style-alpha":
+                  mask_attrs += ' style="mask-type:alpha"'
+              elif declaration != "implicit":
+                  raise ValueError(declaration)
+              return f'''<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+                <defs>
+                  <mask id="m" {mask_attrs}>
+                    <rect x="0" y="0" width="64" height="64" fill="rgb(0,0,0)"/>
+                    <rect x="0" y="0" width="64" height="64" fill="rgb({gray},{gray},{gray})"/>
+                  </mask>
+                </defs>
+                <rect x="0" y="0" width="64" height="64" fill="rgb(255,0,0)" mask="url(#m)"/>
+              </svg>'''.encode("utf-8")
+
+          def render_alpha(gray: int, declaration: str) -> int:
+              data = svg_for(gray, declaration)
+              with tempfile.TemporaryDirectory() as td:
+                  path = Path(td) / "probe.svg"
+                  path.write_bytes(data)
+                  rgba = render_svg_to_rgba(path, 64, 64)
+              if rgba is None:
+                  raise RuntimeError("production_renderer_unavailable")
+              return int(rgba[32, 32, 3])
+
+          def srgb_to_linear_byte(gray: int) -> float:
+              value = gray / 255.0
+              linear = value / 12.92 if value <= 0.04045 else ((value + 0.055) / 1.055) ** 2.4
+              return linear * 255.0
+
+          modes = ("implicit", "attr-luminance", "style-luminance", "attr-alpha", "style-alpha")
+          transfer = {mode: {str(g): render_alpha(g, mode) for g in GRAYS} for mode in modes}
+
+          implicit = transfer["implicit"]
+          candidates = {
+              "attr-luminance": transfer["attr-luminance"],
+              "style-luminance": transfer["style-luminance"],
+          }
+          working_luminance = None
+          for name, values in candidates.items():
+              if values["0"] <= 3 and values["255"] >= 252 and values["128"] < 250:
+                  working_luminance = name
+                  break
+
+          direct_error = None
+          linear_error = None
+          if working_luminance:
+              values = candidates[working_luminance]
+              direct_error = sum(abs(values[str(g)] - g) for g in GRAYS) / len(GRAYS)
+              linear_error = sum(abs(values[str(g)] - srgb_to_linear_byte(g)) for g in GRAYS) / len(GRAYS)
+
+          if implicit["0"] >= 252 and implicit["128"] >= 252 and working_luminance:
+              root_cause = "implicit_mask_type_resolves_to_alpha_semantics"
+          elif working_luminance and linear_error is not None and direct_error is not None and linear_error + 2.0 < direct_error:
+              root_cause = "luminance_srgb_transfer_mismatch"
+          elif not working_luminance:
+              root_cause = "renderer_luminance_mask_unsupported"
+          else:
+              root_cause = "unexpected_mask_transfer"
+
+          payload = {
+              "schema": "vektoryum-faz3d-mask-semantics-v1",
+              "source_commit": "${{ github.sha }}",
+              "renderer": "resvg_py" if __import__("importlib").util.find_spec("resvg_py") else "cairosvg",
+              "gray_values": list(GRAYS),
+              "transfer": transfer,
+              "working_luminance_declaration": working_luminance,
+              "direct_mean_abs_error": direct_error,
+              "linear_mean_abs_error": linear_error,
+              "root_cause": root_cause,
+          }
+          canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+          payload["evidence_sha256"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+          print(json.dumps(payload, sort_keys=True, indent=2))
+          if root_cause == "unexpected_mask_transfer":
+              raise SystemExit("unexpected mask transfer; production fix is not authorized")
+          PY
+
+      - name: Upload scalar-only diagnostic evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: faz3d-mask-semantics-${{ github.run_id }}
+          path: faz3d-mask-semantics.json
+          if-no-files-found: error
+          retention-days: 7
