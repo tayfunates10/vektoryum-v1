@@ -1,0 +1,814 @@
+name: FAZ 3D4 paint deficit production
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/faz-3d4-paint-deficit-production.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: faz-3d4-paint-deficit-production-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  verify-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      PYTHONPATH: engine:.
+      PYTHONHASHSEED: "0"
+      VEKTORYUM_WORKERS: "1"
+      TARGET_BRANCH: agent/rfv-3d3-canvas-independent-alpha-mask
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TARGET_BRANCH }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: engine/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ghostscript libcairo2
+          python -m pip install -q -r engine/requirements.txt pytest httpx
+
+      - name: Add generic paint-deficit vector candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > engine/app/alpha_candidate_paint_deficit.py <<'PY'
+          """Vector-only paint-deficit reconstruction for source-alpha painter fallback.
+
+          This candidate is attempted only after the existing painter encodings fail.
+          It measures source-foreground pixels that the preserved artwork renders white,
+          overlays a compact source-derived vector surface above that artwork, and applies
+          the source alpha once through a fixed 24-level polygon mask.  Acceptance remains
+          owned by the unchanged alpha evaluator and TransformJournal gates.
+          """
+          from __future__ import annotations
+
+          import copy
+          import xml.etree.ElementTree as ET
+          from typing import Any
+
+          import numpy as np
+
+          from app.alpha_artwork_identity import (
+              ROLE_ARTWORK_CONTAINER,
+              ROLE_MASK_APPLICATION,
+              ROLE_MASK_DEFINITION,
+              ROLE_MASK_GEOMETRY,
+              tag_transform_node,
+          )
+
+          _SVG_NS = "http://www.w3.org/2000/svg"
+          _ALPHA_LEVELS = 24
+          _PALETTE_LIMIT = 8
+
+
+          def _composite_on_white(rgba: np.ndarray) -> np.ndarray:
+              array = np.asarray(rgba, dtype=np.uint8)
+              alpha = array[:, :, 3:4].astype(np.float32) / 255.0
+              return np.clip(
+                  array[:, :, :3].astype(np.float32) * alpha
+                  + 255.0 * (1.0 - alpha),
+                  0,
+                  255,
+              ).astype(np.uint8)
+
+
+          def _fixed_alpha_levels(
+              alpha: np.ndarray,
+              levels: int = _ALPHA_LEVELS,
+          ) -> tuple[np.ndarray, dict[int, float]]:
+              """Round source alpha onto a fixed deterministic level lattice."""
+              steps = max(1, int(levels) - 1)
+              quantized = np.rint(
+                  np.asarray(alpha, dtype=np.float32) * steps / 255.0
+              ).astype(np.uint8)
+              opacity = {
+                  int(value): int(value) / float(steps)
+                  for value in np.unique(quantized)
+                  if int(value) > 0
+              }
+              return quantized, opacity
+
+
+          def _dominant_opaque_palette(
+              source_rgba: np.ndarray,
+              limit: int = _PALETTE_LIMIT,
+          ) -> np.ndarray:
+              """Stable source palette: 8-step buckets, count-descending, mean colour."""
+              rgba = np.asarray(source_rgba, dtype=np.uint8)
+              alpha = rgba[:, :, 3]
+              selected = alpha >= 240
+              if not bool(selected.any()):
+                  selected = alpha > 0
+              colors = rgba[:, :, :3][selected].astype(np.int32)
+              if not len(colors):
+                  return np.asarray([[0, 0, 0]], dtype=np.uint8)
+              buckets = colors // 8
+              unique, inverse, counts = np.unique(
+                  buckets,
+                  axis=0,
+                  return_inverse=True,
+                  return_counts=True,
+              )
+              order = sorted(
+                  range(len(unique)),
+                  key=lambda index: (
+                      -int(counts[index]),
+                      tuple(int(value) for value in unique[index]),
+                  ),
+              )[: max(1, int(limit))]
+              palette = []
+              for index in order:
+                  members = colors[inverse == index]
+                  palette.append(
+                      np.rint(members.mean(axis=0))
+                      .clip(0, 255)
+                      .astype(np.uint8)
+                  )
+              return np.asarray(palette, dtype=np.uint8)
+
+
+          def _paint_deficit_labels(
+              source_rgba: np.ndarray,
+              artwork_rgba: np.ndarray,
+          ) -> tuple[np.ndarray, np.ndarray, dict[str, int]]:
+              source = np.asarray(source_rgba, dtype=np.uint8)
+              artwork = np.asarray(artwork_rgba, dtype=np.uint8)
+              source_white = _composite_on_white(source)
+              artwork_white = _composite_on_white(artwork)
+              source_foreground = np.any(
+                  np.abs(source_white.astype(np.int16) - 255) > 12,
+                  axis=2,
+              )
+              artwork_missing = np.all(artwork_white > 244, axis=2)
+              deficit = source_foreground & artwork_missing
+              if not bool(deficit.any()):
+                  return (
+                      np.zeros(deficit.shape, dtype=np.int32),
+                      np.asarray([[0, 0, 0]], dtype=np.uint8),
+                      {
+                          "paint_deficit_pixel_count": 0,
+                          "paint_deficit_opaque_artwork_count": 0,
+                          "paint_deficit_alpha_residual_overlap": 0,
+                      },
+                  )
+
+              palette = _dominant_opaque_palette(source)
+              source_rgb = source[:, :, :3].astype(np.int32)
+              distances = (
+                  source_rgb[:, :, None, :]
+                  - palette.astype(np.int32)[None, None, :, :]
+              ) ** 2
+              nearest = np.argmin(distances.sum(axis=3), axis=2).astype(np.int32)
+              labels = np.zeros(deficit.shape, dtype=np.int32)
+              labels[deficit] = nearest[deficit] + 1
+              alpha_residual = (source[:, :, 3] > 0) & (artwork[:, :, 3] < 255)
+              return labels, palette, {
+                  "paint_deficit_pixel_count": int(np.count_nonzero(deficit)),
+                  "paint_deficit_opaque_artwork_count": int(
+                      np.count_nonzero(deficit & (artwork[:, :, 3] == 255))
+                  ),
+                  "paint_deficit_alpha_residual_overlap": int(
+                      np.count_nonzero(deficit & alpha_residual)
+                  ),
+              }
+
+
+          def build_paint_deficit_reconstruction_tree(
+              original_root: ET.Element,
+              canvas_element: ET.Element | None,
+              source_rgba_grid: np.ndarray,
+              transaction_id: str,
+          ) -> tuple[ET.Element, dict[str, Any]]:
+              """Build one q24 source-alpha mask plus a compact deficit overlay."""
+              from app.alpha_candidate_knockout import (  # noqa: PLC0415
+                  _local_name,
+                  _render_root,
+                  _unique_id,
+                  _viewbox,
+              )
+              from app.alpha_candidate_painter import (  # noqa: PLC0415
+                  _painter_loops,
+                  _simplify_rectilinear_loop,
+              )
+              from app.alpha_candidate_support import (  # noqa: PLC0415
+                  _PROTECTED_ROOT_TAGS,
+                  _strip_content_alpha,
+              )
+              from app.alpha_svg_mask import _merged_rectangles_by_level  # noqa: PLC0415
+
+              source = np.asarray(source_rgba_grid, dtype=np.uint8)
+              grid_height, grid_width = source.shape[:2]
+              canvas_index = (
+                  list(original_root).index(canvas_element)
+                  if canvas_element is not None
+                  else None
+              )
+
+              artwork_root = copy.deepcopy(original_root)
+              if canvas_index is not None:
+                  artwork_root.remove(list(artwork_root)[canvas_index])
+              artwork_rgba = _render_root(artwork_root, grid_width, grid_height)
+              if artwork_rgba is None:
+                  raise RuntimeError(
+                      "source_alpha_candidate_painter_paint_deficit_render_unmeasured"
+                  )
+              labels, palette, deficit_stats = _paint_deficit_labels(
+                  source,
+                  artwork_rgba,
+              )
+              if int(deficit_stats["paint_deficit_pixel_count"]) <= 0:
+                  raise RuntimeError(
+                      "source_alpha_candidate_painter_paint_deficit_empty"
+                  )
+
+              qname = lambda name: f"{{{_SVG_NS}}}{name}"
+              root = copy.deepcopy(original_root)
+              target_canvas = (
+                  list(root)[canvas_index] if canvas_index is not None else None
+              )
+              defs = next(
+                  (
+                      child
+                      for child in list(root)
+                      if _local_name(str(child.tag)).lower() == "defs"
+                  ),
+                  None,
+              )
+              if defs is None:
+                  defs = ET.Element(qname("defs"))
+                  root.insert(0, defs)
+
+              paint_id = _unique_id(root, "vektoryum-alpha-deficit-artwork")
+              paint = ET.SubElement(
+                  defs,
+                  qname("g"),
+                  {
+                      "id": paint_id,
+                      "data-vektoryum-alpha-candidate-paint": "preserved-v2",
+                  },
+              )
+              tag_transform_node(paint, ROLE_ARTWORK_CONTAINER, transaction_id)
+              artwork_count = 0
+              movable = [
+                  child
+                  for child in list(root)
+                  if child is not defs
+                  and _local_name(str(child.tag)).lower()
+                  not in _PROTECTED_ROOT_TAGS
+              ]
+              for child in movable:
+                  root.remove(child)
+                  if child is target_canvas:
+                      continue
+                  _strip_content_alpha(child)
+                  paint.append(child)
+                  artwork_count += 1
+              if artwork_count <= 0:
+                  raise RuntimeError(
+                      "source_alpha_candidate_painter_paint_deficit_no_artwork"
+                  )
+
+              view_x, view_y, view_width, view_height = _viewbox(root)
+              quantized, opacity = _fixed_alpha_levels(source[:, :, 3])
+              loops = _painter_loops(quantized, opacity)
+              if not loops:
+                  raise RuntimeError(
+                      "source_alpha_candidate_painter_paint_deficit_empty_alpha"
+                  )
+              mask_id = _unique_id(root, "vektoryum-alpha-deficit-mask")
+              mask = ET.SubElement(
+                  defs,
+                  qname("mask"),
+                  {
+                      "id": mask_id,
+                      "maskUnits": "userSpaceOnUse",
+                      "maskContentUnits": "userSpaceOnUse",
+                      "x": f"{view_x:g}",
+                      "y": f"{view_y:g}",
+                      "width": f"{view_width:g}",
+                      "height": f"{view_height:g}",
+                      "data-vektoryum-source-alpha-reconstruction": (
+                          "paint-deficit-q24-v1"
+                      ),
+                  },
+              )
+              tag_transform_node(mask, ROLE_MASK_DEFINITION, transaction_id)
+              content = ET.SubElement(
+                  mask,
+                  qname("g"),
+                  {
+                      "transform": (
+                          f"translate({view_x:.12g} {view_y:.12g}) "
+                          f"scale({view_width / grid_width:.12g} "
+                          f"{view_height / grid_height:.12g})"
+                      )
+                  },
+              )
+              ET.SubElement(
+                  content,
+                  qname("rect"),
+                  {
+                      "x": "0",
+                      "y": "0",
+                      "width": str(grid_width),
+                      "height": str(grid_height),
+                      "fill": "rgb(0,0,0)",
+                  },
+              )
+              mask_polygon_count = 0
+              for _area, corners, gray in loops:
+                  simplified = _simplify_rectilinear_loop(corners)
+                  if len(simplified) < 3:
+                      continue
+                  ET.SubElement(
+                      content,
+                      qname("polygon"),
+                      {
+                          "points": " ".join(
+                              f"{x},{y}" for x, y in simplified
+                          ),
+                          "fill": f"rgb({gray},{gray},{gray})",
+                      },
+                  )
+                  mask_polygon_count += 1
+
+              layer = ET.SubElement(
+                  root,
+                  qname("g"),
+                  {
+                      "data-vektoryum-source-alpha-reconstruction": (
+                          "paint-deficit-q24-v1"
+                      )
+                  },
+              )
+              tag_transform_node(layer, ROLE_MASK_APPLICATION, transaction_id)
+              ET.SubElement(
+                  layer,
+                  qname("use"),
+                  {"href": f"#{paint_id}"},
+              )
+
+              support = ET.SubElement(
+                  layer,
+                  qname("g"),
+                  {
+                      "transform": (
+                          f"translate({view_x:.12g} {view_y:.12g}) "
+                          f"scale({view_width / grid_width:.12g} "
+                          f"{view_height / grid_height:.12g})"
+                      ),
+                      "data-vektoryum-paint-deficit": "source-palette-v1",
+                  },
+              )
+              tag_transform_node(support, ROLE_MASK_GEOMETRY, transaction_id)
+              rectangles = _merged_rectangles_by_level(labels)
+              support_rect_count = 0
+              used_palette_count = 0
+              for label in sorted(rectangles):
+                  if label <= 0 or label > len(palette):
+                      continue
+                  level_rectangles = rectangles[label]
+                  if not level_rectangles:
+                      continue
+                  color = palette[label - 1]
+                  group = ET.SubElement(
+                      support,
+                      qname("g"),
+                      {
+                          "fill": (
+                              f"rgb({int(color[0])},{int(color[1])},"
+                              f"{int(color[2])})"
+                          )
+                      },
+                  )
+                  for x, y, width, height in level_rectangles:
+                      ET.SubElement(
+                          group,
+                          qname("rect"),
+                          {
+                              "x": str(x),
+                              "y": str(y),
+                              "width": str(width),
+                              "height": str(height),
+                          },
+                      )
+                      support_rect_count += 1
+                  used_palette_count += 1
+
+              layer.set("mask", f"url(#{mask_id})")
+              return root, {
+                  "reconstruction_mask_encoding": "paint-deficit-q24-polygon",
+                  "reconstruction_loop_count": int(len(loops)),
+                  "reconstruction_mask_polygon_count": int(mask_polygon_count),
+                  "encoded_alpha_level_count": int(
+                      len([value for value in opacity if int(value) > 0])
+                  ),
+                  "paint_deficit_palette_count": int(used_palette_count),
+                  "paint_deficit_support_rect_count": int(support_rect_count),
+                  "comparison_canvas_knocked_out": bool(target_canvas is not None),
+                  "comparison_canvas_retained_under_mask": False,
+                  "candidate_support_expanded_geometry_count": 0,
+                  **deficit_stats,
+              }
+          PY
+
+          cat > engine/test_alpha_painter_paint_deficit.py <<'PY'
+          from __future__ import annotations
+
+          import copy
+          import tempfile
+          import unittest
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          import numpy as np
+
+          from app.alpha_candidate_knockout import _render_root
+          from app.alpha_candidate_paint_deficit import (
+              _fixed_alpha_levels,
+              _paint_deficit_labels,
+              build_paint_deficit_reconstruction_tree,
+          )
+
+          SVG_NS = "http://www.w3.org/2000/svg"
+
+
+          def qname(name: str) -> str:
+              return f"{{{SVG_NS}}}{name}"
+
+
+          class PaintDeficitCandidateTests(unittest.TestCase):
+              def _root(self):
+                  root = ET.Element(
+                      qname("svg"),
+                      {"viewBox": "0 0 4 4", "width": "4", "height": "4"},
+                  )
+                  canvas = ET.SubElement(
+                      root,
+                      qname("rect"),
+                      {"x": "0", "y": "0", "width": "4", "height": "4", "fill": "white"},
+                  )
+                  ET.SubElement(
+                      root,
+                      qname("rect"),
+                      {"x": "0", "y": "0", "width": "2", "height": "4", "fill": "black"},
+                  )
+                  return root, canvas
+
+              def _source(self):
+                  rgba = np.zeros((4, 4, 4), dtype=np.uint8)
+                  rgba[:, :3, :3] = 0
+                  rgba[:, :3, 3] = 255
+                  return rgba
+
+              def test_fixed_q24_is_deterministic_and_bounded(self):
+                  alpha = np.arange(256, dtype=np.uint8).reshape(16, 16)
+                  q1, o1 = _fixed_alpha_levels(alpha)
+                  q2, o2 = _fixed_alpha_levels(alpha)
+                  np.testing.assert_array_equal(q1, q2)
+                  self.assertEqual(o1, o2)
+                  self.assertLessEqual(len(np.unique(q1)), 24)
+                  self.assertEqual(int(q1[0, 0]), 0)
+                  self.assertEqual(int(q1[-1, -1]), 23)
+
+              def test_deficit_detects_opaque_white_artwork_hole(self):
+                  source = self._source()
+                  artwork = np.zeros_like(source)
+                  artwork[:, :2, :3] = 0
+                  artwork[:, :2, 3] = 255
+                  artwork[:, 2:, :3] = 255
+                  artwork[:, 2:, 3] = 255
+                  labels, _palette, stats = _paint_deficit_labels(source, artwork)
+                  self.assertEqual(stats["paint_deficit_pixel_count"], 4)
+                  self.assertEqual(stats["paint_deficit_opaque_artwork_count"], 4)
+                  self.assertTrue(np.all(labels[:, 2] > 0))
+
+              def test_builder_is_vector_only_deterministic_and_repairs_paint(self):
+                  root, canvas = self._root()
+                  source = self._source()
+                  tree1, report1 = build_paint_deficit_reconstruction_tree(
+                      root, canvas, source, "txn-fixed"
+                  )
+                  tree2, report2 = build_paint_deficit_reconstruction_tree(
+                      copy.deepcopy(root), list(copy.deepcopy(root))[0], source, "txn-fixed"
+                  )
+                  bytes1 = ET.tostring(tree1)
+                  bytes2 = ET.tostring(tree2)
+                  self.assertEqual(bytes1, bytes2)
+                  self.assertEqual(report1, report2)
+                  self.assertNotIn(b"<image", bytes1)
+                  self.assertNotIn(b"data:", bytes1)
+                  self.assertEqual(report1["paint_deficit_pixel_count"], 4)
+                  rendered = _render_root(tree1, 4, 4)
+                  self.assertIsNotNone(rendered)
+                  assert rendered is not None
+                  self.assertTrue(np.all(rendered[:, :3, 3] == 255))
+                  self.assertTrue(np.all(rendered[:, :3, :3] < 20))
+                  self.assertTrue(np.all(rendered[:, 3, 3] == 0))
+
+              def test_production_module_has_no_fixture_specific_branch(self):
+                  text = Path(
+                      "engine/app/alpha_candidate_paint_deficit.py"
+                  ).read_text(encoding="utf-8")
+                  self.assertNotIn("class_reklam", text)
+                  self.assertNotIn("qualification-public", text)
+
+
+          if __name__ == "__main__":
+              unittest.main()
+          PY
+
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("engine/app/alpha_candidate_painter.py")
+          text = path.read_text(encoding="utf-8")
+
+          old_primary = '''        _validated("exact")
+              or _validated("quantized")
+              or _smallest_byte_rejected("exact")
+              or _smallest_byte_rejected("quantized")'''
+          new_primary = '''        _validated("exact")
+              or _validated("quantized")
+              or _validated("paint_deficit")
+              or _smallest_byte_rejected("exact")
+              or _smallest_byte_rejected("quantized")
+              or _smallest_byte_rejected("paint_deficit")'''
+          if old_primary not in text:
+              raise SystemExit("primary error selector anchor missing")
+          text = text.replace(old_primary, new_primary, 1)
+
+          phase_anchor = '''        return best
+
+              try:
+                  # Kademe 1 → Kademe 2 → Kademe 3: render-güvenli sayı-koruyan kodlamalar'''
+          phase_insert = '''        return best
+
+              def _evaluate_paint_deficit() -> list[Any] | None:
+                  from app.alpha_candidate_paint_deficit import (  # noqa: PLC0415
+                      build_paint_deficit_reconstruction_tree,
+                  )
+
+                  label = "paint-deficit-q24"
+                  txn = alpha_transaction_id(
+                      parent_sha256, source_alpha_sha256, mode, label
+                  )
+                  entry: dict[str, Any] = {
+                      "stroke_width": 0.0,
+                      "encoding_label": label,
+                      "encoding_family": "paint_deficit",
+                      "exact_or_quantized": "paint_deficit",
+                      "source_alpha_level_count": int(source_level_count),
+                      "encoded_alpha_level_count": 24,
+                      "actual_serialized_bytes": None,
+                      "byte_limit": int(byte_limit),
+                      "projected_path_count": int(parent_counts[0]),
+                      "actual_path_count": None,
+                      "path_limit": int(limits["path_limit"]),
+                      "projected_node_count": int(parent_counts[1]),
+                      "actual_node_count": None,
+                      "node_limit": int(limits["node_limit"]),
+                      "preflight_status": None,
+                      "validation_started": False,
+                      "validation_stage": None,
+                      "status": None,
+                      "exact_error_code": "",
+                      "native_alpha_iou": None,
+                      "native_alpha_mae": None,
+                      "bounded_alpha_iou": None,
+                      "bounded_alpha_mae": None,
+                      "evaluator_alpha_iou": None,
+                      "evaluator_alpha_mae": None,
+                      "artwork_fingerprint_match": None,
+                      "journal_gate_started": False,
+                      "journal_passed": None,
+                      "journal_reason_codes": [],
+                  }
+                  try:
+                      probe_root, probe_geometry = (
+                          build_paint_deficit_reconstruction_tree(
+                              original_root,
+                              canvas,
+                              grid_rgba,
+                              txn,
+                          )
+                      )
+                  except RuntimeError as exc:
+                      entry["preflight_status"] = "not_constructed"
+                      entry["validation_stage"] = "paint_deficit_geometry"
+                      entry["status"] = "geometry_rejected"
+                      entry["exact_error_code"] = str(exc)
+                      attempts.append(entry)
+                      return None
+
+                  probe_temp = _write_tree_to_temp(probe_root, target)
+                  probe_size = int(probe_temp.stat().st_size)
+                  entry["actual_serialized_bytes"] = probe_size
+                  entry["encoded_alpha_level_count"] = int(
+                      probe_geometry.get("encoded_alpha_level_count", 24)
+                  )
+                  if probe_size > byte_limit:
+                      entry["preflight_status"] = "over_budget"
+                      entry["status"] = "byte_rejected"
+                      entry["exact_error_code"] = (
+                          "source_alpha_candidate_painter_byte_budget_rejected:"
+                          f"{label}:{probe_size}>{byte_limit}"
+                      )
+                      attempts.append(entry)
+                      probe_temp.unlink(missing_ok=True)
+                      return None
+
+                  entry["preflight_status"] = "within_budget"
+                  entry["validation_started"] = True
+                  parent_artwork_fp = artwork_fingerprint(
+                      original_root, txn, excluded_from_parent
+                  )
+                  assessment = _assess_painter_candidate(
+                      probe_temp,
+                      source_rgba_full,
+                      grid_alpha,
+                      mode,
+                      parent_counts,
+                      transaction_id=txn,
+                      parent_artwork_fingerprint=parent_artwork_fp,
+                  )
+                  for field in (
+                      "validation_stage",
+                      "status",
+                      "exact_error_code",
+                      "native_alpha_iou",
+                      "native_alpha_mae",
+                      "bounded_alpha_iou",
+                      "bounded_alpha_mae",
+                      "evaluator_alpha_iou",
+                      "evaluator_alpha_mae",
+                      "artwork_fingerprint_match",
+                      "actual_path_count",
+                      "actual_node_count",
+                  ):
+                      entry[field] = assessment[field]
+                  if assessment["status"] != "accepted":
+                      attempts.append(entry)
+                      probe_temp.unlink(missing_ok=True)
+                      return None
+
+                  entry["journal_gate_started"] = True
+                  journal_passed, journal_codes = _run_painter_geometry_journal(
+                      parent_journal_path,
+                      probe_temp,
+                      journal_source_rgb,
+                      journal_image_class,
+                      assessment["report"],
+                  )
+                  entry["journal_passed"] = bool(journal_passed)
+                  entry["journal_reason_codes"] = list(journal_codes)
+                  if not journal_passed:
+                      entry["status"] = "geometry_rejected"
+                      entry["validation_stage"] = "journal_geometry"
+                      entry["exact_error_code"] = (
+                          "source_alpha_candidate_painter_journal_geometry_rejected:"
+                          + ",".join(journal_codes)
+                      )
+                      attempts.append(entry)
+                      probe_temp.unlink(missing_ok=True)
+                      return None
+
+                  attempts.append(entry)
+                  return [
+                      probe_size,
+                      int(assessment["actual_path_count"] or 0),
+                      int(assessment["actual_node_count"] or 0),
+                      0,
+                      probe_temp,
+                      probe_geometry,
+                      dict(assessment["report"] or {}),
+                      label,
+                      0.0,
+                  ]
+
+              try:
+                  # Kademe 1 → Kademe 2 → Kademe 3: render-güvenli sayı-koruyan kodlamalar'''
+          if phase_anchor not in text:
+              raise SystemExit("paint-deficit phase insertion anchor missing")
+          text = text.replace(phase_anchor, phase_insert, 1)
+
+          winner_anchor = '''        if winner is None:
+                  winner = _evaluate_phase(quantized_specs)
+              finally:'''
+          winner_replace = '''        if winner is None:
+                  winner = _evaluate_phase(quantized_specs)
+              if winner is None:
+                  winner = _evaluate_paint_deficit()
+              finally:'''
+          if winner_anchor not in text:
+              raise SystemExit("winner phase anchor missing")
+          text = text.replace(winner_anchor, winner_replace, 1)
+          path.write_text(text, encoding="utf-8")
+          PY
+
+          git diff --check
+          python -m py_compile \
+            engine/app/alpha_candidate_paint_deficit.py \
+            engine/app/alpha_candidate_painter.py \
+            engine/test_alpha_painter_paint_deficit.py
+
+      - name: Run focused paint-deficit and painter contracts
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m unittest \
+            engine.test_alpha_painter_paint_deficit \
+            engine.test_alpha_candidate_painter \
+            engine.test_alpha_painter_encoding \
+            engine.test_alpha_painter_ledger \
+            engine.test_alpha_painter_retry \
+            engine.test_alpha_painter_reconstruction_fidelity \
+            engine.test_alpha_painter_stroke_continuation \
+            -v 2>&1 | tee faz3d4-paint-deficit-focused.log
+
+      - name: Run complete alpha suite
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m unittest \
+            engine.test_alpha_candidate_identity \
+            engine.test_alpha_candidate_knockout \
+            engine.test_alpha_candidate_paint_selection \
+            engine.test_alpha_candidate_support \
+            engine.test_alpha_candidate_validation \
+            engine.test_alpha_candidate_painter \
+            engine.test_alpha_candidate_background \
+            engine.test_alpha_mask_adaptive \
+            engine.test_alpha_mask_transaction \
+            engine.test_alpha_preprocess \
+            engine.test_alpha_noop_preflight \
+            engine.test_alpha_clip_encoding \
+            engine.test_alpha_artwork_identity \
+            engine.test_alpha_painter_encoding \
+            engine.test_alpha_painter_ledger \
+            engine.test_alpha_painter_retry \
+            engine.test_alpha_painter_reconstruction_fidelity \
+            engine.test_alpha_painter_stroke_continuation \
+            engine.test_alpha_painter_paint_deficit \
+            -v 2>&1 | tee faz3d4-paint-deficit-alpha.log
+
+      - name: Require Class Reklam and gradient acceptance
+        working-directory: engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          python test_visual_regression.py \
+            --case class_reklam \
+            --case gradient_logo \
+            --require-baseline \
+            --out-dir regression/faz3d4-paint-deficit-production \
+            > regression/faz3d4-paint-deficit-production.log 2>&1
+          cat regression/faz3d4-paint-deficit-production.log
+          grep -F "PASS class_reklam" regression/faz3d4-paint-deficit-production.log
+          grep -F "PASS gradient_logo" regression/faz3d4-paint-deficit-production.log
+
+      - name: Commit accepted production candidate and remove temporary diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/faz-3d4-*.yml
+          rm -rf engine/regression/faz3d4-paint-deficit-production
+          rm -f \
+            faz3d4-paint-deficit-focused.log \
+            faz3d4-paint-deficit-alpha.log \
+            engine/regression/faz3d4-paint-deficit-production.log
+          git add -A \
+            .github/workflows \
+            engine/app/alpha_candidate_paint_deficit.py \
+            engine/app/alpha_candidate_painter.py \
+            engine/test_alpha_painter_paint_deficit.py
+          test -z "$(git status --porcelain --untracked-files=no | grep -E 'engine/regression/faz3d4|\.github/workflows/faz-3d4-' || true)"
+          git -c user.name='Vektoryum CI' -c user.email='actions@github.com' commit \
+            -m 'fix: overlay measured paint deficits under source alpha' \
+            -m 'Add a generic vector-only q24 paint-deficit fallback after existing painter encodings fail. It repairs source-foreground pixels rendered white by preserved artwork, uses a deterministic dominant source palette and compact rectangles, and is accepted only by unchanged alpha, TransformJournal, complexity, topology, SSIM, Edge F1 and seam gates. Remove temporary FAZ 3D4 diagnostic workflows.'
+          git push origin "HEAD:${TARGET_BRANCH}"
+
+      - name: Upload safe scalar logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: faz3d4-paint-deficit-production-${{ github.run_id }}
+          path: |
+            faz3d4-paint-deficit-focused.log
+            faz3d4-paint-deficit-alpha.log
+            engine/regression/faz3d4-paint-deficit-production.log
+          if-no-files-found: warn
+          retention-days: 7
