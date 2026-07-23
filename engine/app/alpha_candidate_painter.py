@@ -842,7 +842,10 @@ def apply_candidate_painter_reconstruction(
         _write_tree_to_temp,
     )
     from app.alpha_mask_budget import _journal_limits  # noqa: PLC0415
-    from app.alpha_svg_mask import _quantize_alpha  # noqa: PLC0415
+    from app.alpha_svg_mask import (  # noqa: PLC0415
+    _painter_retry_eligible,
+    _quantize_alpha,
+)
 
     target = Path(svg_path)
     source = Path(source_path)
@@ -1105,8 +1108,13 @@ def apply_candidate_painter_reconstruction(
                     )
                     attempts.append(entry)
                     probe_temp.unlink(missing_ok=True)
-                    # Journal geometri reddi maske-kaynaklıdır (node/seam) ve stroke'tan
-                    # bağımsızdır → bu encoding için diğer stroke'ları deneme (maliyet).
+                    # FAZ 3C sözleşmesi: topology/seam/SSIM/edge-F1 reddi
+                    # destek genişliğine ve ölçekli AA'ya bağlı olabilir. TÜM journal
+                    # kodları retry-eligible ise aynı encoding'in bir sonraki mevcut
+                    # stroke adayını dene. Node/path/byte/palet gibi kapsam dışı tek
+                    # kod varsa erken kesme korunur; fail-open veya eşik değişikliği yok.
+                    if _painter_retry_eligible(journal_codes):
+                        continue
                     break
                 attempts.append(entry)
                 probe_temp.unlink(missing_ok=True)
