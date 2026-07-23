@@ -1,0 +1,33 @@
+name: FAZ 3D4 residual patch check
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/faz-3d4-residual-patch-check.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/rfv-3d3-canvas-independent-alpha-mask
+      - name: Check assembled patch
+        shell: bash
+        run: |
+          set +e
+          cat engine/regression/faz3d4_residual_part_*.txt > /tmp/patch.b64
+          echo "b64_bytes=$(wc -c < /tmp/patch.b64)"
+          base64 --decode --ignore-garbage /tmp/patch.b64 > /tmp/residual.patch
+          decode_status=$?
+          echo "decode_status=${decode_status}"
+          echo "patch_bytes=$(wc -c < /tmp/residual.patch)"
+          echo "patch_sha=$(sha256sum /tmp/residual.patch | cut -d' ' -f1)"
+          git apply --check --verbose /tmp/residual.patch
+          echo "git_apply_status=$?"
+          patch --batch --forward -p1 --dry-run < /tmp/residual.patch
+          echo "patch_status=$?"
+          exit 0
