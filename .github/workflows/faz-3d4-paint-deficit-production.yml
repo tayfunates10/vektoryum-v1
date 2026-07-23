@@ -1,4 +1,4 @@
-name: FAZ 3D4 paint deficit production v9
+name: FAZ 3D4 paint deficit production v10
 
 on:
   pull_request:
@@ -11,7 +11,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: faz-3d4-paint-deficit-production-v9-${{ github.event.pull_request.number }}
+  group: faz-3d4-paint-deficit-production-v10-${{ github.event.pull_request.number }}
   cancel-in-progress: false
 
 jobs:
@@ -102,11 +102,11 @@ jobs:
             --case class_reklam \
             --case gradient_logo \
             --require-baseline \
-            --out-dir regression/faz3d4-paint-deficit-production-v9 \
-            > regression/faz3d4-paint-deficit-production-v9.log 2>&1
-          cat regression/faz3d4-paint-deficit-production-v9.log
-          grep -F "PASS class_reklam" regression/faz3d4-paint-deficit-production-v9.log
-          grep -F "PASS gradient_logo" regression/faz3d4-paint-deficit-production-v9.log
+            --out-dir regression/faz3d4-paint-deficit-production-v10 \
+            > regression/faz3d4-paint-deficit-production-v10.log 2>&1
+          cat regression/faz3d4-paint-deficit-production-v10.log
+          grep -F "PASS class_reklam" regression/faz3d4-paint-deficit-production-v10.log
+          grep -F "PASS gradient_logo" regression/faz3d4-paint-deficit-production-v10.log
 
       - name: Commit accepted production code and clean temporary files
         shell: bash
@@ -115,31 +115,33 @@ jobs:
           rm -f .github/workflows/faz-3d4-*.yml
           rm -f engine/regression/faz3d4_integrate_paint_deficit.py
           rm -f engine/regression/faz3d4_integrate_paint_deficit_v2.py
-          rm -rf engine/regression/faz3d4-paint-deficit-production-v9
+          rm -rf engine/regression/faz3d4-paint-deficit-production-v10
           rm -f \
             faz3d4-paint-deficit-focused.log \
             faz3d4-paint-deficit-alpha.log \
-            engine/regression/faz3d4-paint-deficit-production-v9.log
+            engine/regression/faz3d4-paint-deficit-production-v10.log
           git add -A \
             .github/workflows \
             engine/regression \
             engine/app/alpha_candidate_paint_deficit.py \
             engine/app/alpha_candidate_painter.py \
             engine/test_alpha_painter_paint_deficit.py
-          test -z "$(git status --porcelain --untracked-files=no | grep -E 'engine/regression/faz3d4|\.github/workflows/faz-3d4-' || true)"
           git -c user.name='Vektoryum CI' -c user.email='actions@github.com' commit \
             -m 'fix: overlay artwork-anchored paint deficits under source alpha' \
             -m 'Add a generic vector-only q24 fallback that repairs source-foreground pixels rendered white only inside existing artwork coverage. Detached source components remain fail-closed. The candidate uses a deterministic dominant source palette and compact rectangles and remains behind unchanged alpha, TransformJournal, complexity, topology, SSIM, Edge F1 and seam gates.'
+          test -z "$(git ls-files '.github/workflows/faz-3d4-*')"
+          test ! -e engine/regression/faz3d4_integrate_paint_deficit.py
+          test ! -e engine/regression/faz3d4_integrate_paint_deficit_v2.py
           git push origin "HEAD:${TARGET_BRANCH}"
 
       - name: Upload safe logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: faz3d4-paint-deficit-production-v9-${{ github.run_id }}
+          name: faz3d4-paint-deficit-production-v10-${{ github.run_id }}
           path: |
             faz3d4-paint-deficit-focused.log
             faz3d4-paint-deficit-alpha.log
-            engine/regression/faz3d4-paint-deficit-production-v9.log
+            engine/regression/faz3d4-paint-deficit-production-v10.log
           if-no-files-found: warn
           retention-days: 7
