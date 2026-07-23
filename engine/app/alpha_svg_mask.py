@@ -758,6 +758,37 @@ def _source_alpha_already_satisfied(
         max_mae = max(max_mae, float(metrics["alpha_mae"]))
         max_coverage = max(max_coverage, coverage)
 
+    # Third, independent alpha authority: run the unchanged FinalArtifactEvaluator
+    # at the source resolution.  Native/bounded renderer checks alone can hide
+    # scale-dependent mask seams; no-op is admissible only when the evaluator's
+    # own alpha plane also passes the same image-class thresholds.
+    from app.final_artifact_evaluator import evaluate_final_svg  # noqa: PLC0415
+
+    with Image.open(Path(source_path)) as source_image:
+        source_rgba_full = np.asarray(
+            source_image.convert("RGBA"), dtype=np.uint8
+        ).copy()
+        source_rgb_on_white = _journal_source_rgb(source_image)
+    evaluator = evaluate_final_svg(
+        parent_path,
+        source_rgb_on_white,
+        source_alpha=source_rgba_full[:, :, 3],
+        image_class=image_class,
+        required_metrics={"alpha_fidelity"},
+    )
+    alpha_group = evaluator.metrics.get("G_gradient_alpha") or {}
+    evaluator_iou = alpha_group.get("alpha_iou")
+    evaluator_mae = alpha_group.get("alpha_mae")
+    if evaluator_iou is None or evaluator_mae is None:
+        return None
+    alpha_failure_codes = {"alpha_iou_below_min", "alpha_mae_above_max"}
+    if any(code in alpha_failure_codes for code in evaluator.hard_fail_codes):
+        return None
+    if float(evaluator_iou) < float(thresholds["alpha_iou_min"]):
+        return None
+    if float(evaluator_mae) > float(thresholds["alpha_mae_max"]):
+        return None
+
     parent_sha = _sha256(parent_path)
     parent_size = int(parent_path.stat().st_size)
     return {
@@ -774,6 +805,9 @@ def _source_alpha_already_satisfied(
         "noop_min_alpha_iou": min_iou,
         "noop_max_alpha_mae": max_mae,
         "noop_max_render_coverage": max_coverage,
+        "noop_evaluator_alpha_iou": float(evaluator_iou),
+        "noop_evaluator_alpha_mae": float(evaluator_mae),
+        "noop_evaluator_alpha_status": "passed",
         "noop_alpha_iou_min": float(thresholds["alpha_iou_min"]),
         "noop_alpha_mae_max": float(thresholds["alpha_mae_max"]),
         "candidate_identity_preserved": True,

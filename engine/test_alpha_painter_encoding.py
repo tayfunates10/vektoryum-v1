@@ -19,7 +19,9 @@ import numpy as np
 from PIL import Image
 
 from app.alpha_candidate_painter import (
+    _rectilinear_subpaths,
     _requantize_alpha,
+    _simplify_rectilinear_loop,
     apply_candidate_painter_reconstruction,
 )
 
@@ -82,6 +84,34 @@ def _covering_parent(path: Path, side: int) -> bytes:
 
 
 class PainterEncodingTournamentTests(unittest.TestCase):
+    def test_rectilinear_collinear_nodes_are_removed_exactly(self) -> None:
+        loop = [
+            (0, 0), (1, 0), (2, 0), (3, 0),
+            (3, 1), (3, 2), (3, 3),
+            (2, 3), (1, 3), (0, 3),
+            (0, 2), (0, 1),
+        ]
+        simplified = _simplify_rectilinear_loop(loop)
+        self.assertEqual(simplified, [(0, 0), (3, 0), (3, 3), (0, 3)])
+        path_data, nodes = _rectilinear_subpaths([loop])
+        self.assertEqual(path_data, "M0 0h3v3h-3Z")
+        self.assertEqual(nodes, 5)
+
+    def test_rectilinear_simplification_is_cyclic_and_deterministic(self) -> None:
+        loop = [
+            (1, 0), (2, 0), (2, 1), (2, 2),
+            (1, 2), (0, 2), (0, 1), (0, 0),
+        ]
+        first = _simplify_rectilinear_loop(loop)
+        second = _simplify_rectilinear_loop(loop)
+        self.assertEqual(first, second)
+        self.assertEqual(len(first), 4)
+        self.assertEqual(abs(sum(
+            first[i][0] * first[(i + 1) % len(first)][1]
+            - first[(i + 1) % len(first)][0] * first[i][1]
+            for i in range(len(first))
+        )), 8)
+
     def test_requantize_reduces_levels_and_keeps_transparent(self) -> None:
         alpha = np.arange(256, dtype=np.uint8).reshape(16, 16)
         quant, opacity = _requantize_alpha(alpha, 32)

@@ -11,6 +11,8 @@ import hashlib
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 from PIL import Image
@@ -104,6 +106,48 @@ class AlphaNoopPreflightTests(unittest.TestCase):
             )
             self.assertLess(report["noop_max_render_coverage"], 0.98)
             self.assertTrue(report["candidate_identity_preserved"])
+
+    def test_evaluator_alpha_rejection_prevents_noop(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.png"
+            parent = root / "parent.svg"
+            _center_square_source(source)
+            original = _matching_parent(parent)
+            rejected = SimpleNamespace(
+                metrics={
+                    "G_gradient_alpha": {
+                        "alpha_iou": 0.91,
+                        "alpha_mae": 0.08,
+                    }
+                },
+                hard_fail_codes=["alpha_iou_below_min", "alpha_mae_above_max"],
+            )
+            with patch(
+                "app.final_artifact_evaluator.evaluate_final_svg",
+                return_value=rejected,
+            ):
+                report = _source_alpha_already_satisfied(parent, source, _MODE)
+            self.assertIsNone(report)
+            self.assertEqual(parent.read_bytes(), original)
+
+    def test_noop_report_contains_evaluator_alpha_proof(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.png"
+            parent = root / "parent.svg"
+            _center_square_source(source)
+            _matching_parent(parent)
+            report = _source_alpha_already_satisfied(parent, source, _MODE)
+            self.assertIsNotNone(report)
+            assert report is not None
+            self.assertEqual(report["noop_evaluator_alpha_status"], "passed")
+            self.assertGreaterEqual(
+                report["noop_evaluator_alpha_iou"], report["noop_alpha_iou_min"]
+            )
+            self.assertLessEqual(
+                report["noop_evaluator_alpha_mae"], report["noop_alpha_mae_max"]
+            )
 
     def test_wrong_alpha_does_not_noop(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

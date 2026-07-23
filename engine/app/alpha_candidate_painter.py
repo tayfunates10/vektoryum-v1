@@ -162,6 +162,49 @@ def _painter_rect_children(
     return children, rect_count
 
 
+def _simplify_rectilinear_loop(
+    corners: list[tuple[int, int]],
+) -> list[tuple[int, int]]:
+    """Remove duplicate/collinear grid corners without changing the closed fill.
+
+    ``trace_cell_contours`` may emit every cell corner along a straight boundary.
+    Those intermediate points add path commands and journal node cost but carry no
+    geometry.  The reduction is cyclic (the closing edge is considered),
+    deterministic and exact: only axis-aligned points whose neighbours share the
+    same x or y coordinate are removed.
+    """
+    points: list[tuple[int, int]] = []
+    for point in corners:
+        normalized = (int(point[0]), int(point[1]))
+        if not points or normalized != points[-1]:
+            points.append(normalized)
+    if len(points) > 1 and points[0] == points[-1]:
+        points.pop()
+    if len(points) < 3:
+        return points
+
+    changed = True
+    while changed and len(points) >= 3:
+        changed = False
+        keep: list[tuple[int, int]] = []
+        count = len(points)
+        for index, current in enumerate(points):
+            previous = points[(index - 1) % count]
+            following = points[(index + 1) % count]
+            collinear = (
+                previous[0] == current[0] == following[0]
+                or previous[1] == current[1] == following[1]
+            )
+            if collinear:
+                changed = True
+                continue
+            keep.append(current)
+        if len(keep) < 3:
+            break
+        points = keep
+    return points
+
+
 def _rectilinear_subpaths(
     loops: list[list[tuple[int, int]]],
 ) -> tuple[str, int]:
@@ -176,7 +219,8 @@ def _rectilinear_subpaths(
     """
     parts: list[str] = []
     nodes = 0
-    for corners in loops:
+    for raw_corners in loops:
+        corners = _simplify_rectilinear_loop(raw_corners)
         if len(corners) < 3:
             continue
         x0, y0 = corners[0]
@@ -843,9 +887,9 @@ def apply_candidate_painter_reconstruction(
     )
     from app.alpha_mask_budget import _journal_limits  # noqa: PLC0415
     from app.alpha_svg_mask import (  # noqa: PLC0415
-    _painter_retry_eligible,
-    _quantize_alpha,
-)
+        _painter_retry_eligible,
+        _quantize_alpha,
+    )
 
     target = Path(svg_path)
     source = Path(source_path)
