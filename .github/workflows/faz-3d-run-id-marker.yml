@@ -17,12 +17,35 @@ jobs:
       - name: Locate alpha workflow run and publish run ID
         env:
           GH_TOKEN: ${{ github.token }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          TARGET_SHA: be42775899296c0c8bcb996336f128efcd6dce6c
           PR_NUMBER: ${{ github.event.pull_request.number }}
         shell: bash
         run: |
           set -euo pipefail
-          payload="$(gh api "/repos/${GITHUB_REPOSITORY}/actions/workflows/316330054/runs?branch=agent%2Frfv-3d3-canvas-independent-alpha-mask&event=pull_request&per_page=30")"
-          summary="$(jq -r --arg sha "${HEAD_SHA}" '[.workflow_runs[] | select(.head_sha == $sha) | {id,status,conclusion,run_number}] | if length == 0 then "not_found" else map("run_id=\(.id),run_number=\(.run_number),status=\(.status),conclusion=\(.conclusion // \"null\")") | join("; ") end' <<<"${payload}")"
+          gh api "/repos/${GITHUB_REPOSITORY}/actions/workflows/316330054/runs?branch=agent%2Frfv-3d3-canvas-independent-alpha-mask&event=pull_request&per_page=30" > /tmp/runs.json
+          summary="$(python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          payload = json.loads(Path('/tmp/runs.json').read_text())
+          selected = [
+              run for run in payload.get('workflow_runs', [])
+              if run.get('head_sha') == os.environ['TARGET_SHA']
+          ]
+          if not selected:
+              print('not_found')
+          else:
+              print('; '.join(
+                  'run_id={id},run_number={run_number},status={status},conclusion={conclusion}'.format(
+                      id=run.get('id'),
+                      run_number=run.get('run_number'),
+                      status=run.get('status'),
+                      conclusion=run.get('conclusion'),
+                  )
+                  for run in selected
+              ))
+          PY
+          )"
           gh api "/repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
-            -f body="FAZ3D_ALPHA_RUN_LOCATOR head=${HEAD_SHA} ${summary}"
+            -f body="FAZ3D_ALPHA_RUN_LOCATOR head=${TARGET_SHA} ${summary}"
