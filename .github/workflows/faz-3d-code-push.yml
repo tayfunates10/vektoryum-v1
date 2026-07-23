@@ -1,0 +1,90 @@
+name: FAZ 3D verified code publish
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/faz-3d-code-push.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: faz-3d-code-publish-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      PYTHONHASHSEED: "0"
+      PYTHONPATH: engine:.
+      VEKTORYUM_WORKERS: "1"
+      TARGET_BRANCH: agent/rfv-3d3-canvas-independent-alpha-mask
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/rfv-3d3-canvas-independent-alpha-mask
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: engine/requirements.txt
+
+      - name: Install executor parser
+        run: python -m pip install -q pyyaml
+
+      - name: Build and test verified changes without workflow mutations
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess
+          import yaml
+
+          workflow = yaml.safe_load(
+              Path('.github/workflows/faz-3d-pr-runner.yml').read_text()
+          )
+          command = next(
+              step['run']
+              for step in workflow['jobs']['execute']['steps']
+              if step.get('name') == 'Execute final test-gated FAZ 3D plan'
+          )
+          command = command.replace(
+              "skipped = {'Confirm exact starting branch'}",
+              "skipped = {'Confirm exact starting branch', 'Commit fix and remove executor workflows', 'Push diagnostic and fix commits'}",
+          )
+          subprocess.run(
+              command,
+              shell=True,
+              executable='/bin/bash',
+              check=True,
+          )
+          PY
+
+      - name: Commit only non-workflow fix files
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout -- .github/workflows/real-world-fidelity-rfv3d2-alpha-mask-fix.yml
+          git add \
+            engine/app/alpha_artwork_identity.py \
+            engine/app/alpha_candidate_painter.py \
+            engine/test_alpha_painter_reconstruction_fidelity.py \
+            docs/real_world_fidelity/faz-3d-painter-alpha-reconstruction-fix.md
+          git -c user.name='Vektoryum CI' -c user.email='actions@github.com' commit \
+            -m 'fix: make painter reconstruction alpha-faithful' \
+            -m 'Retain a proven comparison canvas only as transform-owned underpaint inside the existing source-alpha mask. Thresholds, evaluator, TransformJournal, corpus, retry, timeout and release policy remain unchanged. Output remains deterministic vector-only with byte-identical rollback.'
+
+      - name: Push diagnostic and fix commits
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '\nfaz3d-alpha-tests.log\nfaz3d-pr-executor.log\n' >> .git/info/exclude
+          test -z "$(git status --porcelain)"
+          git log -4 --oneline
+          git push origin "HEAD:${TARGET_BRANCH}"
