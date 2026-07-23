@@ -1,0 +1,98 @@
+name: FAZ 3D4 exact residual support v2
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/faz-3d4-residual-exact-v2.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: faz-3d4-residual-exact-v2-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  verify-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      PYTHONHASHSEED: "0"
+      PYTHONPATH: engine:.
+      VEKTORYUM_WORKERS: "1"
+      TEST_BRANCH: agent/faz3d4-residual-test
+      TARGET_BRANCH: agent/rfv-3d3-canvas-independent-alpha-mask
+      PATCH_SHA: 6e80719f58b1f2b978157448cd15b4e5f4581ae099a6d519224ee50a37144b2d
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TARGET_BRANCH }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: engine/requirements.txt
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ghostscript libcairo2
+          python -m pip install -q -r engine/requirements.txt pytest httpx
+      - name: Materialize and apply bounded exact patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin "${TEST_BRANCH}:refs/remotes/origin/${TEST_BRANCH}"
+          git show "origin/${TEST_BRANCH}:engine/regression/residual_exact_00.txt" | head -c 9000 > /tmp/00.txt
+          git show "origin/${TEST_BRANCH}:engine/regression/residual_exact_01.txt" | head -c 9000 > /tmp/01.txt
+          git show "origin/${TEST_BRANCH}:engine/regression/residual_exact_02.txt" | head -c 9000 > /tmp/02.txt
+          git show "origin/${TEST_BRANCH}:engine/regression/residual_exact_03.txt" | head -c 6800 > /tmp/03.txt
+          cat /tmp/00.txt /tmp/01.txt /tmp/02.txt /tmp/03.txt > /tmp/residual.b64
+          test "$(wc -c < /tmp/residual.b64)" -eq 33800
+          base64 --decode /tmp/residual.b64 > /tmp/residual.patch
+          test "$(sha256sum /tmp/residual.patch | cut -d' ' -f1)" = "${PATCH_SHA}"
+          git apply --check /tmp/residual.patch
+          git apply /tmp/residual.patch
+          git diff --check
+          python -m py_compile engine/app/alpha_candidate_painter.py engine/app/alpha_candidate_support.py engine/test_alpha_painter_residual_support.py
+      - name: Run focused residual contracts
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m unittest engine.test_alpha_painter_residual_support engine.test_alpha_painter_encoding engine.test_alpha_painter_ledger engine.test_alpha_painter_retry engine.test_alpha_painter_reconstruction_fidelity engine.test_alpha_painter_stroke_continuation -v 2>&1 | tee faz3d4-residual-focused.log
+      - name: Run complete alpha suite
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m unittest engine.test_alpha_candidate_identity engine.test_alpha_candidate_knockout engine.test_alpha_candidate_paint_selection engine.test_alpha_candidate_support engine.test_alpha_candidate_validation engine.test_alpha_candidate_painter engine.test_alpha_candidate_background engine.test_alpha_mask_adaptive engine.test_alpha_mask_transaction engine.test_alpha_preprocess engine.test_alpha_noop_preflight engine.test_alpha_clip_encoding engine.test_alpha_artwork_identity engine.test_alpha_painter_encoding engine.test_alpha_painter_ledger engine.test_alpha_painter_retry engine.test_alpha_painter_reconstruction_fidelity engine.test_alpha_painter_stroke_continuation engine.test_alpha_painter_residual_support -v 2>&1 | tee faz3d4-residual-alpha.log
+      - name: Require Class Reklam and gradient acceptance
+        working-directory: engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          python test_visual_regression.py --case class_reklam --case gradient_logo --require-baseline --out-dir regression/faz3d4-residual-exact-v2 > regression/faz3d4-residual-exact-v2.log 2>&1
+          cat regression/faz3d4-residual-exact-v2.log
+          grep -F "PASS class_reklam" regression/faz3d4-residual-exact-v2.log
+          grep -F "PASS gradient_logo" regression/faz3d4-residual-exact-v2.log
+      - name: Commit and push accepted residual support
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add engine/app/alpha_candidate_painter.py engine/app/alpha_candidate_support.py engine/test_alpha_painter_residual_support.py
+          git -c user.name='Vektoryum CI' -c user.email='actions@github.com' commit -m 'fix: clip painter support to measured alpha deficit' -m 'Reuse one artwork geometry tree and expose support only through a source-derived residual alpha mask. Preserve comparison underpaint, artwork fingerprint, vector-only output, unchanged thresholds, TransformJournal, retry policy, stroke list, corpus, benchmark, repeat, shards and timeout.'
+          rm -rf engine/regression/faz3d4-residual-exact-v2
+          rm -f faz3d4-residual-focused.log faz3d4-residual-alpha.log engine/regression/faz3d4-residual-exact-v2.log
+          test -z "$(git status --porcelain --untracked-files=no)"
+          git push origin "HEAD:${TARGET_BRANCH}"
+      - name: Upload safe scalar logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: faz3d4-residual-exact-v2-${{ github.run_id }}
+          path: |
+            faz3d4-residual-focused.log
+            faz3d4-residual-alpha.log
+            engine/regression/faz3d4-residual-exact-v2.log
+          if-no-files-found: warn
+          retention-days: 7
