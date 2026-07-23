@@ -8,22 +8,20 @@ on:
 permissions:
   actions: read
   contents: read
-  issues: write
 
 jobs:
   locate:
     runs-on: ubuntu-latest
     steps:
-      - name: Locate alpha workflow run and publish run ID
+      - name: Locate alpha workflow run
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET_SHA: be42775899296c0c8bcb996336f128efcd6dce6c
-          PR_NUMBER: ${{ github.event.pull_request.number }}
         shell: bash
         run: |
           set -euo pipefail
           gh api "/repos/${GITHUB_REPOSITORY}/actions/workflows/316330054/runs?branch=agent%2Frfv-3d3-canvas-independent-alpha-mask&event=pull_request&per_page=30" > /tmp/runs.json
-          summary="$(python - <<'PY'
+          python - <<'PY'
           import json
           import os
           from pathlib import Path
@@ -34,18 +32,15 @@ jobs:
               if run.get('head_sha') == os.environ['TARGET_SHA']
           ]
           if not selected:
-              print('not_found')
+              print(f"FAZ3D_ALPHA_RUN_LOCATOR head={os.environ['TARGET_SHA']} not_found")
           else:
-              print('; '.join(
-                  'run_id={id},run_number={run_number},status={status},conclusion={conclusion}'.format(
-                      id=run.get('id'),
-                      run_number=run.get('run_number'),
-                      status=run.get('status'),
-                      conclusion=run.get('conclusion'),
+              for run in selected:
+                  print(
+                      "FAZ3D_ALPHA_RUN_LOCATOR "
+                      f"head={os.environ['TARGET_SHA']} "
+                      f"run_id={run.get('id')} "
+                      f"run_number={run.get('run_number')} "
+                      f"status={run.get('status')} "
+                      f"conclusion={run.get('conclusion')}"
                   )
-                  for run in selected
-              ))
           PY
-          )"
-          gh api "/repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
-            -f body="FAZ3D_ALPHA_RUN_LOCATOR head=${TARGET_SHA} ${summary}"
