@@ -1,0 +1,115 @@
+name: FAZ 3D4 paint deficit alpha levels v7
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/faz-3d4-paint-deficit-alpha-levels-v7.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      PYTHONPATH: engine:.
+      PYTHONHASHSEED: "0"
+      VEKTORYUM_WORKERS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/rfv-3d3-canvas-independent-alpha-mask
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: engine/requirements.txt
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ghostscript libcairo2
+          python -m pip install -q -r engine/requirements.txt pytest httpx
+      - name: Build alpha-level ladder scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import textwrap
+
+          workflow = Path('.github/workflows/faz-3d4-paint-deficit-compact-v6.yml').read_text()
+          start = "python - <<'PY'\n"
+          end = "\n          PY\n          python -m py_compile /tmp/seam_isolation_v3.py"
+          builder = textwrap.dedent(workflow.split(start, 1)[1].split(end, 1)[0])
+          exec(compile(builder, '<v6-builder>', 'exec'))
+          base = Path('/tmp/seam_isolation_v3.py').read_text()
+
+          old_strategies = '''strategies = {
+              "source_nearest_opaque_8": nearest_palette(source_rgba[:, :, :3], palette8),
+              "source_nearest_opaque_16": nearest_palette(source_rgba[:, :, :3], palette16),
+          }'''
+          new_strategies = '''strategies = {
+              "source_nearest_opaque_8": nearest_palette(source_rgba[:, :, :3], palette8),
+          }'''
+          if old_strategies not in base:
+              raise SystemExit('v6 strategy block missing')
+          base = base.replace(old_strategies, new_strategies, 1)
+          base = base.replace(
+              'for support_encoding in ("rect", "polygon"):',
+              'for support_encoding in ("rect",):',
+              1,
+          )
+          for levels in (48, 32, 24):
+              steps = levels - 1
+              script = base.replace('steps = 63', f'steps = {steps}', 1)
+              script = script.replace(
+                  '"schema": "faz3d4-paint-deficit-compact-v6"',
+                  f'"schema": "faz3d4-paint-deficit-alpha-q{levels}-v7"',
+                  1,
+              )
+              Path(f'/tmp/paint_q{levels}.py').write_text(script)
+          PY
+          python -m py_compile /tmp/paint_q48.py /tmp/paint_q32.py /tmp/paint_q24.py
+      - name: Run alpha-level ladder
+        shell: bash
+        run: |
+          set -euo pipefail
+          : > paint-v7-tail.txt
+          for levels in 48 32 24; do
+            set +e
+            python "/tmp/paint_q${levels}.py" > "/tmp/q${levels}.log" 2>&1
+            status=$?
+            set -e
+            if [ -f faz3d4-hidden-rgb-shadow.json ]; then
+              mv faz3d4-hidden-rgb-shadow.json "q${levels}.json"
+            fi
+            {
+              echo "===== q${levels} exit=${status} ====="
+              tail -80 "/tmp/q${levels}.log"
+            } >> paint-v7-tail.txt
+          done
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          payload = {"schema": "faz3d4-paint-deficit-alpha-levels-v7", "results": []}
+          for levels in (48, 32, 24):
+              path = Path(f'q{levels}.json')
+              if path.exists():
+                  data = json.loads(path.read_text())
+                  payload["results"].append({"alpha_levels": levels, **data})
+              else:
+                  payload["results"].append({"alpha_levels": levels, "status": "missing"})
+          Path('faz3d4-paint-deficit-alpha-levels.json').write_text(
+              json.dumps(payload, indent=2, sort_keys=True)
+          )
+          PY
+      - name: Upload scalar-only matrix
+        uses: actions/upload-artifact@v4
+        with:
+          name: faz3d4-paint-deficit-alpha-levels-v7-${{ github.run_id }}
+          path: |
+            faz3d4-paint-deficit-alpha-levels.json
+            paint-v7-tail.txt
+          retention-days: 7
