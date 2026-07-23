@@ -1,4 +1,4 @@
-name: FAZ 3D4 paint deficit production v7
+name: FAZ 3D4 paint deficit production v8
 
 on:
   pull_request:
@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: faz-3d4-paint-deficit-production-v7-${{ github.event.pull_request.number }}
+  group: faz-3d4-paint-deficit-production-v8-${{ github.event.pull_request.number }}
   cancel-in-progress: false
 
 jobs:
@@ -41,7 +41,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends ghostscript libcairo2
           python -m pip install -q -r engine/requirements.txt pytest httpx
 
-      - name: Integrate and compile generic paint-deficit candidate
+      - name: Integrate and compile artwork-anchored paint-deficit candidate
         shell: bash
         run: |
           set -euo pipefail
@@ -84,7 +84,38 @@ jobs:
           )
           path.write_text(text[:start] + replacement + text[end:], encoding="utf-8")
           PY
+
           python engine/regression/faz3d4_integrate_paint_deficit.py
+
+          python - <<'PY'
+          from pathlib import Path
+
+          module = Path("engine/app/alpha_candidate_paint_deficit.py")
+          text = module.read_text(encoding="utf-8")
+          old = "    deficit = source_foreground & artwork_missing\n"
+          new = (
+              "    artwork_occupied = artwork[:, :, 3] > 0\n"
+              "    deficit = source_foreground & artwork_missing & artwork_occupied\n"
+          )
+          if old not in text:
+              raise SystemExit("paint-deficit occupancy anchor missing")
+          module.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          test = Path("engine/test_alpha_painter_paint_deficit.py")
+          test_text = test.read_text(encoding="utf-8")
+          anchor = "                  return root, canvas\n"
+          addition = '''                  ET.SubElement(
+                      root,
+                      qname("rect"),
+                      {"x": "2", "y": "0", "width": "1", "height": "4", "fill": "white"},
+                  )
+                  return root, canvas
+'''
+          if anchor not in test_text:
+              raise SystemExit("paint-deficit test artwork anchor missing")
+          test.write_text(test_text.replace(anchor, addition, 1), encoding="utf-8")
+          PY
+
           git diff --check
           python -m py_compile \
             engine/app/alpha_candidate_paint_deficit.py \
@@ -140,11 +171,11 @@ jobs:
             --case class_reklam \
             --case gradient_logo \
             --require-baseline \
-            --out-dir regression/faz3d4-paint-deficit-production-v7 \
-            > regression/faz3d4-paint-deficit-production-v7.log 2>&1
-          cat regression/faz3d4-paint-deficit-production-v7.log
-          grep -F "PASS class_reklam" regression/faz3d4-paint-deficit-production-v7.log
-          grep -F "PASS gradient_logo" regression/faz3d4-paint-deficit-production-v7.log
+            --out-dir regression/faz3d4-paint-deficit-production-v8 \
+            > regression/faz3d4-paint-deficit-production-v8.log 2>&1
+          cat regression/faz3d4-paint-deficit-production-v8.log
+          grep -F "PASS class_reklam" regression/faz3d4-paint-deficit-production-v8.log
+          grep -F "PASS gradient_logo" regression/faz3d4-paint-deficit-production-v8.log
 
       - name: Commit accepted production code and clean temporary files
         shell: bash
@@ -152,11 +183,11 @@ jobs:
           set -euo pipefail
           rm -f .github/workflows/faz-3d4-*.yml
           rm -f engine/regression/faz3d4_integrate_paint_deficit.py
-          rm -rf engine/regression/faz3d4-paint-deficit-production-v7
+          rm -rf engine/regression/faz3d4-paint-deficit-production-v8
           rm -f \
             faz3d4-paint-deficit-focused.log \
             faz3d4-paint-deficit-alpha.log \
-            engine/regression/faz3d4-paint-deficit-production-v7.log
+            engine/regression/faz3d4-paint-deficit-production-v8.log
           git add -A \
             .github/workflows \
             engine/regression \
@@ -165,18 +196,18 @@ jobs:
             engine/test_alpha_painter_paint_deficit.py
           test -z "$(git status --porcelain --untracked-files=no | grep -E 'engine/regression/faz3d4|\.github/workflows/faz-3d4-' || true)"
           git -c user.name='Vektoryum CI' -c user.email='actions@github.com' commit \
-            -m 'fix: overlay measured paint deficits under source alpha' \
-            -m 'Add a generic vector-only q24 paint-deficit fallback after existing painter encodings fail. It repairs source-foreground pixels rendered white by preserved artwork, uses a deterministic dominant source palette and compact rectangles, and remains fail-closed behind unchanged alpha, TransformJournal, complexity, topology, SSIM, Edge F1 and seam gates.'
+            -m 'fix: overlay artwork-anchored paint deficits under source alpha' \
+            -m 'Add a generic vector-only q24 fallback that repairs source-foreground pixels rendered white only inside existing artwork coverage. Detached source components remain fail-closed. The candidate uses a deterministic dominant source palette and compact rectangles and remains behind unchanged alpha, TransformJournal, complexity, topology, SSIM, Edge F1 and seam gates.'
           git push origin "HEAD:${TARGET_BRANCH}"
 
       - name: Upload safe logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: faz3d4-paint-deficit-production-v7-${{ github.run_id }}
+          name: faz3d4-paint-deficit-production-v8-${{ github.run_id }}
           path: |
             faz3d4-paint-deficit-focused.log
             faz3d4-paint-deficit-alpha.log
-            engine/regression/faz3d4-paint-deficit-production-v7.log
+            engine/regression/faz3d4-paint-deficit-production-v8.log
           if-no-files-found: warn
           retention-days: 7
