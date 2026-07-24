@@ -86,8 +86,9 @@ def _simple_opaque_silhouette_quantization(alpha):
 
     The compact fallback is deliberately stricter than the unchanged evaluator:
     it requires one connected, hole-free, mostly opaque support component whose
-    mass-preserving binary cut already has near-exact alpha IoU/MAE. It therefore
-    cannot flatten real translucency, shadows, holes, or multi-component artwork.
+    only partial alpha is a narrow antialias fringe and whose mass-preserving
+    binary cut already has near-exact alpha IoU/MAE. It therefore cannot flatten
+    real translucency, shadows, holes, or multi-component artwork.
     """
     import cv2  # noqa: PLC0415
     import numpy as np  # noqa: PLC0415
@@ -127,13 +128,26 @@ def _simple_opaque_silhouette_quantization(alpha):
     relation = hierarchy[0][0]
     if int(relation[2]) != -1 or int(relation[3]) != -1:
         return None
-    if len(contours[0]) > 5000:
+
+    # A fixed point cap rejected large, smooth rounded rectangles solely because
+    # their perimeter scales with the source dimensions. Bound perimeter relative
+    # to the raster instead; noisy/jagged or internally complex silhouettes still
+    # fail while ordinary full-canvas rounded/circular supports remain eligible.
+    height, width = plane.shape
+    perimeter_budget = int(round(2.05 * float(width + height)))
+    if len(contours[0]) > perimeter_budget:
         return None
 
     opaque_ratio = float(np.count_nonzero((plane >= 250) & support)) / float(
         support_count
     )
     if opaque_ratio < 0.98:
+        return None
+
+    partial_support_ratio = float(np.count_nonzero(partial & support)) / float(
+        support_count
+    )
+    if partial_support_ratio > 0.005:
         return None
 
     binary_alpha = binary * np.uint8(255)
@@ -144,7 +158,7 @@ def _simple_opaque_silhouette_quantization(alpha):
         np.abs(binary_alpha.astype(np.int16) - plane.astype(np.int16)).mean()
         / 255.0
     )
-    if alpha_iou < 0.999 or alpha_mae > 0.001:
+    if alpha_iou < 0.9985 or alpha_mae > 0.0015:
         return None
 
     return binary.astype(np.int32), {0: 0.0, 1: 1.0}
