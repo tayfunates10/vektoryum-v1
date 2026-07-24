@@ -34,19 +34,46 @@ _ALPHA_STYLE_NAMES = {"opacity", "fill-opacity", "stroke-opacity"}
 _GEOMETRY_TAGS = {"path", "rect", "circle", "ellipse", "polygon", "polyline"}
 _UNDERLAY_STROKE_PIXELS = (0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0)
 
-# Ölçek-stabil painter maskesinin onarabildiği journal reddi sınıfları: yalnız
-# doğrudan geometri reddleri — bileşen/delik topolojisi ve iç AA dikişleri.
-# Painter kuantize alfayı dikişsiz union-konturlarıyla yeniden inşa eder; ardından
-# TAZE bir journal aynı DEĞİŞMEMİŞ kapılarla ölçer, onaramazsa fail-closed kalınır.
-# Yalnız zaten reddedilmiş vakalarda çalışır; geçen (kabul edilen) vakalara
-# dokunmaz. SSIM/edge/renk/karmaşıklık gibi başka reddler fail-closed bırakılır.
-_PAINTER_GEOMETRY_REJECTION_CODES = {"seam_regression"}
+# FAZ 3C — ölçek-stabil painter maskesinin DENEYEBİLECEĞİ journal reddi sınıfları.
+# Painter kuantize alfayı dikişsiz union-konturlarıyla yeniden inşa eder; bu yalnız
+# bileşen/delik topolojisi ve iç AA dikişlerini DEĞİL, ölçekli AA kaynaklı SSIM ve
+# edge-F1 regresyonlarını da onarabilir (maske dikişleri kaybolunca appearance
+# düzelebilir). Bu yüzden DENEME kapsamı bu doğrudan-geometri/ölçek-AA sınıflarına
+# genişletildi. KABUL eşikleri DEĞİŞMEZ: painter çıktısı TAZE bir journal'da aynı
+# DEĞİŞMEMİŞ SSIM/edge/seam/topoloji/byte/path/node kapılarından geçmeden kabul
+# edilmez — edge/SSIM nedeniyle çağrılan painter aynı edge/SSIM kapısını geçmek
+# ZORUNDADIR. Yalnız zaten reddedilmiş vakalarda çalışır; geçen (kabul edilen)
+# vakalara dokunmaz. Renk/palet/karmaşıklık/byte gibi painter'ın gideremeyeceği
+# kodlar kapsam DIŞIdır ve fail-closed korunur (hata gizlenmez).
+_PAINTER_GEOMETRY_REJECTION_CODES = {
+    "seam_regression",
+    "edge_f1_regression",
+    "ssim_regression",
+}
 
 
 def _is_painter_geometry_reason(reason: str) -> bool:
-    """Painter'ı tetikleyen doğrudan geometri reddi (topoloji ya da dikiş) mi?"""
+    """Painter deneme kapsamındaki doğrudan geometri/ölçek-AA reddi mi?
+
+    Kapsam: ``topology_*`` (bileşen/delik) + ``seam_regression`` + ``edge_f1_
+    regression`` + ``ssim_regression``. Painter yalnız bu sınıfları DENER; kabul
+    değişmemiş kapıların çağıran tarafındaki yeniden ölçümüne bağlıdır.
+    """
     text = str(reason)
     return text.startswith("topology_") or text in _PAINTER_GEOMETRY_REJECTION_CODES
+
+
+def _painter_retry_eligible(reason_codes) -> bool:
+    """TÜM journal reddi kodları painter deneme kapsamındaysa (ve en az bir kod
+    varsa) painter yeniden-inşası DENENİR.
+
+    Kapsam dışı tek bir kod (renk/palet/path_count/node/byte gibi painter'ın
+    gideremeyeceği bir red) bile varsa fail-closed kalınır: painter o hatayı
+    onaramaz ve karışık bir geometri reddi altında gizlenmemelidir. Bu yalnız
+    DENEME uygunluğudur; kabul eşikleri değişmez.
+    """
+    reasons = list(reason_codes or [])
+    return bool(reasons) and all(_is_painter_geometry_reason(r) for r in reasons)
 
 
 def _sha256(path: Path) -> str:
@@ -390,6 +417,29 @@ def apply_source_alpha_mask(
     elif encoding != "path":
         raise RuntimeError(f"source_alpha_mask_encoding_invalid:{encoding}")
 
+    # FAZ 2 — kompakt kayıpsız kodlama: kaynak alfa BİNARY (tek, tam-opak seviye)
+    # ve maske içeriği kimlik dönüşümündeyse (raster == viewBox, kayma yok) sert
+    # `<mask>` yerine render-EŞ bir `<clipPath>` kullanılabilir. clipPath, aynı
+    # rect geometrisini `<path>` EKLEMEDEN taşır; maske sarmalayıcı boilerplate'ini
+    # (mask-type/units/level-grupları) düşürerek byte'ı azaltır ve seviye başına
+    # opaklık taşımadığı için YALNIZ ikili maskede geçerlidir. Kısmî alfa (seed-07)
+    # veya ölçeklenmiş/kaydırılmış içerik bu koşulu geçemez → maske yolunda kalır.
+    # Kabul, değişmemiş alfa IoU/MAE (+ SSIM/edge) kapılarına bağlıdır: byte
+    # kazancı ölçüm-kapılıdır, eşik gevşetmesi değildir.
+    use_clip_mask = False
+    if (not direct_path) and len(rectangles) == 1:
+        clip_level = next(iter(rectangles))
+        level_opacity = float(opacity_by_level.get(clip_level, 0.0))
+        clip_sx = view_width / float(raster_width)
+        clip_sy = view_height / float(raster_height)
+        identity_transform = (
+            abs(float(view_x)) < 1e-9
+            and abs(float(view_y)) < 1e-9
+            and abs(clip_sx - 1.0) < 1e-9
+            and abs(clip_sy - 1.0) < 1e-9
+        )
+        use_clip_mask = level_opacity >= 1.0 and identity_transform
+
     qname = lambda name: f"{{{_SVG_NS}}}{name}"
     defs = next(
         (child for child in list(root) if _local_name(str(child.tag)) == "defs"),
@@ -499,6 +549,28 @@ def apply_source_alpha_mask(
         source_eval[:, :, 3], mask_only_render[:, :, 3]
     )
 
+    if use_clip_mask:
+        # Ölçülmüş sert maskeyi render-eş bir clipPath'e dönüştür. clipPath
+        # doğrudan `<g>` çocuğu KABUL ETMEZ; kimlik dönüşümünde raster koordinatı
+        # kullanıcı koordinatına eşit olduğundan rect'ler olduğu gibi taşınır.
+        clip_path = ET.Element(
+            qname("clipPath"),
+            {"id": _MASK_ID, "clipPathUnits": "userSpaceOnUse"},
+        )
+        clip_rectangles = 0
+        for level_group in list(content):
+            for rect in list(level_group):
+                if _local_name(str(rect.tag)) == "rect":
+                    clip_path.append(rect)
+                    clip_rectangles += 1
+        if clip_rectangles == 0:
+            raise RuntimeError("source_alpha_clip_no_vector_rectangles")
+        defs.remove(mask)
+        defs.append(clip_path)
+        wrapper_reference = ("clip-path", f"url(#{_MASK_ID})")
+    else:
+        wrapper_reference = ("mask", f"url(#{_MASK_ID})")
+
     protected = {"defs", "title", "desc", "metadata", "style"}
     movable = [
         child for child in list(root)
@@ -509,7 +581,7 @@ def apply_source_alpha_mask(
     wrapper = ET.Element(
         qname("g"),
         {
-            "mask": f"url(#{_MASK_ID})",
+            wrapper_reference[0]: wrapper_reference[1],
             "data-vektoryum-source-alpha": "vector-mask-v1",
         },
     )
@@ -583,7 +655,7 @@ def apply_source_alpha_mask(
         "after_sha256": after_sha,
         "before_byte_size": before_size,
         "after_byte_size": svg_path.stat().st_size,
-        "mask_encoding": "path" if direct_path else "rect",
+        "mask_encoding": "clip" if use_clip_mask else ("path" if direct_path else "rect"),
         "mask_path_count": path_count,
         "mask_group_count": group_count,
         "mask_rectangle_count": rectangle_count,
@@ -606,6 +678,141 @@ def apply_source_alpha_mask(
         _alpha_diagnostics(source_eval[:, :, 3], rendered[:, :, 3])
     )
     return report
+
+
+def _source_alpha_already_satisfied(
+    parent_path: Path,
+    source_path: Path,
+    mode: str,
+) -> dict[str, Any] | None:
+    """Return a byte-identical no-op report when the selected SVG already
+    reproduces the source alpha, else ``None`` (fail-closed to normal masking).
+
+    The alpha transform must never run when the winning candidate already carries
+    the correct transparency: applying a redundant vector mask only grows bytes and
+    path/node counts (seed-01/seed-03 style regressions). This is proven purely by
+    MEASUREMENT — never by file name or mode — and is fail-closed: a no-op is
+    admissible ONLY when, at every measured render size, the unchanged image-class
+    ``alpha_iou``/``alpha_mae`` hard gates pass AND the parent shows no
+    opaque-canvas-collapse (a nearly fully opaque render over the source-transparent
+    region — the exact defect this mask exists to repair). Any unmeasurable render
+    fails closed so the normal masking path runs; no opaque-background artifact is
+    ever published.
+    """
+    from app.final_artifact_evaluator import _thresholds  # noqa: PLC0415
+
+    parent_path = Path(parent_path)
+    try:
+        root = ET.parse(parent_path).getroot()
+    except ET.ParseError:
+        return None
+    if _local_name(str(root.tag)).lower() != "svg":
+        return None
+
+    _view_x, _view_y, view_width, view_height = _viewbox(root)
+    mask_width = max(1, int(round(view_width)))
+    mask_height = max(1, int(round(view_height)))
+    native_scale = min(1.0, _MAX_MASK_SIDE / float(max(mask_width, mask_height)))
+    native_width = max(1, int(round(mask_width * native_scale)))
+    native_height = max(1, int(round(mask_height * native_scale)))
+
+    source_native = _rgba_from_source_at_size(
+        Path(source_path), (native_width, native_height)
+    )
+    source_alpha_native = np.asarray(source_native[:, :, 3], dtype=np.uint8)
+    if bool(np.all(source_alpha_native == 255)):
+        return None
+
+    image_class = _MODE_IMAGE_CLASS.get(mode, "clean_logo")
+    thresholds = _thresholds(image_class, None)
+
+    # Bounded evaluator size (512) + renderer-native size (viewBox, capped). Both
+    # sides of every comparison pass through the same INTER_AREA downscale.
+    eval_scale = min(1.0, 512.0 / float(max(native_width, native_height)))
+    eval_width = max(1, int(round(native_width * eval_scale)))
+    eval_height = max(1, int(round(native_height * eval_scale)))
+    render_sizes: list[tuple[int, int]] = [(eval_width, eval_height)]
+    if (native_width, native_height) not in render_sizes:
+        render_sizes.append((native_width, native_height))
+
+    min_iou = 1.0
+    max_mae = 0.0
+    max_coverage = 0.0
+    for width, height in render_sizes:
+        rendered = render_svg_to_rgba(parent_path, width, height)
+        if rendered is None:
+            return None
+        if (width, height) == (native_width, native_height):
+            source_at = source_native
+        else:
+            source_at = resize_rgba(source_native, width, height)
+        metrics = alpha_plane_metrics(source_at[:, :, 3], rendered[:, :, 3])
+        if not _alpha_passes(metrics, thresholds):
+            return None
+        coverage = float(
+            np.asarray(rendered[:, :, 3], dtype=np.float32).mean() / 255.0
+        )
+        if coverage >= 0.98:  # opaque-canvas-collapse signature → mask required
+            return None
+        min_iou = min(min_iou, float(metrics["alpha_iou"]))
+        max_mae = max(max_mae, float(metrics["alpha_mae"]))
+        max_coverage = max(max_coverage, coverage)
+
+    # Third, independent alpha authority: run the unchanged FinalArtifactEvaluator
+    # at the source resolution.  Native/bounded renderer checks alone can hide
+    # scale-dependent mask seams; no-op is admissible only when the evaluator's
+    # own alpha plane also passes the same image-class thresholds.
+    from app.final_artifact_evaluator import evaluate_final_svg  # noqa: PLC0415
+
+    with Image.open(Path(source_path)) as source_image:
+        source_rgba_full = np.asarray(
+            source_image.convert("RGBA"), dtype=np.uint8
+        ).copy()
+        source_rgb_on_white = _journal_source_rgb(source_image)
+    evaluator = evaluate_final_svg(
+        parent_path,
+        source_rgb_on_white,
+        source_alpha=source_rgba_full[:, :, 3],
+        image_class=image_class,
+        required_metrics={"alpha_fidelity"},
+    )
+    alpha_group = evaluator.metrics.get("G_gradient_alpha") or {}
+    evaluator_iou = alpha_group.get("alpha_iou")
+    evaluator_mae = alpha_group.get("alpha_mae")
+    if evaluator_iou is None or evaluator_mae is None:
+        return None
+    alpha_failure_codes = {"alpha_iou_below_min", "alpha_mae_above_max"}
+    if any(code in alpha_failure_codes for code in evaluator.hard_fail_codes):
+        return None
+    if float(evaluator_iou) < float(thresholds["alpha_iou_min"]):
+        return None
+    if float(evaluator_mae) > float(thresholds["alpha_mae_max"]):
+        return None
+
+    parent_sha = _sha256(parent_path)
+    parent_size = int(parent_path.stat().st_size)
+    return {
+        "status": "alpha_already_satisfied_noop",
+        "applied": False,
+        "schema": "rfv3d2-source-alpha-vector-mask-v1",
+        "mode": mode,
+        "threshold_image_class": image_class,
+        "before_sha256": parent_sha,
+        "after_sha256": parent_sha,
+        "before_byte_size": parent_size,
+        "after_byte_size": parent_size,
+        "noop_render_sizes": [[int(w), int(h)] for w, h in render_sizes],
+        "noop_min_alpha_iou": min_iou,
+        "noop_max_alpha_mae": max_mae,
+        "noop_max_render_coverage": max_coverage,
+        "noop_evaluator_alpha_iou": float(evaluator_iou),
+        "noop_evaluator_alpha_mae": float(evaluator_mae),
+        "noop_evaluator_alpha_status": "passed",
+        "noop_alpha_iou_min": float(thresholds["alpha_iou_min"]),
+        "noop_alpha_mae_max": float(thresholds["alpha_mae_max"]),
+        "candidate_identity_preserved": True,
+        "candidate_path_data_preserved": True,
+    }
 
 
 def wrap_run_pipeline_with_alpha_mask(
@@ -661,6 +868,15 @@ def wrap_run_pipeline_with_alpha_mask(
             return result
 
         parent_path = Path(best["svg_path"])
+        noop_report = _source_alpha_already_satisfied(parent_path, source_path, mode)
+        if noop_report is not None:
+            # Ölçüm-kapılı byte-identical no-op: seçili SVG kaynak alfayı ZATEN
+            # doğru üretiyor (alfa IoU/MAE geçti, opak-tuval-collapse yok). Gereksiz
+            # vektör maske eklemek yalnız byte/path/node büyütür. Fail-open DEĞİL:
+            # opak arka planlı sonuç yayımlanmaz; parent şeffaflığı zaten taşır.
+            # Parent SVG byte/SHA/candidate-kimliği değişmeden korunur.
+            result["alpha_mask_report"] = noop_report
+            return result
         finalized_path = Path(job_dir) / f"{parent_path.stem}_alpha.svg"
         shutil.copy2(parent_path, finalized_path)
         report = apply_source_alpha_mask(finalized_path, source_path, mode)
@@ -685,13 +901,12 @@ def wrap_run_pipeline_with_alpha_mask(
         )
         if accepted_path != finalized_path:
             first_reasons = list(alpha_stage.get("reason_codes") or ["unknown"])
-            # Painter yalnız doğrudan geometri reddlerinde (topoloji ya da dikiş)
-            # denenir: TÜM kodlar geometri reddi OLMALI. Böylece SSIM/edge/renk/
-            # karmaşıklık gibi painter'ın gideremeyeceği bir hata gizlenmez ve
-            # değişiklik yalnız zaten reddedilmiş topoloji/seam vakalarında çalışır.
-            painter_eligible = bool(first_reasons) and all(
-                _is_painter_geometry_reason(reason) for reason in first_reasons
-            )
+            # FAZ 3C — painter deneme kapsamı: TÜM kodlar doğrudan geometri/ölçek-AA
+            # reddi (topoloji/seam/edge_f1/ssim) OLMALI. Renk/palet/karmaşıklık gibi
+            # painter'ın gideremeyeceği bir kod varsa fail-closed kalınır (gizlenmez).
+            # Kapsam genişledi ama KABUL değişmedi: aşağıdaki TAZE journal aynı edge/
+            # SSIM/seam/topoloji kapılarını uygular; painter yalnız hepsini geçerse kabul.
+            painter_eligible = _painter_retry_eligible(first_reasons)
             if not painter_eligible:
                 finalized_path.unlink(missing_ok=True)
                 raise RuntimeError(

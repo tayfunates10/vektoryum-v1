@@ -136,19 +136,23 @@ class CandidatePainterReconstructionTests(unittest.TestCase):
             self.assertLessEqual(
                 report["after_byte_size"], report["preflight_byte_limit"]
             )
+            # FAZ 3A/3B.1: grouped-evenodd contour maske <path>'leri toplam sayıya
+            # girebilir; kör sayım eşitliği değil, SANAT kimliği (parmak izi) korunur.
+            self.assertTrue(report["artwork_identity_preserved"])
             self.assertEqual(
-                report["preflight_parent_path_count"],
-                report["preserved_path_count"],
-            )
-            self.assertEqual(
-                report["preflight_parent_node_count"],
-                report["preserved_node_count"],
+                report["artwork_identity_authority"], "provenance_fingerprint"
             )
 
             text = svg_path.read_bytes()
             self.assertIn(b'M23 19H105V77H23Z', text)
             self.assertIn(b"painter-luminance-v1", text)
-            self.assertIn(b"<polygon", text)
+            # Luminance mask render-eşdeğer vektör kodlamalarından biriyle yazılır
+            # (döngü başına <polygon>, seviye başına gruplanmış <rect> veya seviye
+            # başına grouped-evenodd <path>); hepsi gri rgb() fill, raster yok.
+            self.assertIn(
+                report["reconstruction_mask_encoding"], ("polygon", "rect", "contour")
+            )
+            self.assertIn(b'fill="rgb(', text)
             self.assertNotIn(b"<image", text.lower())
             self.assertNotIn(b"data:image", text.lower())
 
@@ -309,6 +313,172 @@ class CandidatePainterReconstructionTests(unittest.TestCase):
                     svg_path, source_path, "logo_color"
                 )
             self.assertEqual(svg_path.read_bytes(), original)
+
+
+class PainterMaskEncodingTests(unittest.TestCase):
+    """Polygon ve rect luminance-mask kodlamaları render-EŞDEĞER; karmaşık
+    maskede rect daha kompakt olmalı (byte bütçesi için) ve ikisi de path_count
+    invaryantını bozmaz (<polygon>/<rect> path olarak sayılmaz)."""
+
+    def _render_mask(self, children, width: int, height: int):
+        import xml.etree.ElementTree as ET
+
+        ns = "http://www.w3.org/2000/svg"
+        qname = lambda name: f"{{{ns}}}{name}"
+        with tempfile.TemporaryDirectory() as directory:
+            svg_path = Path(directory) / "mask.svg"
+            root = ET.Element(
+                qname("svg"),
+                {
+                    "xmlns": ns,
+                    "width": str(width),
+                    "height": str(height),
+                    "viewBox": f"0 0 {width} {height}",
+                },
+            )
+            defs = ET.SubElement(root, qname("defs"))
+            mask = ET.SubElement(
+                defs,
+                qname("mask"),
+                {
+                    "id": "m",
+                    "maskUnits": "userSpaceOnUse",
+                    "x": "0",
+                    "y": "0",
+                    "width": str(width),
+                    "height": str(height),
+                },
+            )
+            content = ET.SubElement(mask, qname("g"))
+            ET.SubElement(
+                content,
+                qname("rect"),
+                {
+                    "x": "0",
+                    "y": "0",
+                    "width": str(width),
+                    "height": str(height),
+                    "fill": "rgb(0,0,0)",
+                },
+            )
+            for child in children:
+                content.append(child)
+            ET.SubElement(
+                root,
+                qname("rect"),
+                {
+                    "x": "0",
+                    "y": "0",
+                    "width": str(width),
+                    "height": str(height),
+                    "fill": "#ffffff",
+                    "mask": "url(#m)",
+                },
+            )
+            svg_path.write_bytes(ET.tostring(root))
+            return render_svg_to_rgba(svg_path, width, height)
+
+    def test_rect_and_polygon_encodings_render_identically(self) -> None:
+        from app.alpha_candidate_painter import (
+            _painter_loops,
+            _painter_polygon_children,
+            _painter_rect_children,
+            _serialized_children_size,
+        )
+        from app.alpha_svg_mask import _quantize_alpha
+
+        ns = "http://www.w3.org/2000/svg"
+        qname = lambda name: f"{{{ns}}}{name}"
+        # Çok seviyeli, çentikli yarı-saydam alfa → çok sayıda kontur döngüsü.
+        height, width = 40, 48
+        yy, xx = np.mgrid[0:height, 0:width].astype(np.float32)
+        alpha = (
+            128.0 + 96.0 * np.sin(xx / 4.0) * np.cos(yy / 5.0)
+        ).clip(0, 255).astype(np.uint8)
+        alpha[((xx + yy).astype(int) % 7) == 0] = 0  # kapalı şeffaf lakeler
+        quantized, opacity = _quantize_alpha(alpha)
+
+        loops = _painter_loops(quantized, opacity)
+        polygon_children = _painter_polygon_children(loops, qname)
+        rect_children, rect_count = _painter_rect_children(
+            quantized, opacity, qname
+        )
+        self.assertGreater(rect_count, 0)
+        self.assertGreater(len(loops), 8)
+        # Karmaşık maskede rect kodlaması daha kompakt (döngü başına tag yerine
+        # seviye başına gruplu rect).
+        self.assertLess(
+            _serialized_children_size(rect_children),
+            _serialized_children_size(polygon_children),
+        )
+
+        rendered_polygon = self._render_mask(polygon_children, width, height)
+        rendered_rect = self._render_mask(rect_children, width, height)
+        self.assertIsNotNone(rendered_polygon)
+        self.assertIsNotNone(rendered_rect)
+        assert rendered_polygon is not None and rendered_rect is not None
+        # İki kodlama piksel-özdeş render eder (kayıpsız kompaktlaştırma).
+        self.assertTrue(
+            np.array_equal(rendered_polygon, rendered_rect),
+            int(
+                np.abs(
+                    rendered_polygon.astype(np.int32)
+                    - rendered_rect.astype(np.int32)
+                ).max()
+            ),
+        )
+
+    def test_complex_mask_selects_rect_and_preserves_identity(self) -> None:
+        # Karmaşık yarı-saydam kaynak: painter maskede rect kodlamasını seçmeli,
+        # byte bütçesine sığmalı, aday path/node kimliğini korumalı, raster yok.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_path = root / "source.png"
+            svg_path = root / "candidate.svg"
+            height, width = 72, 96
+            yy, xx = np.mgrid[0:height, 0:width].astype(np.float32)
+            # Her yerde yarı-saydam, çok seviyeli (alpha hiç 0 değil → tam saydam
+            # bölge yok → classify "absent" → Case B: parent paint korunur ve
+            # luminance mask ile maskelenir). Karmaşık maske → çok döngü/seviye;
+            # FAZ 3B turnuvası polygon bütçeyi aşınca kompakt grouped-evenodd
+            # contour'u seçer (rect'ten küçük ve dikiş-güvenli).
+            alpha = (
+                120.0 + 55.0 * np.sin(xx / 9.0) * np.cos(yy / 10.0)
+            ).clip(25, 250)
+            rgba = np.zeros((height, width, 4), dtype=np.uint8)
+            rgba[:, :, :3] = (40, 120, 200)
+            rgba[:, :, 3] = alpha.astype(np.uint8)
+            Image.fromarray(rgba, mode="RGBA").save(source_path)
+            original = (
+                '<?xml version="1.0" encoding="utf-8"?>'
+                '<svg xmlns="http://www.w3.org/2000/svg" width="96" height="72" '
+                'viewBox="0 0 96 72">'
+                '<path d="M0 0H96V72H0Z" fill="#2878C8"/>'
+                '</svg>'
+            ).encode("utf-8")
+            svg_path.write_bytes(original)
+            report = apply_candidate_painter_reconstruction(
+                svg_path, source_path, "logo_color"
+            )
+            self.assertIn(
+                report["reconstruction_mask_encoding"], {"contour", "rect"}
+            )
+            self.assertLessEqual(
+                report["after_byte_size"], report["preflight_byte_limit"]
+            )
+            # FAZ 3A/3B kimlik modeli: grouped-evenodd contour <path> maskeleri
+            # toplam path/node sayısına GİREBİLİR (maske alt-ağacı), fakat SANAT
+            # eserinin geometri+renk kimliği (parmak izi) korunur. Kör toplam-sayım
+            # eşitliği artık kimlik ölçütü değildir.
+            self.assertTrue(report["artwork_identity_preserved"])
+            self.assertEqual(
+                report["artwork_identity_authority"], "provenance_fingerprint"
+            )
+            self.assertTrue(report["candidate_identity_preserved"])
+            self.assertGreaterEqual(report["painter_native_alpha_iou"], 0.995)
+            text = svg_path.read_bytes()
+            self.assertNotIn(b"<image", text.lower())
+            self.assertNotIn(b"data:image", text.lower())
 
 
 if __name__ == "__main__":

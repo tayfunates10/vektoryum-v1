@@ -21,6 +21,7 @@ from typing import Any, Callable
 
 import numpy as np
 from PIL import Image
+from scipy.ndimage import binary_propagation
 
 _ALPHA_COLOR_MODES = {
     "geometric_logo",
@@ -116,24 +117,45 @@ def _stage_source_alpha(
     if bool(np.all(source_alpha == 255)):
         return processed_path, report
 
-    # Opaque interiors retain the existing quantized/cleaned RGB. Soft boundary
-    # pixels adopt the straight source color but SNAPPED to the nearest color
-    # already present in the quantized/cleaned trace image. This keeps the
-    # anti-fringe intent (a real object color, never the white composite) while
-    # preserving the trace palette: un-snapped straight RGB re-injects the full
-    # continuous source ramp at supersampled hard edges (a 2x LANCZOS band edge
-    # becomes 0<alpha<255), de-quantizing the trace input and collapsing VTracer
-    # colour banding (gradient bands merge into a single flat fill). Fully
-    # transparent pixels retain the existing processed composite: their RGB is
-    # invisible in the source and the final vector mask removes the traced
-    # background.
+    # Opaque interiors retain the existing quantized/cleaned RGB. Partial-alpha
+    # pixels are split by whether they are a genuine anti-aliased edge of opaque
+    # content or a large uniformly semi-transparent region. The discriminator is
+    # CONNECTIVITY to opaque content (not a fixed pixel radius): an anti-aliased
+    # edge is a partial-alpha ramp that is contiguously connected — through other
+    # partial pixels — to an opaque (alpha==255) core; a standalone translucent
+    # region contains no opaque pixel in its connected component at all.
+    #
+    # * Partial pixels connected to an opaque core adopt the straight source
+    #   colour SNAPPED to the nearest colour already in the quantized trace image.
+    #   Un-snapped straight RGB there re-injects the full continuous source ramp at
+    #   supersampled hard edges (a 2x LANCZOS band edge becomes 0<alpha<255),
+    #   de-quantizing the trace input and collapsing VTracer colour banding. A
+    #   fixed dilation radius mis-classifies thin-line anti-aliasing whose ramp
+    #   extends many pixels from the opaque core, exploding the path count; the
+    #   connectivity test snaps the whole edge ramp regardless of its width.
+    # * Pixels in a semi-transparent region with no opaque pixel in their connected
+    #   component keep the straight, un-associated source RGB. The single final
+    #   alpha mask applies their alpha exactly once; snapping them to the
+    #   (white-composited) trace palette would composite the same alpha a second
+    #   time and wash the colour out (overlapping translucent shapes lose their RGB
+    #   composition).
+    #
+    # Fully transparent pixels retain the existing processed composite: their RGB
+    # is invisible in the source and the final vector mask removes it.
     output_rgb = processed_rgb.copy()
     partial = (source_alpha > 0) & (source_alpha < 255)
     transparent = source_alpha == 0
-    boundary_rgb = _snap_to_trace_palette(
-        source_rgba[:, :, :3][partial], processed_rgb
-    )
-    output_rgb[partial] = boundary_rgb
+    opaque = source_alpha == 255
+    connected_to_opaque = binary_propagation(opaque, mask=(opaque | partial))
+    snap_partial = partial & connected_to_opaque
+    straight_partial = partial & ~connected_to_opaque
+    straight_rgb = source_rgba[:, :, :3]
+    if bool(np.any(snap_partial)):
+        output_rgb[snap_partial] = _snap_to_trace_palette(
+            straight_rgb[snap_partial], processed_rgb
+        )
+    if bool(np.any(straight_partial)):
+        output_rgb[straight_partial] = straight_rgb[straight_partial]
 
     _atomic_write_rgb(processed_path, output_rgb)
 
@@ -149,8 +171,12 @@ def _stage_source_alpha(
         raise RuntimeError("source_alpha_trace_input_verification_failed")
     if not np.array_equal(verified_rgb[transparent], processed_rgb[transparent]):
         raise RuntimeError("source_alpha_trace_background_changed")
-    if not np.array_equal(verified_rgb[partial], boundary_rgb):
+    if not np.array_equal(verified_rgb[partial], output_rgb[partial]):
         raise RuntimeError("source_alpha_soft_boundary_rgb_changed")
+    if not np.array_equal(
+        verified_rgb[straight_partial], straight_rgb[straight_partial]
+    ):
+        raise RuntimeError("source_alpha_translucent_region_rgb_changed")
 
     alpha_bytes = np.ascontiguousarray(source_alpha).tobytes()
     steps = report.setdefault("steps", [])
@@ -169,7 +195,7 @@ def _stage_source_alpha(
         "alpha_sha256": hashlib.sha256(alpha_bytes).hexdigest(),
         "trace_input_mode": "RGB",
         "trace_background_policy": "retain_processed_composite",
-        "soft_boundary_rgb_policy": "palette_snapped_source_rgb",
+        "soft_boundary_rgb_policy": "palette_snapped_edge_straight_translucent",
         "finalizer": "rfv3d2-source-alpha-vector-mask-v1",
     }
     return processed_path, report
