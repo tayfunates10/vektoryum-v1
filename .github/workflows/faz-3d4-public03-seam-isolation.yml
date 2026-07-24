@@ -1,4 +1,4 @@
-name: FAZ 3D4 Public-03 seam isolation
+name: FAZ 3D4 Public-03 compound path
 
 on:
   pull_request:
@@ -9,13 +9,16 @@ permissions:
   contents: read
   actions: read
 
+concurrency:
+  group: faz-3d4-public03-compound-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   candidate:
     strategy:
       fail-fast: false
       matrix:
-        alpha_levels: [2, 4]
-        support_placement: [none, below, above]
+        alpha_levels: [3, 4]
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
@@ -23,7 +26,6 @@ jobs:
       PYTHONHASHSEED: "0"
       VEKTORYUM_WORKERS: "1"
       ALPHA_LEVELS: ${{ matrix.alpha_levels }}
-      SUPPORT_PLACEMENT: ${{ matrix.support_placement }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -42,7 +44,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends ghostscript libcairo2 unzip
           python -m pip install -q -r engine/requirements.txt pytest httpx
 
-      - name: Patch tagged underpaint candidate variant
+      - name: Patch tagged underpaint compound-path candidate
         shell: bash
         run: |
           set -euo pipefail
@@ -51,7 +53,6 @@ jobs:
           from pathlib import Path
 
           levels = int(os.environ["ALPHA_LEVELS"])
-          placement = os.environ["SUPPORT_PLACEMENT"]
           path = Path("engine/app/alpha_candidate_paint_deficit.py")
           text = path.read_text(encoding="utf-8")
           text = text.replace(
@@ -102,13 +103,66 @@ jobs:
                   artwork_count += 1''',
               1,
           )
+
+          old_mask = '''    mask_polygon_count = 0
+              for _area, corners, gray in loops:
+                  simplified = _simplify_rectilinear_loop(corners)
+                  if len(simplified) < 3:
+                      continue
+                  ET.SubElement(
+                      content,
+                      qname("polygon"),
+                      {
+                          "points": " ".join(
+                              f"{x},{y}" for x, y in simplified
+                          ),
+                          "fill": f"rgb({gray},{gray},{gray})",
+                      },
+                  )
+                  mask_polygon_count += 1'''
+          new_mask = '''    loops_by_gray: dict[int, list[list[tuple[int, int]]]] = {}
+              for _area, corners, gray in loops:
+                  simplified = _simplify_rectilinear_loop(corners)
+                  if len(simplified) < 3:
+                      continue
+                  loops_by_gray.setdefault(int(gray), []).append(simplified)
+              mask_polygon_count = 0
+              for gray in sorted(loops_by_gray):
+                  commands: list[str] = []
+                  for loop in loops_by_gray[gray]:
+                      start_x, start_y = loop[0]
+                      commands.append(f"M{start_x} {start_y}")
+                      previous_x, previous_y = start_x, start_y
+                      for x, y in loop[1:]:
+                          if x == previous_x:
+                              commands.append(f"V{y}")
+                          elif y == previous_y:
+                              commands.append(f"H{x}")
+                          else:
+                              commands.append(f"L{x} {y}")
+                          previous_x, previous_y = x, y
+                      commands.append("Z")
+                  ET.SubElement(
+                      content,
+                      qname("path"),
+                      {
+                          "d": "".join(commands),
+                          "fill": f"rgb({gray},{gray},{gray})",
+                          "fill-rule": "evenodd",
+                      },
+                  )
+                  mask_polygon_count += 1'''
+          if old_mask not in text:
+              raise SystemExit("polygon mask block missing")
+          text = text.replace(old_mask, new_mask, 1)
+
           text = text.replace(
               '"paint-deficit-q24-v1"',
-              f'"paint-deficit-q{levels}-underpaint-{placement}-v1"',
+              f'"paint-deficit-q{levels}-underpaint-compound-v1"',
           )
           text = text.replace(
               '"paint-deficit-q24-polygon"',
-              f'"paint-deficit-q{levels}-underpaint-{placement}-polygon"',
+              f'"paint-deficit-q{levels}-underpaint-compound"',
               1,
           )
           text = text.replace(
@@ -121,24 +175,15 @@ jobs:
               '"comparison_canvas_retained_under_mask": bool(target_canvas is not None),',
               1,
           )
-
           anchor = '    layer.set("mask", f"url(#{mask_id})")\n'
           if anchor not in text:
-              raise SystemExit("support placement anchor missing")
-          if placement == "none":
-              replacement = (
-                  "    layer.remove(support)\n"
-                  "    layer.set(\"mask\", f\"url(#{mask_id})\")\n"
-              )
-          elif placement == "below":
-              replacement = (
-                  "    layer.remove(support)\n"
-                  "    layer.insert(0, support)\n"
-                  "    layer.set(\"mask\", f\"url(#{mask_id})\")\n"
-              )
-          else:
-              replacement = anchor
-          path.write_text(text.replace(anchor, replacement, 1), encoding="utf-8")
+              raise SystemExit("support removal anchor missing")
+          text = text.replace(
+              anchor,
+              '    layer.remove(support)\n' + anchor,
+              1,
+          )
+          path.write_text(text, encoding="utf-8")
           PY
           python -m py_compile engine/app/alpha_candidate_paint_deficit.py
 
@@ -160,7 +205,7 @@ jobs:
           cp /tmp/faz3d4-source/objects/rfv/qualification/34/341204aa906bc0be33e2891a282a9cdb760711b3f348dc2a97ebe61829fad1fb.png /tmp/faz3d4-source/source.png
           echo "341204aa906bc0be33e2891a282a9cdb760711b3f348dc2a97ebe61829fad1fb  /tmp/faz3d4-source/source.png" | sha256sum -c -
 
-      - name: Measure variant and capture structured candidate ledger
+      - name: Measure compound candidate through full gates
         shell: bash
         run: |
           set +e
@@ -174,40 +219,56 @@ jobs:
           import tempfile
           from pathlib import Path
 
+          import numpy as np
           from PIL import Image
 
+          from app.alpha_candidate_knockout import _source_rgb_on_white
+          from app.alpha_svg_mask import _MODE_IMAGE_CLASS
+          from app.final_artifact_evaluator import evaluate_final_svg
           from app.pipeline_entry import run_pipeline
 
           levels = int(os.environ["ALPHA_LEVELS"])
-          placement = os.environ["SUPPORT_PLACEMENT"]
           source = Path("/tmp/faz3d4-source/source.png")
-          job_dir = Path(tempfile.mkdtemp(prefix=f"faz3d4-public03-q{levels}-{placement}-"))
+          job_dir = Path(tempfile.mkdtemp(prefix=f"faz3d4-public03-compound-q{levels}-"))
           stderr = io.StringIO()
           record = {
               "case_id": "qualification-public-03",
               "alpha_levels": levels,
-              "support_placement": placement,
+              "mask_encoding": "compound_path",
           }
           try:
               with Image.open(source) as image, contextlib.redirect_stderr(stderr):
-                  result = run_pipeline(image.convert("RGBA"), source, "auto", job_dir)
+                  rgba = image.convert("RGBA")
+                  source_array = np.asarray(rgba, dtype=np.uint8)
+                  result = run_pipeline(rgba, source, "auto", job_dir)
+              final_svg = Path(result["best"]["svg_path"])
               report = dict(result.get("alpha_mask_report") or {})
+              mode = str(result.get("mode_used") or "geometric_logo")
+              evaluator = evaluate_final_svg(
+                  final_svg,
+                  _source_rgb_on_white(source_array),
+                  source_alpha=source_array[:, :, 3],
+                  image_class=_MODE_IMAGE_CLASS.get(mode, "clean_logo"),
+                  required_metrics=set(),
+              )
+              hard_codes = list(evaluator.hard_fail_codes)
               record.update(
                   {
-                      "status": "accepted",
+                      "status": "accepted" if not hard_codes else "evaluator_rejected",
+                      "mode": mode,
                       "alpha_report_status": report.get("status"),
                       "alpha_report_applied": report.get("applied"),
                       "reconstruction_mask_encoding": report.get("reconstruction_mask_encoding"),
+                      "encoded_alpha_level_count": report.get("encoded_alpha_level_count"),
                       "before_byte_size": report.get("before_byte_size"),
                       "after_byte_size": report.get("after_byte_size"),
                       "native_alpha_iou": report.get("native_alpha_iou"),
                       "native_alpha_mae": report.get("native_alpha_mae"),
-                      "journal_passed": report.get("journal_passed"),
-                      "journal_reason_codes": report.get("journal_reason_codes"),
+                      "hard_fail_codes": hard_codes,
                   }
               )
           except Exception as exc:
-              record.update({"status": "rejected", "error_code": str(exc)[:1000]})
+              record.update({"status": "pipeline_rejected", "error_code": str(exc)[:1000]})
 
           attempts = None
           for line in stderr.getvalue().splitlines():
@@ -215,30 +276,27 @@ jobs:
               if line.startswith(prefix):
                   attempts = json.loads(line[len(prefix):])
           if attempts is not None:
-              paint = [
+              record["paint_deficit_attempts"] = [
                   entry for entry in attempts
                   if entry.get("encoding_family") == "paint_deficit"
               ]
-              record["paint_deficit_attempts"] = paint
-          output = Path(
-              f"faz3d4-public03-q{levels}-{placement}.json"
-          )
+          output = Path(f"faz3d4-public03-compound-q{levels}.json")
           output.write_text(json.dumps(record, sort_keys=True, indent=2), encoding="utf-8")
           print(json.dumps(record, sort_keys=True))
           if record["status"] != "accepted":
               raise SystemExit(1)
           PY
           status=$?
-          tail -160 candidate-run.log > "faz3d4-public03-q${ALPHA_LEVELS}-${SUPPORT_PLACEMENT}.log"
+          tail -180 candidate-run.log > "faz3d4-public03-compound-q${ALPHA_LEVELS}.log"
           exit "${status}"
 
-      - name: Upload scalar-only isolation result
+      - name: Upload scalar-only compound result
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: faz3d4-public03-q${{ matrix.alpha_levels }}-${{ matrix.support_placement }}-${{ github.run_id }}
+          name: faz3d4-public03-compound-q${{ matrix.alpha_levels }}-${{ github.run_id }}
           path: |
-            faz3d4-public03-q${{ matrix.alpha_levels }}-${{ matrix.support_placement }}.json
-            faz3d4-public03-q${{ matrix.alpha_levels }}-${{ matrix.support_placement }}.log
+            faz3d4-public03-compound-q${{ matrix.alpha_levels }}.json
+            faz3d4-public03-compound-q${{ matrix.alpha_levels }}.log
           if-no-files-found: error
           retention-days: 7
