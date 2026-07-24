@@ -144,10 +144,13 @@ def _simple_opaque_silhouette_quantization(alpha):
     if opaque_ratio < 0.98:
         return None
 
-    partial_support_ratio = float(np.count_nonzero(partial & support)) / float(
-        support_count
-    )
-    if partial_support_ratio > 0.005:
+    # Partial alpha must be confined to a narrow edge ribbon. Measuring it against
+    # contour length is scale-stable: a two-pixel antialias fringe remains eligible
+    # on large rectangles/circles, while translucent interiors and broad shadows
+    # grow with area and fail closed.
+    partial_support_count = int(np.count_nonzero(partial & support))
+    fringe_budget = max(16, int(round(2.5 * float(len(contours[0])))))
+    if partial_support_count > fringe_budget:
         return None
 
     binary_alpha = binary * np.uint8(255)
