@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   measure:
@@ -31,7 +32,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ghostscript libcairo2
+          sudo apt-get install -y --no-install-recommends ghostscript libcairo2 unzip
           python -m pip install -q -r engine/requirements.txt pytest httpx
 
       - name: Patch shadow candidate to retain proven underpaint
@@ -86,43 +87,30 @@ jobs:
           PY
           python -m py_compile engine/app/alpha_candidate_paint_deficit.py
 
-      - name: Download exact public sentinels
+      - name: Extract exact public sentinels from immutable RFV corpus
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          mkdir -p /tmp/faz3d4-sources
-          python - <<'PY'
-          from hashlib import sha256
-          from io import BytesIO
-          from pathlib import Path
-          from urllib.request import Request, urlopen
-          from PIL import Image
-
-          cases = {
-              "qualification-public-03": (
-                  "https://openclipart.org/image/2000px/345255",
-                  "4da2a2df0a16f9cdbf60e7a2ce35436918c440b711215f5389eb46f6b7ce1998",
-                  "341204aa906bc0be33e2891a282a9cdb760711b3f348dc2a97ebe61829fad1fb",
-              ),
-              "qualification-public-06": (
-                  "https://openclipart.org/image/2000px/345281",
-                  "9b2bb9585a8c4e35aff3c2b5c8a43ec7e4a57cc9c86dfe3d04093d0addba0f5d",
-                  "0e0e94ad8311a1febb18debdb34f73f00c88ba965cef237a7d49f0954c5d7526",
-              ),
-          }
-          for case_id, (url, raw_sha, canonical_sha) in cases.items():
-              request = Request(url, headers={"User-Agent": "Vektoryum-RFV/1.0"})
-              with urlopen(request, timeout=60) as response:
-                  raw = response.read()
-              if sha256(raw).hexdigest() != raw_sha:
-                  raise RuntimeError(f"raw source identity mismatch: {case_id}")
-              with Image.open(BytesIO(raw)) as image:
-                  canonical = image.convert("RGBA")
-                  output = Path("/tmp/faz3d4-sources") / f"{case_id}.png"
-                  canonical.save(output, format="PNG", optimize=False, compress_level=6)
-              if sha256(output.read_bytes()).hexdigest() != canonical_sha:
-                  raise RuntimeError(f"canonical source identity mismatch: {case_id}")
-          PY
+          mkdir -p /tmp/faz3d4-corpus /tmp/faz3d4-sources
+          curl --fail --location --silent --show-error \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/tayfunates10/vektoryum-v1/actions/artifacts/8599318852/zip" \
+            --output /tmp/faz3d4-corpus.zip
+          unzip -q /tmp/faz3d4-corpus.zip -d /tmp/faz3d4-corpus
+          tar -xzf /tmp/faz3d4-corpus/rfv2-public-corpus.tar.gz \
+            -C /tmp/faz3d4-corpus
+          cp \
+            /tmp/faz3d4-corpus/objects/rfv/qualification/34/341204aa906bc0be33e2891a282a9cdb760711b3f348dc2a97ebe61829fad1fb.png \
+            /tmp/faz3d4-sources/qualification-public-03.png
+          cp \
+            /tmp/faz3d4-corpus/objects/rfv/qualification/0e/0e0e94ad8311a1febb18debdb34f73f00c88ba965cef237a7d49f0954c5d7526.png \
+            /tmp/faz3d4-sources/qualification-public-06.png
+          echo "341204aa906bc0be33e2891a282a9cdb760711b3f348dc2a97ebe61829fad1fb  /tmp/faz3d4-sources/qualification-public-03.png" | sha256sum -c -
+          echo "0e0e94ad8311a1febb18debdb34f73f00c88ba965cef237a7d49f0954c5d7526  /tmp/faz3d4-sources/qualification-public-06.png" | sha256sum -c -
 
       - name: Measure Class Reklam and public sentinels
         shell: bash
@@ -136,13 +124,12 @@ jobs:
           import tempfile
           from pathlib import Path
 
+          import numpy as np
           from PIL import Image
 
-          from app.pipeline_entry import run_pipeline
-          from app.alpha_svg_mask import _source_alpha_already_satisfied
-          from app.final_artifact_evaluator import evaluate_final_svg
           from app.alpha_candidate_knockout import _source_rgb_on_white
-          import numpy as np
+          from app.final_artifact_evaluator import evaluate_final_svg
+          from app.pipeline_entry import run_pipeline
 
           cases = {
               "class_reklam": Path("engine/regression/fixtures/class_reklam.png"),
@@ -198,7 +185,7 @@ jobs:
               matrix.append(record)
 
           payload = {
-              "schema": "faz3d4-underpaint-retention-shadow-v1",
+              "schema": "faz3d4-underpaint-retention-shadow-v2",
               "matrix": matrix,
           }
           Path("faz3d4-underpaint-retention-shadow.json").write_text(
