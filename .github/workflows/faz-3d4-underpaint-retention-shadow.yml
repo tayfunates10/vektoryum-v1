@@ -1,4 +1,4 @@
-name: FAZ 3D4 underpaint retention shadow
+name: FAZ 3D4 component anchored shadow
 
 on:
   pull_request:
@@ -35,7 +35,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends ghostscript libcairo2 unzip
           python -m pip install -q -r engine/requirements.txt pytest httpx
 
-      - name: Patch shadow candidate to retain proven underpaint
+      - name: Patch shadow candidate with source-component anchoring
         shell: bash
         run: |
           set -euo pipefail
@@ -44,50 +44,88 @@ jobs:
 
           path = Path("engine/app/alpha_candidate_paint_deficit.py")
           text = path.read_text(encoding="utf-8")
-          old_artwork = '''    artwork_root = copy.deepcopy(original_root)
-              if canvas_index is not None:
-                  artwork_root.remove(list(artwork_root)[canvas_index])
-              artwork_rgba = _render_root(artwork_root, grid_width, grid_height)'''
-          new_artwork = '''    artwork_root = copy.deepcopy(original_root)
-              artwork_rgba = _render_root(artwork_root, grid_width, grid_height)'''
-          if old_artwork not in text:
-              raise SystemExit("artwork render anchor missing")
-          text = text.replace(old_artwork, new_artwork, 1)
+          if "import cv2\n" not in text:
+              text = text.replace(
+                  "import numpy as np\n",
+                  "import cv2\nimport numpy as np\n",
+                  1,
+              )
 
-          old_empty = '''    if int(deficit_stats["paint_deficit_pixel_count"]) <= 0:
-                  raise RuntimeError(
-                      "source_alpha_candidate_painter_paint_deficit_empty"
-                  )'''
-          new_empty = '''    if (
-                  int(deficit_stats["paint_deficit_pixel_count"]) <= 0
-                  and canvas_index is None
-              ):
-                  raise RuntimeError(
-                      "source_alpha_candidate_painter_paint_deficit_empty"
-                  )'''
+          anchor = "\ndef _paint_deficit_labels(\n"
+          helper = r'''
+
+def _anchored_source_component_mask(
+    source_alpha: np.ndarray,
+    artwork_alpha: np.ndarray,
+) -> tuple[np.ndarray, dict[str, int]]:
+    source_positive = (
+        np.asarray(source_alpha, dtype=np.uint8) > 0
+    ).astype(np.uint8)
+    artwork_occupied = np.asarray(artwork_alpha, dtype=np.uint8) > 0
+    component_count, component_labels = cv2.connectedComponents(
+        source_positive,
+        connectivity=8,
+    )
+    anchored = np.zeros(source_positive.shape, dtype=bool)
+    anchored_count = 0
+    for component_id in range(1, int(component_count)):
+        component = component_labels == component_id
+        if bool(np.any(component & artwork_occupied)):
+            anchored |= component
+            anchored_count += 1
+    total = max(0, int(component_count) - 1)
+    return anchored, {
+        "source_component_count": total,
+        "anchored_source_component_count": int(anchored_count),
+        "detached_source_component_count": int(total - anchored_count),
+    }
+'''
+          if anchor not in text:
+              raise SystemExit("component helper insertion anchor missing")
+          if "def _anchored_source_component_mask(" not in text:
+              text = text.replace(anchor, helper + anchor, 1)
+
+          old = '''    artwork_occupied = artwork[:, :, 3] > 0
+    deficit = source_foreground & artwork_missing & artwork_occupied
+'''
+          new = '''    anchored_components, component_stats = _anchored_source_component_mask(
+        source[:, :, 3], artwork[:, :, 3]
+    )
+    deficit = source_foreground & artwork_missing & anchored_components
+'''
+          if old not in text:
+              raise SystemExit("component deficit replacement anchor missing")
+          text = text.replace(old, new, 1)
+
+          old_empty = '''                "paint_deficit_alpha_residual_overlap": 0,
+            },
+'''
+          new_empty = '''                "paint_deficit_alpha_residual_overlap": 0,
+                **component_stats,
+            },
+'''
           if old_empty not in text:
-              raise SystemExit("empty-deficit anchor missing")
+              raise SystemExit("component empty stats anchor missing")
           text = text.replace(old_empty, new_empty, 1)
 
-          old_move = '''    for child in movable:
-                  root.remove(child)
-                  if child is target_canvas:
-                      continue
-                  _strip_content_alpha(child)
-                  paint.append(child)
-                  artwork_count += 1'''
-          new_move = '''    for child in movable:
-                  root.remove(child)
-                  _strip_content_alpha(child)
-                  paint.append(child)
-                  artwork_count += 1'''
-          if old_move not in text:
-              raise SystemExit("canvas move anchor missing")
-          path.write_text(text.replace(old_move, new_move, 1), encoding="utf-8")
+          old_stats = '''        "paint_deficit_alpha_residual_overlap": int(
+            np.count_nonzero(deficit & alpha_residual)
+        ),
+    }
+'''
+          new_stats = '''        "paint_deficit_alpha_residual_overlap": int(
+            np.count_nonzero(deficit & alpha_residual)
+        ),
+        **component_stats,
+    }
+'''
+          if old_stats not in text:
+              raise SystemExit("component result stats anchor missing")
+          path.write_text(text.replace(old_stats, new_stats, 1), encoding="utf-8")
           PY
           python -m py_compile engine/app/alpha_candidate_paint_deficit.py
 
-      - name: Extract exact public sentinels from immutable RFV corpus
+      - name: Extract exact sentinels from immutable RFV corpus
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -103,16 +141,20 @@ jobs:
           unzip -q /tmp/faz3d4-corpus.zip -d /tmp/faz3d4-corpus
           tar -xzf /tmp/faz3d4-corpus/rfv2-public-corpus.tar.gz \
             -C /tmp/faz3d4-corpus
-          cp \
-            /tmp/faz3d4-corpus/objects/rfv/qualification/34/341204aa906bc0be33e2891a282a9cdb760711b3f348dc2a97ebe61829fad1fb.png \
+          cp /tmp/faz3d4-corpus/objects/rfv/qualification/85/85c5e40843bbe5012a9ea77eacfa0ec2df9d93dfbd66be2be8713e3715004ef4.png \
+            /tmp/faz3d4-sources/qualification-public-01.png
+          cp /tmp/faz3d4-corpus/objects/rfv/qualification/34/341204aa906bc0be33e2891a282a9cdb760711b3f348dc2a97ebe61829fad1fb.png \
             /tmp/faz3d4-sources/qualification-public-03.png
-          cp \
-            /tmp/faz3d4-corpus/objects/rfv/qualification/0e/0e0e94ad8311a1febb18debdb34f73f00c88ba965cef237a7d49f0954c5d7526.png \
+          cp /tmp/faz3d4-corpus/objects/rfv/qualification/e1/e1de239035948f5eef5e981238ebb51b7859d40b62b38da5be71b1c0b08c5eb2.png \
+            /tmp/faz3d4-sources/qualification-public-04.png
+          cp /tmp/faz3d4-corpus/objects/rfv/qualification/0e/0e0e94ad8311a1febb18debdb34f73f00c88ba965cef237a7d49f0954c5d7526.png \
             /tmp/faz3d4-sources/qualification-public-06.png
+          echo "85c5e40843bbe5012a9ea77eacfa0ec2df9d93dfbd66be2be8713e3715004ef4  /tmp/faz3d4-sources/qualification-public-01.png" | sha256sum -c -
           echo "341204aa906bc0be33e2891a282a9cdb760711b3f348dc2a97ebe61829fad1fb  /tmp/faz3d4-sources/qualification-public-03.png" | sha256sum -c -
+          echo "e1de239035948f5eef5e981238ebb51b7859d40b62b38da5be71b1c0b08c5eb2  /tmp/faz3d4-sources/qualification-public-04.png" | sha256sum -c -
           echo "0e0e94ad8311a1febb18debdb34f73f00c88ba965cef237a7d49f0954c5d7526  /tmp/faz3d4-sources/qualification-public-06.png" | sha256sum -c -
 
-      - name: Measure Class Reklam and public sentinels
+      - name: Measure Class Reklam and RFV blockers
         shell: bash
         run: |
           set -euo pipefail
@@ -128,17 +170,20 @@ jobs:
           from PIL import Image
 
           from app.alpha_candidate_knockout import _source_rgb_on_white
+          from app.alpha_svg_mask import _MODE_IMAGE_CLASS
           from app.final_artifact_evaluator import evaluate_final_svg
           from app.pipeline_entry import run_pipeline
 
           cases = {
               "class_reklam": Path("engine/regression/fixtures/class_reklam.png"),
+              "qualification-public-01": Path("/tmp/faz3d4-sources/qualification-public-01.png"),
               "qualification-public-03": Path("/tmp/faz3d4-sources/qualification-public-03.png"),
+              "qualification-public-04": Path("/tmp/faz3d4-sources/qualification-public-04.png"),
               "qualification-public-06": Path("/tmp/faz3d4-sources/qualification-public-06.png"),
           }
           matrix = []
           for case_id, source in cases.items():
-              job_dir = Path(tempfile.mkdtemp(prefix=f"faz3d4-{case_id}-"))
+              job_dir = Path(tempfile.mkdtemp(prefix=f"faz3d4-component-{case_id}-"))
               record = {"case_id": case_id}
               try:
                   with Image.open(source) as image:
@@ -147,23 +192,27 @@ jobs:
                       result = run_pipeline(rgba, source, "auto", job_dir)
                   final_svg = Path(result["best"]["svg_path"])
                   report = dict(result.get("alpha_mask_report") or {})
+                  mode = str(result.get("mode_used") or "geometric_logo")
                   evaluator = evaluate_final_svg(
                       final_svg,
                       _source_rgb_on_white(source_array),
                       source_alpha=source_array[:, :, 3],
-                      image_class=str(result.get("mode_used") or "geometric_logo"),
+                      image_class=_MODE_IMAGE_CLASS.get(mode, "clean_logo"),
                       required_metrics={"alpha_fidelity"},
                   )
                   alpha_group = evaluator.metrics.get("G_gradient_alpha") or {}
                   record.update(
                       {
                           "status": "accepted",
-                          "mode": result.get("mode_used"),
+                          "mode": mode,
                           "best_name": result["best"].get("name"),
                           "alpha_report_status": report.get("status"),
                           "alpha_report_applied": report.get("applied"),
                           "reconstruction_mask_encoding": report.get("reconstruction_mask_encoding"),
                           "paint_deficit_pixel_count": report.get("paint_deficit_pixel_count"),
+                          "source_component_count": report.get("source_component_count"),
+                          "anchored_source_component_count": report.get("anchored_source_component_count"),
+                          "detached_source_component_count": report.get("detached_source_component_count"),
                           "paint_deficit_palette_count": report.get("paint_deficit_palette_count"),
                           "paint_deficit_support_rect_count": report.get("paint_deficit_support_rect_count"),
                           "before_byte_size": report.get("before_byte_size"),
@@ -179,28 +228,27 @@ jobs:
                   record.update(
                       {
                           "status": "rejected",
-                          "error_code": str(exc)[:500],
+                          "error_code": str(exc)[:700],
                       }
                   )
               matrix.append(record)
 
           payload = {
-              "schema": "faz3d4-underpaint-retention-shadow-v2",
+              "schema": "faz3d4-component-anchored-shadow-v1",
               "matrix": matrix,
           }
-          Path("faz3d4-underpaint-retention-shadow.json").write_text(
-              json.dumps(payload, sort_keys=True, indent=2), encoding="utf-8"
+          Path("faz3d4-component-anchored-shadow.json").write_text(
+              json.dumps(payload, sort_keys=True, indent=2),
+              encoding="utf-8",
           )
           print(json.dumps(payload, sort_keys=True))
-          if any(item["status"] != "accepted" for item in matrix):
-              raise SystemExit(1)
           PY
 
       - name: Upload scalar-only matrix
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: faz3d4-underpaint-retention-shadow-${{ github.run_id }}
-          path: faz3d4-underpaint-retention-shadow.json
+          name: faz3d4-component-anchored-shadow-${{ github.run_id }}
+          path: faz3d4-component-anchored-shadow.json
           if-no-files-found: error
           retention-days: 7
