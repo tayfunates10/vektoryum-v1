@@ -1,0 +1,244 @@
+name: FAZ 3D4 Public-03 seam isolation
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/faz-3d4-public03-seam-isolation.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  candidate:
+    strategy:
+      fail-fast: false
+      matrix:
+        alpha_levels: [2, 4]
+        support_placement: [none, below, above]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      PYTHONPATH: engine:.
+      PYTHONHASHSEED: "0"
+      VEKTORYUM_WORKERS: "1"
+      ALPHA_LEVELS: ${{ matrix.alpha_levels }}
+      SUPPORT_PLACEMENT: ${{ matrix.support_placement }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/rfv-3d3-canvas-independent-alpha-mask
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: engine/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ghostscript libcairo2 unzip
+          python -m pip install -q -r engine/requirements.txt pytest httpx
+
+      - name: Patch tagged underpaint candidate variant
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          levels = int(os.environ["ALPHA_LEVELS"])
+          placement = os.environ["SUPPORT_PLACEMENT"]
+          path = Path("engine/app/alpha_candidate_paint_deficit.py")
+          text = path.read_text(encoding="utf-8")
+          text = text.replace(
+              "    ROLE_ARTWORK_CONTAINER,\n",
+              "    ROLE_ARTWORK_CONTAINER,\n    ROLE_CANVAS_UNDERPAINT,\n",
+              1,
+          )
+          text = text.replace("_ALPHA_LEVELS = 24", f"_ALPHA_LEVELS = {levels}", 1)
+          text = text.replace(
+              '''    artwork_root = copy.deepcopy(original_root)
+              if canvas_index is not None:
+                  artwork_root.remove(list(artwork_root)[canvas_index])
+              artwork_rgba = _render_root(artwork_root, grid_width, grid_height)''',
+              '''    artwork_root = copy.deepcopy(original_root)
+              artwork_rgba = _render_root(artwork_root, grid_width, grid_height)''',
+              1,
+          )
+          text = text.replace(
+              '''    if int(deficit_stats["paint_deficit_pixel_count"]) <= 0:
+                  raise RuntimeError(
+                      "source_alpha_candidate_painter_paint_deficit_empty"
+                  )''',
+              '''    if (
+                  int(deficit_stats["paint_deficit_pixel_count"]) <= 0
+                  and canvas_index is None
+              ):
+                  raise RuntimeError(
+                      "source_alpha_candidate_painter_paint_deficit_empty"
+                  )''',
+              1,
+          )
+          text = text.replace(
+              '''    for child in movable:
+                  root.remove(child)
+                  if child is target_canvas:
+                      continue
+                  _strip_content_alpha(child)
+                  paint.append(child)
+                  artwork_count += 1''',
+              '''    for child in movable:
+                  root.remove(child)
+                  if child is target_canvas:
+                      tag_transform_node(
+                          child, ROLE_CANVAS_UNDERPAINT, transaction_id
+                      )
+                  _strip_content_alpha(child)
+                  paint.append(child)
+                  artwork_count += 1''',
+              1,
+          )
+          text = text.replace(
+              '"paint-deficit-q24-v1"',
+              f'"paint-deficit-q{levels}-underpaint-{placement}-v1"',
+          )
+          text = text.replace(
+              '"paint-deficit-q24-polygon"',
+              f'"paint-deficit-q{levels}-underpaint-{placement}-polygon"',
+              1,
+          )
+          text = text.replace(
+              '"comparison_canvas_knocked_out": bool(target_canvas is not None),',
+              '"comparison_canvas_knocked_out": False,',
+              1,
+          )
+          text = text.replace(
+              '"comparison_canvas_retained_under_mask": False,',
+              '"comparison_canvas_retained_under_mask": bool(target_canvas is not None),',
+              1,
+          )
+
+          anchor = '    layer.set("mask", f"url(#{mask_id})")\n'
+          if anchor not in text:
+              raise SystemExit("support placement anchor missing")
+          if placement == "none":
+              replacement = (
+                  "    layer.remove(support)\n"
+                  "    layer.set(\"mask\", f\"url(#{mask_id})\")\n"
+              )
+          elif placement == "below":
+              replacement = (
+                  "    layer.remove(support)\n"
+                  "    layer.insert(0, support)\n"
+                  "    layer.set(\"mask\", f\"url(#{mask_id})\")\n"
+              )
+          else:
+              replacement = anchor
+          path.write_text(text.replace(anchor, replacement, 1), encoding="utf-8")
+          PY
+          python -m py_compile engine/app/alpha_candidate_paint_deficit.py
+
+      - name: Resolve exact Public-03 source
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/faz3d4-source
+          curl --fail --location --silent --show-error \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/tayfunates10/vektoryum-v1/actions/artifacts/8599318852/zip" \
+            --output /tmp/faz3d4-corpus.zip
+          unzip -q /tmp/faz3d4-corpus.zip -d /tmp/faz3d4-source
+          tar -xzf /tmp/faz3d4-source/rfv2-public-corpus.tar.gz -C /tmp/faz3d4-source
+          cp /tmp/faz3d4-source/objects/rfv/qualification/34/341204aa906bc0be33e2891a282a9cdb760711b3f348dc2a97ebe61829fad1fb.png /tmp/faz3d4-source/source.png
+          echo "341204aa906bc0be33e2891a282a9cdb760711b3f348dc2a97ebe61829fad1fb  /tmp/faz3d4-source/source.png" | sha256sum -c -
+
+      - name: Measure variant and capture structured candidate ledger
+        shell: bash
+        run: |
+          set +e
+          python - <<'PY' > candidate-run.log 2>&1
+          from __future__ import annotations
+
+          import contextlib
+          import io
+          import json
+          import os
+          import tempfile
+          from pathlib import Path
+
+          from PIL import Image
+
+          from app.pipeline_entry import run_pipeline
+
+          levels = int(os.environ["ALPHA_LEVELS"])
+          placement = os.environ["SUPPORT_PLACEMENT"]
+          source = Path("/tmp/faz3d4-source/source.png")
+          job_dir = Path(tempfile.mkdtemp(prefix=f"faz3d4-public03-q{levels}-{placement}-"))
+          stderr = io.StringIO()
+          record = {
+              "case_id": "qualification-public-03",
+              "alpha_levels": levels,
+              "support_placement": placement,
+          }
+          try:
+              with Image.open(source) as image, contextlib.redirect_stderr(stderr):
+                  result = run_pipeline(image.convert("RGBA"), source, "auto", job_dir)
+              report = dict(result.get("alpha_mask_report") or {})
+              record.update(
+                  {
+                      "status": "accepted",
+                      "alpha_report_status": report.get("status"),
+                      "alpha_report_applied": report.get("applied"),
+                      "reconstruction_mask_encoding": report.get("reconstruction_mask_encoding"),
+                      "before_byte_size": report.get("before_byte_size"),
+                      "after_byte_size": report.get("after_byte_size"),
+                      "native_alpha_iou": report.get("native_alpha_iou"),
+                      "native_alpha_mae": report.get("native_alpha_mae"),
+                      "journal_passed": report.get("journal_passed"),
+                      "journal_reason_codes": report.get("journal_reason_codes"),
+                  }
+              )
+          except Exception as exc:
+              record.update({"status": "rejected", "error_code": str(exc)[:1000]})
+
+          attempts = None
+          for line in stderr.getvalue().splitlines():
+              prefix = "source_alpha_candidate_painter_attempts="
+              if line.startswith(prefix):
+                  attempts = json.loads(line[len(prefix):])
+          if attempts is not None:
+              paint = [
+                  entry for entry in attempts
+                  if entry.get("encoding_family") == "paint_deficit"
+              ]
+              record["paint_deficit_attempts"] = paint
+          output = Path(
+              f"faz3d4-public03-q{levels}-{placement}.json"
+          )
+          output.write_text(json.dumps(record, sort_keys=True, indent=2), encoding="utf-8")
+          print(json.dumps(record, sort_keys=True))
+          if record["status"] != "accepted":
+              raise SystemExit(1)
+          PY
+          status=$?
+          tail -160 candidate-run.log > "faz3d4-public03-q${ALPHA_LEVELS}-${SUPPORT_PLACEMENT}.log"
+          exit "${status}"
+
+      - name: Upload scalar-only isolation result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: faz3d4-public03-q${{ matrix.alpha_levels }}-${{ matrix.support_placement }}-${{ github.run_id }}
+          path: |
+            faz3d4-public03-q${{ matrix.alpha_levels }}-${{ matrix.support_placement }}.json
+            faz3d4-public03-q${{ matrix.alpha_levels }}-${{ matrix.support_placement }}.log
+          if-no-files-found: error
+          retention-days: 7
