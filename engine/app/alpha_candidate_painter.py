@@ -291,6 +291,64 @@ def _painter_contour_children(
     }
 
 
+def _cumulative_threshold_children(
+    quantized: np.ndarray,
+    opacity_by_level: dict[int, float],
+    qname,
+) -> tuple[list[ET.Element], dict[str, int]] | None:
+    """Kümülatif eşik maskesi: seviye başına tek even-odd `<path>` ama bölgeler
+    `q >= k` (ayrık `q == k` DEĞİL).
+
+    Ayrık seviye poligonları komşu alfa seviyeleri arasında ortak sınır paylaşır;
+    o sınır değerlendirme çözünürlüğüne ölçeklenince her iki poligonun AA'sı SİYAH
+    tabanla karışıp ince bir dikiş (seam_gap) bırakır. Kümülatif eşiklerde
+    ``region_k = (q >= k)`` bir üst seviyeyi TAMAMEN kapsar; bölgeler DÜŞÜK griden
+    YÜKSEK griye çizilir, böylece yüksek-alfa bölgesi öncekinin ÜSTÜNE yazar. Bir
+    pikselin nihai grisi kendi seviyesinin grisidir; komşu seviye sınırındaki AA
+    ise ``gray_k`` ile ALTTAKİ ``gray_{k-1}`` arasında (gerçek alfa rampası) karışır,
+    siyah tabanla değil → dikiş kapanır. Delikler ve iç içe bölgeler even-odd ile
+    deterministik çözülür; koordinatlar tam sayı, çıktı byte-birebir tekrarlanır.
+    """
+    levels = sorted(int(value) for value in opacity_by_level if int(value) > 0)
+    if not levels:
+        return None
+    children: list[ET.Element] = []
+    total_nodes = 0
+    total_loops = 0
+    for level in levels:
+        gray = int(round(float(opacity_by_level[level]) * 255))
+        if gray <= 0:
+            continue
+        region = np.asarray(quantized) >= level
+        if not bool(region.any()):
+            continue
+        loops = trace_cell_contours(region)
+        if not loops:
+            continue
+        path_data, nodes = _rectilinear_subpaths(loops)
+        if not path_data:
+            continue
+        children.append(
+            ET.Element(
+                qname("path"),
+                {
+                    "fill": f"rgb({gray},{gray},{gray})",
+                    "fill-rule": "evenodd",
+                    "d": path_data,
+                },
+            )
+        )
+        total_nodes += nodes
+        total_loops += len(loops)
+    if not children:
+        return None
+    return children, {
+        "cumulative_threshold_count": int(len(children)),
+        "cumulative_command_count": int(total_nodes),
+        "cumulative_loop_count": int(total_loops),
+    }
+
+
 def _requantize_alpha(
     alpha: np.ndarray, max_levels: int
 ) -> tuple[np.ndarray, dict[int, float]]:
@@ -1178,135 +1236,152 @@ def apply_candidate_painter_reconstruction(
             build_paint_deficit_reconstruction_tree,
         )
 
-        label = "paint-deficit-q24"
-        txn = alpha_transaction_id(parent_sha256, source_alpha_sha256, mode, label)
-        entry: dict[str, Any] = {
-            "stroke_width": 0.0,
-            "encoding_label": label,
-            "encoding_family": "paint_deficit",
-            "exact_or_quantized": "paint_deficit",
-            "source_alpha_level_count": int(source_level_count),
-            "encoded_alpha_level_count": 24,
-            "actual_serialized_bytes": None,
-            "byte_limit": int(byte_limit),
-            "projected_path_count": int(parent_counts[0]),
-            "actual_path_count": None,
-            "path_limit": int(limits["path_limit"]),
-            "projected_node_count": int(parent_counts[1]),
-            "actual_node_count": None,
-            "node_limit": int(limits["node_limit"]),
-            "preflight_status": None,
-            "validation_started": False,
-            "validation_stage": None,
-            "status": None,
-            "exact_error_code": "",
-            "native_alpha_iou": None,
-            "native_alpha_mae": None,
-            "bounded_alpha_iou": None,
-            "bounded_alpha_mae": None,
-            "evaluator_alpha_iou": None,
-            "evaluator_alpha_mae": None,
-            "artwork_fingerprint_match": None,
-            "journal_gate_started": False,
-            "journal_passed": None,
-            "journal_reason_codes": [],
-        }
-        try:
-            probe_root, probe_geometry = build_paint_deficit_reconstruction_tree(
-                original_root, canvas, grid_rgba, txn
+        def _try(mask_encoding: str, label: str) -> list[Any] | None:
+            txn = alpha_transaction_id(
+                parent_sha256, source_alpha_sha256, mode, label
             )
-        except RuntimeError as exc:
-            entry["preflight_status"] = "not_constructed"
-            entry["validation_stage"] = "paint_deficit_geometry"
-            entry["status"] = "geometry_rejected"
-            entry["exact_error_code"] = str(exc)
-            attempts.append(entry)
-            return None
+            entry: dict[str, Any] = {
+                "stroke_width": 0.0,
+                "encoding_label": label,
+                "encoding_family": "paint_deficit",
+                "exact_or_quantized": "paint_deficit",
+                "source_alpha_level_count": int(source_level_count),
+                "encoded_alpha_level_count": 24,
+                "actual_serialized_bytes": None,
+                "byte_limit": int(byte_limit),
+                "projected_path_count": int(parent_counts[0]),
+                "actual_path_count": None,
+                "path_limit": int(limits["path_limit"]),
+                "projected_node_count": int(parent_counts[1]),
+                "actual_node_count": None,
+                "node_limit": int(limits["node_limit"]),
+                "preflight_status": None,
+                "validation_started": False,
+                "validation_stage": None,
+                "status": None,
+                "exact_error_code": "",
+                "native_alpha_iou": None,
+                "native_alpha_mae": None,
+                "bounded_alpha_iou": None,
+                "bounded_alpha_mae": None,
+                "evaluator_alpha_iou": None,
+                "evaluator_alpha_mae": None,
+                "artwork_fingerprint_match": None,
+                "journal_gate_started": False,
+                "journal_passed": None,
+                "journal_reason_codes": [],
+            }
+            try:
+                probe_root, probe_geometry = (
+                    build_paint_deficit_reconstruction_tree(
+                        original_root,
+                        canvas,
+                        grid_rgba,
+                        txn,
+                        mask_encoding=mask_encoding,
+                    )
+                )
+            except RuntimeError as exc:
+                entry["preflight_status"] = "not_constructed"
+                entry["validation_stage"] = "paint_deficit_geometry"
+                entry["status"] = "geometry_rejected"
+                entry["exact_error_code"] = str(exc)
+                attempts.append(entry)
+                return None
 
-        probe_temp = _write_tree_to_temp(probe_root, target)
-        probe_size = int(probe_temp.stat().st_size)
-        entry["actual_serialized_bytes"] = probe_size
-        entry["encoded_alpha_level_count"] = int(
-            probe_geometry.get("encoded_alpha_level_count", 24)
-        )
-        if probe_size > byte_limit:
-            entry["preflight_status"] = "over_budget"
-            entry["status"] = "byte_rejected"
-            entry["exact_error_code"] = (
-                "source_alpha_candidate_painter_byte_budget_rejected:"
-                f"{label}:{probe_size}>{byte_limit}"
+            probe_temp = _write_tree_to_temp(probe_root, target)
+            probe_size = int(probe_temp.stat().st_size)
+            entry["actual_serialized_bytes"] = probe_size
+            entry["encoded_alpha_level_count"] = int(
+                probe_geometry.get("encoded_alpha_level_count", 24)
             )
-            attempts.append(entry)
-            probe_temp.unlink(missing_ok=True)
-            return None
+            if probe_size > byte_limit:
+                entry["preflight_status"] = "over_budget"
+                entry["status"] = "byte_rejected"
+                entry["exact_error_code"] = (
+                    "source_alpha_candidate_painter_byte_budget_rejected:"
+                    f"{label}:{probe_size}>{byte_limit}"
+                )
+                attempts.append(entry)
+                probe_temp.unlink(missing_ok=True)
+                return None
 
-        entry["preflight_status"] = "within_budget"
-        entry["validation_started"] = True
-        parent_artwork_fp = artwork_fingerprint(
-            original_root, txn, excluded_from_parent
-        )
-        assessment = _assess_painter_candidate(
-            probe_temp,
-            source_rgba_full,
-            grid_alpha,
-            mode,
-            parent_counts,
-            transaction_id=txn,
-            parent_artwork_fingerprint=parent_artwork_fp,
-        )
-        for field in (
-            "validation_stage",
-            "status",
-            "exact_error_code",
-            "native_alpha_iou",
-            "native_alpha_mae",
-            "bounded_alpha_iou",
-            "bounded_alpha_mae",
-            "evaluator_alpha_iou",
-            "evaluator_alpha_mae",
-            "artwork_fingerprint_match",
-            "actual_path_count",
-            "actual_node_count",
-        ):
-            entry[field] = assessment[field]
-        if assessment["status"] != "accepted":
-            attempts.append(entry)
-            probe_temp.unlink(missing_ok=True)
-            return None
-
-        entry["journal_gate_started"] = True
-        journal_passed, journal_codes = _run_painter_geometry_journal(
-            parent_journal_path,
-            probe_temp,
-            journal_source_rgb,
-            journal_image_class,
-            assessment["report"],
-        )
-        entry["journal_passed"] = bool(journal_passed)
-        entry["journal_reason_codes"] = list(journal_codes)
-        if not journal_passed:
-            entry["status"] = "geometry_rejected"
-            entry["validation_stage"] = "journal_geometry"
-            entry["exact_error_code"] = (
-                "source_alpha_candidate_painter_journal_geometry_rejected:"
-                + ",".join(journal_codes)
+            entry["preflight_status"] = "within_budget"
+            entry["validation_started"] = True
+            parent_artwork_fp = artwork_fingerprint(
+                original_root, txn, excluded_from_parent
             )
-            attempts.append(entry)
-            probe_temp.unlink(missing_ok=True)
-            return None
+            assessment = _assess_painter_candidate(
+                probe_temp,
+                source_rgba_full,
+                grid_alpha,
+                mode,
+                parent_counts,
+                transaction_id=txn,
+                parent_artwork_fingerprint=parent_artwork_fp,
+            )
+            for field in (
+                "validation_stage",
+                "status",
+                "exact_error_code",
+                "native_alpha_iou",
+                "native_alpha_mae",
+                "bounded_alpha_iou",
+                "bounded_alpha_mae",
+                "evaluator_alpha_iou",
+                "evaluator_alpha_mae",
+                "artwork_fingerprint_match",
+                "actual_path_count",
+                "actual_node_count",
+            ):
+                entry[field] = assessment[field]
+            if assessment["status"] != "accepted":
+                attempts.append(entry)
+                probe_temp.unlink(missing_ok=True)
+                return None
 
-        attempts.append(entry)
-        return [
-            probe_size,
-            int(assessment["actual_path_count"] or 0),
-            int(assessment["actual_node_count"] or 0),
-            0,
-            probe_temp,
-            probe_geometry,
-            dict(assessment["report"] or {}),
-            label,
-            0.0,
-        ]
+            entry["journal_gate_started"] = True
+            journal_passed, journal_codes = _run_painter_geometry_journal(
+                parent_journal_path,
+                probe_temp,
+                journal_source_rgb,
+                journal_image_class,
+                assessment["report"],
+            )
+            entry["journal_passed"] = bool(journal_passed)
+            entry["journal_reason_codes"] = list(journal_codes)
+            if not journal_passed:
+                entry["status"] = "geometry_rejected"
+                entry["validation_stage"] = "journal_geometry"
+                entry["exact_error_code"] = (
+                    "source_alpha_candidate_painter_journal_geometry_rejected:"
+                    + ",".join(journal_codes)
+                )
+                attempts.append(entry)
+                probe_temp.unlink(missing_ok=True)
+                return None
+
+            attempts.append(entry)
+            return [
+                probe_size,
+                int(assessment["actual_path_count"] or 0),
+                int(assessment["actual_node_count"] or 0),
+                0,
+                probe_temp,
+                probe_geometry,
+                dict(assessment["report"] or {}),
+                label,
+                0.0,
+            ]
+
+        # Mevcut ayrık poligon paint-deficit önce denenir (geçen vakaları — ör.
+        # class_reklam — korur). Yalnız o TAZE journal geometri kapısında (seam/
+        # topology) reddedilirse kümülatif eşik varyantı ek aday olarak denenir.
+        # Kabul yetkisi her iki varyantta da değişmemiş evaluator + journal'dadır.
+        winner = _try("polygon", "paint-deficit-q24")
+        if winner is None:
+            winner = _try("cumulative", "paint-deficit-cumulative")
+        return winner
 
     try:
         # Kademe 1 → Kademe 2 → Kademe 3: render-güvenli sayı-koruyan kodlamalar

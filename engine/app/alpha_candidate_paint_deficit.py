@@ -185,8 +185,20 @@ def build_paint_deficit_reconstruction_tree(
     canvas_element: ET.Element | None,
     source_rgba_grid: np.ndarray,
     transaction_id: str,
+    mask_encoding: str = "polygon",
 ) -> tuple[ET.Element, dict[str, Any]]:
-    """Build one q24 source-alpha mask plus a compact deficit overlay."""
+    """Build one q24 source-alpha mask plus a compact deficit overlay.
+
+    ``mask_encoding`` seçer nasıl kodlandığını (kabul yetkisi değişmez, iki varyant
+    da aynı değişmemiş alfa evaluator ve TransformJournal kapılarından geçmelidir):
+
+    - ``"polygon"`` (varsayılan): seviye başına ayrık ``q == k`` union poligonları.
+      Mevcut üretim davranışı; hâlihazırda geçen vakaları korur.
+    - ``"cumulative"``: seviye başına kümülatif ``q >= k`` even-odd ``<path>`` (düşük
+      →yüksek gri). Komşu seviye sınırındaki ölçekli-AA dikişini (seam_gap) kapatır;
+      yalnız poligon varyantı journal geometri kapısında (seam/topology) reddedilirse
+      turnuvada ek aday olarak denenir.
+    """
     from app.alpha_candidate_knockout import (  # noqa: PLC0415
         _local_name,
         _render_root,
@@ -194,6 +206,7 @@ def build_paint_deficit_reconstruction_tree(
         _viewbox,
     )
     from app.alpha_candidate_painter import (  # noqa: PLC0415
+        _cumulative_threshold_children,
         _painter_loops,
         _simplify_rectilinear_loop,
     )
@@ -277,11 +290,16 @@ def build_paint_deficit_reconstruction_tree(
 
     view_x, view_y, view_width, view_height = _viewbox(root)
     quantized, opacity = _fixed_alpha_levels(source[:, :, 3])
-    loops = _painter_loops(quantized, opacity)
-    if not loops:
+    if mask_encoding not in ("polygon", "cumulative"):
         raise RuntimeError(
-            "source_alpha_candidate_painter_paint_deficit_empty_alpha"
+            "source_alpha_candidate_painter_paint_deficit_unknown_mask_encoding:"
+            f"{mask_encoding}"
         )
+    encoding_tag = (
+        "paint-deficit-cumulative-v1"
+        if mask_encoding == "cumulative"
+        else "paint-deficit-q24-v1"
+    )
     mask_id = _unique_id(root, "vektoryum-alpha-deficit-mask")
     mask = ET.SubElement(
         defs,
@@ -294,9 +312,7 @@ def build_paint_deficit_reconstruction_tree(
             "y": f"{view_y:g}",
             "width": f"{view_width:g}",
             "height": f"{view_height:g}",
-            "data-vektoryum-source-alpha-reconstruction": (
-                "paint-deficit-q24-v1"
-            ),
+            "data-vektoryum-source-alpha-reconstruction": encoding_tag,
         },
     )
     tag_transform_node(mask, ROLE_MASK_DEFINITION, transaction_id)
@@ -311,6 +327,7 @@ def build_paint_deficit_reconstruction_tree(
             )
         },
     )
+    # Opak siyah taban her iki kodlamada da altta kalır; gri fill'ler üstüne yazar.
     ET.SubElement(
         content,
         qname("rect"),
@@ -322,22 +339,46 @@ def build_paint_deficit_reconstruction_tree(
             "fill": "rgb(0,0,0)",
         },
     )
-    mask_polygon_count = 0
-    for _area, corners, gray in loops:
-        simplified = _simplify_rectilinear_loop(corners)
-        if len(simplified) < 3:
-            continue
-        ET.SubElement(
-            content,
-            qname("polygon"),
-            {
-                "points": " ".join(
-                    f"{x},{y}" for x, y in simplified
-                ),
-                "fill": f"rgb({gray},{gray},{gray})",
-            },
-        )
-        mask_polygon_count += 1
+    cumulative_stats: dict[str, int] = {
+        "cumulative_threshold_count": 0,
+        "cumulative_command_count": 0,
+        "cumulative_loop_count": 0,
+    }
+    if mask_encoding == "cumulative":
+        # Kümülatif ``q >= k`` even-odd path'leri düşük→yüksek gri: komşu seviye
+        # sınırı siyah tabanla değil altındaki daha düşük gri ile karışır → seam_gap
+        # kapanır. Yalnız poligon varyantı seam/topology ile reddedilince denenir.
+        cumulative = _cumulative_threshold_children(quantized, opacity, qname)
+        if cumulative is None:
+            raise RuntimeError(
+                "source_alpha_candidate_painter_paint_deficit_empty_alpha"
+            )
+        mask_children, cumulative_stats = cumulative
+        for child in mask_children:
+            content.append(child)
+        mask_polygon_count = int(cumulative_stats["cumulative_threshold_count"])
+    else:
+        # Ayrık ``q == k`` union poligonları (mevcut üretim davranışı).
+        loops = _painter_loops(quantized, opacity)
+        if not loops:
+            raise RuntimeError(
+                "source_alpha_candidate_painter_paint_deficit_empty_alpha"
+            )
+        mask_polygon_count = 0
+        for _area, corners, gray in loops:
+            simplified = _simplify_rectilinear_loop(corners)
+            if len(simplified) < 3:
+                continue
+            ET.SubElement(
+                content,
+                qname("polygon"),
+                {
+                    "points": " ".join(f"{x},{y}" for x, y in simplified),
+                    "fill": f"rgb({gray},{gray},{gray})",
+                },
+            )
+            mask_polygon_count += 1
+        cumulative_stats["cumulative_loop_count"] = int(len(loops))
 
     layer = ET.SubElement(
         root,
@@ -404,9 +445,19 @@ def build_paint_deficit_reconstruction_tree(
 
     layer.set("mask", f"url(#{mask_id})")
     return root, {
-        "reconstruction_mask_encoding": "paint-deficit-q24-polygon",
-        "reconstruction_loop_count": int(len(loops)),
+        "reconstruction_mask_encoding": (
+            "paint-deficit-cumulative-threshold"
+            if mask_encoding == "cumulative"
+            else "paint-deficit-q24-polygon"
+        ),
+        "reconstruction_loop_count": int(cumulative_stats["cumulative_loop_count"]),
         "reconstruction_mask_polygon_count": int(mask_polygon_count),
+        "reconstruction_cumulative_threshold_count": int(
+            cumulative_stats["cumulative_threshold_count"]
+        ),
+        "reconstruction_cumulative_command_count": int(
+            cumulative_stats["cumulative_command_count"]
+        ),
         "encoded_alpha_level_count": int(
             len([value for value in opacity if int(value) > 0])
         ),
