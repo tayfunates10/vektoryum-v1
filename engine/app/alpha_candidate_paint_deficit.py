@@ -12,6 +12,7 @@ import copy
 import xml.etree.ElementTree as ET
 from typing import Any
 
+import cv2
 import numpy as np
 
 from app.alpha_artwork_identity import (
@@ -93,6 +94,41 @@ def _dominant_opaque_palette(
     return np.asarray(palette, dtype=np.uint8)
 
 
+def _anchored_source_component_mask(
+    source_alpha: np.ndarray,
+    artwork_alpha: np.ndarray,
+) -> tuple[np.ndarray, dict[str, int]]:
+    """Select only source-alpha components grounded in preserved artwork.
+
+    Missing paint may be completed anywhere inside a source component only when
+    that same deterministic 8-connected component overlaps existing artwork by at
+    least one pixel. Fully detached source components remain excluded, preventing
+    the fallback from synthesising unrelated objects. The unchanged alpha and
+    TransformJournal gates remain the final acceptance authority.
+    """
+    source_positive = (
+        np.asarray(source_alpha, dtype=np.uint8) > 0
+    ).astype(np.uint8)
+    artwork_occupied = np.asarray(artwork_alpha, dtype=np.uint8) > 0
+    component_count, component_labels = cv2.connectedComponents(
+        source_positive,
+        connectivity=8,
+    )
+    anchored = np.zeros(source_positive.shape, dtype=bool)
+    anchored_count = 0
+    for component_id in range(1, int(component_count)):
+        component = component_labels == component_id
+        if bool(np.any(component & artwork_occupied)):
+            anchored |= component
+            anchored_count += 1
+    total = max(0, int(component_count) - 1)
+    return anchored, {
+        "source_component_count": total,
+        "anchored_source_component_count": int(anchored_count),
+        "detached_source_component_count": int(total - anchored_count),
+    }
+
+
 def _paint_deficit_labels(
     source_rgba: np.ndarray,
     artwork_rgba: np.ndarray,
@@ -106,8 +142,10 @@ def _paint_deficit_labels(
         axis=2,
     )
     artwork_missing = np.all(artwork_white > 244, axis=2)
-    artwork_occupied = artwork[:, :, 3] > 0
-    deficit = source_foreground & artwork_missing & artwork_occupied
+    anchored_components, component_stats = _anchored_source_component_mask(
+        source[:, :, 3], artwork[:, :, 3]
+    )
+    deficit = source_foreground & artwork_missing & anchored_components
     if not bool(deficit.any()):
         return (
             np.zeros(deficit.shape, dtype=np.int32),
@@ -116,6 +154,7 @@ def _paint_deficit_labels(
                 "paint_deficit_pixel_count": 0,
                 "paint_deficit_opaque_artwork_count": 0,
                 "paint_deficit_alpha_residual_overlap": 0,
+                **component_stats,
             },
         )
 
@@ -137,6 +176,7 @@ def _paint_deficit_labels(
         "paint_deficit_alpha_residual_overlap": int(
             np.count_nonzero(deficit & alpha_residual)
         ),
+        **component_stats,
     }
 
 
