@@ -10,6 +10,7 @@ import numpy as np
 
 from app.alpha_candidate_knockout import _render_root
 from app.alpha_candidate_paint_deficit import (
+    _anchored_source_component_mask,
     _fixed_alpha_levels,
     _paint_deficit_labels,
     build_paint_deficit_reconstruction_tree,
@@ -71,7 +72,37 @@ class PaintDeficitCandidateTests(unittest.TestCase):
         labels, _palette, stats = _paint_deficit_labels(source, artwork)
         self.assertEqual(stats["paint_deficit_pixel_count"], 4)
         self.assertEqual(stats["paint_deficit_opaque_artwork_count"], 4)
+        self.assertEqual(stats["source_component_count"], 1)
+        self.assertEqual(stats["anchored_source_component_count"], 1)
+        self.assertEqual(stats["detached_source_component_count"], 0)
         self.assertTrue(np.all(labels[:, 2] > 0))
+
+    def test_detached_source_component_remains_fail_closed(self):
+        source = np.zeros((6, 10, 4), dtype=np.uint8)
+        source[1:5, 1:4, :3] = 0
+        source[1:5, 1:4, 3] = 255
+        source[1:5, 7:9, :3] = 0
+        source[1:5, 7:9, 3] = 255
+
+        artwork = np.zeros_like(source)
+        artwork[1:5, 1:3, :3] = 0
+        artwork[1:5, 1:3, 3] = 255
+        artwork[1:5, 3:4, :3] = 255
+        artwork[1:5, 3:4, 3] = 255
+
+        anchored, component_stats = _anchored_source_component_mask(
+            source[:, :, 3], artwork[:, :, 3]
+        )
+        labels, _palette, stats = _paint_deficit_labels(source, artwork)
+
+        self.assertEqual(component_stats["source_component_count"], 2)
+        self.assertEqual(component_stats["anchored_source_component_count"], 1)
+        self.assertEqual(component_stats["detached_source_component_count"], 1)
+        self.assertTrue(np.all(anchored[1:5, 1:4]))
+        self.assertFalse(np.any(anchored[1:5, 7:9]))
+        self.assertTrue(np.all(labels[1:5, 3] > 0))
+        self.assertFalse(np.any(labels[1:5, 7:9]))
+        self.assertEqual(stats["detached_source_component_count"], 1)
 
     def test_builder_is_vector_only_deterministic_and_repairs_paint(self):
         root, canvas = self._root()
@@ -91,6 +122,8 @@ class PaintDeficitCandidateTests(unittest.TestCase):
         self.assertNotIn(b"<image", bytes1)
         self.assertNotIn(b"data:", bytes1)
         self.assertEqual(report1["paint_deficit_pixel_count"], 4)
+        self.assertEqual(report1["anchored_source_component_count"], 1)
+        self.assertEqual(report1["detached_source_component_count"], 0)
         rendered = _render_root(tree1, 4, 4)
         self.assertIsNotNone(rendered)
         assert rendered is not None
