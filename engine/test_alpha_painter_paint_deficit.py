@@ -131,6 +131,47 @@ class PaintDeficitCandidateTests(unittest.TestCase):
         self.assertTrue(np.all(rendered[:, :3, :3] < 20))
         self.assertTrue(np.all(rendered[:, 3, 3] == 0))
 
+    def test_cumulative_builder_is_vector_only_and_applies_alpha_once(self):
+        # Kümülatif kodlama üretim dalını uçtan uca doğrular: aynı korunan artwork +
+        # kompakt support tek maskeyle çizilir, kaynak alfa bir kez uygulanır (şeffaf
+        # sütun şeffaf kalır), çıktı deterministik/byte-birebir ve raster içermez.
+        root, canvas = self._root()
+        source = self._source()
+        tree1, report1 = build_paint_deficit_reconstruction_tree(
+            root, canvas, source, "txn-cumulative", mask_encoding="cumulative"
+        )
+        root2 = copy.deepcopy(root)
+        canvas2 = list(root2)[0]
+        tree2, report2 = build_paint_deficit_reconstruction_tree(
+            root2, canvas2, source, "txn-cumulative", mask_encoding="cumulative"
+        )
+        bytes1 = ET.tostring(tree1)
+        self.assertEqual(bytes1, ET.tostring(tree2))
+        self.assertEqual(report1, report2)
+        self.assertNotIn(b"<image", bytes1)
+        self.assertNotIn(b"data:", bytes1)
+        self.assertEqual(
+            report1["reconstruction_mask_encoding"],
+            "paint-deficit-cumulative-threshold",
+        )
+        self.assertGreaterEqual(
+            report1["reconstruction_cumulative_threshold_count"], 1
+        )
+        rendered = _render_root(tree1, 4, 4)
+        self.assertIsNotNone(rendered)
+        assert rendered is not None
+        self.assertTrue(np.all(rendered[:, :3, 3] == 255))
+        self.assertTrue(np.all(rendered[:, :3, :3] < 20))
+        self.assertTrue(np.all(rendered[:, 3, 3] == 0))
+
+    def test_unknown_mask_encoding_fails_closed(self):
+        root, canvas = self._root()
+        source = self._source()
+        with self.assertRaises(RuntimeError):
+            build_paint_deficit_reconstruction_tree(
+                root, canvas, source, "txn-bad", mask_encoding="spline"
+            )
+
     def test_production_module_has_no_fixture_specific_branch(self):
         text = Path(
             "engine/app/alpha_candidate_paint_deficit.py"
