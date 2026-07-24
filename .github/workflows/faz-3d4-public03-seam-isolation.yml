@@ -1,4 +1,4 @@
-name: FAZ 3D4 Public-03 compound path
+name: FAZ 3D4 Public-03 grouped polygons
 
 on:
   pull_request:
@@ -10,7 +10,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: faz-3d4-public03-compound-${{ github.event.pull_request.number }}
+  group: faz-3d4-public03-grouped-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
@@ -44,7 +44,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends ghostscript libcairo2 unzip
           python -m pip install -q -r engine/requirements.txt pytest httpx
 
-      - name: Patch tagged underpaint compound-path candidate
+      - name: Patch tagged underpaint grouped-polygon candidate
         shell: bash
         run: |
           set -euo pipefail
@@ -120,49 +120,41 @@ jobs:
                       },
                   )
                   mask_polygon_count += 1'''
-          new_mask = '''    loops_by_gray: dict[int, list[list[tuple[int, int]]]] = {}
+          new_mask = '''    polygons_by_gray: dict[int, list[list[tuple[int, int]]]] = {}
               for _area, corners, gray in loops:
                   simplified = _simplify_rectilinear_loop(corners)
                   if len(simplified) < 3:
                       continue
-                  loops_by_gray.setdefault(int(gray), []).append(simplified)
+                  polygons_by_gray.setdefault(int(gray), []).append(simplified)
               mask_polygon_count = 0
-              for gray in sorted(loops_by_gray):
-                  commands: list[str] = []
-                  for loop in loops_by_gray[gray]:
-                      start_x, start_y = loop[0]
-                      commands.append(f"M{start_x} {start_y}")
-                      previous_x, previous_y = start_x, start_y
-                      for x, y in loop[1:]:
-                          if x == previous_x:
-                              commands.append(f"V{y}")
-                          elif y == previous_y:
-                              commands.append(f"H{x}")
-                          else:
-                              commands.append(f"L{x} {y}")
-                          previous_x, previous_y = x, y
-                      commands.append("Z")
-                  ET.SubElement(
+              for gray in sorted(polygons_by_gray):
+                  group = ET.SubElement(
                       content,
-                      qname("path"),
-                      {
-                          "d": "".join(commands),
-                          "fill": f"rgb({gray},{gray},{gray})",
-                          "fill-rule": "evenodd",
-                      },
+                      qname("g"),
+                      {"fill": f"rgb({gray},{gray},{gray})"},
                   )
-                  mask_polygon_count += 1'''
+                  for simplified in polygons_by_gray[gray]:
+                      ET.SubElement(
+                          group,
+                          qname("polygon"),
+                          {
+                              "points": " ".join(
+                                  f"{x},{y}" for x, y in simplified
+                              )
+                          },
+                      )
+                      mask_polygon_count += 1'''
           if old_mask not in text:
               raise SystemExit("polygon mask block missing")
           text = text.replace(old_mask, new_mask, 1)
 
           text = text.replace(
               '"paint-deficit-q24-v1"',
-              f'"paint-deficit-q{levels}-underpaint-compound-v1"',
+              f'"paint-deficit-q{levels}-underpaint-grouped-v1"',
           )
           text = text.replace(
               '"paint-deficit-q24-polygon"',
-              f'"paint-deficit-q{levels}-underpaint-compound"',
+              f'"paint-deficit-q{levels}-underpaint-grouped-polygon"',
               1,
           )
           text = text.replace(
@@ -178,11 +170,7 @@ jobs:
           anchor = '    layer.set("mask", f"url(#{mask_id})")\n'
           if anchor not in text:
               raise SystemExit("support removal anchor missing")
-          text = text.replace(
-              anchor,
-              '    layer.remove(support)\n' + anchor,
-              1,
-          )
+          text = text.replace(anchor, '    layer.remove(support)\n' + anchor, 1)
           path.write_text(text, encoding="utf-8")
           PY
           python -m py_compile engine/app/alpha_candidate_paint_deficit.py
@@ -205,7 +193,7 @@ jobs:
           cp /tmp/faz3d4-source/objects/rfv/qualification/34/341204aa906bc0be33e2891a282a9cdb760711b3f348dc2a97ebe61829fad1fb.png /tmp/faz3d4-source/source.png
           echo "341204aa906bc0be33e2891a282a9cdb760711b3f348dc2a97ebe61829fad1fb  /tmp/faz3d4-source/source.png" | sha256sum -c -
 
-      - name: Measure compound candidate through full gates
+      - name: Measure grouped candidate through full gates
         shell: bash
         run: |
           set +e
@@ -229,12 +217,12 @@ jobs:
 
           levels = int(os.environ["ALPHA_LEVELS"])
           source = Path("/tmp/faz3d4-source/source.png")
-          job_dir = Path(tempfile.mkdtemp(prefix=f"faz3d4-public03-compound-q{levels}-"))
+          job_dir = Path(tempfile.mkdtemp(prefix=f"faz3d4-public03-grouped-q{levels}-"))
           stderr = io.StringIO()
           record = {
               "case_id": "qualification-public-03",
               "alpha_levels": levels,
-              "mask_encoding": "compound_path",
+              "mask_encoding": "grouped_polygon",
           }
           try:
               with Image.open(source) as image, contextlib.redirect_stderr(stderr):
@@ -280,23 +268,23 @@ jobs:
                   entry for entry in attempts
                   if entry.get("encoding_family") == "paint_deficit"
               ]
-          output = Path(f"faz3d4-public03-compound-q{levels}.json")
+          output = Path(f"faz3d4-public03-grouped-q{levels}.json")
           output.write_text(json.dumps(record, sort_keys=True, indent=2), encoding="utf-8")
           print(json.dumps(record, sort_keys=True))
           if record["status"] != "accepted":
               raise SystemExit(1)
           PY
           status=$?
-          tail -180 candidate-run.log > "faz3d4-public03-compound-q${ALPHA_LEVELS}.log"
+          tail -180 candidate-run.log > "faz3d4-public03-grouped-q${ALPHA_LEVELS}.log"
           exit "${status}"
 
-      - name: Upload scalar-only compound result
+      - name: Upload scalar-only grouped result
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: faz3d4-public03-compound-q${{ matrix.alpha_levels }}-${{ github.run_id }}
+          name: faz3d4-public03-grouped-q${{ matrix.alpha_levels }}-${{ github.run_id }}
           path: |
-            faz3d4-public03-compound-q${{ matrix.alpha_levels }}.json
-            faz3d4-public03-compound-q${{ matrix.alpha_levels }}.log
+            faz3d4-public03-grouped-q${{ matrix.alpha_levels }}.json
+            faz3d4-public03-grouped-q${{ matrix.alpha_levels }}.log
           if-no-files-found: error
           retention-days: 7
