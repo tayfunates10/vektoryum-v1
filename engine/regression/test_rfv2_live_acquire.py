@@ -70,6 +70,30 @@ class RFV2LiveAcquireTests(unittest.TestCase):
         self.assertEqual(resolved, current)
         self.assertEqual(calls[:2], [self.case["source_page_url"], current])
 
+    def test_uses_identity_bound_canonical_page_when_short_route_fails(self):
+        canonical = (
+            "https://openclipart.org/detail/345253/"
+            "my-pronouns-are-custom-lgbt-orange-square-badge"
+        )
+        current = "https://openclipart.org/image/800px/svg_to_png/345253/orange-square.png"
+        page = f'<meta property="og:image" content="{current}">'.encode()
+        calls = []
+
+        def fetcher(url, allowed_hosts, max_bytes):
+            calls.append(url)
+            self.assertEqual(allowed_hosts, {"openclipart.org", "www.loc.gov", "tile.loc.gov", "cdn.loc.gov"})
+            if url == self.case["source_page_url"]:
+                raise PublicSourceError("simulated short-route timeout")
+            if url == canonical:
+                return page, canonical, "text/html"
+            if url == current:
+                return png_bytes(), current, "image/png"
+            raise PublicSourceError("unexpected URL")
+
+        resolved = resolve_openclipart_asset_url(self.case, self.manifest, fetcher=fetcher)
+        self.assertEqual(resolved, current)
+        self.assertEqual(calls, [self.case["source_page_url"], canonical, current])
+
     def test_transparent_profile_requires_actual_alpha(self):
         case = dict(self.case, acquisition_profile="openclipart_transparent_png")
         opaque = "https://openclipart.org/image/800px/svg_to_png/345253/opaque.png"
