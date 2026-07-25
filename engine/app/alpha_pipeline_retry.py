@@ -218,3 +218,23 @@ def wrap_run_pipeline_with_alpha_retry(
 
     legacy_first.__vektoryum_alpha_retry_wrapped__ = True
     return legacy_first
+
+
+def _install_soft_ellipse_direct_factory() -> None:
+    """Bind the ellipse attempt before ``app.__init__`` captures the factory."""
+    from app import alpha_candidate_direct  # noqa: PLC0415
+    from app.alpha_soft_ellipse import make_soft_ellipse_alpha_first  # noqa: PLC0415
+
+    current = alpha_candidate_direct.make_direct_element_alpha_first
+    if getattr(current, "__vektoryum_soft_ellipse_factory__", False):
+        return
+
+    @wraps(current)
+    def soft_ellipse_factory(guarded_builder):
+        return make_soft_ellipse_alpha_first(current(guarded_builder))
+
+    soft_ellipse_factory.__vektoryum_soft_ellipse_factory__ = True
+    alpha_candidate_direct.make_direct_element_alpha_first = soft_ellipse_factory
+
+
+_install_soft_ellipse_direct_factory()
