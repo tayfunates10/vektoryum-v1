@@ -250,10 +250,19 @@ class AlphaPreprocessUnitTests(unittest.TestCase):
                 result["transform_journal"]["stages"][-1]["stage_id"],
                 "source_alpha_vector_mask",
             )
-            self.assertGreater(
-                result["alpha_mask_report"]["preflight_rectangle_limit"],
-                result["alpha_mask_report"]["preflight_rectangle_count"],
-            )
+            mask_report = result["alpha_mask_report"]
+            if "preflight_rectangle_limit" in mask_report:
+                self.assertGreater(
+                    mask_report["preflight_rectangle_limit"],
+                    mask_report["preflight_rectangle_count"],
+                )
+            else:
+                # Doğrudan-eleman kodlaması mevcut boyayı yeniden kullanır;
+                # rect planı hiç kurulmaz, dolayısıyla rect bütçesi de yoktur.
+                self.assertEqual(
+                    mask_report["mask_encoding"], "direct_existing_elements"
+                )
+                self.assertNotIn("preflight_rectangle_count", mask_report)
             self.assertNotEqual(Path(result["best"]["svg_path"]), svg_path)
 
     def test_noisy_alpha_fails_before_svg_mutation(self) -> None:

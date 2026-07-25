@@ -7,9 +7,14 @@ Kaynak alfa sert-kenarlı (kısmî değer yok) ve maske içeriği kimlik dönü�
   * gating renderer (resvg) altında sert maske ile PİKSEL-EŞ üretir.
 Kısmî alfa veya ölçeklenmiş/kaydırılmış içerik bu yola girmez (maskede kalır).
 Dosya adına/moda göre koşul yoktur; karar yalnız ölçülen alfa yapısındandır.
+
+RFV-3D3 sonrası clipPath, doğrudan-eleman adayı reddedildiğinde devreye giren
+genel yedek zincirin parçasıdır. Bu süit kodlayıcıyı sarmalanmamış maske zinciri
+üzerinde ölçer; üretim yığınının aynı girdideki davranışı ayrıca doğrulanır.
 """
 from __future__ import annotations
 
+import importlib.util
 import tempfile
 import unittest
 import xml.etree.ElementTree as ET
@@ -18,6 +23,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+import app.alpha_svg_mask as _alpha_svg_mask
 from app.alpha_mask_budget import wrap_apply_source_alpha_mask
 from app.alpha_mask_adaptive import make_adaptive_apply_source_alpha_mask
 from app.alpha_svg_mask import apply_source_alpha_mask
@@ -27,7 +33,32 @@ _MODE = "geometric_logo"
 _SIDE = 192
 
 
+def _unwrapped_apply_source_alpha_mask():
+    """Maske kodlayıcısını `app` zincir bağlamalarından bağımsız yükle.
+
+    `app/__init__` modül niteliğini doğrudan-eleman zinciriyle yeniden bağlar.
+    `importlib.reload` bunu tüm test süreci için geri alırdı, bu yüzden
+    `sys.modules` dokunulmadan özel bir kopya yüklenir.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "vektoryum_unwrapped_alpha_svg_mask",
+        Path(_alpha_svg_mask.__file__),
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.apply_source_alpha_mask
+
+
+def _mask_chain_apply():
+    """clipPath'i yayınlayan yedek maske zinciri (doğrudan-eleman adayı olmadan)."""
+    return wrap_apply_source_alpha_mask(
+        make_adaptive_apply_source_alpha_mask(_unwrapped_apply_source_alpha_mask())
+    )
+
+
 def _production_apply():
+    """Üretim yığını: doğrudan-eleman adayı önce, ardından genel yedek zincir."""
     return wrap_apply_source_alpha_mask(
         make_adaptive_apply_source_alpha_mask(apply_source_alpha_mask)
     )
@@ -81,7 +112,7 @@ class AlphaClipEncodingTests(unittest.TestCase):
             _opaque_parent(parent)
             before_paths = _count_paths(parent.read_bytes())
 
-            report = _production_apply()(parent, source, _MODE)
+            report = _mask_chain_apply()(parent, source, _MODE)
             self.assertTrue(report["applied"])
             self.assertEqual(report["mask_encoding"], "clip")
             data = parent.read_bytes()
@@ -100,7 +131,7 @@ class AlphaClipEncodingTests(unittest.TestCase):
             clip_parent = root / "clip.svg"
             _binary_source(source)
             _opaque_parent(clip_parent)
-            report = _production_apply()(clip_parent, source, _MODE)
+            report = _mask_chain_apply()(clip_parent, source, _MODE)
             self.assertEqual(report["mask_encoding"], "clip")
 
             clip_text = clip_parent.read_text()
@@ -143,7 +174,7 @@ class AlphaClipEncodingTests(unittest.TestCase):
             _binary_source(source)
             _opaque_parent(parent)
             before_size = parent.stat().st_size
-            report = _production_apply()(parent, source, _MODE)
+            report = _mask_chain_apply()(parent, source, _MODE)
             after_size = parent.stat().st_size
             # clipPath eklenmiş byte, sert maske sarmalayıcısından küçük olmalı.
             # Sert maske ~410+ byte eklerken clip ~230 byte ekler.
@@ -172,7 +203,7 @@ class AlphaClipEncodingTests(unittest.TestCase):
             parent = root / "parent.svg"
             _binary_source(source)
             _opaque_parent(parent)
-            _production_apply()(parent, source, _MODE)
+            _mask_chain_apply()(parent, source, _MODE)
             # Ayrıştırılabilir ve tek clipPath id'si tutarlı.
             tree = ET.parse(parent)
             clip_ids = [
@@ -181,6 +212,38 @@ class AlphaClipEncodingTests(unittest.TestCase):
                 if element.tag.endswith("clipPath")
             ]
             self.assertEqual(clip_ids, ["vektoryum-source-alpha"])
+
+    def test_production_stack_prefers_direct_elements_over_clip(self) -> None:
+        """Aynı ikili girdide üretim yığını clip'ten daha kompakt kalmalı.
+
+        Doğrudan-eleman adayı mevcut boyayı yeniden kullanır: clipPath geometrisi
+        eklemez ve eklenen byte clip kodlamasını aşmaz. Alfa kapısı değişmez.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.png"
+            clip_parent = root / "clip.svg"
+            direct_parent = root / "direct.svg"
+            _binary_source(source)
+            _opaque_parent(clip_parent)
+            _opaque_parent(direct_parent)
+            before_size = direct_parent.stat().st_size
+            before_paths = _count_paths(direct_parent.read_bytes())
+
+            clip_report = _mask_chain_apply()(clip_parent, source, _MODE)
+            self.assertEqual(clip_report["mask_encoding"], "clip")
+            clip_growth = clip_parent.stat().st_size - before_size
+
+            report = _production_apply()(direct_parent, source, _MODE)
+            self.assertTrue(report["applied"])
+            self.assertEqual(report["mask_encoding"], "direct_existing_elements")
+
+            data = direct_parent.read_bytes()
+            self.assertNotIn(b"<clipPath", data)
+            self.assertNotIn(b"<mask", data)
+            self.assertEqual(_count_paths(data), before_paths)
+            self.assertLessEqual(direct_parent.stat().st_size - before_size, clip_growth)
+            self.assertGreaterEqual(report["source_truth_alpha_iou"], 0.995)
 
 
 if __name__ == "__main__":
