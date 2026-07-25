@@ -4,10 +4,12 @@ import unittest
 from PIL import Image
 
 from engine.regression.rfv2_live_acquire import (
+    _OPENCLIPART_CANONICAL_SOURCE_PAGES,
     extract_openclipart_candidates,
     prepare_live_provider_case,
     resolve_openclipart_asset_url,
 )
+from engine.regression import rfv2_public_source_acquire as public_acquire
 from engine.regression.rfv2_public_source_acquire import PublicSourceError
 
 
@@ -37,6 +39,19 @@ class RFV2LiveAcquireTests(unittest.TestCase):
             "https://openclipart.org/detail/345253/"
             "my-pronouns-are-custom-lgbt-orange-square-badge"
         )
+
+    def test_canonical_pages_cover_the_entire_reviewed_openclipart_allowlist(self):
+        manifest = public_acquire.load_json(public_acquire.MANIFEST_PATH)
+        openclipart_ids = {
+            str(case["provider_asset_id"])
+            for case in manifest["cases"]
+            if case["provider"] == "openclipart"
+        }
+        self.assertEqual(set(_OPENCLIPART_CANONICAL_SOURCE_PAGES), openclipart_ids)
+        for asset_id, url in _OPENCLIPART_CANONICAL_SOURCE_PAGES.items():
+            with self.subTest(asset_id=asset_id):
+                self.assertTrue(url.startswith("https://openclipart.org/"))
+                self.assertIn(f"/{asset_id}/", url)
 
     def test_extracts_current_png_from_reviewed_source_page(self):
         page = b'''<html><head>
