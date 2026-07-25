@@ -46,7 +46,10 @@ from app.alpha_preprocess import _rgba_from_source_at_size
 from app.source_truth import resize_rgba
 
 _SVG_NS = "http://www.w3.org/2000/svg"
-_MAX_DIRECT_CHILDREN = 32
+# Matches the existing TransformJournal absolute path-growth safety order while
+# remaining a processing cap only; acceptance still uses the unchanged evaluator
+# and journal path/node/byte gates.
+_MAX_DIRECT_CHILDREN = 512
 _ALPHA_STYLE_NAMES = {"opacity", "fill-opacity", "stroke-opacity"}
 
 
@@ -162,6 +165,7 @@ def _build_direct_candidate(
     nonzero_levels = [int(value) for value in np.unique(source_alpha) if int(value) > 0]
     if not nonzero_levels:
         raise RuntimeError("source_alpha_direct_empty_source")
+    binary_alpha = nonzero_levels == [255]
 
     assignments: list[tuple[int, int]] = []
     archive_reasons: dict[int, str] = {}
@@ -169,24 +173,34 @@ def _build_direct_candidate(
         archive_reasons[background_index] = "renderer-proven-comparison-canvas-v1"
 
     negative_space_count = 0
+    probed_child_count = 0
     for index in _direct_renderable_indexes(original_root):
         if background_index is not None and index == background_index:
             continue
         child = original_children[index]
         if _has_existing_content_alpha(child):
             raise RuntimeError("source_alpha_direct_existing_content_alpha")
+        child_rgb = comparison_canvas_rgb(child)
+
+        # A binary source needs per-child probing only for canvas-coloured paint,
+        # which can encode transparent negative space. All contrasting artwork is
+        # already required to be opaque; the final full render remains authoritative.
+        if binary_alpha and background_index is not None and child_rgb != canvas_rgb:
+            assignments.append((index, 255))
+            continue
+
         rendered = _render_root(
             _probe_root(original_root, child),
             eval_width,
             eval_height,
         )
+        probed_child_count += 1
         if rendered is None:
             raise RuntimeError("source_alpha_direct_child_render_unmeasured")
         if rendered.shape[:2] != (eval_height, eval_width):
             rendered = resize_rgba(rendered, eval_width, eval_height)
         level = _weighted_source_alpha_mode(rendered[:, :, 3], source_alpha)
         if level == 0:
-            child_rgb = comparison_canvas_rgb(child)
             if canvas_rgb is None or child_rgb != canvas_rgb:
                 raise RuntimeError(
                     "source_alpha_direct_transparent_child_not_canvas_colour"
@@ -223,6 +237,7 @@ def _build_direct_candidate(
         "comparison_canvas_archived": background_index is not None,
         "canvas_colour_negative_space_archive_count": int(negative_space_count),
         "direct_child_count": int(assigned_count),
+        "direct_probed_child_count": int(probed_child_count),
         "direct_translucent_child_count": int(translucent_count),
         "source_nonzero_alpha_levels": nonzero_levels,
     }
