@@ -5,14 +5,18 @@ import re
 import unittest
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+ENGINE_ROOT = REPO_ROOT / "engine"
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
 class RQ4ReleaseGateTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.manifest = json.loads(Path("engine/regression/rq4_release_manifest.json").read_text())
-        cls.roadmap = json.loads(Path("docs/release_qualification_roadmap.json").read_text())
+        manifest_path = ENGINE_ROOT / "regression" / "rq4_release_manifest.json"
+        roadmap_path = REPO_ROOT / "docs" / "release_qualification_roadmap.json"
+        cls.manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        cls.roadmap = json.loads(roadmap_path.read_text(encoding="utf-8"))
 
     def test_manifest_is_finite_and_secret_safe(self) -> None:
         self.assertEqual(self.manifest["schema"], "vektoryum-rq4-beta-release-v1")
@@ -60,7 +64,7 @@ class RQ4ReleaseGateTests(unittest.TestCase):
         self.assertEqual(self.roadmap["phase_count"], 4)
         self.assertEqual([p["id"] for p in phases], ["RQ-1", "RQ-2", "RQ-3", "RQ-4"])
         self.assertEqual([p["status"] for p in phases], ["implemented"] * 4)
-        self.assertTrue(Path(phases[3]["evidence"]).is_file())
+        self.assertTrue((REPO_ROOT / phases[3]["evidence"]).is_file())
         self.assertEqual(len(phases[3]["acceptance"]), 5)
 
 
