@@ -4,6 +4,7 @@ on:
   pull_request:
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -44,6 +45,8 @@ jobs:
 
       - name: Acquire and qualify all 24 reviewed public sources
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -uo pipefail
           RFV_ROOT="${RUNNER_TEMP}/rfv2-live"
@@ -74,25 +77,223 @@ jobs:
               echo "RFV-2E acquisition attempt ${attempt} failed; retrying reviewed allowlist"
               sleep "$((attempt * 10))"
             done
-            if [ "${acquired}" -ne 1 ]; then
-              echo "RFV-2E acquisition exhausted 3 bounded attempts"
-              exit 2
+
+            if [ "${acquired}" -eq 1 ]; then
+              python -m engine.regression.rfv2_manifest_assembler \
+                --records-dir "${RFV_ROOT}/records" \
+                --manifest-out "${RFV_ROOT}/out/qualification-manifest.json" \
+                --audit-out "${RFV_ROOT}/out/qualification-audit.json" \
+                --require-complete
+
+              python -m engine.regression.rfv2_live_bundle \
+                --storage-root "${RFV_ROOT}/storage" \
+                --download-root "${RFV_ROOT}/downloads" \
+                --records-dir "${RFV_ROOT}/records" \
+                --manifest "${RFV_ROOT}/out/qualification-manifest.json" \
+                --audit "${RFV_ROOT}/out/qualification-audit.json" \
+                --bundle-out "${RFV_ROOT}/out/rfv2-public-corpus.tar.gz" \
+                --checksums-out "${RFV_ROOT}/out/bundle-checksums.json"
+            else
+              echo "RFV-2E live provider unavailable; resolving latest verified immutable corpus"
+              python - <<'PY'
+          import hashlib
+          import io
+          import json
+          import os
+          import shutil
+          import urllib.request
+          import zipfile
+          from pathlib import Path, PurePosixPath
+
+          root = Path(os.environ["RUNNER_TEMP"]) / "rfv2-live"
+          out = root / "out"
+          token = os.environ["GH_TOKEN"]
+          repository = os.environ["GITHUB_REPOSITORY"]
+          prefix = "rfv2-public-qualification-corpus-"
+          required = {
+              "rfv2-public-corpus.tar.gz",
+              "qualification-manifest.json",
+              "qualification-audit.json",
+              "bundle-checksums.json",
+          }
+
+          def request_json(url: str) -> dict:
+              request = urllib.request.Request(
+                  url,
+                  headers={
+                      "Accept": "application/vnd.github+json",
+                      "Authorization": f"Bearer {token}",
+                      "X-GitHub-Api-Version": "2022-11-28",
+                  },
+              )
+              with urllib.request.urlopen(request, timeout=60) as response:
+                  return json.load(response)
+
+          def request_bytes(url: str) -> bytes:
+              request = urllib.request.Request(
+                  url,
+                  headers={
+                      "Accept": "application/vnd.github+json",
+                      "Authorization": f"Bearer {token}",
+                      "X-GitHub-Api-Version": "2022-11-28",
+                  },
+              )
+              with urllib.request.urlopen(request, timeout=120) as response:
+                  return response.read()
+
+          def digest(path: Path) -> str:
+              return hashlib.sha256(path.read_bytes()).hexdigest()
+
+          committed = json.loads(
+              Path("engine/regression/rfv2_qualification_manifest.json").read_text(
+                  encoding="utf-8"
+              )
+          )
+          expected_cases = {
+              case["case_id"]: {
+                  key: case[key]
+                  for key in (
+                      "case_id",
+                      "category",
+                      "license",
+                      "source_sha256",
+                      "source_format",
+                      "file_bytes",
+                      "width",
+                      "height",
+                      "storage_object_id",
+                  )
+              }
+              for case in committed["cases"]
+          }
+          if len(expected_cases) != 24:
+              raise RuntimeError("committed RFV-2 qualification identity is incomplete")
+
+          listing = request_json(
+              f"https://api.github.com/repos/{repository}/actions/artifacts?per_page=100"
+          )
+          artifacts = sorted(
+              (
+                  artifact
+                  for artifact in listing.get("artifacts", [])
+                  if str(artifact.get("name", "")).startswith(prefix)
+                  and not artifact.get("expired", True)
+              ),
+              key=lambda artifact: str(artifact.get("created_at", "")),
+              reverse=True,
+          )
+          failures = []
+          selected = None
+          for artifact in artifacts:
+              try:
+                  payload = request_bytes(str(artifact["archive_download_url"]))
+                  advertised = str(artifact.get("digest") or "")
+                  actual_zip_digest = hashlib.sha256(payload).hexdigest()
+                  if advertised:
+                      if advertised.removeprefix("sha256:") != actual_zip_digest:
+                          raise RuntimeError("artifact archive digest mismatch")
+
+                  with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+                      names = set(archive.namelist())
+                      safe_names = {
+                          name
+                          for name in names
+                          if not PurePosixPath(name).is_absolute()
+                          and ".." not in PurePosixPath(name).parts
+                      }
+                      if names != safe_names or not required.issubset(names):
+                          raise RuntimeError("artifact archive layout rejected")
+                      for name in required:
+                          target = out / name
+                          target.parent.mkdir(parents=True, exist_ok=True)
+                          with archive.open(name) as source, target.open("wb") as sink:
+                              shutil.copyfileobj(source, sink)
+
+                  manifest = json.loads(
+                      (out / "qualification-manifest.json").read_text(encoding="utf-8")
+                  )
+                  audit = json.loads(
+                      (out / "qualification-audit.json").read_text(encoding="utf-8")
+                  )
+                  checksums = json.loads(
+                      (out / "bundle-checksums.json").read_text(encoding="utf-8")
+                  )
+                  actual_cases = {
+                      case["case_id"]: {
+                          key: case[key]
+                          for key in (
+                              "case_id",
+                              "category",
+                              "license",
+                              "source_sha256",
+                              "source_format",
+                              "file_bytes",
+                              "width",
+                              "height",
+                              "storage_object_id",
+                          )
+                      }
+                      for case in manifest["cases"]
+                  }
+                  if actual_cases != expected_cases:
+                      raise RuntimeError("cached corpus source identity drift")
+                  if manifest.get("status") != "qualified":
+                      raise RuntimeError("cached corpus is not qualified")
+                  if manifest.get("qualified_case_count") != 24:
+                      raise RuntimeError("cached corpus case count drift")
+                  if manifest.get("cases_sha256") != checksums.get("cases_sha256"):
+                      raise RuntimeError("cached corpus cases digest mismatch")
+                  if audit.get("complete") is not True or audit.get("missing_categories") != []:
+                      raise RuntimeError("cached corpus audit is incomplete")
+                  if digest(out / "rfv2-public-corpus.tar.gz") != checksums.get(
+                      "bundle_sha256"
+                  ):
+                      raise RuntimeError("cached corpus bundle digest mismatch")
+                  if digest(out / "qualification-manifest.json") != checksums.get(
+                      "qualification_manifest_sha256"
+                  ):
+                      raise RuntimeError("cached qualification manifest digest mismatch")
+                  if digest(out / "qualification-audit.json") != checksums.get(
+                      "qualification_audit_sha256"
+                  ):
+                      raise RuntimeError("cached qualification audit digest mismatch")
+                  if checksums.get("storage_mode") != "github_actions_immutable_artifact":
+                      raise RuntimeError("cached corpus storage mode rejected")
+                  selected = artifact
+                  break
+              except Exception as exc:
+                  failures.append(f"{artifact.get('id')}: {type(exc).__name__}: {exc}")
+                  for name in required:
+                      (out / name).unlink(missing_ok=True)
+
+          if selected is None:
+              raise RuntimeError(
+                  "no verified immutable RFV-2 corpus artifact available: "
+                  + " | ".join(failures[-5:])
+              )
+
+          provenance = {
+              "schema": "vektoryum-rfv2-immutable-fallback-v1",
+              "reason": "bounded_live_provider_attempts_exhausted",
+              "source_artifact_id": int(selected["id"]),
+              "source_artifact_name": selected["name"],
+              "source_artifact_digest": selected.get("digest"),
+              "source_created_at": selected.get("created_at"),
+              "cases_sha256": checksums["cases_sha256"],
+              "bundle_sha256": checksums["bundle_sha256"],
+              "qualified_case_count": 24,
+              "verification": "committed_source_identity_and_internal_sha256",
+          }
+          (out / "fallback-provenance.json").write_text(
+              json.dumps(provenance, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print(
+              "RFV-2E immutable fallback accepted: "
+              f"artifact={selected['id']} cases_sha256={checksums['cases_sha256']}"
+          )
+          PY
             fi
-
-            python -m engine.regression.rfv2_manifest_assembler \
-              --records-dir "${RFV_ROOT}/records" \
-              --manifest-out "${RFV_ROOT}/out/qualification-manifest.json" \
-              --audit-out "${RFV_ROOT}/out/qualification-audit.json" \
-              --require-complete
-
-            python -m engine.regression.rfv2_live_bundle \
-              --storage-root "${RFV_ROOT}/storage" \
-              --download-root "${RFV_ROOT}/downloads" \
-              --records-dir "${RFV_ROOT}/records" \
-              --manifest "${RFV_ROOT}/out/qualification-manifest.json" \
-              --audit "${RFV_ROOT}/out/qualification-audit.json" \
-              --bundle-out "${RFV_ROOT}/out/rfv2-public-corpus.tar.gz" \
-              --checksums-out "${RFV_ROOT}/out/bundle-checksums.json"
 
             python - <<'PY'
           import json
@@ -142,6 +343,7 @@ jobs:
             ${{ runner.temp }}/rfv2-live/out/qualification-manifest.json
             ${{ runner.temp }}/rfv2-live/out/qualification-audit.json
             ${{ runner.temp }}/rfv2-live/out/bundle-checksums.json
+            ${{ runner.temp }}/rfv2-live/out/fallback-provenance.json
           if-no-files-found: error
           retention-days: 90
           compression-level: 0
@@ -170,6 +372,7 @@ jobs:
 
           root = Path(os.environ["RUNNER_TEMP"]) / "rfv2-live" / "out"
           checksums = json.loads((root / "bundle-checksums.json").read_text())
+          fallback = root / "fallback-provenance.json"
           envelope = {
               "schema": "vektoryum-rfv2-actions-publication-envelope-v1",
               "head_sha": head_sha,
@@ -181,6 +384,9 @@ jobs:
               "cases_sha256": checksums["cases_sha256"],
               "bundle_sha256": checksums["bundle_sha256"],
               "raw_assets_in_repository": False,
+              "acquisition_mode": (
+                  "verified_immutable_fallback" if fallback.is_file() else "live"
+              ),
           }
           (root / "publication-envelope.json").write_text(
               json.dumps(envelope, indent=2, sort_keys=True) + "\n",
