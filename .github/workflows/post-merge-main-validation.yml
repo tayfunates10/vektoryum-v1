@@ -37,7 +37,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - name: Verify branch ancestry and collect inventory
+      - name: Verify branch ancestry and collect dependency-free inventory
         env:
           GH_TOKEN: ${{ github.token }}
           BASE_SHA: ${{ github.event.pull_request.base.sha || env.EXPECTED_BASE_SHA }}
@@ -48,6 +48,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "${HEAD_SHA}"
           mkdir -p validation_artifacts
           python - <<'PY'
+          import ast
           import json
           import os
           import platform
@@ -72,26 +73,27 @@ jobs:
               with urllib.request.urlopen(request, timeout=30) as response:
                   return json.load(response)
 
+          test_files = sorted(Path("engine").rglob("test_*.py"))
+          test_count = 0
+          parse_failures = []
+          for path in test_files:
+              try:
+                  tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+              except Exception as exc:
+                  parse_failures.append({"path": str(path), "error": type(exc).__name__})
+                  continue
+              for node in ast.walk(tree):
+                  if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test_"):
+                      test_count += 1
+
           pulls = get_json(f"/repos/{repo}/pulls?state=open&per_page=100")
           issues = get_json(f"/repos/{repo}/issues?state=open&per_page=100")
           open_issue_count = sum(1 for item in issues if "pull_request" not in item)
           issue_97 = get_json(f"/repos/{repo}/issues/97")
-
-          collect = subprocess.run(
-              ["python", "-m", "pytest", "engine", "--collect-only", "-q"],
-              check=False,
-              text=True,
-              capture_output=True,
-          )
-          collected_line = ""
-          for line in reversed((collect.stdout + "\n" + collect.stderr).splitlines()):
-              if "collected" in line:
-                  collected_line = line.strip()
-                  break
-
           workflow_count = len(list(Path(".github/workflows").glob("*.y*ml")))
+
           report = {
-              "schema": "vektoryum-post-merge-baseline-v1",
+              "schema": "vektoryum-post-merge-baseline-v2",
               "repository": repo,
               "main_sha": os.environ["BASE_SHA"],
               "validation_head_sha": os.environ["HEAD_SHA"],
@@ -99,8 +101,9 @@ jobs:
               "python_version": platform.python_version(),
               "node_version": subprocess.check_output(["node", "--version"], text=True).strip(),
               "docker_version": subprocess.check_output(["docker", "--version"], text=True).strip(),
-              "test_collection_status": collect.returncode,
-              "test_count_summary": collected_line,
+              "test_file_count": len(test_files),
+              "static_test_function_count": test_count,
+              "test_parse_failures": parse_failures,
               "workflow_count": workflow_count,
               "open_pr_count": len(pulls),
               "open_issue_count": open_issue_count,
@@ -123,28 +126,26 @@ jobs:
           Path("validation_artifacts/baseline-report.json").write_text(
               json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
           )
-          lines = [
-              "# BASELINE REPORT",
-              "",
-              f"- repository: {report['repository']}",
-              f"- main_sha: {report['main_sha']}",
-              f"- validation_head_sha: {report['validation_head_sha']}",
-              f"- python_version: {report['python_version']}",
-              f"- node_version: {report['node_version']}",
-              f"- docker_version: {report['docker_version']}",
-              f"- test_count: {report['test_count_summary'] or 'collection failed'}",
-              f"- workflow_count: {report['workflow_count']}",
-              f"- open_pr_count: {report['open_pr_count']}",
-              f"- open_issue_count: {report['open_issue_count']}",
-              f"- release_state: {report['release_state']}",
-              f"- known_blockers: {', '.join(report['known_blockers'])}",
-              f"- planned_branches: {', '.join(report['planned_branches'])}",
-          ]
           Path("validation_artifacts/baseline-report.md").write_text(
-              "\n".join(lines) + "\n", encoding="utf-8"
+              "# BASELINE REPORT\n\n"
+              f"- repository: {report['repository']}\n"
+              f"- main_sha: {report['main_sha']}\n"
+              f"- validation_head_sha: {report['validation_head_sha']}\n"
+              f"- python_version: {report['python_version']}\n"
+              f"- node_version: {report['node_version']}\n"
+              f"- docker_version: {report['docker_version']}\n"
+              f"- test_file_count: {report['test_file_count']}\n"
+              f"- static_test_function_count: {report['static_test_function_count']}\n"
+              f"- workflow_count: {report['workflow_count']}\n"
+              f"- open_pr_count: {report['open_pr_count']}\n"
+              f"- open_issue_count: {report['open_issue_count']}\n"
+              f"- release_state: {report['release_state']}\n"
+              f"- known_blockers: {', '.join(report['known_blockers'])}\n"
+              f"- planned_branches: {', '.join(report['planned_branches'])}\n",
+              encoding="utf-8",
           )
-          if collect.returncode != 0:
-              raise SystemExit(collect.returncode)
+          if parse_failures:
+              raise SystemExit("test AST parse failures detected")
           PY
       - uses: actions/upload-artifact@v4
         if: always()
@@ -175,6 +176,8 @@ jobs:
         run: python -m pip install -r requirements.txt pytest httpx
       - name: Compile engine
         run: python -m compileall .
+      - name: Collect complete test suite
+        run: python -m pytest --collect-only -q
       - name: Run complete test suite
         run: python -m pytest -q
 
@@ -197,7 +200,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ghostscript libcairo2
       - name: Install dependencies
         run: python -m pip install -r requirements.txt pytest httpx
-      - name: Exact final, journal, evaluator and alpha contracts
+      - name: Exact final journal evaluator and alpha contracts
         shell: bash
         run: |
           set -euo pipefail
@@ -227,9 +230,6 @@ jobs:
   security-and-acquisition-contracts:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    defaults:
-      run:
-        working-directory: engine
     steps:
       - uses: actions/checkout@v4
         with:
@@ -240,14 +240,20 @@ jobs:
           cache: pip
           cache-dependency-path: engine/requirements.txt
       - name: Install dependencies
+        working-directory: engine
         run: python -m pip install -r requirements.txt pytest httpx
       - name: Production HTTP security contracts
+        working-directory: engine
         env:
           VEKTORYUM_SERVICE_MODE: beta
           VEKTORYUM_SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
         run: python -m pytest -q test_platform_operations.py test_platform_security.py test_runtime_main.py
       - name: RFV-2 acquisition and immutable fallback contracts
-        run: python -m pytest -q regression/test_rfv2_live_acquire.py regression/test_rfv2_immutable_fallback.py regression/test_rfv2_live_bundle.py
+        run: >-
+          python -m unittest
+          engine.regression.test_rfv2_live_acquire
+          engine.regression.test_rfv2_immutable_fallback
+          engine.regression.test_rfv2_live_bundle
 
   export-smoke:
     runs-on: ubuntu-latest
@@ -274,10 +280,8 @@ jobs:
           import tempfile
           import xml.etree.ElementTree as ET
           from pathlib import Path
-
           import ezdxf
           import fitz
-
           from app.exporters import export_all
 
           with tempfile.TemporaryDirectory() as tmp:
@@ -302,13 +306,11 @@ jobs:
               assert set(outputs) == {"svg", "pdf", "eps", "dxf"}
               for path in map(Path, outputs.values()):
                   assert path.exists() and path.stat().st_size > 0, path
-
               svg_path = Path(outputs["svg"])
               svg_root = ET.parse(svg_path).getroot()
               assert svg_root.get("viewBox") == "0 0 320 180"
               assert not any(node.tag.split("}")[-1] == "image" for node in svg_root.iter())
               assert svg_root.get("data-candidate") == "post-merge-smoke"
-
               pdf = fitz.open(outputs["pdf"])
               assert pdf.page_count >= 1
               pdf.close()
@@ -412,9 +414,7 @@ jobs:
           for i in $(seq 1 45); do
             if python - <<'PY'
           import json
-          import urllib.error
           import urllib.request
-
           for path in ("livez", "readyz"):
               with urllib.request.urlopen(f"http://127.0.0.1:7860/{path}", timeout=3) as response:
                   payload = json.load(response)
@@ -485,7 +485,7 @@ jobs:
           }
           success = all(value == "success" for value in results.values())
           payload = {
-              "schema": "vektoryum-post-merge-validation-decision-v1",
+              "schema": "vektoryum-post-merge-validation-decision-v2",
               "base_sha": os.environ["BASE_SHA"],
               "head_sha": os.environ["HEAD_SHA"],
               "workflow_run_id": os.environ["GITHUB_RUN_ID"],
