@@ -20,6 +20,7 @@ on:
       - "engine/regression/rfv3_measurement_policy.json"
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -49,14 +50,17 @@ jobs:
       - name: Compile RFV-3B files
         run: |
           python -m py_compile \
+            engine/regression/rfv2_immutable_fallback.py \
+            engine/regression/test_rfv2_immutable_fallback.py \
             engine/regression/rfv3_live_measurement.py \
             engine/regression/rfv3_live_prepare.py \
             engine/regression/test_rfv3_live_measurement.py \
             engine/regression/test_rfv3_live_prepare.py
 
-      - name: Validate sharding extraction identity and aggregate gates
+      - name: Validate sharding extraction identity aggregate and fallback gates
         run: >-
           python -m unittest
+          engine.regression.test_rfv2_immutable_fallback
           engine.regression.test_rfv3_live_measurement
           engine.regression.test_rfv3_live_prepare
 
@@ -89,8 +93,10 @@ jobs:
       - name: Install acquisition dependencies
         run: python -m pip install --disable-pip-version-check Pillow
 
-      - name: Acquire and bundle the exact 24 reviewed sources
+      - name: Acquire or restore the exact verified 24-source corpus
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -uo pipefail
           RFV_ROOT="${RUNNER_TEMP}/rfv3b-acquire"
@@ -121,25 +127,48 @@ jobs:
               echo "RFV-3B acquisition attempt ${attempt} failed; retrying reviewed allowlist"
               sleep "$((attempt * 10))"
             done
-            if [ "${acquired}" -ne 1 ]; then
-              echo "RFV-3B acquisition exhausted 3 bounded attempts"
-              exit 2
+
+            if [ "${acquired}" -eq 1 ]; then
+              python -m engine.regression.rfv2_manifest_assembler \
+                --records-dir "${RFV_ROOT}/records" \
+                --manifest-out "${RFV_ROOT}/out/qualification-manifest.json" \
+                --audit-out "${RFV_ROOT}/out/qualification-audit.json" \
+                --require-complete
+
+              python -m engine.regression.rfv2_live_bundle \
+                --storage-root "${RFV_ROOT}/storage" \
+                --download-root "${RFV_ROOT}/downloads" \
+                --records-dir "${RFV_ROOT}/records" \
+                --manifest "${RFV_ROOT}/out/qualification-manifest.json" \
+                --audit "${RFV_ROOT}/out/qualification-audit.json" \
+                --bundle-out "${RFV_ROOT}/out/rfv2-public-corpus.tar.gz" \
+                --checksums-out "${RFV_ROOT}/out/bundle-checksums.json"
+            else
+              echo "RFV-3B live provider unavailable; restoring verified immutable corpus"
+              python -m engine.regression.rfv2_immutable_fallback \
+                --out-dir "${RFV_ROOT}/out"
             fi
 
-            python -m engine.regression.rfv2_manifest_assembler \
-              --records-dir "${RFV_ROOT}/records" \
-              --manifest-out "${RFV_ROOT}/out/qualification-manifest.json" \
-              --audit-out "${RFV_ROOT}/out/qualification-audit.json" \
-              --require-complete
+            python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
 
-            python -m engine.regression.rfv2_live_bundle \
-              --storage-root "${RFV_ROOT}/storage" \
-              --download-root "${RFV_ROOT}/downloads" \
-              --records-dir "${RFV_ROOT}/records" \
-              --manifest "${RFV_ROOT}/out/qualification-manifest.json" \
-              --audit "${RFV_ROOT}/out/qualification-audit.json" \
-              --bundle-out "${RFV_ROOT}/out/rfv2-public-corpus.tar.gz" \
-              --checksums-out "${RFV_ROOT}/out/bundle-checksums.json"
+          out = Path(os.environ['RUNNER_TEMP']) / 'rfv3b-acquire' / 'out'
+          manifest = json.loads((out / 'qualification-manifest.json').read_text())
+          audit = json.loads((out / 'qualification-audit.json').read_text())
+          checksums = json.loads((out / 'bundle-checksums.json').read_text())
+          bundle = out / 'rfv2-public-corpus.tar.gz'
+          assert manifest['status'] == 'qualified'
+          assert manifest['qualified_case_count'] == 24
+          assert len(manifest['cases']) == 24
+          assert audit['complete'] is True
+          assert audit['missing_categories'] == []
+          assert checksums['qualified_case_count'] == 24
+          assert checksums['storage_mode'] == 'github_actions_immutable_artifact'
+          assert hashlib.sha256(bundle.read_bytes()).hexdigest() == checksums['bundle_sha256']
+          PY
           ) 2>&1 | tee "${RFV_ROOT}/out/acquisition.log"
           status=${PIPESTATUS[0]}
           if [ "${status}" -ne 0 ]; then
@@ -155,7 +184,8 @@ jobs:
           path: |
             ${{ runner.temp }}/rfv3b-acquire/out/acquisition.log
             ${{ runner.temp }}/rfv3b-acquire/out/failure-tail.log
-          if-no-files-found: error
+            ${{ runner.temp }}/rfv3b-acquire/out/fallback-provenance.json
+          if-no-files-found: warn
           retention-days: 14
           compression-level: 0
 
@@ -166,6 +196,7 @@ jobs:
           path: |
             ${{ runner.temp }}/rfv3b-acquire/out/rfv2-public-corpus.tar.gz
             ${{ runner.temp }}/rfv3b-acquire/out/bundle-checksums.json
+            ${{ runner.temp }}/rfv3b-acquire/out/fallback-provenance.json
           if-no-files-found: error
           retention-days: 14
           compression-level: 0
