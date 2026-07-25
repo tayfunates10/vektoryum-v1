@@ -1,9 +1,4 @@
-"""Compact renderer-native alpha geometry for RFV-3D2 support fallback.
-
-Repeated native-grid rectangles are defined once and referenced with short SVG
-IDs. This preserves exact alpha cells while keeping the unchanged
-TransformJournal byte, path and path-command limits authoritative.
-"""
+"""Compact, fail-closed alpha encodings used by the RFV-3D remediation chain."""
 from __future__ import annotations
 
 import copy
@@ -268,9 +263,8 @@ def _fit_single_primitive(
     residual = np.asarray(target, dtype=bool) & ~np.asarray(higher, dtype=bool)
     if not bool(residual.any()):
         return None
-    boxes = _candidate_boxes(target, residual)
     for kind, factory in (("rect", _rect_mask), ("ellipse", _ellipse_mask)):
-        for box in boxes:
+        for box in _candidate_boxes(target, residual):
             primitive = factory(target.shape, box)
             if np.array_equal(primitive | higher, target):
                 return kind, box
@@ -281,12 +275,10 @@ def _primitive_layers(alpha: np.ndarray) -> list[tuple[int, str, tuple[int, int,
     levels = sorted(int(value) for value in np.unique(alpha) if int(value) > 0)
     if len(levels) < 2 or len(levels) > 4:
         return None
-    layers: list[tuple[int, str, tuple[int, int, int, int]]] = []
     alpha_i = np.asarray(alpha, dtype=np.uint8)
+    layers: list[tuple[int, str, tuple[int, int, int, int]]] = []
     for level in levels:
-        target = alpha_i >= level
-        higher = alpha_i > level
-        fitted = _fit_single_primitive(target, higher)
+        fitted = _fit_single_primitive(alpha_i >= level, alpha_i > level)
         if fitted is None:
             return None
         kind, box = fitted
@@ -392,11 +384,7 @@ def _build_primitive_mask_tree(
 
     layer = ET.SubElement(root, qname("g"))
     tag_transform_node(layer, ROLE_MASK_APPLICATION, transaction_id)
-    ET.SubElement(
-        layer,
-        qname("use"),
-        {"href": f"#{paint_id}", "mask": f"url(#{mask_id})"},
-    )
+    ET.SubElement(layer, qname("use"), {"href": f"#{paint_id}", "mask": f"url(#{mask_id})"})
     return root, {
         "primitive_count": int(len(layers)),
         "primitive_kinds": [kind for _level, kind, _box in layers],
@@ -447,9 +435,7 @@ def _apply_compact_primitive_alpha(
     parent_sha = hashlib.sha256(before_bytes).hexdigest()
     alpha_sha = hashlib.sha256(np.ascontiguousarray(alpha).tobytes()).hexdigest()
     transaction_id = alpha_transaction_id(parent_sha, alpha_sha, mode, "primitive")
-    candidate_root, geometry = _build_primitive_mask_tree(
-        original_root, alpha, layers, transaction_id
-    )
+    candidate_root, geometry = _build_primitive_mask_tree(original_root, alpha, layers, transaction_id)
     temporary = _write_tree_to_temp(candidate_root, target)
     try:
         limits = _journal_limits(original_root, before_size)
@@ -462,9 +448,7 @@ def _apply_compact_primitive_alpha(
         with Image.open(source) as source_image:
             source_size = source_image.size
         source_full = _rgba_from_source_at_size(source, source_size)
-        validation = validate_alpha_reconstruction_contract(
-            temporary, source_full, mode, parent_counts
-        )
+        validation = validate_alpha_reconstruction_contract(temporary, source_full, mode, parent_counts)
         os.replace(temporary, target)
         temporary = None
     finally:
@@ -521,6 +505,179 @@ def make_compact_primitive_alpha_first(
     return primitive_first
 
 
+def _signed_area(points: list[tuple[int, int]]) -> float:
+    return 0.5 * sum(
+        points[index][0] * points[(index + 1) % len(points)][1]
+        - points[(index + 1) % len(points)][0] * points[index][1]
+        for index in range(len(points))
+    )
+
+
+def _simplify_loop(points: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    result = list(points)
+    changed = True
+    while changed and len(result) >= 3:
+        changed = False
+        keep: list[tuple[int, int]] = []
+        count = len(result)
+        for index, current in enumerate(result):
+            previous = result[(index - 1) % count]
+            following = result[(index + 1) % count]
+            if (
+                previous[0] == current[0] == following[0]
+                or previous[1] == current[1] == following[1]
+            ):
+                changed = True
+                continue
+            keep.append(current)
+        if len(keep) < 3:
+            break
+        result = keep
+    return result
+
+
+def _union_polygon_points(
+    rectangles: list[tuple[int, int, int, int]],
+    width: int,
+    height: int,
+) -> str | None:
+    """Return one even-odd polygon walk for a small integer rectangle union."""
+    if width <= 0 or height <= 0 or max(width, height) > 512:
+        return None
+    mask = np.zeros((height, width), dtype=bool)
+    for x, y, rect_width, rect_height in rectangles:
+        if (
+            x < 0
+            or y < 0
+            or rect_width <= 0
+            or rect_height <= 0
+            or x + rect_width > width
+            or y + rect_height > height
+        ):
+            return None
+        mask[y : y + rect_height, x : x + rect_width] = True
+    if not bool(mask.any()):
+        return None
+
+    adjacency: dict[tuple[int, int], list[tuple[int, int]]] = {}
+
+    def add(start: tuple[int, int], end: tuple[int, int]) -> None:
+        adjacency.setdefault(start, []).append(end)
+
+    ys, xs = np.nonzero(mask)
+    for y, x in zip(ys.tolist(), xs.tolist()):
+        if y == 0 or not mask[y - 1, x]:
+            add((x, y), (x + 1, y))
+        if x == width - 1 or not mask[y, x + 1]:
+            add((x + 1, y), (x + 1, y + 1))
+        if y == height - 1 or not mask[y + 1, x]:
+            add((x + 1, y + 1), (x, y + 1))
+        if x == 0 or not mask[y, x - 1]:
+            add((x, y + 1), (x, y))
+
+    if any(len(ends) != 1 for ends in adjacency.values()):
+        return None
+    loops: list[list[tuple[int, int]]] = []
+    while adjacency:
+        start = min(adjacency)
+        current = start
+        loop = [start]
+        while True:
+            next_point = adjacency.pop(current)[0]
+            current = next_point
+            if current == start:
+                break
+            if current not in adjacency:
+                return None
+            loop.append(current)
+        simplified = _simplify_loop(loop)
+        if len(simplified) < 3:
+            return None
+        loops.append(simplified)
+    loops.sort(key=lambda loop: (-abs(_signed_area(loop)), loop[0][1], loop[0][0]))
+
+    walk: list[tuple[int, int]] = [loops[0][0]]
+    starts: list[tuple[int, int]] = []
+    for index, loop in enumerate(loops):
+        start = loop[0]
+        if index:
+            walk.append(start)
+        starts.append(start)
+        walk.extend(loop[1:])
+        walk.append(start)
+    walk.extend(reversed(starts[:-1]))
+    return " ".join(f"{x},{y}" for x, y in walk)
+
+
+def _compact_complex_clip(root: ET.Element) -> int:
+    """Compact verbose binary clips without adding paths or changing artwork d."""
+    _view_x, _view_y, view_width, view_height = _viewbox(root)
+    width = int(round(view_width))
+    height = int(round(view_height))
+    if abs(view_width - width) > 1e-9 or abs(view_height - height) > 1e-9:
+        return 0
+
+    clip = next(
+        (
+            element
+            for element in root.iter()
+            if _local_name(str(element.tag)).lower() == "clippath"
+            and element.get("id") == "vektoryum-source-alpha"
+        ),
+        None,
+    )
+    if clip is None or clip.get("transform"):
+        return 0
+    children = list(clip)
+    if len(children) < 8 or any(_local_name(str(child.tag)).lower() != "rect" for child in children):
+        return 0
+
+    rectangles: list[tuple[int, int, int, int]] = []
+    try:
+        for child in children:
+            values = tuple(
+                int(str(child.get(name, "0")))
+                for name in ("x", "y", "width", "height")
+            )
+            rectangles.append(values)
+    except ValueError:
+        return 0
+    points = _union_polygon_points(rectangles, width, height)
+    if not points:
+        return 0
+
+    qname = lambda name: f"{{{_SVG_NS}}}{name}"
+    for child in children:
+        clip.remove(child)
+    ET.SubElement(clip, qname("polygon"), {"points": points, "fill-rule": "evenodd"})
+    if clip.get("clipPathUnits") == "userSpaceOnUse":
+        clip.attrib.pop("clipPathUnits", None)
+
+    used_ids = {
+        str(element.get("id"))
+        for element in root.iter()
+        if element is not clip and element.get("id")
+    }
+    short_id = "a"
+    while short_id in used_ids:
+        short_id += "a"
+    old_id = str(clip.get("id"))
+    clip.set("id", short_id)
+    old_reference = f"url(#{old_id})"
+    new_reference = f"url(#{short_id})"
+    for element in root.iter():
+        if element.get("clip-path") == old_reference:
+            element.set("clip-path", new_reference)
+        element.attrib.pop("data-vektoryum-source-alpha", None)
+        if element.text is not None and not element.text.strip():
+            element.text = None
+        if element.tail is not None and not element.tail.strip():
+            element.tail = None
+    if root.get("version") == "1.1":
+        root.attrib.pop("version", None)
+    return len(rectangles)
+
+
 def _compact_direct_artifact(
     original_apply: Callable[[Path, Path, str], dict[str, Any]],
 ) -> Callable[[Path, Path, str], dict[str, Any]]:
@@ -551,12 +708,15 @@ def _compact_direct_artifact(
                         removed += 1
                     else:
                         seen_diagnostics.add(marker)
-            if removed == 0:
+            compacted_rectangles = _compact_complex_clip(root)
+            if removed == 0 and compacted_rectangles == 0:
                 return report
+
+            ET.register_namespace("", _SVG_NS)
             candidate = ET.tostring(
                 root,
                 encoding="utf-8",
-                xml_declaration=True,
+                xml_declaration=compacted_rectangles == 0,
                 short_empty_elements=True,
             )
             if len(candidate) >= len(accepted_bytes):
@@ -567,7 +727,7 @@ def _compact_direct_artifact(
                 with Image.open(source) as source_image:
                     source_size = source_image.size
                 source_full = _rgba_from_source_at_size(source, source_size)
-                validate_alpha_reconstruction_contract(
+                validation = validate_alpha_reconstruction_contract(
                     temporary, source_full, mode, parent_counts
                 )
                 os.replace(temporary, target)
@@ -578,9 +738,11 @@ def _compact_direct_artifact(
             return report
 
         result = dict(report)
+        result.update(validation)
         result["after_byte_size"] = int(target.stat().st_size)
         result["after_sha256"] = hashlib.sha256(target.read_bytes()).hexdigest()
         result["direct_diagnostic_attributes_removed"] = int(removed)
+        result["complex_clip_rectangles_compacted"] = int(compacted_rectangles)
         result["direct_artifact_compacted"] = True
         return result
 
