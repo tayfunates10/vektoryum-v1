@@ -69,12 +69,12 @@ def _openclipart_source_page_candidates(case: dict[str, Any]) -> list[str]:
     source_page = case.get("source_page_url")
     if not isinstance(source_page, str) or not source_page:
         raise public_acquire.PublicSourceError("missing Openclipart source page")
-    candidates = [source_page]
     canonical = _OPENCLIPART_CANONICAL_SOURCE_PAGES.get(
         str(case.get("provider_asset_id") or "")
     )
-    if canonical and canonical not in candidates:
-        candidates.append(canonical)
+    candidates = [canonical] if canonical else []
+    if source_page not in candidates:
+        candidates.append(source_page)
     return candidates
 
 
