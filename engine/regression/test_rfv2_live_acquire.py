@@ -33,6 +33,10 @@ class RFV2LiveAcquireTests(unittest.TestCase):
             "asset_url": "https://openclipart.org/image/2000px/345253",
             "acquisition_profile": "openclipart_png",
         }
+        self.canonical = (
+            "https://openclipart.org/detail/345253/"
+            "my-pronouns-are-custom-lgbt-orange-square-badge"
+        )
 
     def test_extracts_current_png_from_reviewed_source_page(self):
         page = b'''<html><head>
@@ -60,7 +64,7 @@ class RFV2LiveAcquireTests(unittest.TestCase):
         def fetcher(url, allowed_hosts, max_bytes):
             calls.append(url)
             self.assertEqual(allowed_hosts, {"openclipart.org", "www.loc.gov", "tile.loc.gov", "cdn.loc.gov"})
-            if url == self.case["source_page_url"]:
+            if url == self.canonical:
                 return page, url, "text/html"
             if url == current:
                 return png_bytes(), url, "image/png"
@@ -68,13 +72,9 @@ class RFV2LiveAcquireTests(unittest.TestCase):
 
         resolved = resolve_openclipart_asset_url(self.case, self.manifest, fetcher=fetcher)
         self.assertEqual(resolved, current)
-        self.assertEqual(calls[:2], [self.case["source_page_url"], current])
+        self.assertEqual(calls[:2], [self.canonical, current])
 
-    def test_uses_identity_bound_canonical_page_when_short_route_fails(self):
-        canonical = (
-            "https://openclipart.org/detail/345253/"
-            "my-pronouns-are-custom-lgbt-orange-square-badge"
-        )
+    def test_falls_back_to_reviewed_short_page_when_canonical_route_fails(self):
         current = "https://openclipart.org/image/800px/svg_to_png/345253/orange-square.png"
         page = f'<meta property="og:image" content="{current}">'.encode()
         calls = []
@@ -82,17 +82,17 @@ class RFV2LiveAcquireTests(unittest.TestCase):
         def fetcher(url, allowed_hosts, max_bytes):
             calls.append(url)
             self.assertEqual(allowed_hosts, {"openclipart.org", "www.loc.gov", "tile.loc.gov", "cdn.loc.gov"})
+            if url == self.canonical:
+                raise PublicSourceError("simulated canonical-route timeout")
             if url == self.case["source_page_url"]:
-                raise PublicSourceError("simulated short-route timeout")
-            if url == canonical:
-                return page, canonical, "text/html"
+                return page, url, "text/html"
             if url == current:
                 return png_bytes(), current, "image/png"
             raise PublicSourceError("unexpected URL")
 
         resolved = resolve_openclipart_asset_url(self.case, self.manifest, fetcher=fetcher)
         self.assertEqual(resolved, current)
-        self.assertEqual(calls, [self.case["source_page_url"], canonical, current])
+        self.assertEqual(calls, [self.canonical, self.case["source_page_url"], current])
 
     def test_transparent_profile_requires_actual_alpha(self):
         case = dict(self.case, acquisition_profile="openclipart_transparent_png")
@@ -101,7 +101,7 @@ class RFV2LiveAcquireTests(unittest.TestCase):
         page = f'<img src="{opaque}"><img data-src="{transparent}">'.encode()
 
         def fetcher(url, allowed_hosts, max_bytes):
-            if url == case["source_page_url"]:
+            if url == self.canonical:
                 return page, url, "text/html"
             if url == opaque:
                 return png_bytes(transparent=False), url, "image/png"
@@ -116,7 +116,7 @@ class RFV2LiveAcquireTests(unittest.TestCase):
         page = b'<img src="https://evil.example/image/345253.png">'
 
         def fetcher(url, allowed_hosts, max_bytes):
-            if url == self.case["source_page_url"]:
+            if url == self.canonical:
                 return page, url, "text/html"
             raise PublicSourceError("HTTP 404")
 
