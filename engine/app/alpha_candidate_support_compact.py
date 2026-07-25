@@ -192,10 +192,6 @@ def build_compact_native_use_reconstruction_tree(
     }
 
 
-# ---------------------------------------------------------------------------
-# RFV-3D3 benchmark-safe compact finalization
-# ---------------------------------------------------------------------------
-
 _DIRECT_DIAGNOSTIC_ATTRIBUTES = {
     "data-vektoryum-source-alpha-archive",
     "data-vektoryum-source-alpha-direct",
@@ -245,6 +241,27 @@ def _candidate_boxes(
             candidate = (x0 - delta, y0 - delta, x1 + delta, y1 + delta)
             if candidate not in boxes:
                 boxes.append(candidate)
+
+    # A higher-alpha rectangle can cover the top and bottom of an underlying
+    # circle/ellipse, so the residual bounding box loses those extrema. Recover
+    # the symmetric square candidate from the still-visible horizontal span and
+    # the residual centroid; exact pixel equality below remains authoritative.
+    ys, xs = np.nonzero(residual)
+    if len(xs):
+        residual_box = _bbox(residual)
+        assert residual_box is not None
+        x0, y0, x1, y1 = residual_box
+        center_x = int(round(float(xs.mean())))
+        center_y = int(round(float(ys.mean())))
+        radius_x = (x1 - x0) / 2.0
+        radius_y = (y1 - y0) / 2.0
+        inferred = [
+            (x0, int(round(center_y - radius_x)), x1, int(round(center_y + radius_x))),
+            (int(round(center_x - radius_y)), y0, int(round(center_x + radius_y)), y1),
+        ]
+        for candidate in inferred:
+            if candidate not in boxes:
+                boxes.append(candidate)
     return boxes
 
 
@@ -287,13 +304,13 @@ def _build_primitive_mask_tree(
     layers: list[tuple[int, str, tuple[int, int, int, int]]],
     transaction_id: str,
 ) -> tuple[ET.Element, dict[str, Any]]:
-    from app.alpha_artwork_identity import (  # noqa: PLC0415
+    from app.alpha_artwork_identity import (
         ROLE_ARTWORK_CONTAINER,
         ROLE_MASK_APPLICATION,
         ROLE_MASK_DEFINITION,
         tag_transform_node,
     )
-    from app.alpha_candidate_knockout import _unique_id  # noqa: PLC0415
+    from app.alpha_candidate_knockout import _unique_id
 
     root = copy.deepcopy(original_root)
     qname = lambda name: f"{{{_SVG_NS}}}{name}"
@@ -396,18 +413,12 @@ def _apply_compact_primitive_alpha(
     source_path: Path,
     mode: str,
 ) -> dict[str, Any]:
-    from PIL import Image  # noqa: PLC0415
-    from app.alpha_artwork_identity import alpha_transaction_id  # noqa: PLC0415
-    from app.alpha_candidate_knockout import (  # noqa: PLC0415
-        _path_node_counts,
-        _render_root,
-        _write_tree_to_temp,
-    )
-    from app.alpha_candidate_validation import (  # noqa: PLC0415
-        validate_alpha_reconstruction_contract,
-    )
-    from app.alpha_mask_budget import _journal_limits  # noqa: PLC0415
-    from app.alpha_preprocess import _rgba_from_source_at_size  # noqa: PLC0415
+    from PIL import Image
+    from app.alpha_artwork_identity import alpha_transaction_id
+    from app.alpha_candidate_knockout import _path_node_counts, _render_root, _write_tree_to_temp
+    from app.alpha_candidate_validation import validate_alpha_reconstruction_contract
+    from app.alpha_mask_budget import _journal_limits
+    from app.alpha_preprocess import _rgba_from_source_at_size
 
     target = Path(svg_path)
     source = Path(source_path)
@@ -496,7 +507,7 @@ def make_compact_primitive_alpha_first(
         parent = target.read_bytes()
         try:
             return _apply_compact_primitive_alpha(target, Path(source_path), mode)
-        except Exception as exc:  # noqa: BLE001 - existing guarded chain is authoritative
+        except Exception as exc:
             if target.read_bytes() != parent:
                 target.write_bytes(parent)
             report = guarded_builder(target, Path(source_path), mode)
@@ -517,12 +528,10 @@ def _compact_direct_artifact(
 ) -> Callable[[Path, Path, str], dict[str, Any]]:
     @wraps(original_apply)
     def compacted(svg_path: Path, source_path: Path, mode: str) -> dict[str, Any]:
-        from PIL import Image  # noqa: PLC0415
-        from app.alpha_candidate_knockout import _path_node_counts  # noqa: PLC0415
-        from app.alpha_candidate_validation import (  # noqa: PLC0415
-            validate_alpha_reconstruction_contract,
-        )
-        from app.alpha_preprocess import _rgba_from_source_at_size  # noqa: PLC0415
+        from PIL import Image
+        from app.alpha_candidate_knockout import _path_node_counts
+        from app.alpha_candidate_validation import validate_alpha_reconstruction_contract
+        from app.alpha_preprocess import _rgba_from_source_at_size
 
         target = Path(svg_path)
         source = Path(source_path)
@@ -582,11 +591,8 @@ def _compact_direct_artifact(
 
 
 def _install_runtime_compactors() -> None:
-    # ``app.__init__`` imports this module before it imports the adaptive factory.
-    # Patch the factory, not the already-built chain, so the primitive candidate is
-    # tried outside the rect/path adapter and its report cannot be reinterpreted.
-    from app import alpha_candidate_direct as direct_module  # noqa: PLC0415
-    from app import alpha_mask_adaptive as adaptive_module  # noqa: PLC0415
+    from app import alpha_candidate_direct as direct_module
+    from app import alpha_mask_adaptive as adaptive_module
 
     direct_apply = direct_module.apply_direct_element_alpha
     if not getattr(direct_apply, "__vektoryum_direct_artifact_compacted__", False):
