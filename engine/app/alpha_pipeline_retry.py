@@ -101,13 +101,15 @@ def _has_exact_dense_partial_alpha(source_path: Path, trace_mode: str) -> bool:
     This is not a filename, mode-quality or heuristic shortcut. The same source
     alpha plane, quantizer and geometry planner used by the publishing encoder are
     executed before tracing. Any parse, size, level or polygon rejection preserves
-    the normal legacy-first behavior.
+    the normal legacy-first behavior. ``auto`` is eligible because its inner
+    analyzer still resolves to one of the existing alpha-mask execution modes
+    before finalization; all publishing gates remain authoritative there.
     """
     try:
         from app.alpha_mask_adaptive import _dense_polygon_plan  # noqa: PLC0415
         from app.alpha_svg_mask import _ALPHA_MASK_MODES, _quantize_alpha  # noqa: PLC0415
 
-        if trace_mode not in _ALPHA_MASK_MODES:
+        if trace_mode != "auto" and trace_mode not in _ALPHA_MASK_MODES:
             return False
         with Image.open(Path(source_path)) as source:
             alpha = np.asarray(
