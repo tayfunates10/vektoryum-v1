@@ -124,6 +124,7 @@ from app import alpha_svg_mask as _alpha_svg_mask
 from app.alpha_candidate_identity import (
     wrap_run_pipeline_preserving_candidate_identity,
 )
+from app.alpha_parent_selection import wrap_run_pipeline_selecting_alpha_parent
 from app import alpha_candidate_knockout as _alpha_candidate_knockout
 from app.alpha_candidate_knockout import (
     make_candidate_geometry_knockout_fallback,
@@ -176,6 +177,12 @@ _alpha_svg_mask.apply_source_alpha_mask = make_candidate_support_reconstruction_
             )
         )
     )
+)
+# For low-level source alpha, trial at most four already-produced parents through
+# the real guarded alpha transform. A leaner candidate is selected only within the
+# strict fidelity/edge margin; the normal journaled finalization still decides.
+_pipeline.run_pipeline = wrap_run_pipeline_selecting_alpha_parent(
+    _pipeline.run_pipeline
 )
 _pipeline.run_pipeline = _alpha_svg_mask.wrap_run_pipeline_with_alpha_mask(
     _pipeline.run_pipeline
