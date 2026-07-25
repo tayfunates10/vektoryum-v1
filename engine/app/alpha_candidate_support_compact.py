@@ -216,7 +216,7 @@ def _rect_mask(shape: tuple[int, int], box: tuple[int, int, int, int]) -> np.nda
 
 
 def _ellipse_mask(shape: tuple[int, int], box: tuple[int, int, int, int]) -> np.ndarray:
-    from PIL import Image, ImageDraw  # noqa: PLC0415
+    from PIL import Image, ImageDraw
 
     height, width = shape
     x0, y0, x1, y1 = box
@@ -242,10 +242,6 @@ def _candidate_boxes(
             if candidate not in boxes:
                 boxes.append(candidate)
 
-    # A higher-alpha rectangle can cover the top and bottom of an underlying
-    # circle/ellipse, so the residual bounding box loses those extrema. Recover
-    # the symmetric square candidate from the still-visible horizontal span and
-    # the residual centroid; exact pixel equality below remains authoritative.
     ys, xs = np.nonzero(residual)
     if len(xs):
         residual_box = _bbox(residual)
@@ -283,7 +279,7 @@ def _fit_single_primitive(
 
 def _primitive_layers(alpha: np.ndarray) -> list[tuple[int, str, tuple[int, int, int, int]]] | None:
     levels = sorted(int(value) for value in np.unique(alpha) if int(value) > 0)
-    if not levels or len(levels) > 4:
+    if len(levels) < 2 or len(levels) > 4:
         return None
     layers: list[tuple[int, str, tuple[int, int, int, int]]] = []
     alpha_i = np.asarray(alpha, dtype=np.uint8)
@@ -417,11 +413,13 @@ def _apply_compact_primitive_alpha(
     from app.alpha_artwork_identity import alpha_transaction_id
     from app.alpha_candidate_knockout import _path_node_counts, _render_root, _write_tree_to_temp
     from app.alpha_candidate_validation import validate_alpha_reconstruction_contract
-    from app.alpha_mask_budget import _journal_limits
+    from app.alpha_mask_budget import _journal_limits, current_alpha_mask_encoding
     from app.alpha_preprocess import _rgba_from_source_at_size
 
     target = Path(svg_path)
     source = Path(source_path)
+    if current_alpha_mask_encoding() != "rect":
+        raise RuntimeError("source_alpha_primitive_non_rect_context")
     before_bytes = target.read_bytes()
     before_size = len(before_bytes)
     original_root = ET.fromstring(before_bytes)
