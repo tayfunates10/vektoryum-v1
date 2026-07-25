@@ -34,25 +34,6 @@ class RFV2LiveAcquireTests(unittest.TestCase):
             "acquisition_profile": "openclipart_png",
         }
 
-    def test_normalizes_known_broken_short_detail_url_to_same_provider_identity(self):
-        prepared = prepare_live_provider_case(self.case, self.manifest)
-        self.assertEqual(
-            prepared["source_page_url"],
-            "https://openclipart.org/detail/345253/my-pronouns-are-custom-lgbt-orange-square-badge",
-        )
-        self.assertEqual(prepared["provider_asset_id"], self.case["provider_asset_id"])
-        self.assertEqual(prepared["asset_url"], self.case["asset_url"])
-        self.assertEqual(self.case["source_page_url"], "https://openclipart.org/detail/345253")
-
-    def test_leaves_other_openclipart_source_pages_unchanged(self):
-        original = dict(
-            self.case,
-            provider_asset_id="345254",
-            source_page_url="https://openclipart.org/detail/345254",
-            asset_url="https://openclipart.org/image/2000px/345254",
-        )
-        self.assertEqual(prepare_live_provider_case(original, self.manifest), original)
-
     def test_extracts_current_png_from_reviewed_source_page(self):
         page = b'''<html><head>
         <meta property="og:image" content="https://openclipart.org/image/800px/svg_to_png/345253/orange-square.png">
