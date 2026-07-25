@@ -5,6 +5,9 @@ import unittest
 from dataclasses import dataclass
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+ENGINE_ROOT = REPO_ROOT / "engine"
+
 
 @dataclass(frozen=True)
 class Artifact:
@@ -36,8 +39,10 @@ def cleanup_candidates(artifacts: list[Artifact]) -> list[Artifact]:
 class RQ3ResilienceContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.manifest = json.loads(Path("engine/regression/rq3_resilience_manifest.json").read_text())
-        cls.roadmap = json.loads(Path("docs/release_qualification_roadmap.json").read_text())
+        manifest_path = ENGINE_ROOT / "regression" / "rq3_resilience_manifest.json"
+        roadmap_path = REPO_ROOT / "docs" / "release_qualification_roadmap.json"
+        cls.manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        cls.roadmap = json.loads(roadmap_path.read_text(encoding="utf-8"))
         cls.limits = cls.manifest["limits"]
 
     def test_manifest_is_finite_and_bounded(self) -> None:
@@ -101,7 +106,7 @@ class RQ3ResilienceContractTests(unittest.TestCase):
         statuses = [p["status"] for p in phases]
         self.assertEqual(statuses[:3], ["implemented"] * 3)
         self.assertIn(statuses[3], {"pending", "implemented"})
-        self.assertTrue(Path(phases[2]["evidence"]).is_file())
+        self.assertTrue((REPO_ROOT / phases[2]["evidence"]).is_file())
 
 
 if __name__ == "__main__":
