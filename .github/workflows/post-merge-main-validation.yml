@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/post-merge-main-validation.yml"
+      - "engine/pytest.ini"
   workflow_dispatch:
 
 permissions:
@@ -21,6 +22,7 @@ env:
   PYTHONHASHSEED: "0"
   VEKTORYUM_WORKERS: "1"
   EXPECTED_BASE_SHA: "8b4ac41ef627008931a5cd20389133cc78d8cdbe"
+  VALIDATION_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
 
 jobs:
   repository-inventory:
@@ -30,22 +32,21 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ env.VALIDATION_HEAD_SHA }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - name: Verify branch ancestry and collect dependency-free inventory
+      - name: Verify ancestry and write baseline report
         env:
           GH_TOKEN: ${{ github.token }}
           BASE_SHA: ${{ github.event.pull_request.base.sha || env.EXPECTED_BASE_SHA }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
           git merge-base --is-ancestor "${EXPECTED_BASE_SHA}" "${BASE_SHA}"
-          test "$(git rev-parse HEAD)" = "${HEAD_SHA}"
+          test "$(git rev-parse HEAD)" = "${VALIDATION_HEAD_SHA}"
           mkdir -p validation_artifacts
           python - <<'PY'
           import ast
@@ -59,11 +60,10 @@ jobs:
 
           repo = os.environ["GITHUB_REPOSITORY"]
           token = os.environ["GH_TOKEN"]
-          api = "https://api.github.com"
 
-          def get_json(path: str):
+          def github_json(path: str):
               request = urllib.request.Request(
-                  api + path,
+                  "https://api.github.com" + path,
                   headers={
                       "Authorization": f"Bearer {token}",
                       "Accept": "application/vnd.github+json",
@@ -74,7 +74,7 @@ jobs:
                   return json.load(response)
 
           test_files = sorted(Path("engine").rglob("test_*.py"))
-          test_count = 0
+          test_functions = 0
           parse_failures = []
           for path in test_files:
               try:
@@ -82,31 +82,31 @@ jobs:
               except Exception as exc:
                   parse_failures.append({"path": str(path), "error": type(exc).__name__})
                   continue
-              for node in ast.walk(tree):
-                  if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test_"):
-                      test_count += 1
+              test_functions += sum(
+                  1
+                  for node in ast.walk(tree)
+                  if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                  and node.name.startswith("test_")
+              )
 
-          pulls = get_json(f"/repos/{repo}/pulls?state=open&per_page=100")
-          issues = get_json(f"/repos/{repo}/issues?state=open&per_page=100")
-          open_issue_count = sum(1 for item in issues if "pull_request" not in item)
-          issue_97 = get_json(f"/repos/{repo}/issues/97")
-          workflow_count = len(list(Path(".github/workflows").glob("*.y*ml")))
-
+          pulls = github_json(f"/repos/{repo}/pulls?state=open&per_page=100")
+          issues = github_json(f"/repos/{repo}/issues?state=open&per_page=100")
+          issue_97 = github_json(f"/repos/{repo}/issues/97")
           report = {
-              "schema": "vektoryum-post-merge-baseline-v2",
+              "schema": "vektoryum-post-merge-baseline-v3",
               "repository": repo,
               "main_sha": os.environ["BASE_SHA"],
-              "validation_head_sha": os.environ["HEAD_SHA"],
+              "validation_head_sha": os.environ["VALIDATION_HEAD_SHA"],
               "expected_ancestor_sha": os.environ["EXPECTED_BASE_SHA"],
               "python_version": platform.python_version(),
               "node_version": subprocess.check_output(["node", "--version"], text=True).strip(),
               "docker_version": subprocess.check_output(["docker", "--version"], text=True).strip(),
               "test_file_count": len(test_files),
-              "static_test_function_count": test_count,
+              "static_test_function_count": test_functions,
               "test_parse_failures": parse_failures,
-              "workflow_count": workflow_count,
+              "workflow_count": len(list(Path(".github/workflows").glob("*.y*ml"))),
               "open_pr_count": len(pulls),
-              "open_issue_count": open_issue_count,
+              "open_issue_count": sum(1 for item in issues if "pull_request" not in item),
               "issue_97_state": issue_97["state"],
               "release_state": "RFV-3 pending / NO-GO / rfv4_allowed=false",
               "known_blockers": [
@@ -120,28 +120,24 @@ jobs:
                   "agent/rfv-3d4-controlled-remeasurement",
                   "agent/repository-ci-hardening",
               ],
-              "timestamp_utc": datetime.now(timezone.utc).isoformat(),
               "workflow_run_id": os.environ["GITHUB_RUN_ID"],
+              "timestamp_utc": datetime.now(timezone.utc).isoformat(),
           }
           Path("validation_artifacts/baseline-report.json").write_text(
               json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
           )
           Path("validation_artifacts/baseline-report.md").write_text(
               "# BASELINE REPORT\n\n"
-              f"- repository: {report['repository']}\n"
-              f"- main_sha: {report['main_sha']}\n"
-              f"- validation_head_sha: {report['validation_head_sha']}\n"
-              f"- python_version: {report['python_version']}\n"
-              f"- node_version: {report['node_version']}\n"
-              f"- docker_version: {report['docker_version']}\n"
-              f"- test_file_count: {report['test_file_count']}\n"
-              f"- static_test_function_count: {report['static_test_function_count']}\n"
-              f"- workflow_count: {report['workflow_count']}\n"
-              f"- open_pr_count: {report['open_pr_count']}\n"
-              f"- open_issue_count: {report['open_issue_count']}\n"
-              f"- release_state: {report['release_state']}\n"
-              f"- known_blockers: {', '.join(report['known_blockers'])}\n"
-              f"- planned_branches: {', '.join(report['planned_branches'])}\n",
+              + "\n".join(
+                  f"- {key}: {report[key]}"
+                  for key in (
+                      "repository", "main_sha", "validation_head_sha", "python_version",
+                      "node_version", "docker_version", "test_file_count",
+                      "static_test_function_count", "workflow_count", "open_pr_count",
+                      "open_issue_count", "release_state"
+                  )
+              )
+              + "\n",
               encoding="utf-8",
           )
           if parse_failures:
@@ -164,7 +160,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ env.VALIDATION_HEAD_SHA }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -190,7 +186,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ env.VALIDATION_HEAD_SHA }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -233,7 +229,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ env.VALIDATION_HEAD_SHA }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -246,7 +242,7 @@ jobs:
         working-directory: engine
         env:
           VEKTORYUM_SERVICE_MODE: beta
-          VEKTORYUM_SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+          VEKTORYUM_SOURCE_REVISION: ${{ env.VALIDATION_HEAD_SHA }}
         run: python -m pytest -q test_platform_operations.py test_platform_security.py test_runtime_main.py
       - name: RFV-2 acquisition and immutable fallback contracts
         run: >-
@@ -264,7 +260,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ env.VALIDATION_HEAD_SHA }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -296,33 +292,27 @@ jobs:
                   encoding="utf-8",
               )
               outputs, errors = export_all(
-                  source,
-                  root,
-                  "smoke",
-                  candidate_id="post-merge-smoke",
+                  source, root, "smoke", candidate_id="post-merge-smoke",
                   formats=("svg", "pdf", "eps", "dxf"),
               )
               assert errors == {}, errors
               assert set(outputs) == {"svg", "pdf", "eps", "dxf"}
-              for path in map(Path, outputs.values()):
-                  assert path.exists() and path.stat().st_size > 0, path
-              svg_path = Path(outputs["svg"])
-              svg_root = ET.parse(svg_path).getroot()
+              assert all(Path(path).exists() and Path(path).stat().st_size > 0 for path in outputs.values())
+              svg_root = ET.parse(outputs["svg"]).getroot()
               assert svg_root.get("viewBox") == "0 0 320 180"
-              assert not any(node.tag.split("}")[-1] == "image" for node in svg_root.iter())
               assert svg_root.get("data-candidate") == "post-merge-smoke"
+              assert not any(node.tag.split("}")[-1] == "image" for node in svg_root.iter())
               pdf = fitz.open(outputs["pdf"])
               assert pdf.page_count >= 1
               pdf.close()
               assert Path(outputs["pdf"]).read_bytes().startswith(b"%PDF")
               assert Path(outputs["eps"]).read_bytes().startswith(b"%!PS")
-              dxf = ezdxf.readfile(outputs["dxf"])
-              assert len(list(dxf.modelspace())) >= 1
+              assert len(list(ezdxf.readfile(outputs["dxf"]).modelspace())) >= 1
           PY
 
   seed-benchmark:
     runs-on: ubuntu-latest
-    timeout-minutes: 70
+    timeout-minutes: 80
     defaults:
       run:
         working-directory: engine
@@ -330,7 +320,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ env.VALIDATION_HEAD_SHA }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -355,7 +345,7 @@ jobs:
           test_benchmark_quality_report.py
       - name: Generate same-run main baseline
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || env.EXPECTED_BASE_SHA }}
         run: |
           set -euo pipefail
           base_worktree="${RUNNER_TEMP}/vektoryum-main-baseline"
@@ -365,13 +355,20 @@ jobs:
           (
             cd "${base_worktree}/engine"
             python -m benchmark.seed_runner --output "${RUNNER_TEMP}/baseline-seed"
-            python -m benchmark.pipeline_smoke --output "${RUNNER_TEMP}/baseline-pipeline" --engine-version "${BASE_SHA}"
+            python -m benchmark.pipeline_smoke \
+              --output "${RUNNER_TEMP}/baseline-pipeline" \
+              --engine-version "${BASE_SHA}"
           )
       - name: Run head eight-category real pipeline benchmark
         run: |
+          test "$(git rev-parse HEAD)" = "${VALIDATION_HEAD_SHA}"
           python -m benchmark.seed_runner --output benchmark_artifacts
-          python -m benchmark.pipeline_smoke --output benchmark_artifacts/pipeline --engine-version "${GITHUB_SHA}"
-          python -m benchmark.quality_report --results benchmark_artifacts/pipeline/pipeline_results.json --output benchmark_artifacts/pipeline
+          python -m benchmark.pipeline_smoke \
+            --output benchmark_artifacts/pipeline \
+            --engine-version "${VALIDATION_HEAD_SHA}"
+          python -m benchmark.quality_report \
+            --results benchmark_artifacts/pipeline/pipeline_results.json \
+            --output benchmark_artifacts/pipeline
           python -m benchmark.release_gate \
             --current benchmark_artifacts/pipeline/pipeline_results.json \
             --baseline "${RUNNER_TEMP}/baseline-pipeline/pipeline_results.json" \
@@ -391,14 +388,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ env.VALIDATION_HEAD_SHA }}
       - name: Build production image
-        run: docker build -t vektoryum-post-merge:${GITHUB_SHA} .
+        run: docker build -t vektoryum-post-merge:${VALIDATION_HEAD_SHA} .
       - name: Verify production image contract
         run: |
           set -euo pipefail
-          test "$(docker image inspect vektoryum-post-merge:${GITHUB_SHA} --format '{{.Config.User}}')" = "appuser"
-          docker image inspect vektoryum-post-merge:${GITHUB_SHA} --format '{{range .Config.Env}}{{println .}}{{end}}' > /tmp/image-env
+          test "$(docker image inspect vektoryum-post-merge:${VALIDATION_HEAD_SHA} --format '{{.Config.User}}')" = "appuser"
+          docker image inspect vektoryum-post-merge:${VALIDATION_HEAD_SHA} --format '{{range .Config.Env}}{{println .}}{{end}}' > /tmp/image-env
           grep -qx 'VEKTORYUM_ENVIRONMENT=production' /tmp/image-env
           grep -qx 'VEKTORYUM_COOKIE_SECURE=1' /tmp/image-env
       - name: Start bounded container
@@ -406,8 +403,8 @@ jobs:
           docker run -d --name vektoryum-post-merge
           --memory 4g --cpus 2 --pids-limit 256
           -e VEKTORYUM_SERVICE_MODE=beta
-          -e VEKTORYUM_SOURCE_REVISION=${GITHUB_SHA}
-          -p 7860:7860 vektoryum-post-merge:${GITHUB_SHA}
+          -e VEKTORYUM_SOURCE_REVISION=${VALIDATION_HEAD_SHA}
+          -p 7860:7860 vektoryum-post-merge:${VALIDATION_HEAD_SHA}
       - name: Liveness readiness and HTTP security smoke
         run: |
           set -euo pipefail
@@ -420,7 +417,7 @@ jobs:
                   payload = json.load(response)
                   assert payload["revision"]
                   assert payload["status"] in {"ok", "ready"}
-                  headers = {k.lower(): v for k, v in response.headers.items()}
+                  headers = {key.lower(): value for key, value in response.headers.items()}
                   assert headers["x-content-type-options"] == "nosniff"
                   assert headers["x-frame-options"] in {"DENY", "SAMEORIGIN"}
                   assert headers["referrer-policy"]
@@ -462,7 +459,6 @@ jobs:
           EXPORT_SMOKE: ${{ needs.export-smoke.result }}
           SEED_BENCHMARK: ${{ needs.seed-benchmark.result }}
           DOCKER_SMOKE: ${{ needs.docker-production-smoke.result }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           BASE_SHA: ${{ github.event.pull_request.base.sha || env.EXPECTED_BASE_SHA }}
         run: |
           set -euo pipefail
@@ -483,11 +479,11 @@ jobs:
               "seed_benchmark": os.environ["SEED_BENCHMARK"],
               "docker_production_smoke": os.environ["DOCKER_SMOKE"],
           }
-          success = all(value == "success" for value in results.values())
+          success = all(status == "success" for status in results.values())
           payload = {
-              "schema": "vektoryum-post-merge-validation-decision-v2",
+              "schema": "vektoryum-post-merge-validation-decision-v3",
               "base_sha": os.environ["BASE_SHA"],
-              "head_sha": os.environ["HEAD_SHA"],
+              "head_sha": os.environ["VALIDATION_HEAD_SHA"],
               "workflow_run_id": os.environ["GITHUB_RUN_ID"],
               "timestamp_utc": datetime.now(timezone.utc).isoformat(),
               "jobs": results,
