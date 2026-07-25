@@ -173,8 +173,88 @@ from app.alpha_mask_adaptive import (
 )
 from app.alpha_mask_budget import wrap_apply_source_alpha_mask
 
+
+def _compact_inert_empty_path_paint(original_apply):
+    """Drop paint metadata from zero-command paths without changing path counts."""
+    if getattr(original_apply, "__vektoryum_empty_path_paint_compacted__", False):
+        return original_apply
+
+    @wraps(original_apply)
+    def compacted(svg_path, source_path, mode):
+        import hashlib
+        import os
+        import xml.etree.ElementTree as ET
+        from pathlib import Path
+
+        from PIL import Image
+
+        from app.alpha_candidate_knockout import _path_node_counts
+        from app.alpha_preprocess import _rgba_from_source_at_size
+
+        target = Path(svg_path)
+        source = Path(source_path)
+        parent_root = ET.fromstring(target.read_bytes())
+        parent_counts = _path_node_counts(parent_root)
+        report = original_apply(target, source, mode)
+        accepted_bytes = target.read_bytes()
+        try:
+            root = ET.fromstring(accepted_bytes)
+            removed = 0
+            for element in root.iter():
+                if (
+                    str(element.tag).rsplit("}", 1)[-1].lower() != "path"
+                    or str(element.get("d", "")).strip()
+                    or "fill" not in element.attrib
+                ):
+                    continue
+                element.attrib.pop("fill", None)
+                removed += 1
+            if removed == 0:
+                return report
+
+            ET.register_namespace("", "http://www.w3.org/2000/svg")
+            candidate = ET.tostring(
+                root,
+                encoding="utf-8",
+                xml_declaration=accepted_bytes.startswith(b"<?xml"),
+                short_empty_elements=True,
+            )
+            if len(candidate) >= len(accepted_bytes):
+                return report
+
+            temporary = target.parent / f".{target.name}.empty-path-compact.svg"
+            temporary.write_bytes(candidate)
+            try:
+                with Image.open(source) as source_image:
+                    source_size = source_image.size
+                source_full = _rgba_from_source_at_size(source, source_size)
+                validation = validate_alpha_reconstruction_contract(
+                    temporary,
+                    source_full,
+                    mode,
+                    parent_counts,
+                )
+                os.replace(temporary, target)
+            finally:
+                temporary.unlink(missing_ok=True)
+        except Exception:
+            target.write_bytes(accepted_bytes)
+            return report
+
+        result = dict(report)
+        result.update(validation)
+        result["after_byte_size"] = int(target.stat().st_size)
+        result["after_sha256"] = hashlib.sha256(target.read_bytes()).hexdigest()
+        result["empty_path_paint_attributes_removed"] = int(removed)
+        result["empty_path_artifact_compacted"] = True
+        return result
+
+    compacted.__vektoryum_empty_path_paint_compacted__ = True
+    return compacted
+
+
 # Bind the compact primitive before the guarded rect/path adapter. The final
-# compactor is deliberately outermost so a direct rejection followed by a clip
+# compactors are deliberately outermost so a direct rejection followed by a clip
 # fallback is still compacted and revalidated before publication.
 _adaptive_alpha_builder = make_compact_primitive_alpha_first(
     make_adaptive_apply_source_alpha_mask(_alpha_svg_mask.apply_source_alpha_mask)
@@ -186,8 +266,10 @@ _guarded_alpha_builder = make_candidate_support_reconstruction_fallback(
         )
     )
 )
-_alpha_svg_mask.apply_source_alpha_mask = _compact_direct_artifact(
-    make_direct_element_alpha_first(_guarded_alpha_builder)
+_alpha_svg_mask.apply_source_alpha_mask = _compact_inert_empty_path_paint(
+    _compact_direct_artifact(
+        make_direct_element_alpha_first(_guarded_alpha_builder)
+    )
 )
 
 # For low-level source alpha, trial at most four already-produced parents through
