@@ -40,6 +40,7 @@ from app.alpha_candidate_support import _PROTECTED_ROOT_TAGS, _SVG_NS, _strip_co
 _MIN_BINARY_ELLIPSE_IOU = 0.998
 _MAX_SOFT_PIXEL_FRACTION = 0.03
 _MIN_INNER_OPAQUE_FRACTION = 0.995
+_MIN_PARENT_SOURCE_SUPPORT_RECALL = 0.995
 
 
 def _bbox(mask: np.ndarray) -> tuple[int, int, int, int] | None:
@@ -249,17 +250,6 @@ def apply_soft_ellipse_alpha(
         raise RuntimeError("source_alpha_soft_ellipse_root_not_svg")
     parent_counts = _path_node_counts(original_root)
 
-    _vx, _vy, view_width, view_height = _viewbox(original_root)
-    eval_scale = min(1.0, 512.0 / float(max(view_width, view_height)))
-    eval_width = max(1, int(round(view_width * eval_scale)))
-    eval_height = max(1, int(round(view_height * eval_scale)))
-    collapsed = _render_root(original_root, eval_width, eval_height)
-    if collapsed is None:
-        raise RuntimeError("source_alpha_soft_ellipse_parent_render_unmeasured")
-    coverage = float(collapsed[:, :, 3].astype(np.float32).mean() / 255.0)
-    if coverage < 0.98:
-        raise RuntimeError("source_alpha_soft_ellipse_parent_not_collapsed")
-
     with Image.open(source) as source_image:
         source_size = source_image.size
     source_full = _rgba_from_source_at_size(source, source_size)
@@ -268,6 +258,28 @@ def apply_soft_ellipse_alpha(
     if fitted is None:
         raise RuntimeError("source_alpha_soft_ellipse_not_applicable")
     box, geometry, binary_overlap = fitted
+
+    _vx, _vy, view_width, view_height = _viewbox(original_root)
+    eval_scale = min(1.0, 512.0 / float(max(view_width, view_height)))
+    eval_width = max(1, int(round(view_width * eval_scale)))
+    eval_height = max(1, int(round(view_height * eval_scale)))
+    collapsed = _render_root(original_root, eval_width, eval_height)
+    if collapsed is None:
+        raise RuntimeError("source_alpha_soft_ellipse_parent_render_unmeasured")
+    source_eval = _rgba_from_source_at_size(source, (eval_width, eval_height))
+    source_support = np.asarray(source_eval[:, :, 3], dtype=np.uint8) >= 128
+    support_pixels = int(np.count_nonzero(source_support))
+    if support_pixels <= 0:
+        raise RuntimeError("source_alpha_soft_ellipse_source_support_empty")
+    parent_support = np.asarray(collapsed[:, :, 3], dtype=np.uint8) >= 128
+    support_recall = float(
+        np.count_nonzero(parent_support & source_support) / support_pixels
+    )
+    if support_recall < _MIN_PARENT_SOURCE_SUPPORT_RECALL:
+        raise RuntimeError(
+            "source_alpha_soft_ellipse_parent_source_support_recall_below_min:"
+            f"{support_recall:.6f}<{_MIN_PARENT_SOURCE_SUPPORT_RECALL}"
+        )
 
     parent_sha = hashlib.sha256(before_bytes).hexdigest()
     alpha_sha = hashlib.sha256(
@@ -322,6 +334,7 @@ def apply_soft_ellipse_alpha(
             float(radius_y),
         ],
         "soft_ellipse_binary_iou": float(binary_overlap),
+        "soft_ellipse_parent_source_support_recall": float(support_recall),
         "preflight_parent_path_count": int(parent_counts[0]),
         "preflight_parent_node_count": int(parent_counts[1]),
         "preflight_path_limit": int(limits["path_limit"]),
@@ -347,6 +360,12 @@ def make_soft_ellipse_alpha_first(
         except Exception as exc:  # noqa: BLE001 - established fallback is authoritative
             if target.read_bytes() != parent:
                 target.write_bytes(parent)
+            if not str(exc).startswith("source_alpha_soft_ellipse_not_applicable"):
+                print(
+                    "source_alpha_soft_ellipse_attempt_rejected="
+                    f"{type(exc).__name__}:{exc}",
+                    flush=True,
+                )
             report = original_apply(target, Path(source_path), mode)
             if isinstance(report, dict):
                 report = dict(report)
