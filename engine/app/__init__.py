@@ -35,18 +35,30 @@ if not getattr(_analyzer.analyze_image_from_mem, "__vektoryum_contract_wrapped__
     _analyzer.analyze_image_from_mem = _analyze_image_from_mem_with_contract
 
 
-# Alpha is staged before pipeline imports preprocess_for_mode by value. The
-# selected SVG receives the single source-alpha truth only after every mutator.
+# Alpha is staged before pipeline imports preprocess_for_mode by value. Production
+# calls are additionally wrapped by a legacy-first context: alpha-specific RGB
+# staging is enabled only after a measured source-alpha rejection.
 from app import preprocess as _preprocess
 from app.alpha_preprocess import wrap_gradient_vectorizer, wrap_preprocess_for_mode
+from app.alpha_pipeline_retry import (
+    wrap_gradient_with_alpha_context,
+    wrap_preprocess_with_alpha_context,
+    wrap_run_pipeline_with_alpha_retry,
+)
 
 _preprocess.preprocess_for_mode = wrap_preprocess_for_mode(
+    _preprocess.preprocess_for_mode
+)
+_preprocess.preprocess_for_mode = wrap_preprocess_with_alpha_context(
     _preprocess.preprocess_for_mode
 )
 
 from app import gradient_vectorize as _gradient_vectorize
 
 _gradient_vectorize.vectorize_with_gradients = wrap_gradient_vectorizer(
+    _gradient_vectorize.vectorize_with_gradients
+)
+_gradient_vectorize.vectorize_with_gradients = wrap_gradient_with_alpha_context(
     _gradient_vectorize.vectorize_with_gradients
 )
 
@@ -179,8 +191,8 @@ _alpha_svg_mask.apply_source_alpha_mask = make_candidate_support_reconstruction_
     )
 )
 # For low-level source alpha, trial at most four already-produced parents through
-# the real guarded alpha transform. A leaner candidate is selected only within the
-# strict fidelity/edge margin; the normal journaled finalization still decides.
+# the real guarded alpha transform. Parent reselection is active only during the
+# bounded remediation pass; the legacy-first pass keeps the original winner.
 _pipeline.run_pipeline = wrap_run_pipeline_selecting_alpha_parent(
     _pipeline.run_pipeline
 )
@@ -191,6 +203,12 @@ _pipeline.run_pipeline = _alpha_svg_mask.wrap_run_pipeline_with_alpha_mask(
 # engine candidate. Preserve the selected candidate identity for API/regression
 # consumers while the final SVG path and journal SHA point at the masked artifact.
 _pipeline.run_pipeline = wrap_run_pipeline_preserving_candidate_identity(
+    _pipeline.run_pipeline
+)
+# Outermost orchestration: return the untouched legacy result whenever it already
+# satisfies alpha. Only a source-alpha fail-closed rejection authorizes one retry
+# with alpha-specific preprocessing and alternate-parent selection enabled.
+_pipeline.run_pipeline = wrap_run_pipeline_with_alpha_retry(
     _pipeline.run_pipeline
 )
 
