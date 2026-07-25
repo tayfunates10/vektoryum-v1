@@ -122,6 +122,49 @@ def _archive_indexes(
         defs.append(element)
 
 
+def _retained_root(root: ET.Element, archived_indexes: set[int]) -> ET.Element:
+    probe = ET.Element(root.tag, dict(root.attrib))
+    for index, child in enumerate(list(root)):
+        protected = _local_name(str(child.tag)).lower() in _PROTECTED_ROOT_TAGS
+        if protected or index not in archived_indexes:
+            probe.append(copy.deepcopy(child))
+    return probe
+
+
+def _reject_occluded_negative_space(
+    original_root: ET.Element,
+    archived_indexes: set[int],
+    source_alpha: np.ndarray,
+    eval_width: int,
+    eval_height: int,
+) -> None:
+    """Archiving canvas-coloured negative space only produces transparency when
+    no retained element paints underneath it.
+
+    Removing the child reveals whatever sits below, so a hole punched over kept
+    artwork stays opaque. The reconstruction gate measures whole-image alpha and
+    tolerates a small hole, so the invariant is asserted here instead.
+    """
+    retained = _render_root(
+        _retained_root(original_root, archived_indexes),
+        eval_width,
+        eval_height,
+    )
+    if retained is None:
+        raise RuntimeError("source_alpha_direct_retained_render_unmeasured")
+    if retained.shape[:2] != (eval_height, eval_width):
+        retained = resize_rgba(retained, eval_width, eval_height)
+    occluded = (np.asarray(retained[:, :, 3], dtype=np.uint8) >= 128) & (
+        np.asarray(source_alpha, dtype=np.uint8) == 0
+    )
+    occluded_count = int(np.count_nonzero(occluded))
+    if occluded_count:
+        raise RuntimeError(
+            "source_alpha_direct_negative_space_occluded_by_retained_paint:"
+            f"{occluded_count}"
+        )
+
+
 def _direct_renderable_indexes(root: ET.Element) -> list[int]:
     indexes = [
         index
@@ -212,6 +255,15 @@ def _build_direct_candidate(
 
     if not assignments:
         raise RuntimeError("source_alpha_direct_no_supported_paint")
+
+    if negative_space_count:
+        _reject_occluded_negative_space(
+            original_root,
+            set(archive_reasons),
+            source_alpha,
+            eval_width,
+            eval_height,
+        )
 
     candidate_root = copy.deepcopy(original_root)
     candidate_children = list(candidate_root)
