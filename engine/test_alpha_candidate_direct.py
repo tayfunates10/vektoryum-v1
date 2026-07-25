@@ -46,11 +46,56 @@ class DirectElementAlphaTests(unittest.TestCase):
             self.assertNotIn("<clipPath", text)
             self.assertNotIn("<mask", text)
             self.assertNotIn("<rect", text)
-            self.assertIn("comparison-canvas-archive", text)
+            self.assertIn("renderer-proven-comparison-canvas-v1", text)
 
             parsed = ET.parse(svg_path).getroot()
             paths = [element for element in parsed.iter() if element.tag.endswith("path")]
             self.assertEqual(len(paths), 2)
+            rendered = render_svg_to_rgba(svg_path, 64, 64)
+            self.assertIsNotNone(rendered)
+            assert rendered is not None
+            metrics = alpha_plane_metrics(source[:, :, 3], rendered[:, :, 3])
+            self.assertGreaterEqual(metrics["alpha_iou"], 0.99)
+            self.assertLessEqual(metrics["alpha_mae"], 0.01)
+
+    def test_canvas_coloured_negative_space_is_archived_not_raster_masked(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_path = root / "technical.png"
+            svg_path = root / "candidate.svg"
+            source = np.zeros((64, 64, 4), dtype=np.uint8)
+            source[8:56, 8:56, :3] = (0, 0, 0)
+            source[8:56, 8:56, 3] = 255
+            source[20:44, 20:44, :] = 0
+            Image.fromarray(source, mode="RGBA").save(source_path)
+            svg_path.write_text(
+                '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" '
+                'viewBox="0 0 64 64">'
+                '<path fill="#ffffff" d="M0 0h64v64H0Z"/>'
+                '<path fill="#000000" d="M8 8h48v48H8Z"/>'
+                '<path fill="#ffffff" d="M20 20h24v24H20Z"/>'
+                '</svg>',
+                encoding="utf-8",
+            )
+
+            report = apply_direct_element_alpha(
+                svg_path,
+                source_path,
+                "logo_color",
+            )
+            self.assertTrue(report["comparison_canvas_archived"])
+            self.assertEqual(
+                report["canvas_colour_negative_space_archive_count"],
+                1,
+            )
+            text = svg_path.read_text(encoding="utf-8")
+            self.assertNotIn("<clipPath", text)
+            self.assertNotIn("<mask", text)
+            self.assertNotIn("<rect", text)
+            self.assertIn("measured-canvas-colour-negative-space-v1", text)
+            parsed = ET.parse(svg_path).getroot()
+            paths = [element for element in parsed.iter() if element.tag.endswith("path")]
+            self.assertEqual(len(paths), 3)
             rendered = render_svg_to_rgba(svg_path, 64, 64)
             self.assertIsNotNone(rendered)
             assert rendered is not None
