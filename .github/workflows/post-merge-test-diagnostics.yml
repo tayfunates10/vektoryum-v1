@@ -1,0 +1,144 @@
+name: Post-merge pytest failure diagnostics
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/post-merge-test-diagnostics.yml"
+      - "engine/pytest.ini"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: post-merge-pytest-diagnostics-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: true
+
+env:
+  PYTHONHASHSEED: "0"
+  VEKTORYUM_WORKERS: "1"
+  VALIDATION_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  diagnose:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: full-suite-diagnostics
+            command: python -m pytest -q --tb=short --maxfail=25 --junitxml=diagnostics/full-suite.xml
+            junit: diagnostics/full-suite.xml
+            summary: diagnostics/full-suite-summary.json
+          - name: exact-alpha-diagnostics
+            command: >-
+              python -m pytest -q --tb=short --maxfail=25
+              --junitxml=diagnostics/exact-alpha.xml
+              test_exact_final_contract.py
+              test_exact_corpus.py
+              test_exact_final_artifact_integration.py
+              test_exact_corpus_pipeline.py
+              test_transform_journal.py
+              test_final_artifact_metrics.py
+              test_source_truth.py
+              test_alpha_*.py
+            junit: diagnostics/exact-alpha.xml
+            summary: diagnostics/exact-alpha-summary.json
+    defaults:
+      run:
+        working-directory: engine
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.VALIDATION_HEAD_SHA }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: engine/requirements.txt
+      - name: Install system validators
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ghostscript libcairo2
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt pytest httpx
+      - name: Run tests and preserve the real exit code
+        id: tests
+        shell: bash
+        env:
+          TEST_COMMAND: ${{ matrix.command }}
+        run: |
+          set +e
+          mkdir -p diagnostics
+          bash -o pipefail -c "${TEST_COMMAND}" 2>&1 | tee diagnostics/pytest-output.log
+          status=${PIPESTATUS[0]}
+          echo "exit_code=${status}" >> "${GITHUB_OUTPUT}"
+          exit 0
+      - name: Parse fail-closed JUnit summary
+        env:
+          JUNIT_PATH: ${{ matrix.junit }}
+          SUMMARY_PATH: ${{ matrix.summary }}
+          TEST_EXIT_CODE: ${{ steps.tests.outputs.exit_code }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          junit_path = Path(os.environ["JUNIT_PATH"])
+          output_path = Path(os.environ["SUMMARY_PATH"])
+          exit_code = int(os.environ["TEST_EXIT_CODE"])
+          if not junit_path.exists():
+              payload = {
+                  "schema": "vektoryum-pytest-diagnostic-v1",
+                  "exit_code": exit_code,
+                  "junit_present": False,
+                  "reason_code": "junit_missing",
+                  "failures": [],
+                  "errors": [],
+              }
+          else:
+              root = ET.parse(junit_path).getroot()
+              cases = list(root.iter("testcase"))
+              failures = []
+              errors = []
+              for case in cases:
+                  identity = {
+                      "classname": case.get("classname"),
+                      "name": case.get("name"),
+                      "file": case.get("file"),
+                      "line": case.get("line"),
+                  }
+                  failure = case.find("failure")
+                  error = case.find("error")
+                  if failure is not None:
+                      failures.append({**identity, "message": failure.get("message")})
+                  if error is not None:
+                      errors.append({**identity, "message": error.get("message")})
+              payload = {
+                  "schema": "vektoryum-pytest-diagnostic-v1",
+                  "exit_code": exit_code,
+                  "junit_present": True,
+                  "test_count": len(cases),
+                  "failure_count": len(failures),
+                  "error_count": len(errors),
+                  "failures": failures,
+                  "errors": errors,
+                  "reason_code": "tests_passed" if exit_code == 0 else "pytest_failed",
+              }
+          output_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          print(json.dumps(payload, indent=2, sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: post-merge-${{ matrix.name }}-${{ github.run_id }}
+          path: engine/diagnostics
+          if-no-files-found: error
+          retention-days: 14
+      - name: Enforce original result
+        env:
+          TEST_EXIT_CODE: ${{ steps.tests.outputs.exit_code }}
+        run: exit "${TEST_EXIT_CODE}"
