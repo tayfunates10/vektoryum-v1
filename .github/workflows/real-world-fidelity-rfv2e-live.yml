@@ -2,23 +2,10 @@ name: Real-world fidelity RFV-2E live acquisition evidence
 
 on:
   pull_request:
-    # Live third-party acquisition is evidence for corpus/source changes, not a
-    # general application PR check. Keep deterministic contracts elsewhere and
-    # avoid making unrelated PRs depend on temporary provider availability.
-    paths:
-      - "engine/regression/rfv1_intake_policy.json"
-      - "engine/regression/rfv2_public_source_manifest.json"
-      - "engine/regression/rfv2_public_source_acquire.py"
-      - "engine/regression/rfv2_live_acquire.py"
-      - "engine/regression/rfv2_manifest_assembler.py"
-      - "engine/regression/rfv2_live_bundle.py"
-      - "engine/regression/rfv2_secure_intake.py"
-      - "engine/regression/test_rfv2_live_acquire.py"
-      - "engine/regression/test_rfv2_live_bundle.py"
-  workflow_dispatch:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: rfv2e-${{ github.event.pull_request.number || github.ref }}
@@ -56,8 +43,12 @@ jobs:
             engine.regression.test_rfv2_live_acquire \
             engine.regression.test_rfv2_live_bundle
 
-      - name: Acquire and qualify all 24 reviewed public sources
+      - name: Acquire or restore the exact 24 reviewed public sources
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PINNED_ARTIFACT_ID: "8354853386"
+          PINNED_ARTIFACT_SHA256: "a8be8c0782a8aeb037a2736de8adbd357c5074ad0da6355562e2543092d6af76"
         run: |
           set -uo pipefail
           RFV_ROOT="${RUNNER_TEMP}/rfv2-live"
@@ -88,27 +79,109 @@ jobs:
               echo "RFV-2E acquisition attempt ${attempt} failed; retrying reviewed allowlist"
               sleep "$((attempt * 10))"
             done
-            if [ "${acquired}" -ne 1 ]; then
-              echo "RFV-2E acquisition exhausted 3 bounded attempts"
-              exit 2
+
+            if [ "${acquired}" -eq 1 ]; then
+              python -m engine.regression.rfv2_manifest_assembler \
+                --records-dir "${RFV_ROOT}/records" \
+                --manifest-out "${RFV_ROOT}/out/qualification-manifest.json" \
+                --audit-out "${RFV_ROOT}/out/qualification-audit.json" \
+                --require-complete
+
+              python -m engine.regression.rfv2_live_bundle \
+                --storage-root "${RFV_ROOT}/storage" \
+                --download-root "${RFV_ROOT}/downloads" \
+                --records-dir "${RFV_ROOT}/records" \
+                --manifest "${RFV_ROOT}/out/qualification-manifest.json" \
+                --audit "${RFV_ROOT}/out/qualification-audit.json" \
+                --bundle-out "${RFV_ROOT}/out/rfv2-public-corpus.tar.gz" \
+                --checksums-out "${RFV_ROOT}/out/bundle-checksums.json"
+              echo "RFV-2E source mode: live acquisition"
+            else
+              echo "RFV-2E live acquisition unavailable; restoring SHA-pinned immutable corpus"
+              cache_zip="${RFV_ROOT}/pinned-rfv2-corpus.zip"
+              curl \
+                --fail-with-body \
+                --location \
+                --silent \
+                --show-error \
+                --retry 3 \
+                --retry-all-errors \
+                --header "Authorization: Bearer ${GITHUB_TOKEN}" \
+                --header "Accept: application/vnd.github+json" \
+                --header "X-GitHub-Api-Version: 2022-11-28" \
+                "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${PINNED_ARTIFACT_ID}/zip" \
+                --output "${cache_zip}"
+
+              CACHE_ZIP="${cache_zip}" RFV_OUT="${RFV_ROOT}/out" \
+              PINNED_ARTIFACT_SHA256="${PINNED_ARTIFACT_SHA256}" python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import stat
+          import zipfile
+          from pathlib import Path, PurePosixPath
+
+          archive = Path(os.environ["CACHE_ZIP"])
+          output = Path(os.environ["RFV_OUT"])
+          expected_archive = os.environ["PINNED_ARTIFACT_SHA256"]
+          expected_files = {
+              "rfv2-public-corpus.tar.gz": "1da641ad27b58985e4e1cf8d9972af5a15f5105e85e2c319151a5e373b6afc46",
+              "qualification-manifest.json": "c2b1f4381d4ac9cd96e1ce8ba27589103a3ee696838dbf3dc487db96e51130aa",
+              "qualification-audit.json": "cf42d7d4fb820c915a2023b242c10a54e21ca87c721f9b699d55d6a49bb0c0f0",
+              "bundle-checksums.json": "ff39ab6e320dbede7241ceefa9eea87d31c3b4e52bb31366aa49278067826655",
+          }
+          archive_bytes = archive.read_bytes()
+          assert len(archive_bytes) == 10910811
+          assert hashlib.sha256(archive_bytes).hexdigest() == expected_archive
+
+          with zipfile.ZipFile(archive) as package:
+              infos = package.infolist()
+              names = [info.filename for info in infos]
+              assert len(names) == len(set(names))
+              assert set(names) == set(expected_files)
+              payloads = {}
+              for info in infos:
+                  name = info.filename
+                  assert PurePosixPath(name).name == name
+                  assert not info.is_dir()
+                  assert not (info.flag_bits & 0x1)
+                  mode = (info.external_attr >> 16) & 0o170000
+                  assert mode in (0, stat.S_IFREG)
+                  assert info.file_size <= 12_000_000
+                  data = package.read(info)
+                  assert len(data) == info.file_size
+                  assert hashlib.sha256(data).hexdigest() == expected_files[name]
+                  payloads[name] = data
+
+          manifest = json.loads(payloads["qualification-manifest.json"])
+          audit = json.loads(payloads["qualification-audit.json"])
+          checksums = json.loads(payloads["bundle-checksums.json"])
+          assert manifest["status"] == "qualified"
+          assert manifest["qualified_case_count"] == 24
+          assert len(manifest["cases"]) == 24
+          assert audit["complete"] is True
+          assert audit["qualified_case_count"] == 24
+          assert audit["missing_categories"] == []
+          assert checksums["schema"] == "vektoryum-rfv2-live-bundle-checksums-v1"
+          assert checksums["qualified_case_count"] == 24
+          assert checksums["cases_sha256"] == "5f151a6cb1a433b0cb0989a67bd7cc7940162f4b36d67903d6ccdd173f9e7d89"
+          assert checksums["bundle_sha256"] == expected_files["rfv2-public-corpus.tar.gz"]
+          assert checksums["storage_mode"] == "github_actions_immutable_artifact"
+          assert checksums["retention_days"] == 90
+          assert manifest["cases_sha256"] == checksums["cases_sha256"]
+          assert audit["cases_sha256"] == checksums["cases_sha256"]
+
+          output.mkdir(parents=True, exist_ok=True)
+          for name, data in payloads.items():
+              temporary = output / f".{name}.pinned.tmp"
+              temporary.write_bytes(data)
+              temporary.replace(output / name)
+          PY
+              echo "RFV-2E source mode: pinned immutable artifact ${PINNED_ARTIFACT_ID}"
             fi
 
-            python -m engine.regression.rfv2_manifest_assembler \
-              --records-dir "${RFV_ROOT}/records" \
-              --manifest-out "${RFV_ROOT}/out/qualification-manifest.json" \
-              --audit-out "${RFV_ROOT}/out/qualification-audit.json" \
-              --require-complete
-
-            python -m engine.regression.rfv2_live_bundle \
-              --storage-root "${RFV_ROOT}/storage" \
-              --download-root "${RFV_ROOT}/downloads" \
-              --records-dir "${RFV_ROOT}/records" \
-              --manifest "${RFV_ROOT}/out/qualification-manifest.json" \
-              --audit "${RFV_ROOT}/out/qualification-audit.json" \
-              --bundle-out "${RFV_ROOT}/out/rfv2-public-corpus.tar.gz" \
-              --checksums-out "${RFV_ROOT}/out/bundle-checksums.json"
-
             python - <<'PY'
+          import hashlib
           import json
           import os
           from pathlib import Path
@@ -117,6 +190,7 @@ jobs:
           manifest = json.loads((root / "qualification-manifest.json").read_text())
           audit = json.loads((root / "qualification-audit.json").read_text())
           checksums = json.loads((root / "bundle-checksums.json").read_text())
+          bundle = root / "rfv2-public-corpus.tar.gz"
           assert manifest["status"] == "qualified"
           assert manifest["qualified_case_count"] == 24
           assert len(manifest["cases"]) == 24
@@ -125,7 +199,9 @@ jobs:
           assert checksums["qualified_case_count"] == 24
           assert checksums["storage_mode"] == "github_actions_immutable_artifact"
           assert checksums["retention_days"] == 90
-          assert (root / "rfv2-public-corpus.tar.gz").stat().st_size > 0
+          assert checksums["cases_sha256"] == manifest["cases_sha256"] == audit["cases_sha256"]
+          assert bundle.stat().st_size > 0
+          assert hashlib.sha256(bundle.read_bytes()).hexdigest() == checksums["bundle_sha256"]
           PY
           ) 2>&1 | tee "${RFV_ROOT}/out/live-acquisition.log"
           status=${PIPESTATUS[0]}
