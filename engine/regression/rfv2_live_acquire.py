@@ -35,15 +35,31 @@ class _AssetLinkParser(HTMLParser):
 
 _URL_RE = re.compile(r"https?:\\?/\\?/[^\s\"'<>]+", re.IGNORECASE)
 
-# Openclipart occasionally stops serving the identifier-only detail route to
-# automated clients while the reviewed asset remains available at its canonical
-# detail URL. Keep this finite and identity-bound: no search, title guessing or
-# provider substitution is allowed. The asset id and host remain unchanged.
+# Openclipart's identifier-only detail routes are intermittently unavailable to
+# automated clients while the same reviewed records remain live at their
+# canonical slug routes. Keep the fallback finite and identity-bound: every URL
+# below belongs to the exact manifest provider_asset_id, on the same allowlisted
+# host, with no search or provider substitution.
 _OPENCLIPART_CANONICAL_SOURCE_PAGES = {
-    "345253": (
-        "https://openclipart.org/detail/345253/"
-        "my-pronouns-are-custom-lgbt-orange-square-badge"
-    ),
+    "345253": "https://openclipart.org/detail/345253/my-pronouns-are-custom-lgbt-orange-square-badge",
+    "345254": "https://openclipart.org/detail/345254/name-and-pronouns-lgbt-friendly-orange-badge",
+    "345255": "https://openclipart.org/detail/345255/name-and-pronouns-lgbt-friendly-red-badge",
+    "345536": "https://openclipart.org/detail/345536/lgbt-pride-pink-my-pronouns-are-badge",
+    "345532": "https://openclipart.org/detail/345532/my-pronouns-are-lgbt-pride-gender-identity-round-badge",
+    "345281": "https://openclipart.org/detail/345281/my-pronouns-badge-zie-zir-nonbinary-gender-in-blue",
+    "345275": "https://openclipart.org/detail/345275/they-them-pronouns-gender-identity-purple-rectangle-badge",
+    "345268": "https://openclipart.org/detail/345268/i-am-name-pronouns-nonbinary-custom-rectangle-purple-badge",
+    "162313": "https://openclipart.org/detail/162313/01a%E2%82%AC%C2%A610-from-tetrahedron-to-geodesic-dome-frequncy-2",
+    "273059": "https://openclipart.org/273059/003-calligrafie-exemples",
+    "353378": "https://openclipart.org/detail/353378/cut-open-fig",
+    "353377": "https://openclipart.org/detail/353377/big-persimmon",
+    "119857": "https://openclipart.org/119857/00-moonphases-openclipa-01",
+    "353371": "https://openclipart.org/detail/353371/retro-couple-on-the-phone-colour-remix",
+    "345256": "https://openclipart.org/detail/345256/name-and-pronouns-introduction-badge-in-transgender-pride-blue-color-round",
+    "345257": "https://openclipart.org/detail/345257/i-am-my-pronouns-are-nonbinary-inclusive-round-purple-badge",
+    "353375": "https://openclipart.org/detail/353375/mom-cooks-cookies",
+    "353376": "https://openclipart.org/detail/353376/girl-helps-girl-with-hair",
+    "353372": "https://openclipart.org/detail/353372/van-driving",
 }
 
 
