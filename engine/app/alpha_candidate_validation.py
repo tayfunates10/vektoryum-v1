@@ -12,6 +12,7 @@ together with absolute SSIM, topology, seam, color and complexity policy.
 """
 from __future__ import annotations
 
+import gc
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,19 @@ _ALPHA_APPEARANCE_PREFIXES = (
 )
 
 
+def _release_transient_memory() -> None:
+    """Best-effort release between repeated evaluator passes in one worker."""
+    gc.collect()
+    try:
+        import ctypes
+
+        trim = getattr(ctypes.CDLL(None), "malloc_trim", None)
+        if trim is not None:
+            trim(0)
+    except (AttributeError, OSError):
+        pass
+
+
 def validate_alpha_reconstruction_contract(
     candidate_path: Path,
     source_rgba_full: np.ndarray,
@@ -45,6 +59,11 @@ def validate_alpha_reconstruction_contract(
         evaluate_final_svg,
     )
 
+    # A production request may invoke this contract more than once while trying a
+    # bounded fallback and then compacting the accepted artifact. Release completed
+    # renderer/evaluator allocations before the next exact pass; gates are unchanged.
+    _release_transient_memory()
+
     source_height, source_width = source_rgba_full.shape[:2]
     eval_scale = min(1.0, 512.0 / float(max(source_width, source_height)))
     eval_width = max(1, int(round(source_width * eval_scale)))
@@ -56,27 +75,40 @@ def validate_alpha_reconstruction_contract(
     if rendered.shape[:2] != (eval_height, eval_width):
         rendered = resize_rgba(rendered, eval_width, eval_height)
     direct_metrics = alpha_plane_metrics(source_eval[:, :, 3], rendered[:, :, 3])
+    direct_values = {
+        "alpha_iou": float(direct_metrics["alpha_iou"]),
+        "alpha_mae": float(direct_metrics["alpha_mae"]),
+        "source_coverage": float(direct_metrics["source_coverage"]),
+        "render_coverage": float(direct_metrics["render_coverage"]),
+    }
 
     image_class = _MODE_IMAGE_CLASS.get(mode, "clean_logo")
     thresholds = _thresholds(image_class, None)
-    if float(direct_metrics["alpha_iou"]) < float(thresholds["alpha_iou_min"]):
+    if direct_values["alpha_iou"] < float(thresholds["alpha_iou_min"]):
         raise RuntimeError(
             "source_alpha_candidate_knockout_iou_gate_failed:"
-            f"{direct_metrics['alpha_iou']:.6f}<{thresholds['alpha_iou_min']}"
+            f"{direct_values['alpha_iou']:.6f}<{thresholds['alpha_iou_min']}"
         )
-    if float(direct_metrics["alpha_mae"]) > float(thresholds["alpha_mae_max"]):
+    if direct_values["alpha_mae"] > float(thresholds["alpha_mae_max"]):
         raise RuntimeError(
             "source_alpha_candidate_knockout_mae_gate_failed:"
-            f"{direct_metrics['alpha_mae']:.6f}>{thresholds['alpha_mae_max']}"
+            f"{direct_values['alpha_mae']:.6f}>{thresholds['alpha_mae_max']}"
         )
 
-    # Bind the second alpha-plane measurement to the same bounded truth. The
-    # following TransformJournal remains authoritative for RGB appearance and
+    # Bind the second alpha-plane measurement to the same bounded truth. Build
+    # compact evaluator inputs, then release the first renderer result before the
+    # heavier multi-background evaluator pass.
+    source_rgb = _source_rgb_on_white(source_eval)
+    source_alpha = np.ascontiguousarray(source_eval[:, :, 3])
+    del rendered, direct_metrics, source_eval
+    _release_transient_memory()
+
+    # The following TransformJournal remains authoritative for RGB appearance and
     # every parent-relative structural/visual/topology/seam/complexity regression.
     report = evaluate_final_svg(
         candidate_path,
-        _source_rgb_on_white(source_eval),
-        source_alpha=source_eval[:, :, 3],
+        source_rgb,
+        source_alpha=source_alpha,
         image_class=image_class,
         required_metrics={"alpha_fidelity"},
     )
@@ -133,11 +165,11 @@ def validate_alpha_reconstruction_contract(
         if code not in _ALPHA_PLANE_FAILURE_CODES
         and not code.startswith(_ALPHA_APPEARANCE_PREFIXES)
     ]
-    return {
-        "source_truth_alpha_iou": float(direct_metrics["alpha_iou"]),
-        "source_truth_alpha_mae": float(direct_metrics["alpha_mae"]),
-        "source_truth_source_coverage": float(direct_metrics["source_coverage"]),
-        "source_truth_render_coverage": float(direct_metrics["render_coverage"]),
+    result = {
+        "source_truth_alpha_iou": direct_values["alpha_iou"],
+        "source_truth_alpha_mae": direct_values["alpha_mae"],
+        "source_truth_source_coverage": direct_values["source_coverage"],
+        "source_truth_render_coverage": direct_values["render_coverage"],
         "final_evaluator_verdict": report.verdict,
         "final_evaluator_alpha_plane_status": "passed",
         "final_evaluator_alpha_iou": float(evaluator_alpha_iou),
@@ -150,3 +182,6 @@ def validate_alpha_reconstruction_contract(
         "preserved_path_count": int(after_counts[0]),
         "preserved_node_count": int(after_counts[1]),
     }
+    del report, root, source_rgb, source_alpha
+    _release_transient_memory()
+    return result

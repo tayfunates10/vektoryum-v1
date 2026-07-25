@@ -8,22 +8,23 @@ import numpy as np
 from PIL import Image
 
 from app.alpha_mask_budget import wrap_apply_source_alpha_mask
-from app.alpha_svg_mask import _is_painter_geometry_reason
+from app.alpha_svg_mask import _painter_retry_eligible
 
 
 class AlphaPainterRetryEligibilityTests(unittest.TestCase):
-    """Journal reddi kodlarına göre painter yeniden-inşa tetiklemesi.
+    """Journal reddi kodlarına göre painter yeniden-inşa tetiklemesi (FAZ 3C).
 
-    Painter yalnız doğrudan geometri reddlerinde (topoloji ya da dikiş) denenir:
-    TÜM kodlar geometri reddi olmalı. Aksi halde fail-closed kalınır — painter
-    renk/karmaşıklık ya da SSIM/edge reddini gideremez ve bunlar gizlenmemeli.
-    Değişiklik yalnız zaten reddedilmiş vakalarda çalışır; geçen vakalara dokunmaz.
+    Painter DENEME kapsamı doğrudan geometri/ölçek-AA reddleridir: ``topology_*``
+    (bileşen/delik) + ``seam_regression`` + ``edge_f1_regression`` +
+    ``ssim_regression``. TÜM kodlar bu kapsamda olmalı; kapsam dışı tek bir kod
+    (renk/palet/path/node/byte) bile varsa fail-closed kalınır. Bu yalnız DENEME
+    uygunluğudur — kabul, çağıranın TAZE journal'da aynı değişmemiş kapıları
+    (edge/SSIM/seam/topoloji) yeniden ölçmesine bağlıdır (geçen vakaya dokunulmaz).
+    Testler üretim yardımcısını (`_painter_retry_eligible`) doğrudan çağırır.
     """
 
     def _eligible(self, reasons: list[str]) -> bool:
-        return bool(reasons) and all(
-            _is_painter_geometry_reason(reason) for reason in reasons
-        )
+        return _painter_retry_eligible(reasons)
 
     def test_pure_seam_regression_triggers_painter(self) -> None:
         self.assertTrue(self._eligible(["seam_regression"]))
@@ -40,31 +41,31 @@ class AlphaPainterRetryEligibilityTests(unittest.TestCase):
             self._eligible(["topology_component_regression", "seam_regression"])
         )
 
-    def test_seam_with_induced_ssim_edge_fails_closed(self) -> None:
-        # Onaylanan kapsam yalnız seam/topoloji: SSIM/edge karışan reddler painter
-        # kapsamına alınmaz, fail-closed kalır (eşik/politika değişmez).
-        self.assertFalse(
+    def test_edge_and_ssim_now_in_painter_scope(self) -> None:
+        # FAZ 3C: edge_f1/ssim ölçek-AA reddleri artık painter DENEME kapsamında
+        # (kabul yine TAZE journal'ın aynı edge/SSIM kapılarına bağlı).
+        self.assertTrue(self._eligible(["edge_f1_regression"]))
+        self.assertTrue(self._eligible(["ssim_regression"]))
+        self.assertTrue(self._eligible(["ssim_regression", "edge_f1_regression"]))
+        self.assertTrue(
             self._eligible(
                 [
                     "topology_component_regression",
                     "ssim_regression",
                     "edge_f1_regression",
+                    "seam_regression",
                 ]
             )
         )
-        self.assertFalse(self._eligible(["seam_regression", "ssim_regression"]))
-
-    def test_pure_ssim_regression_fails_closed(self) -> None:
-        # Geometri reddi yok; painter maskesi bir şey değiştirmez → fail-closed.
-        self.assertFalse(self._eligible(["ssim_regression"]))
-        self.assertFalse(self._eligible(["ssim_regression", "edge_f1_regression"]))
 
     def test_non_repairable_reason_fails_closed(self) -> None:
-        # Painter'ın gideremeyeceği bir kod (ör. renk/karmaşıklık) gizlenemez.
-        self.assertFalse(
-            self._eligible(["seam_regression", "color_regression"])
-        )
+        # Painter'ın gideremeyeceği bir kod (renk/palet/path/node/byte) kapsam
+        # dışı geometri reddiyle KARIŞSA bile gizlenemez → fail-closed.
+        self.assertFalse(self._eligible(["seam_regression", "color_regression"]))
+        self.assertFalse(self._eligible(["ssim_regression", "palette_regression"]))
+        self.assertFalse(self._eligible(["edge_f1_regression", "node_complexity_explosion"]))
         self.assertFalse(self._eligible(["path_count_regression"]))
+        self.assertFalse(self._eligible(["byte_budget_regression"]))
         self.assertFalse(self._eligible([]))
 
 

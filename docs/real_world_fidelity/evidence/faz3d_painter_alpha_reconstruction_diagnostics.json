@@ -1,0 +1,142 @@
+{
+  "evidence_sha256": "33a51292db918d1f50333e6351644913879e9097b8d2da5d8333a5003528adc6",
+  "gray_values": [
+    0,
+    1,
+    32,
+    64,
+    128,
+    192,
+    254,
+    255
+  ],
+  "implicit_luminance_transfer_is_byte_exact": true,
+  "renderer": "resvg_py",
+  "root_cause": "canvas_knockout_removes_required_alpha_support",
+  "schema": "vektoryum-faz3d-painter-diagnostics-v3",
+  "source_commit": "d594e15f3defdf989eb60c55850b8c5c2fbb9cf5",
+  "synthetic": {
+    "canvas_knockout": {
+      "alpha_iou": 0.2685607373714447,
+      "alpha_mae": 0.32018327713012695,
+      "comparison_canvas_knocked_out": true,
+      "render_coverage": 0.11756089329719543,
+      "source_coverage": 0.437744140625
+    },
+    "canvas_retained_inside_mask": {
+      "alpha_iou": 1.0,
+      "alpha_mae": 0.0,
+      "comparison_canvas_knocked_out": false,
+      "render_coverage": 0.437744140625,
+      "source_coverage": 0.437744140625
+    },
+    "grid_height": 64,
+    "grid_width": 64,
+    "source_support_pixels": 1793
+  },
+  "transfer": {
+    "attr-alpha": {
+      "0": 255,
+      "1": 255,
+      "128": 255,
+      "192": 255,
+      "254": 255,
+      "255": 255,
+      "32": 255,
+      "64": 255
+    },
+    "attr-luminance": {
+      "0": 0,
+      "1": 1,
+      "128": 128,
+      "192": 192,
+      "254": 254,
+      "255": 255,
+      "32": 32,
+      "64": 64
+    },
+    "implicit": {
+      "0": 0,
+      "1": 1,
+      "128": 128,
+      "192": 192,
+      "254": 254,
+      "255": 255,
+      "32": 32,
+      "64": 64
+    },
+    "style-alpha": {
+      "0": 255,
+      "1": 255,
+      "128": 255,
+      "192": 255,
+      "254": 255,
+      "255": 255,
+      "32": 255,
+      "64": 255
+    },
+    "style-luminance": {
+      "0": 0,
+      "1": 1,
+      "128": 128,
+      "192": 192,
+      "254": 254,
+      "255": 255,
+      "32": 32,
+      "64": 64
+    }
+  },
+  "underpaint_stroke_ladder": {
+    "artifact_digest": "sha256:55fefe897afbd26a2ac980bf88a9ecaef743d18e6f944015cc8dd4d8b4b517a1",
+    "rows": [
+      {
+        "alpha_iou": 1.0,
+        "alpha_mae": 0.0,
+        "component_delta": 2,
+        "hole_delta": -3,
+        "journal_passed": true,
+        "journal_reason_codes": [
+          "metrics_non_regressing"
+        ],
+        "stroke_width": 1.0
+      },
+      {
+        "alpha_iou": 1.0,
+        "alpha_mae": 0.0,
+        "component_delta": 2,
+        "hole_delta": -1,
+        "journal_passed": true,
+        "journal_reason_codes": [
+          "metrics_non_regressing"
+        ],
+        "stroke_width": 1.5
+      },
+      {
+        "alpha_iou": 1.0,
+        "alpha_mae": 0.0,
+        "component_delta": -2,
+        "hole_delta": -2,
+        "journal_passed": true,
+        "journal_reason_codes": [
+          "metrics_non_regressing"
+        ],
+        "stroke_width": 2.0
+      },
+      {
+        "alpha_iou": 1.0,
+        "alpha_mae": 0.0,
+        "component_delta": 2,
+        "hole_delta": -1,
+        "journal_passed": false,
+        "journal_reason_codes": [
+          "edge_f1_regression"
+        ],
+        "stroke_width": 3.0
+      }
+    ],
+    "selected_minimum_underpaint_support_stroke": 1.5,
+    "selection_reason": "smallest_existing_stroke_preserving_alpha_and_topology_sentinel",
+    "source_commit": "c12e440a00e46b3d6dde21a6225fc1917e80844a",
+    "workflow_run_id": 29999207982
+  }
+}
