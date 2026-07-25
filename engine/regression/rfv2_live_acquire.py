@@ -35,6 +35,17 @@ class _AssetLinkParser(HTMLParser):
 
 _URL_RE = re.compile(r"https?:\\?/\\?/[^\s\"'<>]+", re.IGNORECASE)
 
+# Openclipart occasionally stops serving the identifier-only detail route to
+# automated clients while the reviewed asset remains available at its canonical
+# detail URL. Keep this finite and identity-bound: no search, title guessing or
+# provider substitution is allowed. The asset id and host remain unchanged.
+_OPENCLIPART_CANONICAL_SOURCE_PAGES = {
+    "345253": (
+        "https://openclipart.org/detail/345253/"
+        "my-pronouns-are-custom-lgbt-orange-square-badge"
+    ),
+}
+
 
 def _candidate_score(url: str) -> tuple[int, int, str]:
     lowered = url.lower()
@@ -52,6 +63,19 @@ def _candidate_score(url: str) -> tuple[int, int, str]:
             score += weight
             break
     return score, -len(url), url
+
+
+def _openclipart_source_page_candidates(case: dict[str, Any]) -> list[str]:
+    source_page = case.get("source_page_url")
+    if not isinstance(source_page, str) or not source_page:
+        raise public_acquire.PublicSourceError("missing Openclipart source page")
+    candidates = [source_page]
+    canonical = _OPENCLIPART_CANONICAL_SOURCE_PAGES.get(
+        str(case.get("provider_asset_id") or "")
+    )
+    if canonical and canonical not in candidates:
+        candidates.append(canonical)
+    return candidates
 
 
 def extract_openclipart_candidates(
@@ -103,7 +127,23 @@ def resolve_openclipart_asset_url(
     fetcher: FetchFunction = public_acquire._fetch_url,
 ) -> str:
     allowed_hosts = {host.lower() for host in manifest["allowed_source_hosts"]}
-    source_page, source_page_final, _ = fetcher(case["source_page_url"], allowed_hosts, 5 * 1024 * 1024)
+    source_page = None
+    source_page_final = None
+    last_page_reason = "no approved source page URL"
+    for source_page_url in _openclipart_source_page_candidates(case):
+        try:
+            source_page, source_page_final, _ = fetcher(
+                source_page_url, allowed_hosts, 5 * 1024 * 1024
+            )
+            break
+        except public_acquire.PublicSourceError as exc:
+            last_page_reason = str(exc)
+    if source_page is None or source_page_final is None:
+        raise public_acquire.PublicSourceError(
+            f"Openclipart source page resolution failed for {case['case_id']}: "
+            f"{last_page_reason}"
+        )
+
     candidates = extract_openclipart_candidates(
         source_page,
         source_page_url=source_page_final,
