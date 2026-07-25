@@ -12,6 +12,8 @@ from typing import Callable
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from app.platform_security import install_platform_security
+
 ALLOWED_SERVICE_MODES = frozenset({"beta", "live", "maintenance"})
 _WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 _HEALTH_PATHS = frozenset({"/livez", "/readyz"})
@@ -81,6 +83,7 @@ def install_platform_operations(app: FastAPI, *, revision: str | None = None) ->
 
     if app.middleware_stack is None:
         app.middleware("http")(operations_boundary)
+        install_platform_security(app)
     else:
         _structured("middleware_registration_skipped", reason="application_already_started")
 
