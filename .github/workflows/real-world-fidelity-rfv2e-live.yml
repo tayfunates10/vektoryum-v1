@@ -101,6 +101,7 @@ jobs:
           import json
           import os
           import shutil
+          import urllib.error
           import urllib.request
           import zipfile
           from pathlib import Path, PurePosixPath
@@ -129,6 +130,10 @@ jobs:
               with urllib.request.urlopen(request, timeout=60) as response:
                   return json.load(response)
 
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, request, file_pointer, code, message, headers, new_url):
+                  return None
+
           def request_bytes(url: str) -> bytes:
               request = urllib.request.Request(
                   url,
@@ -138,7 +143,21 @@ jobs:
                       "X-GitHub-Api-Version": "2022-11-28",
                   },
               )
-              with urllib.request.urlopen(request, timeout=120) as response:
+              opener = urllib.request.build_opener(NoRedirect)
+              try:
+                  response = opener.open(request, timeout=60)
+              except urllib.error.HTTPError as exc:
+                  if exc.code not in {301, 302, 303, 307, 308}:
+                      raise
+                  location = exc.headers.get("Location")
+                  if not location or not location.startswith("https://"):
+                      raise RuntimeError("artifact redirect location rejected") from exc
+              else:
+                  with response:
+                      return response.read()
+              # Never forward the repository token to GitHub's temporary object
+              # storage host. The signed redirect URL is sufficient by design.
+              with urllib.request.urlopen(location, timeout=120) as response:
                   return response.read()
 
           def digest(path: Path) -> str:
