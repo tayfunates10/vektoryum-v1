@@ -145,6 +145,7 @@ from app.alpha_candidate_knockout import (
 from app import alpha_candidate_support as _alpha_candidate_support
 from app.alpha_candidate_support_compact import (
     _compact_direct_artifact,
+    _union_polygon_points,
     build_compact_native_use_reconstruction_tree,
     make_compact_primitive_alpha_first,
 )
@@ -175,7 +176,7 @@ from app.alpha_mask_budget import wrap_apply_source_alpha_mask
 
 
 def _compact_inert_empty_path_paint(original_apply):
-    """Drop paint metadata from zero-command paths without changing path counts."""
+    """Compact inert and reusable alpha markup without changing owned geometry."""
     if getattr(original_apply, "__vektoryum_empty_path_paint_compacted__", False):
         return original_apply
 
@@ -183,6 +184,7 @@ def _compact_inert_empty_path_paint(original_apply):
     def compacted(svg_path, source_path, mode):
         import hashlib
         import os
+        import re
         import xml.etree.ElementTree as ET
         from pathlib import Path
 
@@ -190,6 +192,9 @@ def _compact_inert_empty_path_paint(original_apply):
 
         from app.alpha_candidate_knockout import _path_node_counts
         from app.alpha_preprocess import _rgba_from_source_at_size
+
+        def local_name(element):
+            return str(element.tag).rsplit("}", 1)[-1].split(":")[-1].lower()
 
         target = Path(svg_path)
         source = Path(source_path)
@@ -199,30 +204,220 @@ def _compact_inert_empty_path_paint(original_apply):
         accepted_bytes = target.read_bytes()
         try:
             root = ET.fromstring(accepted_bytes)
-            removed = 0
+            removed_empty_paint = 0
+            compacted_rectangles = 0
+            reused_underlay_paths = 0
+            shortened_mask_ids = 0
+            stripped_metadata = 0
+
             for element in root.iter():
                 if (
-                    str(element.tag).rsplit("}", 1)[-1].lower() != "path"
-                    or str(element.get("d", "")).strip()
-                    or "fill" not in element.attrib
+                    local_name(element) == "path"
+                    and not str(element.get("d", "")).strip()
+                    and "fill" in element.attrib
+                ):
+                    element.attrib.pop("fill", None)
+                    removed_empty_paint += 1
+
+            used_ids = {
+                str(element.get("id"))
+                for element in root.iter()
+                if element.get("id")
+            }
+            source_mask = next(
+                (
+                    element
+                    for element in root.iter()
+                    if local_name(element) == "mask"
+                    and element.get("id") == "vektoryum-source-alpha"
+                ),
+                None,
+            )
+            if source_mask is not None and "a" not in used_ids:
+                old_id = str(source_mask.get("id"))
+                source_mask.set("id", "a")
+                old_reference = f"url(#{old_id})"
+                for element in root.iter():
+                    if element.get("mask") == old_reference:
+                        element.set("mask", "url(#a)")
+                used_ids.discard(old_id)
+                used_ids.add("a")
+                shortened_mask_ids = 1
+
+            viewbox = root.get("viewBox") or root.get("viewbox")
+            dimensions = None
+            if source_mask is not None and viewbox:
+                try:
+                    values = [
+                        float(value)
+                        for value in re.split(r"[\s,]+", viewbox.strip())
+                        if value
+                    ]
+                    if (
+                        len(values) == 4
+                        and abs(values[0]) <= 1e-9
+                        and abs(values[1]) <= 1e-9
+                        and abs(values[2] - round(values[2])) <= 1e-9
+                        and abs(values[3] - round(values[3])) <= 1e-9
+                    ):
+                        dimensions = (int(round(values[2])), int(round(values[3])))
+                except (TypeError, ValueError):
+                    dimensions = None
+
+            if dimensions is not None:
+                width, height = dimensions
+                namespace = "http://www.w3.org/2000/svg"
+                qname = lambda name: f"{{{namespace}}}{name}"
+                for group in list(source_mask.iter()):
+                    children = list(group)
+                    if (
+                        len(children) < 8
+                        or any(local_name(child) != "rect" for child in children)
+                    ):
+                        continue
+                    try:
+                        rectangles = [
+                            tuple(
+                                int(str(child.get(name, "0")))
+                                for name in ("x", "y", "width", "height")
+                            )
+                            for child in children
+                        ]
+                    except ValueError:
+                        continue
+                    points = _union_polygon_points(rectangles, width, height)
+                    if not points:
+                        continue
+                    for child in children:
+                        group.remove(child)
+                    ET.SubElement(
+                        group,
+                        qname("polygon"),
+                        {"points": points, "fill-rule": "evenodd"},
+                    )
+                    group.attrib.pop("data-vektoryum-alpha-level", None)
+                    compacted_rectangles += len(rectangles)
+
+            parent_by_child = {
+                child: parent
+                for parent in root.iter()
+                for child in list(parent)
+            }
+            underlays = [
+                element
+                for element in root.iter()
+                if local_name(element) == "g"
+                and element.get("data-vektoryum-alpha-coverage-underlay")
+            ]
+            allowed_underlay_extra = {
+                "stroke",
+                "stroke-width",
+                "stroke-linejoin",
+                "stroke-linecap",
+            }
+            for underlay in underlays:
+                owner = parent_by_child.get(underlay)
+                underlay_paths = list(underlay)
+                if (
+                    owner is None
+                    or not underlay_paths
+                    or any(local_name(child) != "path" for child in underlay_paths)
                 ):
                     continue
-                element.attrib.pop("fill", None)
-                removed += 1
-            if removed == 0:
+                main_paths = [
+                    child
+                    for child in list(owner)
+                    if child is not underlay and local_name(child) == "path"
+                ]
+                matches = []
+                claimed = set()
+                valid = True
+                for underlay_path in underlay_paths:
+                    extra_names = set(underlay_path.attrib) - {
+                        "d",
+                        "fill",
+                        "fill-rule",
+                    }
+                    if not extra_names.issubset(allowed_underlay_extra):
+                        valid = False
+                        break
+                    candidates = [
+                        path
+                        for path in main_paths
+                        if path not in claimed
+                        and path.get("d") == underlay_path.get("d")
+                        and path.get("fill") == underlay_path.get("fill")
+                        and path.get("fill-rule") == underlay_path.get("fill-rule")
+                    ]
+                    if len(candidates) != 1:
+                        valid = False
+                        break
+                    match = candidates[0]
+                    claimed.add(match)
+                    matches.append((underlay_path, match))
+                if not valid:
+                    continue
+
+                replacements = []
+                for underlay_path, match in matches:
+                    identifier = match.get("id")
+                    if not identifier:
+                        candidate_id = "b"
+                        while candidate_id in used_ids:
+                            candidate_id += "a"
+                        identifier = candidate_id
+                        match.set("id", identifier)
+                        used_ids.add(identifier)
+                    attributes = {"href": f"#{identifier}"}
+                    for name in sorted(allowed_underlay_extra):
+                        value = underlay_path.get(name)
+                        if value is not None:
+                            attributes[name] = value
+                    replacements.append(
+                        ET.Element(
+                            "{http://www.w3.org/2000/svg}use",
+                            attributes,
+                        )
+                    )
+                for index, child in enumerate(underlay_paths):
+                    underlay.remove(child)
+                    underlay.insert(index, replacements[index])
+                reused_underlay_paths += len(replacements)
+
+            if (
+                removed_empty_paint == 0
+                and compacted_rectangles == 0
+                and reused_underlay_paths == 0
+                and shortened_mask_ids == 0
+            ):
                 return report
+
+            for element in root.iter():
+                if "data-vektoryum-source-alpha" in element.attrib:
+                    element.attrib.pop("data-vektoryum-source-alpha", None)
+                    stripped_metadata += 1
+                if element.get("transform") == "translate(0 0) scale(1 1)":
+                    element.attrib.pop("transform", None)
+                    stripped_metadata += 1
+                if element.text is not None and not element.text.strip():
+                    element.text = None
+                if element.tail is not None and not element.tail.strip():
+                    element.tail = None
+            if root.get("version") == "1.1":
+                root.attrib.pop("version", None)
+                stripped_metadata += 1
 
             ET.register_namespace("", "http://www.w3.org/2000/svg")
             candidate = ET.tostring(
                 root,
                 encoding="utf-8",
-                xml_declaration=accepted_bytes.startswith(b"<?xml"),
+                xml_declaration=False,
                 short_empty_elements=True,
             )
             if len(candidate) >= len(accepted_bytes):
                 return report
 
-            temporary = target.parent / f".{target.name}.empty-path-compact.svg"
+            temporary = target.parent / f".{target.name}.inert-alpha-compact.svg"
             temporary.write_bytes(candidate)
             try:
                 with Image.open(source) as source_image:
@@ -245,7 +440,11 @@ def _compact_inert_empty_path_paint(original_apply):
         result.update(validation)
         result["after_byte_size"] = int(target.stat().st_size)
         result["after_sha256"] = hashlib.sha256(target.read_bytes()).hexdigest()
-        result["empty_path_paint_attributes_removed"] = int(removed)
+        result["empty_path_paint_attributes_removed"] = int(removed_empty_paint)
+        result["dense_mask_rectangles_compacted"] = int(compacted_rectangles)
+        result["underlay_paths_reused"] = int(reused_underlay_paths)
+        result["source_mask_ids_shortened"] = int(shortened_mask_ids)
+        result["inert_alpha_metadata_removed"] = int(stripped_metadata)
         result["empty_path_artifact_compacted"] = True
         return result
 
