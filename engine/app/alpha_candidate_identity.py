@@ -167,11 +167,63 @@ def _simple_opaque_silhouette_quantization(alpha):
     return binary.astype(np.int32), {0: 0.0, 1: 1.0}
 
 
+def _coherent_silhouette_edge_rgb(rgba, compact):
+    """Prove one source RGB colour owns the silhouette's visible edge ribbon.
+
+    Transparent PNG RGB can be arbitrary, so the authority is the opaque inner rim.
+    Partially transparent pixels are used only as an independent agreement check.
+    A multicolour edge, gradient, shadow, or incoherent fringe fails closed.
+    """
+    import cv2  # noqa: PLC0415
+    import numpy as np  # noqa: PLC0415
+
+    pixels = np.asarray(rgba, dtype=np.uint8)
+    if pixels.ndim != 3 or pixels.shape[2] < 4:
+        return None
+    quantized = np.asarray(compact[0])
+    support = quantized > 0
+    if support.shape != pixels.shape[:2] or not bool(support.any()):
+        return None
+
+    alpha = pixels[:, :, 3]
+    rgb = pixels[:, :, :3]
+    distance = cv2.distanceTransform(
+        support.astype(np.uint8), cv2.DIST_L2, 5
+    )
+    max_side = float(max(support.shape))
+    ribbon_width = max(2.0, min(6.0, max_side / 256.0))
+    opaque_rim = support & (distance > 0.0) & (distance <= ribbon_width) & (alpha >= 250)
+    opaque_count = int(np.count_nonzero(opaque_rim))
+    if opaque_count < 32:
+        return None
+
+    rim_values = rgb[opaque_rim].astype(np.int16)
+    median = np.rint(np.median(rim_values, axis=0)).astype(np.int16)
+    rim_delta = np.max(np.abs(rim_values - median[None, :]), axis=1)
+    if float(np.mean(rim_delta <= 12)) < 0.90:
+        return None
+
+    visible_partial = (alpha >= 32) & (alpha < 250)
+    partial_count = int(np.count_nonzero(visible_partial))
+    if partial_count >= 16:
+        partial_values = rgb[visible_partial].astype(np.int16)
+        partial_median = np.rint(np.median(partial_values, axis=0)).astype(np.int16)
+        partial_delta = np.max(
+            np.abs(partial_values - partial_median[None, :]), axis=1
+        )
+        if float(np.mean(partial_delta <= 24)) < 0.80:
+            return None
+        if int(np.max(np.abs(partial_median - median))) > 24:
+            return None
+
+    return tuple(int(value) for value in np.clip(median, 0, 255))
+
+
 def _simple_silhouette_has_proven_canvas(
     svg_path: Path,
     source_path: Path,
 ):
-    """Return the compact grid only when a proven full-canvas underpaint exists."""
+    """Return compact silhouette evidence only with a proven full-canvas underpaint."""
     import xml.etree.ElementTree as ET  # noqa: PLC0415
 
     from app.alpha_candidate_background import (  # noqa: PLC0415
@@ -204,11 +256,16 @@ def _simple_silhouette_has_proven_canvas(
     )
     if status != "proven" or canvas is None:
         return None
-    return compact
+    return {
+        "compact": compact,
+        "edge_rgb": _coherent_silhouette_edge_rgb(grid_rgba, compact),
+        "grid_width": int(grid_width),
+        "grid_height": int(grid_height),
+    }
 
 
 def _install_simple_silhouette_quantizer() -> None:
-    """Bind compact, supportless silhouette as the final q32 painter candidate."""
+    """Bind compact, source-edge-aware silhouette painter candidates."""
     from app import alpha_candidate_painter as painter  # noqa: PLC0415
     from app import alpha_candidate_support as support  # noqa: PLC0415
 
@@ -235,45 +292,146 @@ def _install_simple_silhouette_quantizer() -> None:
 
     @wraps(original_apply)
     def apply_with_supportless_simple_silhouette(svg_path, source_path, mode):
-        compact = _simple_silhouette_has_proven_canvas(
+        evidence = _simple_silhouette_has_proven_canvas(
             Path(svg_path), Path(source_path)
         )
-        if compact is None:
+        if evidence is None:
             return original_apply(svg_path, source_path, mode)
+
+        compact = evidence["compact"]
+        edge_rgb = evidence.get("edge_rgb")
+        grid_width = int(evidence["grid_width"])
+        grid_height = int(evidence["grid_height"])
 
         original_strokes = painter._PAINTER_STROKE_PIXELS
         original_min_stroke = painter._PAINTER_UNDERPAINT_MIN_STROKE_PIXELS
         original_expand = support._expand_candidate_paint
+        original_builder = painter.build_painter_reconstruction_tree
 
         @wraps(original_expand)
-        def expand_or_preserve(node, stroke_width, inherited_fill=None):
-            if float(stroke_width) == 0.0:
-                # The proven full-canvas element is retained inside the same source
-                # alpha mask, so it supplies complete support. Preserve every artwork
-                # stroke/fill byte instead of manufacturing topology-changing support.
-                geometry_count = sum(
-                    1
-                    for child in node.iter()
-                    if support._local_name(str(child.tag)).lower()
-                    in support._GEOMETRY_TAGS
-                )
-                return max(1, int(geometry_count))
-            return original_expand(node, stroke_width, inherited_fill)
+        def preserve_artwork(node, stroke_width, inherited_fill=None):
+            # The proven full-canvas element supplies complete alpha support. Never
+            # widen every artwork path: the candidate stroke value is reserved for a
+            # single source-proven edge-colour contour below.
+            geometry_count = sum(
+                1
+                for child in node.iter()
+                if support._local_name(str(child.tag)).lower()
+                in support._GEOMETRY_TAGS
+            )
+            return max(1, int(geometry_count))
 
-        painter._PAINTER_STROKE_PIXELS = tuple(
-            dict.fromkeys((0.0, *original_strokes))
+        @wraps(original_builder)
+        def build_with_source_edge(
+            original_root,
+            canvas_element,
+            quantized,
+            opacity_by_level,
+            stroke_width,
+            mask_encoding="polygon",
+            transaction_id="",
+        ):
+            import xml.etree.ElementTree as ET  # noqa: PLC0415
+
+            from app.alpha_artwork_identity import (  # noqa: PLC0415
+                ROLE_MASK_GEOMETRY,
+                tag_transform_node,
+            )
+            from app.alpha_candidate_knockout import _viewbox  # noqa: PLC0415
+            from app.alpha_mask_contour import trace_cell_contours  # noqa: PLC0415
+
+            root, geometry = original_builder(
+                original_root,
+                canvas_element,
+                quantized,
+                opacity_by_level,
+                stroke_width,
+                mask_encoding=mask_encoding,
+                transaction_id=transaction_id,
+            )
+            width_pixels = float(stroke_width)
+            if edge_rgb is None or width_pixels <= 0.0:
+                return root, geometry
+
+            paint = next(
+                (
+                    node
+                    for node in root.iter()
+                    if node.get("data-vektoryum-alpha-candidate-paint")
+                    == "preserved-v1"
+                ),
+                None,
+            )
+            if paint is None:
+                return root, geometry
+
+            loops = trace_cell_contours(compact[0] > 0)
+            path_data, command_count = painter._rectilinear_subpaths(loops)
+            if not path_data:
+                return root, geometry
+
+            view_x, view_y, view_width, view_height = _viewbox(root)
+            qname = lambda name: f"{{{painter._SVG_NS}}}{name}"
+            red, green, blue = edge_rgb
+            edge = ET.SubElement(
+                paint,
+                qname("path"),
+                {
+                    "d": path_data,
+                    "fill": "none",
+                    "stroke": f"rgb({red},{green},{blue})",
+                    "stroke-width": f"{width_pixels:g}",
+                    "stroke-linejoin": "round",
+                    "stroke-linecap": "round",
+                    "transform": (
+                        f"translate({view_x:.12g} {view_y:.12g}) "
+                        f"scale({view_width / float(grid_width):.12g} "
+                        f"{view_height / float(grid_height):.12g})"
+                    ),
+                    "data-vektoryum-source-edge-support": "coherent-rim-v1",
+                },
+            )
+            tag_transform_node(edge, ROLE_MASK_GEOMETRY, transaction_id)
+            geometry["candidate_edge_support_path_count"] = 1
+            geometry["candidate_edge_support_command_count"] = int(command_count)
+            geometry["candidate_edge_support_width_pixels"] = width_pixels
+            geometry["contour_path_count"] = int(
+                geometry.get("contour_path_count", 0)
+            ) + 1
+            geometry["contour_command_count"] = int(
+                geometry.get("contour_command_count", 0)
+            ) + int(command_count)
+            return root, geometry
+
+        painter._PAINTER_STROKE_PIXELS = (
+            0.0,
+            1.0,
+            2.0,
+            3.0,
+            4.0,
+            6.0,
+            8.0,
         )
         painter._PAINTER_UNDERPAINT_MIN_STROKE_PIXELS = 0.0
-        support._expand_candidate_paint = expand_or_preserve
+        support._expand_candidate_paint = preserve_artwork
+        painter.build_painter_reconstruction_tree = build_with_source_edge
         try:
             report = original_apply(svg_path, source_path, mode)
         finally:
+            painter.build_painter_reconstruction_tree = original_builder
             support._expand_candidate_paint = original_expand
             painter._PAINTER_UNDERPAINT_MIN_STROKE_PIXELS = original_min_stroke
             painter._PAINTER_STROKE_PIXELS = original_strokes
 
-        if float(report.get("candidate_support_stroke_width_pixels") or 0.0) == 0.0:
-            report["candidate_support_expanded_geometry_count"] = 0
+        accepted_width = float(
+            report.get("candidate_support_stroke_width_pixels") or 0.0
+        )
+        report["candidate_support_expanded_geometry_count"] = 0
+        if accepted_width > 0.0 and edge_rgb is not None:
+            report["candidate_support_mode"] = "proven_source_edge_contour"
+            report["candidate_edge_support_width_pixels"] = accepted_width
+            report["candidate_edge_support_color_rgb"] = list(edge_rgb)
+        else:
             report["candidate_support_mode"] = (
                 "proven_canvas_underpaint_without_artwork_expansion"
             )
