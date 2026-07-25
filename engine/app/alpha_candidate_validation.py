@@ -13,6 +13,8 @@ together with absolute SSIM, topology, seam, color and complexity policy.
 from __future__ import annotations
 
 import gc
+import inspect
+from functools import wraps
 from pathlib import Path
 from typing import Any
 
@@ -185,3 +187,49 @@ def validate_alpha_reconstruction_contract(
     del report, root, source_rgb, source_alpha
     _release_transient_memory()
     return result
+
+
+def _install_dense_polygon_before_direct() -> None:
+    """Avoid a redundant direct-element probe for exact dense partial-alpha masks.
+
+    ``make_direct_element_alpha_first`` resolves the module global at call time.
+    Wrapping that global here lets the already validated dense-polygon encoder run
+    first only from the production ``direct_first`` orchestrator. Direct low-level
+    calls and their contracts remain unchanged. Every rejection restores the exact
+    parent bytes before delegating to the established direct/fallback chain.
+    """
+    from app import alpha_candidate_direct as direct_module  # noqa: PLC0415
+    from app.alpha_mask_adaptive import _apply_dense_polygon_alpha  # noqa: PLC0415
+
+    original = direct_module.apply_direct_element_alpha
+    if getattr(original, "__vektoryum_dense_polygon_before_direct__", False):
+        return
+
+    @wraps(original)
+    def dense_before_direct(svg_path: Path, source_path: Path, mode: str) -> dict[str, Any]:
+        frame = inspect.currentframe()
+        caller = frame.f_back if frame is not None else None
+        production_direct_first = bool(
+            caller is not None
+            and caller.f_code.co_name == "direct_first"
+            and caller.f_globals.get("__name__") == "app.alpha_candidate_direct"
+        )
+        del frame, caller
+        if not production_direct_first:
+            return original(Path(svg_path), Path(source_path), mode)
+
+        target = Path(svg_path)
+        source = Path(source_path)
+        parent = target.read_bytes()
+        try:
+            return _apply_dense_polygon_alpha(target, source, mode)
+        except Exception:  # noqa: BLE001 - existing direct/fallback chain is authoritative
+            if target.read_bytes() != parent:
+                target.write_bytes(parent)
+            return original(target, source, mode)
+
+    dense_before_direct.__vektoryum_dense_polygon_before_direct__ = True
+    direct_module.apply_direct_element_alpha = dense_before_direct
+
+
+_install_dense_polygon_before_direct()
