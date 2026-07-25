@@ -1,0 +1,66 @@
+name: Validation source snapshot
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/source-snapshot.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validation-source-snapshot-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Create deterministic repository snapshot
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p source-snapshot
+          git archive \
+            --format=tar.gz \
+            --prefix="vektoryum-v1-${HEAD_SHA}/" \
+            --output="source-snapshot/vektoryum-v1-${HEAD_SHA}.tar.gz" \
+            "${HEAD_SHA}"
+          sha256sum "source-snapshot/vektoryum-v1-${HEAD_SHA}.tar.gz" \
+            > "source-snapshot/vektoryum-v1-${HEAD_SHA}.tar.gz.sha256"
+          python - <<'PY'
+          import json
+          import os
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          payload = {
+              "schema": "vektoryum-validation-source-snapshot-v1",
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "head_sha": os.environ["HEAD_SHA"],
+              "workflow_run_id": os.environ["GITHUB_RUN_ID"],
+              "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+              "git_archive": True,
+              "working_tree_files_included": False,
+              "secrets_included": False,
+          }
+          Path("source-snapshot/provenance.json").write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: validation-source-snapshot-${{ github.event.pull_request.head.sha || github.sha }}
+          path: source-snapshot
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
