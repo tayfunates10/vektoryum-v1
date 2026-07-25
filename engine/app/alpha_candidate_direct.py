@@ -2,11 +2,13 @@
 
 The verbose raster-rectangle mask is a safe general fallback, but it is wasteful
 when the selected vector candidate already contains the exact source-support
-geometry. This module tries two renderer-proven, byte-transactional candidates
-before the existing mask chain:
+geometry. This module tries renderer-proven, byte-transactional candidates before
+the existing mask chain:
 
 * archive one color-agnostically proven comparison-canvas child in ``<defs>``;
-* assign one measured source-alpha opacity to each existing direct paint child.
+* archive same-canvas-colour negative-space children whose measured source alpha
+  support is exactly the transparent level;
+* assign one measured source-alpha opacity to each remaining direct paint child.
 
 No path data, path-command node, palette, gradient or evaluator threshold is
 changed. The candidate is published only after the existing direct alpha-plane
@@ -38,6 +40,7 @@ from app.alpha_candidate_knockout import (
     _render_root,
     _viewbox,
 )
+from app.alpha_candidate_paint_selection import comparison_canvas_rgb
 from app.alpha_candidate_validation import validate_alpha_reconstruction_contract
 from app.alpha_preprocess import _rgba_from_source_at_size
 from app.source_truth import resize_rgba
@@ -80,24 +83,24 @@ def _weighted_source_alpha_mode(
     weights = np.asarray(child_alpha, dtype=np.float64)[covered]
     histogram = np.bincount(values, weights=weights, minlength=256)
     level = int(np.argmax(histogram))
-    if level <= 0 or float(histogram[level]) <= 0.0:
-        raise RuntimeError("source_alpha_direct_child_has_no_source_support")
+    if float(histogram[level]) <= 0.0:
+        raise RuntimeError("source_alpha_direct_child_support_unmeasured")
     return level
 
 
-def _archive_background(
+def _archive_indexes(
     root: ET.Element,
-    background_index: int,
+    archive_reasons: dict[int, str],
 ) -> None:
+    if not archive_reasons:
+        return
     children = list(root)
-    if background_index < 0 or background_index >= len(children):
-        raise RuntimeError("source_alpha_direct_background_index_drift")
-    background = children[background_index]
-    root.remove(background)
-    background.set(
-        "data-vektoryum-comparison-canvas-archive",
-        "renderer-proven-v1",
-    )
+    selected: list[tuple[ET.Element, str]] = []
+    for index, reason in sorted(archive_reasons.items()):
+        if index < 0 or index >= len(children):
+            raise RuntimeError("source_alpha_direct_archive_index_drift")
+        selected.append((children[index], reason))
+
     defs = next(
         (
             child
@@ -109,7 +112,11 @@ def _archive_background(
     if defs is None:
         defs = ET.Element(f"{{{_SVG_NS}}}defs")
         root.insert(0, defs)
-    defs.append(background)
+
+    for element, reason in selected:
+        root.remove(element)
+        element.set("data-vektoryum-source-alpha-archive", reason)
+        defs.append(element)
 
 
 def _direct_renderable_indexes(root: ET.Element) -> list[int]:
@@ -150,12 +157,18 @@ def _build_direct_candidate(
         if status == "proven" and background is not None
         else None
     )
+    canvas_rgb = comparison_canvas_rgb(background) if background is not None else None
     source_alpha = np.asarray(source_eval[:, :, 3], dtype=np.uint8)
     nonzero_levels = [int(value) for value in np.unique(source_alpha) if int(value) > 0]
     if not nonzero_levels:
         raise RuntimeError("source_alpha_direct_empty_source")
 
     assignments: list[tuple[int, int]] = []
+    archive_reasons: dict[int, str] = {}
+    if background_index is not None:
+        archive_reasons[background_index] = "renderer-proven-comparison-canvas-v1"
+
+    negative_space_count = 0
     for index in _direct_renderable_indexes(original_root):
         if background_index is not None and index == background_index:
             continue
@@ -172,6 +185,15 @@ def _build_direct_candidate(
         if rendered.shape[:2] != (eval_height, eval_width):
             rendered = resize_rgba(rendered, eval_width, eval_height)
         level = _weighted_source_alpha_mode(rendered[:, :, 3], source_alpha)
+        if level == 0:
+            child_rgb = comparison_canvas_rgb(child)
+            if canvas_rgb is None or child_rgb != canvas_rgb:
+                raise RuntimeError(
+                    "source_alpha_direct_transparent_child_not_canvas_colour"
+                )
+            archive_reasons[index] = "measured-canvas-colour-negative-space-v1"
+            negative_space_count += 1
+            continue
         assignments.append((index, level))
 
     if not assignments:
@@ -194,12 +216,12 @@ def _build_direct_candidate(
             )
             translucent_count += 1
 
-    if background_index is not None:
-        _archive_background(candidate_root, background_index)
+    _archive_indexes(candidate_root, archive_reasons)
 
     return candidate_root, {
         "background_status": status,
         "comparison_canvas_archived": background_index is not None,
+        "canvas_colour_negative_space_archive_count": int(negative_space_count),
         "direct_child_count": int(assigned_count),
         "direct_translucent_child_count": int(translucent_count),
         "source_nonzero_alpha_levels": nonzero_levels,
