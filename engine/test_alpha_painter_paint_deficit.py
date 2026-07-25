@@ -173,9 +173,12 @@ class PaintDeficitCandidateTests(unittest.TestCase):
             )
 
     def test_production_module_has_no_fixture_specific_branch(self):
-        text = Path(
-            "engine/app/alpha_candidate_paint_deficit.py"
-        ).read_text(encoding="utf-8")
+        module_path = (
+            Path(__file__).resolve().parent
+            / "app"
+            / "alpha_candidate_paint_deficit.py"
+        )
+        text = module_path.read_text(encoding="utf-8")
         self.assertNotIn("class_reklam", text)
         self.assertNotIn("qualification-public", text)
 
