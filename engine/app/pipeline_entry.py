@@ -15,9 +15,16 @@ from PIL import Image
 
 from app.pipeline import WorkerFailure
 from app.pipeline import run_pipeline as _run_pipeline_core
+from app.alpha_soft_ellipse import install_soft_ellipse_alpha
 from app.pipeline_canonical_report import maybe_attach_canonical_svg_candidate
 from app.production_export_integration import register_pipeline_canonical_report
 from app.shadow_runtime import maybe_attach_shadow_telemetry
+
+
+# The application package assembles the established alpha chain during import.
+# Install the measured ellipse candidate afterwards so it remains a narrow,
+# byte-transactional first attempt and all existing fallbacks stay authoritative.
+install_soft_ellipse_alpha()
 
 
 def _audit_path(job_dir: Path) -> Path | None:
