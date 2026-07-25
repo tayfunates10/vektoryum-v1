@@ -11,6 +11,10 @@ def _app() -> FastAPI:
     install_platform_security(app)
     install_platform_security(app)  # idempotency contract
 
+    @app.get("/")
+    async def index():
+        return {"ok": True}
+
     @app.get("/ok")
     async def ok():
         return {"ok": True}
@@ -64,8 +68,11 @@ def test_security_headers_and_sensitive_cache_policy() -> None:
     assert normal.headers["x-frame-options"] == "DENY"
     assert normal.headers["referrer-policy"] == "no-referrer"
     assert normal.headers["permissions-policy"] == "camera=(), microphone=(), geolocation=()"
-    assert "frame-ancestors 'none'" in normal.headers["content-security-policy"]
+    assert "content-security-policy" not in normal.headers
     assert "cache-control" not in normal.headers
+
+    platform_page = client.get("/")
+    assert "frame-ancestors 'none'" in platform_page.headers["content-security-policy"]
 
     sensitive = client.get("/api/auth/me")
     assert sensitive.headers["cache-control"] == "no-store"
