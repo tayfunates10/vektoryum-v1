@@ -133,6 +133,7 @@ if not getattr(_pipeline.run_pipeline, "__vektoryum_auto_gate_wrapped__", False)
 
 
 from app import alpha_svg_mask as _alpha_svg_mask
+from app.alpha_candidate_direct import make_direct_element_alpha_first
 from app.alpha_candidate_identity import (
     wrap_run_pipeline_preserving_candidate_identity,
 )
@@ -170,21 +171,19 @@ from app.alpha_mask_adaptive import (
 )
 from app.alpha_mask_budget import wrap_apply_source_alpha_mask
 
-# The preflight computes the unchanged TransformJournal path/node/byte budgets.
-# Rect encoding remains the default; compact paths are authorized when rect bytes
-# do not fit, or after the exact rect mask render fails alpha fidelity and the same
-# unchanged compact budgets independently admit a contour retry. An opaque trace
-# canvas is then removed only when renderer probes prove its identity. If clipping
-# the unchanged candidate paint still lacks source-edge support, the smallest
-# same-color stroke painted behind the existing fill is measured on the renderer's
-# native grid. Repeated rectangles use compact references so the unchanged byte
-# budget remains authoritative. Rollback wraps every rejected representation.
-_alpha_svg_mask.apply_source_alpha_mask = make_candidate_support_reconstruction_fallback(
-    make_candidate_geometry_knockout_fallback(
-        make_rect_fidelity_fallback(
-            wrap_apply_source_alpha_mask(
-                make_adaptive_apply_source_alpha_mask(
-                    _alpha_svg_mask.apply_source_alpha_mask
+# First try representing source alpha directly with the already-selected vector
+# elements: archive only a renderer-proven comparison canvas or assign measured
+# per-child opacity. The same alpha/evaluator/journal contracts remain mandatory.
+# Any rejection delegates byte-identically to the established adaptive rect,
+# contour, knockout and support reconstruction chain below.
+_alpha_svg_mask.apply_source_alpha_mask = make_direct_element_alpha_first(
+    make_candidate_support_reconstruction_fallback(
+        make_candidate_geometry_knockout_fallback(
+            make_rect_fidelity_fallback(
+                wrap_apply_source_alpha_mask(
+                    make_adaptive_apply_source_alpha_mask(
+                        _alpha_svg_mask.apply_source_alpha_mask
+                    )
                 )
             )
         )
