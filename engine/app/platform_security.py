@@ -42,7 +42,10 @@ def _apply_security_headers(response: Response, path: str) -> Response:
         "Permissions-Policy",
         "camera=(), microphone=(), geolocation=()",
     )
-    _set_default_header(response, "Content-Security-Policy", _CONTENT_SECURITY_POLICY)
+    # The custom application/admin documents are self-contained. Scope CSP to
+    # those pages so FastAPI's optional CDN-backed /docs UI keeps working.
+    if path == "/" or path.startswith("/admin"):
+        _set_default_header(response, "Content-Security-Policy", _CONTENT_SECURITY_POLICY)
     if path.startswith(_NO_STORE_PREFIXES):
         _set_default_header(response, "Cache-Control", "no-store")
     return response
