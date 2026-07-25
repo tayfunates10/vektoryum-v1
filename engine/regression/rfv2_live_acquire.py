@@ -35,19 +35,6 @@ class _AssetLinkParser(HTMLParser):
 
 _URL_RE = re.compile(r"https?:\\?/\\?/[^\s\"'<>]+", re.IGNORECASE)
 
-# Openclipart normally redirects short numeric detail URLs to the canonical slug
-# page. Asset 345253 intermittently rejects that redirect on GitHub-hosted
-# runners while the canonical page for the same immutable provider ID remains
-# available. Keep the reviewed provider identity and asset URL unchanged; only
-# normalize the machine-readable source-page snapshot to the provider's own
-# canonical URL before acquisition.
-_OPENCLIPART_CANONICAL_SOURCE_PAGES = {
-    "345253": (
-        "https://openclipart.org/detail/345253/"
-        "my-pronouns-are-custom-lgbt-orange-square-badge"
-    ),
-}
-
 
 def _candidate_score(url: str) -> tuple[int, int, str]:
     lowered = url.lower()
@@ -144,19 +131,6 @@ def resolve_openclipart_asset_url(
 
 def prepare_live_provider_case(case: dict[str, Any], manifest: dict[str, Any]) -> dict[str, Any]:
     prepared = dict(case)
-    if prepared["provider"] == "openclipart":
-        canonical = _OPENCLIPART_CANONICAL_SOURCE_PAGES.get(prepared["provider_asset_id"])
-        if canonical:
-            allowed_hosts = {host.lower() for host in manifest["allowed_source_hosts"]}
-            parsed = urllib.parse.urlsplit(
-                public_acquire._validated_https_url(canonical, allowed_hosts, "Openclipart canonical source page")
-            )
-            expected_prefix = f"/detail/{prepared['provider_asset_id']}/"
-            if parsed.hostname != "openclipart.org" or not parsed.path.startswith(expected_prefix):
-                raise public_acquire.PublicSourceError("Openclipart canonical source-page identity mismatch")
-            prepared["source_page_url"] = canonical
-        return prepared
-
     if prepared["provider"] != "library_of_congress":
         return prepared
 
