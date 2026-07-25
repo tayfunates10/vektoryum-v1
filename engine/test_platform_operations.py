@@ -24,15 +24,18 @@ def test_modes_health_correlation_and_maintenance(monkeypatch: pytest.MonkeyPatc
         return {"ok": True}
 
     state = install_platform_operations(app, revision="abc123")
+    assert app.state.platform_security_installed is True
     with TestClient(app) as client:
         live = client.get("/livez")
         assert live.json() == {"status": "ok", "check": "liveness", "mode": "beta", "revision": "abc123"}
+        assert live.headers["x-content-type-options"] == "nosniff"
         ready = client.get("/readyz")
         assert ready.status_code == 200
         assert ready.json()["status"] == "ready"
         response = client.post("/write", headers={"X-Correlation-ID": "cid-1"})
         assert response.status_code == 200
         assert response.headers["X-Correlation-ID"] == "cid-1"
+        assert response.headers["x-frame-options"] == "DENY"
         monkeypatch.setenv("VEKTORYUM_SERVICE_MODE", "maintenance")
         blocked = client.post("/write")
         assert blocked.status_code == 503

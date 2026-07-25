@@ -2,13 +2,12 @@ name: Real-world fidelity RFV-3B live production measurement
 
 on:
   pull_request:
-    # The 24-case x 3-repeat live run is intentionally limited to changes that
-    # can affect corpus acquisition, the production vectorizer, measurement
-    # contracts or this workflow. Diagnostics/docs-only PRs use their fast
-    # contract workflows instead of re-running the multi-hour live benchmark.
+    # Run the 24-case x 3-repeat production benchmark only when vector output,
+    # corpus identity or measurement contracts can change. Platform-only HTTP,
+    # auth, frontend and operations changes have their own production contract.
     paths:
-      - ".github/workflows/real-world-fidelity-rfv3b-live.yml"
       - "engine/app/**"
+      - "!engine/app/platform_*.py"
       - "engine/benchmark/**"
       - "engine/requirements.txt"
       - "engine/regression/rfv2_*.py"
@@ -18,6 +17,7 @@ on:
       - "engine/regression/rfv3_measurement_runner.py"
       - "engine/regression/test_rfv3_measurement_runner.py"
       - "engine/regression/rfv3_measurement_policy.json"
+  workflow_dispatch:
 
 permissions:
   contents: read

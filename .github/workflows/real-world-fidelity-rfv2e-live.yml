@@ -2,6 +2,20 @@ name: Real-world fidelity RFV-2E live acquisition evidence
 
 on:
   pull_request:
+    # Live third-party acquisition is evidence for corpus/source changes, not a
+    # general application PR check. Keep deterministic contracts elsewhere and
+    # avoid making unrelated PRs depend on temporary provider availability.
+    paths:
+      - "engine/regression/rfv1_intake_policy.json"
+      - "engine/regression/rfv2_public_source_manifest.json"
+      - "engine/regression/rfv2_public_source_acquire.py"
+      - "engine/regression/rfv2_live_acquire.py"
+      - "engine/regression/rfv2_manifest_assembler.py"
+      - "engine/regression/rfv2_live_bundle.py"
+      - "engine/regression/rfv2_secure_intake.py"
+      - "engine/regression/test_rfv2_live_acquire.py"
+      - "engine/regression/test_rfv2_live_bundle.py"
+  workflow_dispatch:
 
 permissions:
   contents: read

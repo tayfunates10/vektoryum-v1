@@ -8,6 +8,7 @@ on:
       - "engine/test_platform_identity.py"
       - "engine/test_platform_persistence.py"
       - "engine/test_platform_operations.py"
+      - "engine/test_platform_security.py"
       - "engine/app/**"
       - "docs/PRODUCTION_PLATFORM_ROADMAP.md"
       - "Dockerfile"
@@ -19,6 +20,7 @@ on:
       - "engine/production_platform_roadmap.json"
       - "engine/test_production_platform_roadmap.py"
       - "engine/test_platform_operations.py"
+      - "engine/test_platform_security.py"
       - "engine/app/**"
       - "Dockerfile"
       - ".github/workflows/production-platform-contract.yml"
@@ -59,8 +61,8 @@ jobs:
         run: python -m pytest -q test_platform_identity.py test_runtime_main.py
       - name: Validate PPC-3 durable persistence contract
         run: python -m pytest -q test_platform_persistence.py
-      - name: Validate PPC-4 operations contract
-        run: python -m pytest -q test_platform_operations.py
+      - name: Validate PPC-4 operations and HTTP security contracts
+        run: python -m pytest -q test_platform_operations.py test_platform_security.py
 
   container-smoke:
     runs-on: ubuntu-latest
@@ -71,6 +73,11 @@ jobs:
         run: docker build -t vektoryum-ppc4:${GITHUB_SHA} .
       - name: Verify non-root image user
         run: test "$(docker image inspect vektoryum-ppc4:${GITHUB_SHA} --format '{{.Config.User}}')" = "appuser"
+      - name: Verify production security environment
+        run: |
+          docker image inspect vektoryum-ppc4:${GITHUB_SHA} --format '{{range .Config.Env}}{{println .}}{{end}}' > /tmp/vektoryum-image-env
+          grep -qx 'VEKTORYUM_ENVIRONMENT=production' /tmp/vektoryum-image-env
+          grep -qx 'VEKTORYUM_COOKIE_SECURE=1' /tmp/vektoryum-image-env
       - name: Start bounded container
         run: >-
           docker run -d --name vektoryum-ppc4
