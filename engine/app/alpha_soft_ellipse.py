@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import math
 import os
 import xml.etree.ElementTree as ET
 from functools import wraps
@@ -72,8 +73,12 @@ def _binary_iou(first: np.ndarray, second: np.ndarray) -> float:
 
 def fit_soft_ellipse(
     alpha: np.ndarray,
-) -> tuple[tuple[int, int, int, int], float] | None:
-    """Return a measured ellipse bbox only for a simple antialiased boundary."""
+) -> tuple[
+    tuple[int, int, int, int],
+    tuple[float, float, float, float],
+    float,
+] | None:
+    """Return measured ellipse geometry only for a simple antialiased boundary."""
     plane = np.asarray(alpha, dtype=np.uint8)
     if plane.ndim != 2 or min(plane.shape) < 16:
         return None
@@ -90,7 +95,9 @@ def fit_soft_ellipse(
     if box is None:
         return None
     x0, y0, x1, y1 = box
-    if x1 - x0 < 8 or y1 - y0 < 8:
+    box_width = x1 - x0 + 1
+    box_height = y1 - y0 + 1
+    if box_width < 9 or box_height < 9:
         return None
 
     primitive = _ellipse_mask(plane.shape, box)
@@ -100,7 +107,7 @@ def fit_soft_ellipse(
 
     # A true alpha boundary has an opaque interior. This rejects translucent
     # ellipses, internal holes and approximately oval multi-object silhouettes.
-    inset = max(2, int(round(min(x1 - x0 + 1, y1 - y0 + 1) * 0.005)))
+    inset = max(2, int(round(min(box_width, box_height) * 0.005)))
     inner_box = (x0 + inset, y0 + inset, x1 - inset, y1 - inset)
     inner = _ellipse_mask(plane.shape, inner_box)
     if not bool(np.any(inner)):
@@ -109,13 +116,28 @@ def fit_soft_ellipse(
     if opaque_fraction < _MIN_INNER_OPAQUE_FRACTION:
         return None
 
-    return box, overlap
+    # The alpha integral is the coverage area of the antialiased ellipse. Derive
+    # sub-pixel radii from that area while retaining the measured bounding-box
+    # aspect ratio. This avoids the half/one-pixel shrink introduced by choosing a
+    # radius solely from the alpha>=128 bbox.
+    alpha_area = float(np.asarray(plane, dtype=np.float64).sum() / 255.0)
+    aspect = float(box_width / box_height)
+    if alpha_area <= 0.0 or aspect <= 0.0:
+        return None
+    radius_x = math.sqrt(alpha_area * aspect / math.pi)
+    radius_y = math.sqrt(alpha_area / (aspect * math.pi))
+    center_x = (x0 + x1 + 1) / 2.0
+    center_y = (y0 + y1 + 1) / 2.0
+    if radius_x > box_width / 2.0 + 1.0 or radius_y > box_height / 2.0 + 1.0:
+        return None
+
+    return box, (center_x, center_y, radius_x, radius_y), overlap
 
 
 def _build_soft_ellipse_tree(
     original_root: ET.Element,
     alpha_shape: tuple[int, int],
-    box: tuple[int, int, int, int],
+    geometry: tuple[float, float, float, float],
     transaction_id: str,
 ) -> ET.Element:
     from app.alpha_artwork_identity import (
@@ -184,17 +206,15 @@ def _build_soft_ellipse_tree(
         },
     )
 
-    x0, y0, x1, y1 = box
-    # Inclusive raster bounds represent pixel centres. The +1 centre offset and
-    # half-open radius preserve the original antialiased circle registration.
+    center_x, center_y, radius_x, radius_y = geometry
     ET.SubElement(
         content,
         qname("ellipse"),
         {
-            "cx": f"{(x0 + x1 + 1) / 2.0:g}",
-            "cy": f"{(y0 + y1 + 1) / 2.0:g}",
-            "rx": f"{(x1 - x0) / 2.0:g}",
-            "ry": f"{(y1 - y0) / 2.0:g}",
+            "cx": f"{center_x:.12g}",
+            "cy": f"{center_y:.12g}",
+            "rx": f"{radius_x:.12g}",
+            "ry": f"{radius_y:.12g}",
             "fill": "white",
         },
     )
@@ -247,7 +267,7 @@ def apply_soft_ellipse_alpha(
     fitted = fit_soft_ellipse(source_alpha)
     if fitted is None:
         raise RuntimeError("source_alpha_soft_ellipse_not_applicable")
-    box, binary_overlap = fitted
+    box, geometry, binary_overlap = fitted
 
     parent_sha = hashlib.sha256(before_bytes).hexdigest()
     alpha_sha = hashlib.sha256(
@@ -257,7 +277,7 @@ def apply_soft_ellipse_alpha(
     candidate_root = _build_soft_ellipse_tree(
         original_root,
         source_alpha.shape,
-        box,
+        geometry,
         transaction_id,
     )
     temporary = _write_tree_to_temp(candidate_root, target)
@@ -281,6 +301,7 @@ def apply_soft_ellipse_alpha(
         if temporary is not None:
             temporary.unlink(missing_ok=True)
 
+    center_x, center_y, radius_x, radius_y = geometry
     return {
         "status": "accepted",
         "applied": True,
@@ -294,6 +315,12 @@ def apply_soft_ellipse_alpha(
         "candidate_path_data_preserved": True,
         "candidate_identity_preserved": True,
         "soft_ellipse_bbox": [int(value) for value in box],
+        "soft_ellipse_geometry": [
+            float(center_x),
+            float(center_y),
+            float(radius_x),
+            float(radius_y),
+        ],
         "soft_ellipse_binary_iou": float(binary_overlap),
         "preflight_parent_path_count": int(parent_counts[0]),
         "preflight_parent_node_count": int(parent_counts[1]),
