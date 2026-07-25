@@ -1,6 +1,7 @@
 """Choose a leaner measured parent before final source-alpha masking."""
 from __future__ import annotations
 
+import hashlib
 import shutil
 import tempfile
 from functools import wraps
@@ -16,6 +17,13 @@ _SUPPORTED_MODES = {
     "flat_logo",
     "logo_color",
     "photo_poster",
+}
+_MODE_IMAGE_CLASS = {
+    "geometric_logo": "geometric",
+    "minimal_ai": "clean_logo",
+    "flat_logo": "clean_logo",
+    "logo_color": "clean_logo",
+    "photo_poster": "photo",
 }
 _MAX_ALPHA_LEVELS = 4
 _MAX_TRIALS = 4
@@ -39,6 +47,22 @@ def _edge_f1(candidate: dict[str, Any]) -> float | None:
         if value is not None:
             return float(value)
     return None
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def _journal_source_rgb(source_path: Path) -> np.ndarray:
+    with Image.open(Path(source_path)) as source:
+        rgba = np.asarray(source.convert("RGBA"), dtype=np.uint8).copy()
+    alpha = rgba[:, :, 3].astype(np.float32)[:, :, None] / 255.0
+    return np.clip(
+        rgba[:, :, :3].astype(np.float32) * alpha
+        + 255.0 * (1.0 - alpha),
+        0.0,
+        255.0,
+    ).astype(np.uint8)
 
 
 def _shortlist(result: dict[str, Any]) -> list[dict[str, Any]]:
@@ -135,7 +159,74 @@ def choose_alpha_parent_trial(
     )
 
 
+def _bind_parent_selection_journal(
+    result: dict[str, Any],
+    *,
+    best_path: Path,
+    selected_path: Path,
+    source_path: Path,
+    mode: str,
+    trial: dict[str, Any],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None, str | None]:
+    """Accept alternate-parent selection as an explicit journal boundary.
+
+    Parent selection changes the artifact that the subsequent alpha journal uses as
+    its baseline. Without this stage, the previous journal still ends at the old
+    winner and the merged chain correctly reports both a stage-parent and journal-
+    boundary mismatch. The alternate parent is therefore admitted only through the
+    unchanged TransformJournal gates; rejection simply preserves the original best.
+    """
+    existing = result.get("transform_journal")
+    best_sha = _sha256(best_path)
+    if isinstance(existing, dict):
+        existing_final = existing.get("final_accepted_sha256")
+        if existing_final and existing_final != best_sha:
+            return None, None, "existing_journal_best_mismatch"
+
+    from app.transform_journal import TransformJournal, merge_journal_reports  # noqa: PLC0415
+
+    journal = TransformJournal(
+        best_path,
+        _journal_source_rgb(source_path),
+        image_class=_MODE_IMAGE_CLASS.get(mode, "clean_logo"),
+        required_metrics=set(),
+    )
+    accepted_path, stage = journal.consider_candidate(
+        "source_alpha_parent_selection",
+        best_path,
+        selected_path,
+        transform_report={
+            "schema": "vektoryum-alpha-parent-selection-v1",
+            "selected_fidelity_score": float(trial["fidelity_score"]),
+            "selected_edge_f1": trial.get("edge_f1"),
+            "selected_path_count_after_alpha": int(trial["path_count"]),
+            "selected_byte_size_after_alpha": int(trial["byte_size"]),
+        },
+    )
+    if accepted_path != selected_path:
+        reasons = ",".join(stage.get("reason_codes") or ["journal_rejected"])
+        return None, stage, f"journal_rejected:{reasons}"
+
+    merged = merge_journal_reports(
+        existing if isinstance(existing, dict) else None,
+        journal.to_dict(),
+    )
+    if not merged or not merged.get("chain_valid", False):
+        codes = ",".join(
+            (merged or {}).get("chain_failure_codes") or ["journal_merge_failed"]
+        )
+        return None, stage, f"journal_chain_invalid:{codes}"
+    return merged, stage, None
+
+
 def _select(result: dict[str, Any], source_path: Path, job_dir: Path) -> dict[str, Any]:
+    from app.alpha_pipeline_retry import alpha_remediation_enabled  # noqa: PLC0415
+
+    # The legacy-first pass must preserve the established winner and its bytes.
+    # Alternate-parent trials are authorized only in the bounded remediation pass.
+    if not alpha_remediation_enabled():
+        return result
+
     best = result.get("best")
     mode = str(result.get("mode_used") or "")
     if not isinstance(best, dict) or mode not in _SUPPORTED_MODES:
@@ -195,7 +286,28 @@ def _select(result: dict[str, Any], source_path: Path, job_dir: Path) -> dict[st
     if selected_path is None or best_path is None or selected_path.resolve() == best_path.resolve():
         return result
 
+    merged_journal, selection_stage, rejection = _bind_parent_selection_journal(
+        result,
+        best_path=best_path,
+        selected_path=selected_path,
+        source_path=source_path,
+        mode=mode,
+        trial=chosen,
+    )
+    if rejection is not None or merged_journal is None:
+        result["alpha_parent_selection"] = {
+            "status": "preserved_original",
+            "reason": rejection or "journal_not_available",
+            "source_alpha_level_count": int(len(levels)),
+            "original_candidate_name": str(best.get("name") or best_path.stem),
+            "proposed_candidate_name": str(candidate.get("name") or selected_path.stem),
+            "trial_count": len(trials),
+            "journal_stage": selection_stage,
+        }
+        return result
+
     result["best"] = candidate
+    result["transform_journal"] = merged_journal
     result["selection_reason"] = (
         f"{result.get('selection_reason') or 'selected'}+alpha_parent_editability"
     )
@@ -211,6 +323,8 @@ def _select(result: dict[str, Any], source_path: Path, job_dir: Path) -> dict[st
         "selected_byte_size_after_alpha": int(chosen["byte_size"]),
         "fidelity_margin": _FIDELITY_MARGIN,
         "edge_f1_margin": _EDGE_MARGIN,
+        "journal_stage_status": str((selection_stage or {}).get("status") or "accepted"),
+        "journal_chain_valid": True,
     }
     return result
 
