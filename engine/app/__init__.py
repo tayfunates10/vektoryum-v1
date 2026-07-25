@@ -7,7 +7,7 @@ from app import vector_engines as _vector_engines
 
 
 def _lazy_graph_centerline(*args, **kwargs):
-    from app.centerline_svg import vectorize_skeleton_graph_to_svg  # noqa: PLC0415
+    from app.centerline_svg import vectorize_skeleton_graph_to_svg
 
     return vectorize_skeleton_graph_to_svg(*args, **kwargs)
 
@@ -21,13 +21,13 @@ if not getattr(_analyzer.analyze_image_from_mem, "__vektoryum_contract_wrapped__
 
     @wraps(_original_analyze_image_from_mem)
     def _analyze_image_from_mem_with_contract(image):
-        from app.analyzer_decision_gate import consume_precomputed_analysis  # noqa: PLC0415
+        from app.analyzer_decision_gate import consume_precomputed_analysis
 
         precomputed = consume_precomputed_analysis()
         if precomputed is not None:
             return precomputed
         report = _original_analyze_image_from_mem(image)
-        from app.analyzer_contracts import attach_analyzer_contract  # noqa: PLC0415
+        from app.analyzer_contracts import attach_analyzer_contract
 
         return attach_analyzer_contract(report, image)
 
@@ -78,7 +78,7 @@ if not getattr(_pipeline.run_pipeline, "__vektoryum_auto_gate_wrapped__", False)
         refine=True,
         edge_cleanup=True,
     ):
-        from app.analyzer_decision_gate import (  # noqa: PLC0415
+        from app.analyzer_decision_gate import (
             bind_precomputed_analysis,
             decide_trace_mode,
             reset_precomputed_analysis,
@@ -123,7 +123,7 @@ if not getattr(_pipeline.run_pipeline, "__vektoryum_auto_gate_wrapped__", False)
             else None
         )
         if decision["status"] == "needs_review":
-            from app.analyzer_runtime import register_job_auto_decision  # noqa: PLC0415
+            from app.analyzer_runtime import register_job_auto_decision
 
             register_job_auto_decision(job_dir, decision)
         return result
@@ -144,7 +144,9 @@ from app.alpha_candidate_knockout import (
 )
 from app import alpha_candidate_support as _alpha_candidate_support
 from app.alpha_candidate_support_compact import (
+    _compact_direct_artifact,
     build_compact_native_use_reconstruction_tree,
+    make_compact_primitive_alpha_first,
 )
 from app.alpha_candidate_validation import (
     validate_alpha_reconstruction_contract,
@@ -162,7 +164,7 @@ _alpha_candidate_knockout._validate_reconstruction = (
 _alpha_candidate_support._validate_reconstruction = (
     validate_alpha_reconstruction_contract
 )
-from app.alpha_candidate_support import (  # noqa: E402
+from app.alpha_candidate_support import (
     make_candidate_support_reconstruction_fallback,
 )
 from app.alpha_mask_adaptive import (
@@ -171,24 +173,23 @@ from app.alpha_mask_adaptive import (
 )
 from app.alpha_mask_budget import wrap_apply_source_alpha_mask
 
-# First try representing source alpha directly with the already-selected vector
-# elements: archive only a renderer-proven comparison canvas or assign measured
-# per-child opacity. The same alpha/evaluator/journal contracts remain mandatory.
-# Any rejection delegates byte-identically to the established adaptive rect,
-# contour, knockout and support reconstruction chain below.
-_alpha_svg_mask.apply_source_alpha_mask = make_direct_element_alpha_first(
-    make_candidate_support_reconstruction_fallback(
-        make_candidate_geometry_knockout_fallback(
-            make_rect_fidelity_fallback(
-                wrap_apply_source_alpha_mask(
-                    make_adaptive_apply_source_alpha_mask(
-                        _alpha_svg_mask.apply_source_alpha_mask
-                    )
-                )
-            )
+# Bind the compact primitive before the guarded rect/path adapter. The final
+# compactor is deliberately outermost so a direct rejection followed by a clip
+# fallback is still compacted and revalidated before publication.
+_adaptive_alpha_builder = make_compact_primitive_alpha_first(
+    make_adaptive_apply_source_alpha_mask(_alpha_svg_mask.apply_source_alpha_mask)
+)
+_guarded_alpha_builder = make_candidate_support_reconstruction_fallback(
+    make_candidate_geometry_knockout_fallback(
+        make_rect_fidelity_fallback(
+            wrap_apply_source_alpha_mask(_adaptive_alpha_builder)
         )
     )
 )
+_alpha_svg_mask.apply_source_alpha_mask = _compact_direct_artifact(
+    make_direct_element_alpha_first(_guarded_alpha_builder)
+)
+
 # For low-level source alpha, trial at most four already-produced parents through
 # the real guarded alpha transform. Parent reselection is active only during the
 # bounded remediation pass; the legacy-first pass keeps the original winner.
@@ -224,7 +225,7 @@ if not getattr(
     @wraps(_original_evaluate_final_svg)
     def _evaluate_final_svg_with_auto_review(svg_path, *args, **kwargs):
         report = _original_evaluate_final_svg(svg_path, *args, **kwargs)
-        from app.analyzer_runtime import take_final_svg_auto_decision  # noqa: PLC0415
+        from app.analyzer_runtime import take_final_svg_auto_decision
 
         decision = take_final_svg_auto_decision(svg_path)
         if isinstance(decision, dict) and decision.get("status") == "needs_review":
