@@ -14,6 +14,12 @@ from engine.regression import rfv2_public_source_acquire as public_acquire
 FetchResult = tuple[bytes, str, str]
 FetchFunction = Callable[[str, set[str], int], FetchResult]
 
+_OPENCLIPART_USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36 "
+    "Vektoryum-RFV2-Public-Acquirer/1.0"
+)
+
 
 class _AssetLinkParser(HTMLParser):
     def __init__(self) -> None:
@@ -33,7 +39,7 @@ class _AssetLinkParser(HTMLParser):
                 self.values.append(value)
 
 
-_URL_RE = re.compile(r"https?:\\?/\\?/[^\s\"'<>]+", re.IGNORECASE)
+_URL_RE = re.compile(r"https?:\\?/\\?/[^^\s\"'<>]+".replace("^^", "^"), re.IGNORECASE)
 
 # Openclipart's identifier-only detail routes are intermittently unavailable to
 # automated clients while the same reviewed records remain live at their
@@ -74,7 +80,13 @@ def _candidate_score(url: str) -> tuple[int, int, str]:
         score += 80
     if "/download/" in lowered:
         score += 20
-    for size, weight in (("2400px", 40), ("2000px", 35), ("1200px", 30), ("800px", 25), ("400px", 20)):
+    for size, weight in (
+        ("2400px", 40),
+        ("2000px", 35),
+        ("1200px", 30),
+        ("800px", 25),
+        ("400px", 20),
+    ):
         if size in lowered:
             score += weight
             break
@@ -104,7 +116,9 @@ def extract_openclipart_candidates(
     try:
         text = source_page.decode("utf-8", errors="replace")
     except Exception as exc:  # pragma: no cover - bytes.decode is deterministic
-        raise public_acquire.PublicSourceError("Openclipart source page could not be decoded") from exc
+        raise public_acquire.PublicSourceError(
+            "Openclipart source page could not be decoded"
+        ) from exc
 
     parser = _AssetLinkParser()
     parser.feed(text)
@@ -120,14 +134,19 @@ def extract_openclipart_candidates(
         parsed = urllib.parse.urlsplit(resolved)
         if parsed.scheme != "https" or not parsed.hostname:
             continue
-        if parsed.hostname.lower() not in allowed_hosts or parsed.hostname.lower() != "openclipart.org":
+        if (
+            parsed.hostname.lower() not in allowed_hosts
+            or parsed.hostname.lower() != "openclipart.org"
+        ):
             continue
         if parsed.username or parsed.password or parsed.fragment:
             continue
         path = parsed.path.lower()
         if provider_asset_id not in path and provider_asset_id not in parsed.query:
             continue
-        if "/detail/" in path or path.rstrip("/").endswith(f"/detail/{provider_asset_id}"):
+        if "/detail/" in path or path.rstrip("/").endswith(
+            f"/detail/{provider_asset_id}"
+        ):
             continue
         if not any(token in path for token in ("/image/", "/download/", ".png")):
             continue
@@ -145,7 +164,7 @@ def resolve_openclipart_asset_url(
     allowed_hosts = {host.lower() for host in manifest["allowed_source_hosts"]}
     source_page = None
     source_page_final = None
-    last_page_reason = "no approved source page URL"
+    page_failures: list[str] = []
     for source_page_url in _openclipart_source_page_candidates(case):
         try:
             source_page, source_page_final, _ = fetcher(
@@ -153,11 +172,11 @@ def resolve_openclipart_asset_url(
             )
             break
         except public_acquire.PublicSourceError as exc:
-            last_page_reason = str(exc)
+            page_failures.append(f"{source_page_url} -> {exc}")
     if source_page is None or source_page_final is None:
         raise public_acquire.PublicSourceError(
             f"Openclipart source page resolution failed for {case['case_id']}: "
-            f"{last_page_reason}"
+            + " | ".join(page_failures or ["no approved source page URL"])
         )
 
     candidates = extract_openclipart_candidates(
@@ -174,8 +193,12 @@ def resolve_openclipart_asset_url(
     last_reason = "no candidate URL found on the reviewed source page"
     for candidate in candidates:
         try:
-            payload, final_url, _ = fetcher(candidate, allowed_hosts, public_acquire.MAX_HTTP_BYTES)
-            public_acquire.canonicalize_image(payload, case["acquisition_profile"])
+            payload, final_url, _ = fetcher(
+                candidate, allowed_hosts, public_acquire.MAX_HTTP_BYTES
+            )
+            public_acquire.canonicalize_image(
+                payload, case["acquisition_profile"]
+            )
             return final_url
         except public_acquire.PublicSourceError as exc:
             last_reason = str(exc)
@@ -185,7 +208,9 @@ def resolve_openclipart_asset_url(
     )
 
 
-def prepare_live_provider_case(case: dict[str, Any], manifest: dict[str, Any]) -> dict[str, Any]:
+def prepare_live_provider_case(
+    case: dict[str, Any], manifest: dict[str, Any]
+) -> dict[str, Any]:
     prepared = dict(case)
     if prepared["provider"] != "library_of_congress":
         return prepared
@@ -200,11 +225,6 @@ def prepare_live_provider_case(case: dict[str, Any], manifest: dict[str, Any]) -
     if prepared.get("rights_statement") != "No known restrictions on publication.":
         raise public_acquire.PublicSourceError("LOC rights statement mismatch")
 
-    # LOC HTML item pages reject automated clients. The official JSON item
-    # representation contains the same catalog identity, rights metadata and
-    # raster links, so it is used as both the machine-readable source snapshot
-    # and public-domain proof while the original item URL remains in the
-    # reviewed source-selection manifest.
     prepared["source_page_url"] = metadata_url
     prepared["license_proof_url"] = metadata_url
     return prepared
@@ -221,23 +241,32 @@ def acquire_selected(
     acquired: list[dict[str, Any]] = []
     for original in cases:
         case = prepare_live_provider_case(original, manifest)
+        previous_user_agent = public_acquire.USER_AGENT
         if case["provider"] == "openclipart":
-            case["asset_url"] = resolve_openclipart_asset_url(case, manifest)
-        acquired.append(
-            public_acquire.acquire_case(
-                case,
-                download_root=download_root,
-                storage_root=storage_root,
-                records_dir=records_dir,
-                manifest=manifest,
+            public_acquire.USER_AGENT = _OPENCLIPART_USER_AGENT
+        try:
+            if case["provider"] == "openclipart":
+                case["asset_url"] = resolve_openclipart_asset_url(case, manifest)
+            acquired.append(
+                public_acquire.acquire_case(
+                    case,
+                    download_root=download_root,
+                    storage_root=storage_root,
+                    records_dir=records_dir,
+                    manifest=manifest,
+                )
             )
-        )
+        finally:
+            public_acquire.USER_AGENT = previous_user_agent
     return acquired
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Acquire the reviewed RFV-2 public allowlist with live provider URL resolution."
+        description=(
+            "Acquire the reviewed RFV-2 public allowlist with live provider URL "
+            "resolution."
+        )
     )
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--case-id")
@@ -253,9 +282,15 @@ def main() -> int:
     try:
         manifest = public_acquire.load_json(public_acquire.MANIFEST_PATH)
         cases = public_acquire.validate_manifest(manifest)
-        selected = cases if args.all else [case for case in cases if case["case_id"] == args.case_id]
+        selected = (
+            cases
+            if args.all
+            else [case for case in cases if case["case_id"] == args.case_id]
+        )
         if not selected:
-            raise public_acquire.PublicSourceError("requested case is not in the reviewed allowlist")
+            raise public_acquire.PublicSourceError(
+                "requested case is not in the reviewed allowlist"
+            )
         acquired = acquire_selected(
             cases=selected,
             manifest=manifest,
