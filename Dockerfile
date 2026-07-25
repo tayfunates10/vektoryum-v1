@@ -51,7 +51,11 @@ ENV HOME=/home/appuser
 # - VEKTORYUM_JOB_TIMEOUT=300: asılı native işi kontrollü kesme.
 # - Girdi sınırları (byte/kenar/piksel) sınırsız/0 bırakılmaz (decompression bomb
 #   ve OOM koruması); tek kaynak app/settings.py.
+# - Üretim kimliği HTTPS çerezlerini zorunlu tutar; platform_identity bu iki
+#   değişkeni oturum ve istek-doğrulama çerezlerine uygular.
 ENV PYTHONUNBUFFERED=1 \
+    VEKTORYUM_ENVIRONMENT="production" \
+    VEKTORYUM_COOKIE_SECURE="1" \
     VEKTORYUM_WORKERS="1" \
     VEKTORYUM_JOB_TIMEOUT="300" \
     VEKTORYUM_MAX_UPLOAD_BYTES="15728640" \
