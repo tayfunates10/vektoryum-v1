@@ -533,11 +533,17 @@ def _compact_direct_artifact(
         try:
             root = ET.fromstring(accepted_bytes)
             removed = 0
+            seen_diagnostics: set[tuple[str, str]] = set()
             for element in root.iter():
                 for name in _DIRECT_DIAGNOSTIC_ATTRIBUTES:
-                    if name in element.attrib:
+                    if name not in element.attrib:
+                        continue
+                    marker = (name, str(element.attrib[name]))
+                    if marker in seen_diagnostics:
                         element.attrib.pop(name, None)
                         removed += 1
+                    else:
+                        seen_diagnostics.add(marker)
             if removed == 0:
                 return report
             candidate = ET.tostring(
