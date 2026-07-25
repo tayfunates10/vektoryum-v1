@@ -404,20 +404,34 @@ def apply_direct_element_alpha(
 def make_direct_element_alpha_first(
     guarded_builder: Callable[[Path, Path, str], dict[str, Any]],
 ) -> Callable[[Path, Path, str], dict[str, Any]]:
-    """Try compact existing-element alpha, then delegate byte-identically."""
+    """Try an exact dense mask, then direct elements, then guarded fallbacks."""
     if getattr(guarded_builder, "__vektoryum_direct_element_alpha_first__", False):
         return guarded_builder
 
     @wraps(guarded_builder)
     def direct_first(svg_path: Path, source_path: Path, mode: str) -> dict[str, Any]:
         target = Path(svg_path)
+        source = Path(source_path)
         parent = target.read_bytes()
+
+        # Dense, low-level partial-alpha fields are cheaper to encode directly as
+        # exact polygons than to probe every selected candidate child first. This
+        # path retains the same alpha, byte, path and node gates and is attempted
+        # only when its own strict geometry preflight declares it applicable.
         try:
-            return apply_direct_element_alpha(target, Path(source_path), mode)
+            from app.alpha_mask_adaptive import _apply_dense_polygon_alpha  # noqa: PLC0415
+
+            return _apply_dense_polygon_alpha(target, source, mode)
+        except Exception:  # noqa: BLE001 - direct/fallback chain remains authoritative
+            if target.read_bytes() != parent:
+                target.write_bytes(parent)
+
+        try:
+            return apply_direct_element_alpha(target, source, mode)
         except Exception as exc:  # noqa: BLE001 - guarded fallback remains authoritative
             if target.read_bytes() != parent:
                 target.write_bytes(parent)
-            report = guarded_builder(target, Path(source_path), mode)
+            report = guarded_builder(target, source, mode)
             if isinstance(report, dict):
                 report = dict(report)
                 report["direct_element_alpha"] = {
