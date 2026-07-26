@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+# Connector-authored provenance marker: trigger normal PR CI after the verified bot patch.
+
 import hashlib
 from pathlib import Path
 from types import SimpleNamespace
