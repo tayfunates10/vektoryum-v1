@@ -59,18 +59,27 @@ yeniden render ediliyordu**.
 Hiçbir eşik yükseltilmedi, hiçbir tolerans genişletilmedi, timeout artırılmadı.
 
 1. **Knockout clip kodlaması fallback'i** (`engine/app/alpha_candidate_knockout.py`)
-   - `_CLIP_GEOMETRY_ENCODINGS = ("rect", "path-transform")`.
+   - `_CLIP_GEOMETRY_ENCODINGS = ("rect", "rect-transform")`.
    - `rect` bugünkü kanıtlanmış davranıştır ve bütçeye sığdığı sürece **bayt-aynıdır**;
      hâlihazırda geçen vakalar etkilenmez.
-   - `path-transform` YALNIZ rect bütçeyi aştığında denenir: aynı birleşmiş dikdörtgenler
-     tam sayı raster koordinatlarında tek bir `<path>` olarak yazılır
-     (`M{x} {y}h{w}v{h}h-{w}z`), raster→user dönüşümü clipPath'in kendi `transform`
-     niteliğine taşınır. clipPath içine transform'lu `<g>` **yuvalanmaz**; resvg'nin
-     daraltılmış alt kümesi korunur.
-   - Alt yollar ayrıktır, bu yüzden nonzero/even-odd aynı bölgeyi verir; koordinatlar tam
-     sayı olduğundan yuvarlama kaybı yoktur.
+   - `rect-transform` YALNIZ rect bütçeyi aştığında denenir: **aynı `<rect>` elementleri**
+     korunur, yalnız koordinatlar tam sayı raster uzayına alınır ve raster→user dönüşümü
+     clipPath'in kendi `transform` niteliğine taşınır. clipPath içine transform'lu `<g>`
+     **yuvalanmaz**; resvg'nin daraltılmış alt kümesi korunur.
+   - Bölge birebir aynıdır; koordinatlar tam sayı olduğundan yuvarlama kaybı yoktur.
    - Renderer bu alt kümeyi desteklemezse değişmemiş alpha IoU/MAE ve journal kapıları
      adayı fail-closed reddeder; sessiz kabul yoktur.
+   - Bu kodlama bütçeyi hâlâ aşarsa mevcut `quantized_128` alfa fallback'i aynı iki clip
+     kodlamasıyla yeniden denenir; yeni bir kaçış yolu eklenmedi.
+
+   **Ölçülen ve reddedilen alternatif:** clip geometrisini tek bir `<path>` olarak yazmak
+   bayt açısından daha ucuzdu ancak CI ölçümünde fail-closed reddedildi:
+   `_path_node_counts` `defs` içindeki `<path>`'leri de saydığı için aday, değişmemiş
+   artwork kimlik sözleşmesini ihlal etti
+   (`source_alpha_candidate_knockout_candidate_geometry_changed: 190/9221 -> 445/112181`,
+   PR #122 `measure (1)`). `<rect>` path/node sayımına girmediğinden kimlik korunur.
+   `engine/test_rfv3d3_knockout_clip_encoding.py` bu değişmezi her iki kodlama için de
+   sabitler.
 
 2. **Turnuva elemesi** (`engine/app/alpha_candidate_painter.py`)
    - Bütçe içi bir aday, mevcut kazananın baytından **kesin olarak** büyükse sözlüksel
@@ -93,18 +102,21 @@ Hiçbir eşik yükseltilmedi, hiçbir tolerans genişletilmedi, timeout artırı
 
 ## Ölçüm
 
-Sentetik yumuşak alfa alanı (400×400 viewBox, 200×200 raster, 31 seviye, 4.609 birleşmiş
+Sentetik yumuşak alfa alanı (997×997 viewBox, 613×613 raster, 13.969 birleşmiş
 dikdörtgen), `engine/test_rfv3d3_knockout_clip_encoding.py`:
 
-| clip kodlaması | serileşmiş bayt | oran |
-| --- | --- | --- |
-| `rect` | 238.470 | 1,00× |
-| `path-transform` | 84.524 | 0,35× |
+| clip kodlaması | serileşmiş bayt | oran | path/node |
+| --- | --- | --- | --- |
+| `rect` | 1.291.411 | 1,00× | parent ile aynı |
+| `rect-transform` | 709.937 | 0,55× | parent ile aynı |
+
+Sentetik alan bilinçli olarak kesirli ölçek kullanır (`viewBox 997`, raster 613); gerçek
+vakalarda markup maliyetini belirleyen şey uzun ondalıklı user-space koordinatlarıdır.
 
 - Render karşılaştırması: alpha IoU `1,0`, alpha MAE `0,0` (geometri birebir).
-- `qualification-public-14` izdüşümü: 1.800.596 × 0,354 ≈ 638.000 bayt < 1.273.782 sınır.
-  Bu vakadaki ölçek kesirli olduğu için gerçek kazancın daha yüksek olması beklenir; bu
-  yalnız alt sınırdır ve nihai karar CI ölçümüne aittir.
+- `qualification-public-14` izdüşümü: maske markup'ı ≈ 1.376.000 bayt, 0,55× ile
+  ≈ 757.000; parent (≈ 424.594) ile toplam ≈ 1.182.000 < 1.273.782 sınır. Pay dardır;
+  yetmezse `quantized_128` fallback'i devrededir. Nihai karar CI ölçümüne aittir.
 
 Painter turnuvası, `engine/test_rfv3d3_search_pruning.py` ve mevcut painter ledger'ı:
 kabul edilen polygon adayından (2.702 bayt) sonra dört rect denemesi

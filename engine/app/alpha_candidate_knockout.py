@@ -44,14 +44,20 @@ _ALPHA_FAILURE_PREFIXES = (
     "source_alpha_compact_mae_gate_failed:",
 )
 _PATH_COMMAND = re.compile(r"[MmLlHhVvCcSsQqTtAaZz]")
-# Clip geometrisi kodlamaları, ARTAN ölçüm riski sırasıyla denenir. "rect" bugünkü
-# kanıtlanmış davranıştır ve bütçeye sığdığı sürece bayt-aynı kalır. "path-transform"
-# YALNIZ rect bütçeyi aştığında devreye girer: aynı birleşmiş dikdörtgenleri tam sayı
-# raster koordinatlarında tek bir <path> olarak yazar ve raster→user dönüşümünü
-# clipPath'in kendi transform'una taşır. Geometri birebir aynıdır; kazanç yalnız
-# markup'tadır. Renderer bu alt kümeyi desteklemezse değişmemiş alpha IoU/MAE ve
-# journal kapıları adayı fail-closed reddeder.
-_CLIP_GEOMETRY_ENCODINGS = ("rect", "path-transform")
+# Clip geometrisi kodlamaları sırayla denenir. "rect" bugünkü kanıtlanmış
+# davranıştır ve bütçeye sığdığı sürece bayt-aynı kalır. "rect-transform" YALNIZ
+# rect bütçeyi aştığında devreye girer: AYNI <rect> elementleri korunur, yalnız
+# koordinatlar tam sayı raster uzayına alınır ve raster→user dönüşümü clipPath'in
+# kendi transform'una taşınır.
+#
+# Element türü bilinçli olarak <rect> kalır. Clip geometrisini <path> ile yazmak
+# ölçüldü ve reddedildi: _path_node_counts defs içindeki <path>'leri de saydığı
+# için aday, değişmemiş artwork kimlik sözleşmesini ihlal ediyordu
+# (source_alpha_candidate_knockout_candidate_geometry_changed). <rect> path/node
+# sayımına girmez, dolayısıyla kimlik birebir korunur ve kazanç yalnız sayısal
+# gösterimden gelir. Renderer clipPath transform'unu desteklemezse değişmemiş
+# alpha IoU/MAE ve journal kapıları adayı fail-closed reddeder.
+_CLIP_GEOMETRY_ENCODINGS = ("rect", "rect-transform")
 
 
 def _local_name(name: str) -> str:
@@ -175,21 +181,6 @@ def _alpha_encodings(alpha: np.ndarray):
         yield "quantized_128", quantized, opacity_by_level
 
 
-def _clip_raster_path_data(level_rectangles: list[tuple[int, int, int, int]]) -> str:
-    """Birleşmiş dikdörtgenleri tam sayı raster uzayında tek path verisine yazar.
-
-    Her dikdörtgen kapalı bir alt yoldur; alt yollar ayrık olduğundan nonzero ve
-    even-odd doldurma kuralları aynı bölgeyi verir. Koordinatlar tam sayı olduğu
-    için yuvarlama kaybı yoktur.
-    """
-    parts: list[str] = []
-    for x, y, width, height in level_rectangles:
-        if width <= 0 or height <= 0:
-            continue
-        parts.append(f"M{x} {y}h{width}v{height}h-{width}z")
-    return "".join(parts)
-
-
 def _build_reconstruction_tree(
     original_root: ET.Element,
     canvas_element: ET.Element,
@@ -264,7 +255,7 @@ def _build_reconstruction_tree(
             "clipPathUnits": "userSpaceOnUse",
             "data-vektoryum-alpha-level": str(level),
         }
-        if clip_encoding == "path-transform":
+        if clip_encoding == "rect-transform":
             # Dönüşüm clipPath ELEMENTİNİN kendi transform'undadır; clipPath içine
             # transform'lu bir <g> yuvalanmaz. Resvg'nin daraltılmış clipPath alt
             # kümesi shape + transform'u destekler, yuvalanmış grubu desteklemez.
@@ -272,36 +263,31 @@ def _build_reconstruction_tree(
                 f"translate({view_x:.12g},{view_y:.12g}) scale({sx:.12g},{sy:.12g})"
             )
         clip = ET.SubElement(defs, qname("clipPath"), clip_attributes)
-        if clip_encoding == "path-transform":
-            path_data = _clip_raster_path_data(level_rectangles)
-            if path_data:
-                ET.SubElement(
-                    clip,
-                    qname("path"),
-                    {"d": path_data, "clip-rule": "nonzero"},
-                )
-                rectangle_count += sum(
-                    1 for _x, _y, width, height in level_rectangles
-                    if width > 0 and height > 0
-                )
-        else:
-            for x, y, width, height in level_rectangles:
-                if width <= 0 or height <= 0:
-                    continue
+        for x, y, width, height in level_rectangles:
+            if width <= 0 or height <= 0:
+                continue
+            if clip_encoding == "rect-transform":
+                # Aynı dikdörtgenler, tam sayı raster koordinatlarıyla. Ölçek
+                # clipPath transform'unda olduğu için bölge birebir aynıdır;
+                # yalnız sayısal gösterim kısalır.
+                attributes = {
+                    "x": str(int(x)),
+                    "y": str(int(y)),
+                    "width": str(int(width)),
+                    "height": str(int(height)),
+                }
+            else:
                 # Resvg supports a stricter clipPath subset than Cairo. Emit exact
                 # user-space rectangles directly instead of nesting a transformed
                 # group inside clipPath so both evaluator renderers agree.
-                ET.SubElement(
-                    clip,
-                    qname("rect"),
-                    {
-                        "x": f"{view_x + x * sx:.12g}",
-                        "y": f"{view_y + y * sy:.12g}",
-                        "width": f"{width * sx:.12g}",
-                        "height": f"{height * sy:.12g}",
-                    },
-                )
-                rectangle_count += 1
+                attributes = {
+                    "x": f"{view_x + x * sx:.12g}",
+                    "y": f"{view_y + y * sy:.12g}",
+                    "width": f"{width * sx:.12g}",
+                    "height": f"{height * sy:.12g}",
+                }
+            ET.SubElement(clip, qname("rect"), attributes)
+            rectangle_count += 1
         if len(clip) == 0:
             defs.remove(clip)
             continue
