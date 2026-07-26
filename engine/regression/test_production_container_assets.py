@@ -4,14 +4,16 @@ import json
 import unittest
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
 
 class ProductionContainerAssetTests(unittest.TestCase):
     def test_analyzer_calibration_is_packaged_at_runtime_path(self) -> None:
-        dockerfile = Path("Dockerfile").read_text(encoding="utf-8")
+        dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
         copy_line = "COPY engine/analyzer_calibration_v1.json ./analyzer_calibration_v1.json"
         self.assertIn(copy_line, dockerfile)
 
-        calibration_path = Path("engine/analyzer_calibration_v1.json")
+        calibration_path = REPO_ROOT / "engine" / "analyzer_calibration_v1.json"
         self.assertTrue(calibration_path.is_file())
         payload = json.loads(calibration_path.read_text(encoding="utf-8"))
         self.assertEqual(payload["schema_version"], "analyzer-calibration-evidence-v1")

@@ -5,11 +5,14 @@ import math
 import unittest
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
 
 class F991GeometricFidelityTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.roadmap = json.loads(Path("docs/fidelity99_roadmap.json").read_text())
+        roadmap_path = REPO_ROOT / "docs" / "fidelity99_roadmap.json"
+        cls.roadmap = json.loads(roadmap_path.read_text(encoding="utf-8"))
         cls.samples = [
             {"id": "logo", "iou": 0.996, "hausdorff": 0.0020, "topology_mismatches": 0},
             {"id": "badge", "iou": 0.994, "hausdorff": 0.0025, "topology_mismatches": 0},
@@ -39,7 +42,7 @@ class F991GeometricFidelityTests(unittest.TestCase):
             tail = tail[1:]
         self.assertEqual(tail, ["pending"] * len(tail))
 
-        self.assertTrue(Path(phases[0]["evidence"]).is_file())
+        self.assertTrue((REPO_ROOT / phases[0]["evidence"]).is_file())
         self.assertEqual(len(phases[0]["acceptance"]), 5)
 
     def test_metrics_are_finite_unique_and_bounded(self) -> None:

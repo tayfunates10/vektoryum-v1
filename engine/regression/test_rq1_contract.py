@@ -5,12 +5,17 @@ import json
 import unittest
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+ENGINE_ROOT = REPO_ROOT / "engine"
+
 
 class RQ1ContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.roadmap = json.loads(Path("docs/release_qualification_roadmap.json").read_text())
-        spec = importlib.util.spec_from_file_location("rq1_live_probe", "engine/regression/rq1_live_probe.py")
+        roadmap_path = REPO_ROOT / "docs" / "release_qualification_roadmap.json"
+        cls.roadmap = json.loads(roadmap_path.read_text(encoding="utf-8"))
+        probe_path = ENGINE_ROOT / "regression" / "rq1_live_probe.py"
+        spec = importlib.util.spec_from_file_location("rq1_live_probe", probe_path)
         if spec is None or spec.loader is None:
             raise RuntimeError("unable to load RQ-1 probe module")
         cls.module = importlib.util.module_from_spec(spec)
@@ -32,7 +37,7 @@ class RQ1ContractTests(unittest.TestCase):
         self.assertTrue(all(status == "pending" for status in statuses[first_pending:]))
 
         self.assertEqual(len(phases[0]["acceptance"]), 5)
-        self.assertTrue(Path(phases[0]["evidence"]).is_file())
+        self.assertTrue((REPO_ROOT / phases[0]["evidence"]).is_file())
 
     def test_positive_health_contract(self) -> None:
         payloads = {

@@ -1,0 +1,516 @@
+name: Post-merge main validation
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/post-merge-main-validation.yml"
+      - "engine/pytest.ini"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+  issues: read
+
+concurrency:
+  group: post-merge-main-validation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONHASHSEED: "0"
+  VEKTORYUM_WORKERS: "1"
+  EXPECTED_BASE_SHA: "8b4ac41ef627008931a5cd20389133cc78d8cdbe"
+  VALIDATION_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  repository-inventory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ env.VALIDATION_HEAD_SHA }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Verify ancestry and write baseline report
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || env.EXPECTED_BASE_SHA }}
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor "${EXPECTED_BASE_SHA}" "${BASE_SHA}"
+          test "$(git rev-parse HEAD)" = "${VALIDATION_HEAD_SHA}"
+          mkdir -p validation_artifacts
+          python - <<'PY'
+          import ast
+          import json
+          import os
+          import platform
+          import subprocess
+          import urllib.request
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          token = os.environ["GH_TOKEN"]
+
+          def github_json(path: str):
+              request = urllib.request.Request(
+                  "https://api.github.com" + path,
+                  headers={
+                      "Authorization": f"Bearer {token}",
+                      "Accept": "application/vnd.github+json",
+                      "X-GitHub-Api-Version": "2022-11-28",
+                  },
+              )
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  return json.load(response)
+
+          test_files = sorted(Path("engine").rglob("test_*.py"))
+          test_functions = 0
+          parse_failures = []
+          for path in test_files:
+              try:
+                  tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+              except Exception as exc:
+                  parse_failures.append({"path": str(path), "error": type(exc).__name__})
+                  continue
+              test_functions += sum(
+                  1
+                  for node in ast.walk(tree)
+                  if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                  and node.name.startswith("test_")
+              )
+
+          pulls = github_json(f"/repos/{repo}/pulls?state=open&per_page=100")
+          issues = github_json(f"/repos/{repo}/issues?state=open&per_page=100")
+          issue_97 = github_json(f"/repos/{repo}/issues/97")
+          report = {
+              "schema": "vektoryum-post-merge-baseline-v3",
+              "repository": repo,
+              "main_sha": os.environ["BASE_SHA"],
+              "validation_head_sha": os.environ["VALIDATION_HEAD_SHA"],
+              "expected_ancestor_sha": os.environ["EXPECTED_BASE_SHA"],
+              "python_version": platform.python_version(),
+              "node_version": subprocess.check_output(["node", "--version"], text=True).strip(),
+              "docker_version": subprocess.check_output(["docker", "--version"], text=True).strip(),
+              "test_file_count": len(test_files),
+              "static_test_function_count": test_functions,
+              "test_parse_failures": parse_failures,
+              "workflow_count": len(list(Path(".github/workflows").glob("*.y*ml"))),
+              "open_pr_count": len(pulls),
+              "open_issue_count": sum(1 for item in issues if "pull_request" not in item),
+              "issue_97_state": issue_97["state"],
+              "release_state": "RFV-3 pending / NO-GO / rfv4_allowed=false",
+              "known_blockers": [
+                  "post-merge validation not yet completed",
+                  "RFV-3D3 current measurement not yet produced",
+                  "RFV-3D4 24x3 not yet completed",
+              ],
+              "planned_branches": [
+                  "agent/post-merge-main-validation",
+                  "agent/rfv-3d3-edge-structural-fidelity",
+                  "agent/rfv-3d4-controlled-remeasurement",
+                  "agent/repository-ci-hardening",
+              ],
+              "workflow_run_id": os.environ["GITHUB_RUN_ID"],
+              "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+          }
+          Path("validation_artifacts/baseline-report.json").write_text(
+              json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+          )
+          Path("validation_artifacts/baseline-report.md").write_text(
+              "# BASELINE REPORT\n\n"
+              + "\n".join(
+                  f"- {key}: {report[key]}"
+                  for key in (
+                      "repository", "main_sha", "validation_head_sha", "python_version",
+                      "node_version", "docker_version", "test_file_count",
+                      "static_test_function_count", "workflow_count", "open_pr_count",
+                      "open_issue_count", "release_state"
+                  )
+              )
+              + "\n",
+              encoding="utf-8",
+          )
+          if parse_failures:
+              raise SystemExit("test AST parse failures detected")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: post-merge-baseline-${{ github.run_id }}
+          path: validation_artifacts
+          if-no-files-found: error
+          retention-days: 30
+
+  compile-and-full-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: engine
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.VALIDATION_HEAD_SHA }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: engine/requirements.txt
+      - name: Install system validators
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ghostscript libcairo2
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt pytest httpx
+      - name: Compile engine
+        run: python -m compileall .
+      - name: Collect complete test suite
+        run: python -m pytest --collect-only -q
+      - name: Run complete test suite
+        run: python -m pytest -q
+
+  exact-final-alpha-contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: engine
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.VALIDATION_HEAD_SHA }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: engine/requirements.txt
+      - name: Install system validators
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ghostscript libcairo2
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt pytest httpx
+      - name: Exact final journal evaluator and alpha contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pytest -q \
+            test_exact_final_contract.py \
+            test_exact_corpus.py \
+            test_exact_final_artifact_integration.py \
+            test_exact_corpus_pipeline.py \
+            test_transform_journal.py \
+            test_final_artifact_metrics.py \
+            test_source_truth.py \
+            test_alpha_*.py
+      - name: Hard SVG regressions
+        run: python regression/artifact_probe.py
+      - name: Geometric and gradient regressions
+        run: python test_visual_regression.py --case class_reklam --case gradient_logo --require-baseline --out-dir regression/output
+      - name: Native-resolution small-component regression
+        run: python test_small_component_quality.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: post-merge-svg-diagnostics-${{ github.run_id }}
+          path: engine/regression/output
+          if-no-files-found: warn
+          retention-days: 14
+
+  security-and-acquisition-contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.VALIDATION_HEAD_SHA }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: engine/requirements.txt
+      - name: Install dependencies
+        working-directory: engine
+        run: python -m pip install -r requirements.txt pytest httpx
+      - name: Production HTTP security contracts
+        working-directory: engine
+        env:
+          VEKTORYUM_SERVICE_MODE: beta
+          VEKTORYUM_SOURCE_REVISION: ${{ env.VALIDATION_HEAD_SHA }}
+        run: python -m pytest -q test_platform_operations.py test_platform_security.py test_runtime_main.py
+      - name: RFV-2 acquisition and immutable fallback contracts
+        run: >-
+          python -m unittest
+          engine.regression.test_rfv2_live_acquire
+          engine.regression.test_rfv2_immutable_fallback
+          engine.regression.test_rfv2_live_bundle
+
+  export-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: engine
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.VALIDATION_HEAD_SHA }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: engine/requirements.txt
+      - name: Install system validators
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ghostscript libcairo2
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt pytest httpx
+      - name: Produce and reopen SVG PDF EPS DXF
+        run: |
+          python - <<'PY'
+          import tempfile
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+          import ezdxf
+          import fitz
+          from app.exporters import export_all
+
+          with tempfile.TemporaryDirectory() as tmp:
+              root = Path(tmp)
+              source = root / "source.svg"
+              source.write_text(
+                  '<?xml version="1.0" encoding="UTF-8"?>\n'
+                  '<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180" viewBox="0 0 320 180">'
+                  '<path d="M20 20H300V160H20Z M90 60H230V120H90Z" fill="#111111" fill-rule="evenodd"/>'
+                  '<path d="M40 145L100 35L160 145Z" fill="#e53935"/>'
+                  '</svg>\n',
+                  encoding="utf-8",
+              )
+              outputs, errors = export_all(
+                  source, root, "smoke", candidate_id="post-merge-smoke",
+                  formats=("svg", "pdf", "eps", "dxf"),
+              )
+              assert errors == {}, errors
+              assert set(outputs) == {"svg", "pdf", "eps", "dxf"}
+              assert all(Path(path).exists() and Path(path).stat().st_size > 0 for path in outputs.values())
+              svg_root = ET.parse(outputs["svg"]).getroot()
+              assert svg_root.get("viewBox") == "0 0 320 180"
+              assert svg_root.get("data-candidate") == "post-merge-smoke"
+              assert not any(node.tag.split("}")[-1] == "image" for node in svg_root.iter())
+              pdf = fitz.open(outputs["pdf"])
+              assert pdf.page_count >= 1
+              pdf.close()
+              assert Path(outputs["pdf"]).read_bytes().startswith(b"%PDF")
+              assert Path(outputs["eps"]).read_bytes().startswith(b"%!PS")
+              assert len(list(ezdxf.readfile(outputs["dxf"]).modelspace())) >= 1
+          PY
+
+  seed-benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 80
+    defaults:
+      run:
+        working-directory: engine
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ env.VALIDATION_HEAD_SHA }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: engine/requirements.txt
+      - name: Install system validators
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ghostscript libcairo2
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt pytest
+      - name: Validate benchmark contracts
+        run: >-
+          python -m pytest -q
+          test_benchmark_manifest.py
+          test_benchmark_seed_runner.py
+          test_benchmark_compare.py
+          test_benchmark_artifact_history.py
+          test_benchmark_pipeline_results.py
+          test_benchmark_pipeline_smoke.py
+          test_benchmark_repeat_samples.py
+          test_benchmark_release_gate.py
+          test_benchmark_release_gate_cli.py
+          test_benchmark_quality_report.py
+      - name: Generate same-run main baseline
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || env.EXPECTED_BASE_SHA }}
+        run: |
+          set -euo pipefail
+          base_worktree="${RUNNER_TEMP}/vektoryum-main-baseline"
+          rm -rf "${base_worktree}"
+          git worktree add --detach "${base_worktree}" "${BASE_SHA}"
+          trap 'git worktree remove --force "${base_worktree}" >/dev/null 2>&1 || true' EXIT
+          (
+            cd "${base_worktree}/engine"
+            python -m benchmark.seed_runner --output "${RUNNER_TEMP}/baseline-seed"
+            python -m benchmark.pipeline_smoke \
+              --output "${RUNNER_TEMP}/baseline-pipeline" \
+              --engine-version "${BASE_SHA}"
+          )
+      - name: Run head eight-category real pipeline benchmark
+        run: |
+          test "$(git rev-parse HEAD)" = "${VALIDATION_HEAD_SHA}"
+          python -m benchmark.seed_runner --output benchmark_artifacts
+          python -m benchmark.pipeline_smoke \
+            --output benchmark_artifacts/pipeline \
+            --engine-version "${VALIDATION_HEAD_SHA}"
+          python -m benchmark.quality_report \
+            --results benchmark_artifacts/pipeline/pipeline_results.json \
+            --output benchmark_artifacts/pipeline
+          python -m benchmark.release_gate \
+            --current benchmark_artifacts/pipeline/pipeline_results.json \
+            --baseline "${RUNNER_TEMP}/baseline-pipeline/pipeline_results.json" \
+            --timing-baseline "${RUNNER_TEMP}/baseline-pipeline/pipeline_results.json" \
+            --output benchmark_artifacts/pipeline/release_gate.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: post-merge-seed-benchmark-${{ github.run_id }}
+          path: engine/benchmark_artifacts
+          if-no-files-found: error
+          retention-days: 30
+
+  docker-production-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.VALIDATION_HEAD_SHA }}
+      - name: Build production image
+        run: docker build -t vektoryum-post-merge:${VALIDATION_HEAD_SHA} .
+      - name: Verify production image contract
+        run: |
+          set -euo pipefail
+          test "$(docker image inspect vektoryum-post-merge:${VALIDATION_HEAD_SHA} --format '{{.Config.User}}')" = "appuser"
+          docker image inspect vektoryum-post-merge:${VALIDATION_HEAD_SHA} --format '{{range .Config.Env}}{{println .}}{{end}}' > /tmp/image-env
+          grep -qx 'VEKTORYUM_ENVIRONMENT=production' /tmp/image-env
+          grep -qx 'VEKTORYUM_COOKIE_SECURE=1' /tmp/image-env
+      - name: Start bounded container
+        run: >-
+          docker run -d --name vektoryum-post-merge
+          --memory 4g --cpus 2 --pids-limit 256
+          -e VEKTORYUM_SERVICE_MODE=beta
+          -e VEKTORYUM_SOURCE_REVISION=${VALIDATION_HEAD_SHA}
+          -p 7860:7860 vektoryum-post-merge:${VALIDATION_HEAD_SHA}
+      - name: Liveness readiness and HTTP security smoke
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 45); do
+            if python - <<'PY'
+          import json
+          import urllib.request
+          for path in ("livez", "readyz"):
+              with urllib.request.urlopen(f"http://127.0.0.1:7860/{path}", timeout=3) as response:
+                  payload = json.load(response)
+                  assert payload["revision"]
+                  assert payload["status"] in {"ok", "ready"}
+                  headers = {key.lower(): value for key, value in response.headers.items()}
+                  assert headers["x-content-type-options"] == "nosniff"
+                  assert headers["x-frame-options"] in {"DENY", "SAMEORIGIN"}
+                  assert headers["referrer-policy"]
+          PY
+            then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs vektoryum-post-merge
+          exit 1
+      - name: Graceful shutdown
+        run: |
+          docker stop --time 20 vektoryum-post-merge
+          test "$(docker inspect vektoryum-post-merge --format '{{.State.ExitCode}}')" = "0"
+      - name: Cleanup
+        if: always()
+        run: docker rm -f vektoryum-post-merge >/dev/null 2>&1 || true
+
+  validation-summary:
+    if: always()
+    needs:
+      - repository-inventory
+      - compile-and-full-tests
+      - exact-final-alpha-contracts
+      - security-and-acquisition-contracts
+      - export-smoke
+      - seed-benchmark
+      - docker-production-smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Write fail-closed validation decision
+        env:
+          INVENTORY: ${{ needs.repository-inventory.result }}
+          COMPILE_TESTS: ${{ needs.compile-and-full-tests.result }}
+          EXACT_ALPHA: ${{ needs.exact-final-alpha-contracts.result }}
+          SECURITY_ACQUISITION: ${{ needs.security-and-acquisition-contracts.result }}
+          EXPORT_SMOKE: ${{ needs.export-smoke.result }}
+          SEED_BENCHMARK: ${{ needs.seed-benchmark.result }}
+          DOCKER_SMOKE: ${{ needs.docker-production-smoke.result }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || env.EXPECTED_BASE_SHA }}
+        run: |
+          set -euo pipefail
+          mkdir -p validation-summary
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          results = {
+              "repository_inventory": os.environ["INVENTORY"],
+              "compile_and_full_tests": os.environ["COMPILE_TESTS"],
+              "exact_final_alpha_contracts": os.environ["EXACT_ALPHA"],
+              "security_and_acquisition_contracts": os.environ["SECURITY_ACQUISITION"],
+              "export_smoke": os.environ["EXPORT_SMOKE"],
+              "seed_benchmark": os.environ["SEED_BENCHMARK"],
+              "docker_production_smoke": os.environ["DOCKER_SMOKE"],
+          }
+          success = all(status == "success" for status in results.values())
+          payload = {
+              "schema": "vektoryum-post-merge-validation-decision-v3",
+              "base_sha": os.environ["BASE_SHA"],
+              "head_sha": os.environ["VALIDATION_HEAD_SHA"],
+              "workflow_run_id": os.environ["GITHUB_RUN_ID"],
+              "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+              "jobs": results,
+              "post_merge_main_validation": "success" if success else "failed",
+              "release_state": "RFV-3 pending / NO-GO / rfv4_allowed=false",
+              "rfv3d3_allowed_to_start": success,
+              "rfv4_allowed": False,
+          }
+          encoded = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode()
+          Path("validation-summary/post-merge-validation-decision.json").write_bytes(encoded)
+          Path("validation-summary/post-merge-validation-decision.sha256").write_text(
+              hashlib.sha256(encoded).hexdigest() + "\n", encoding="utf-8"
+          )
+          Path("validation-summary/post-merge-validation-summary.md").write_text(
+              "# Post-merge main validation\n\n"
+              + "\n".join(f"- {name}: {status}" for name, status in results.items())
+              + f"\n- decision: {'SUCCESS' if success else 'FAILED'}\n"
+              + "- release_state: RFV-3 pending / NO-GO / rfv4_allowed=false\n",
+              encoding="utf-8",
+          )
+          if not success:
+              raise SystemExit(1)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: post-merge-validation-decision-${{ github.run_id }}
+          path: validation-summary
+          if-no-files-found: error
+          retention-days: 30
