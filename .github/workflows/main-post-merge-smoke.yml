@@ -1,0 +1,264 @@
+name: Main post-merge smoke
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/main-post-merge-smoke.yml"
+      - "engine/pytest.ini"
+      - "engine/app/**"
+      - "engine/test_platform_operations.py"
+      - "engine/test_platform_security.py"
+      - "engine/test_runtime_main.py"
+      - "engine/test_exact_final_contract.py"
+      - "engine/test_transform_journal.py"
+      - "engine/test_final_artifact_metrics.py"
+      - "engine/test_source_truth.py"
+      - "engine/regression/test_production_container_assets.py"
+      - "engine/regression/test_rq1_contract.py"
+      - "engine/tests/test_rq3_resilience_contract.py"
+      - "engine/tests/test_rq4_release_gate.py"
+      - "Dockerfile"
+      - ".dockerignore"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: main-post-merge-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONHASHSEED: "0"
+  VEKTORYUM_WORKERS: "1"
+  VALIDATION_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  core-contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.VALIDATION_SHA }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: engine/requirements.txt
+      - name: Install system validators
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ghostscript libcairo2
+      - name: Install dependencies
+        run: python -m pip install -r engine/requirements.txt pytest httpx
+      - name: Compile production engine
+        run: python -m compileall engine
+      - name: Run core serializer security and release contracts
+        working-directory: engine
+        env:
+          VEKTORYUM_SERVICE_MODE: beta
+          VEKTORYUM_SOURCE_REVISION: ${{ env.VALIDATION_SHA }}
+        run: >-
+          python -m pytest -q
+          test_platform_operations.py
+          test_platform_security.py
+          test_runtime_main.py
+          test_exact_final_contract.py
+          test_transform_journal.py
+          test_final_artifact_metrics.py
+          test_source_truth.py
+          regression/test_production_container_assets.py
+          regression/test_rq1_contract.py
+          tests/test_rq3_resilience_contract.py
+          tests/test_rq4_release_gate.py
+
+  export-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.VALIDATION_SHA }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: engine/requirements.txt
+      - name: Install system validators
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ghostscript libcairo2
+      - name: Install dependencies
+        run: python -m pip install -r engine/requirements.txt
+      - name: Produce and reopen SVG PDF EPS DXF
+        working-directory: engine
+        run: |
+          python - <<'PY'
+          import tempfile
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          import ezdxf
+          import fitz
+
+          from app.exporters import export_all
+
+          with tempfile.TemporaryDirectory() as tmp:
+              root = Path(tmp)
+              source = root / "source.svg"
+              source.write_text(
+                  '<?xml version="1.0" encoding="UTF-8"?>\n'
+                  '<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180" viewBox="0 0 320 180">'
+                  '<path d="M20 20H300V160H20Z M90 60H230V120H90Z" fill="#111111" fill-rule="evenodd"/>'
+                  '<path d="M40 145L100 35L160 145Z" fill="#e53935"/>'
+                  '</svg>\n',
+                  encoding="utf-8",
+              )
+              outputs, errors = export_all(
+                  source,
+                  root,
+                  "smoke",
+                  candidate_id="main-post-merge-smoke",
+                  formats=("svg", "pdf", "eps", "dxf"),
+              )
+              assert errors == {}, errors
+              assert set(outputs) == {"svg", "pdf", "eps", "dxf"}
+              assert all(Path(path).exists() and Path(path).stat().st_size > 0 for path in outputs.values())
+              svg_root = ET.parse(outputs["svg"]).getroot()
+              assert svg_root.get("viewBox") == "0 0 320 180"
+              assert svg_root.get("data-candidate") == "main-post-merge-smoke"
+              assert not any(node.tag.split("}")[-1] == "image" for node in svg_root.iter())
+              pdf = fitz.open(outputs["pdf"])
+              assert pdf.page_count >= 1
+              pdf.close()
+              assert Path(outputs["pdf"]).read_bytes().startswith(b"%PDF")
+              assert Path(outputs["eps"]).read_bytes().startswith(b"%!PS")
+              assert len(list(ezdxf.readfile(outputs["dxf"]).modelspace())) >= 1
+          PY
+
+  docker-production-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.VALIDATION_SHA }}
+      - name: Build production image
+        run: docker build -t vektoryum-main-smoke:${VALIDATION_SHA} .
+      - name: Verify production image contract
+        run: |
+          set -euo pipefail
+          test "$(docker image inspect vektoryum-main-smoke:${VALIDATION_SHA} --format '{{.Config.User}}')" = "appuser"
+          docker image inspect vektoryum-main-smoke:${VALIDATION_SHA} --format '{{range .Config.Env}}{{println .}}{{end}}' > /tmp/image-env
+          grep -qx 'VEKTORYUM_ENVIRONMENT=production' /tmp/image-env
+          grep -qx 'VEKTORYUM_COOKIE_SECURE=1' /tmp/image-env
+      - name: Start bounded container
+        run: >-
+          docker run -d --name vektoryum-main-smoke
+          --memory 4g --cpus 2 --pids-limit 256
+          -e VEKTORYUM_SERVICE_MODE=beta
+          -e VEKTORYUM_SOURCE_REVISION=${VALIDATION_SHA}
+          -p 7860:7860 vektoryum-main-smoke:${VALIDATION_SHA}
+      - name: Liveness readiness and HTTP security smoke
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 45); do
+            if python - <<'PY'
+          import json
+          import urllib.request
+
+          for path in ("livez", "readyz"):
+              with urllib.request.urlopen(f"http://127.0.0.1:7860/{path}", timeout=3) as response:
+                  payload = json.load(response)
+                  assert payload["revision"]
+                  assert payload["status"] in {"ok", "ready"}
+                  headers = {key.lower(): value for key, value in response.headers.items()}
+                  assert headers["x-content-type-options"] == "nosniff"
+                  assert headers["x-frame-options"] in {"DENY", "SAMEORIGIN"}
+                  assert headers["referrer-policy"]
+          PY
+            then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs vektoryum-main-smoke
+          exit 1
+      - name: Graceful shutdown
+        run: |
+          docker stop --time 20 vektoryum-main-smoke
+          test "$(docker inspect vektoryum-main-smoke --format '{{.State.ExitCode}}')" = "0"
+      - name: Cleanup
+        if: always()
+        run: docker rm -f vektoryum-main-smoke >/dev/null 2>&1 || true
+
+  deployment-eligibility:
+    if: always()
+    needs:
+      - core-contracts
+      - export-smoke
+      - docker-production-smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Write fail-closed post-merge decision
+        env:
+          CORE: ${{ needs.core-contracts.result }}
+          EXPORT: ${{ needs.export-smoke.result }}
+          DOCKER: ${{ needs.docker-production-smoke.result }}
+        run: |
+          set -euo pipefail
+          mkdir -p main-post-merge-smoke
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          jobs = {
+              "core_contracts": os.environ["CORE"],
+              "export_smoke": os.environ["EXPORT"],
+              "docker_production_smoke": os.environ["DOCKER"],
+          }
+          smoke_passed = all(value == "success" for value in jobs.values())
+          payload = {
+              "schema": "vektoryum-main-post-merge-smoke-v1",
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "head_sha": os.environ["VALIDATION_SHA"],
+              "workflow_run_id": os.environ["GITHUB_RUN_ID"],
+              "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+              "jobs": jobs,
+              "platform_smoke_passed": smoke_passed,
+              "deployment_eligible_from_platform_smoke": smoke_passed,
+              "engine_release_decision": "no-go",
+              "production_rollout_allowed": False,
+              "rfv4_allowed": False,
+              "release_state": "RFV-3 pending / NO-GO / rfv4_allowed=false",
+          }
+          encoded = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode()
+          Path("main-post-merge-smoke/decision.json").write_bytes(encoded)
+          Path("main-post-merge-smoke/decision.sha256").write_text(
+              hashlib.sha256(encoded).hexdigest() + "\n",
+              encoding="utf-8",
+          )
+          Path("main-post-merge-smoke/summary.md").write_text(
+              "# Main post-merge smoke\n\n"
+              + "\n".join(f"- {name}: {status}" for name, status in jobs.items())
+              + f"\n- platform_smoke_passed: {str(smoke_passed).lower()}\n"
+              + "- engine_release_decision: no-go\n"
+              + "- production_rollout_allowed: false\n"
+              + "- rfv4_allowed: false\n",
+              encoding="utf-8",
+          )
+          if not smoke_passed:
+              raise SystemExit(1)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: main-post-merge-smoke-${{ github.run_id }}
+          path: main-post-merge-smoke
+          if-no-files-found: error
+          retention-days: 30
