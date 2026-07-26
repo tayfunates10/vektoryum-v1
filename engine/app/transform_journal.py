@@ -385,8 +385,99 @@ class TransformJournal:
             and float(comparison['rgb_mae']) <= thresholds['alpha_background_mae_max']
         )
 
+    def _verified_source_alpha_contract(
+        self,
+        stage_id: str,
+        transform_report: Any,
+    ) -> bool:
+        """Return True only for a complete source-aware alpha transaction proof.
+
+        This does not lower or replace any evaluator threshold.  It requires the
+        existing direct and FinalArtifactEvaluator alpha-plane gates, provenance
+        identity, and exact parent-to-candidate non-regression on every white,
+        black and checker appearance metric.  Only then may the generic journal
+        stop treating the newly introduced transparent boundary as an accidental
+        topology/edge/seam regression.
+        """
+        if stage_id not in {
+            "source_alpha_vector_mask",
+            "source_alpha_painter_candidate",
+        }:
+            return False
+        if not isinstance(transform_report, dict):
+            return False
+        if transform_report.get("schema") not in {
+            "rfv3d3-soft-ellipse-alpha-v1",
+            "rfv3d2-candidate-painter-reconstruction-v1",
+        }:
+            return False
+        if transform_report.get("status") != "accepted":
+            return False
+        if transform_report.get("applied") is not True:
+            return False
+        required_true = (
+            "candidate_geometry_preserved",
+            "candidate_path_data_preserved",
+            "candidate_identity_preserved",
+            "artwork_identity_preserved",
+            "source_alpha_background_non_regression",
+        )
+        if any(transform_report.get(key) is not True for key in required_true):
+            return False
+        if (
+            transform_report.get("schema")
+            == "rfv3d2-candidate-painter-reconstruction-v1"
+            and transform_report.get("trace_rgb_bytes_preserved") is not True
+        ):
+            return False
+        if transform_report.get("final_evaluator_alpha_plane_status") != "passed":
+            return False
+        if transform_report.get("final_evaluator_alpha_plane_hard_fail_codes"):
+            return False
+        if transform_report.get("source_alpha_background_failure_codes"):
+            return False
+        if transform_report.get("source_alpha_background_authority") != (
+            "final_artifact_evaluator_parent_candidate_exact_non_regression"
+        ):
+            return False
+        comparisons = transform_report.get("source_alpha_background_comparison")
+        if not isinstance(comparisons, dict):
+            return False
+        for background in ("white", "black", "checker"):
+            metrics = comparisons.get(background)
+            if not isinstance(metrics, dict):
+                return False
+            for metric in ("ssim", "ms_ssim", "rgb_mae", "rgb_p95"):
+                values = metrics.get(metric)
+                if (
+                    not isinstance(values, dict)
+                    or values.get("non_regressing") is not True
+                ):
+                    return False
+
+        from app.final_artifact_evaluator import _thresholds  # noqa: PLC0415
+
+        thresholds = _thresholds(self.image_class, None)
+        try:
+            source_iou = float(transform_report["source_truth_alpha_iou"])
+            source_mae = float(transform_report["source_truth_alpha_mae"])
+            evaluator_iou = float(transform_report["final_evaluator_alpha_iou"])
+            evaluator_mae = float(transform_report["final_evaluator_alpha_mae"])
+        except (KeyError, TypeError, ValueError):
+            return False
+        values = (source_iou, source_mae, evaluator_iou, evaluator_mae)
+        if not all(np.isfinite(value) for value in values):
+            return False
+        return bool(
+            source_iou >= float(thresholds["alpha_iou_min"])
+            and evaluator_iou >= float(thresholds["alpha_iou_min"])
+            and source_mae <= float(thresholds["alpha_mae_max"])
+            and evaluator_mae <= float(thresholds["alpha_mae_max"])
+        )
+
     def _decide(
-        self, before: dict[str, Any], after: dict[str, Any], *, stage_id: str,
+        self, before: dict[str, Any], after: dict[str, Any], *,
+        stage_id: str, transform_report: Any = None,
     ) -> list[str]:
         reasons: list[str] = []
         if not after.get("structural_safe"):
@@ -434,6 +525,9 @@ class TransformJournal:
         if reasons:
             return list(dict.fromkeys(reasons))
 
+        verified_source_alpha = self._verified_source_alpha_contract(
+            stage_id, transform_report
+        )
         before_has_visual = all(key in before for key in visual_keys)
         if before_has_visual:
             # Clean/artwork outputunda topoloji önceki kabul edilmiş artifact'tan
@@ -443,19 +537,31 @@ class TransformJournal:
                 stage_id == 'restore_source_dimensions'
                 and self._render_equivalent(render_comparison)
             )
-            if self.image_class != "photo" and not coordinate_render_equivalent:
+            if (
+                self.image_class != "photo"
+                and not coordinate_render_equivalent
+                and not verified_source_alpha
+            ):
                 if after["component_delta"] > before["component_delta"]:
                     reasons.append("topology_component_regression")
                 if after["hole_delta"] > before["hole_delta"]:
                     reasons.append("topology_hole_regression")
 
+            # Source-aware alpha proof does not waive RGB fidelity: the existing
+            # parent-relative SSIM non-regression remains mandatory.  Edge, seam
+            # and topology are skipped only because the verified transaction is
+            # intentionally introducing the source's transparent boundary and has
+            # already proved every multi-background appearance metric non-regressing.
             if after["ssim"] < before["ssim"] - 0.0005:
                 reasons.append("ssim_regression")
-            if after["edge_f1_1px"] < before["edge_f1_1px"] - 0.0015:
-                reasons.append("edge_f1_regression")
-            before_seam = float(before["seam_ratio"])
-            if after["seam_ratio"] > max(before_seam + 0.0005, before_seam * 1.25):
-                reasons.append("seam_regression")
+            if not verified_source_alpha:
+                if after["edge_f1_1px"] < before["edge_f1_1px"] - 0.0015:
+                    reasons.append("edge_f1_regression")
+                before_seam = float(before["seam_ratio"])
+                if after["seam_ratio"] > max(
+                    before_seam + 0.0005, before_seam * 1.25
+                ):
+                    reasons.append("seam_regression")
         else:
             # Yapısal olarak eksik engine artifact'ı (çoğunlukla viewBox yok)
             # güvenli koordinat sözleşmesine onarılırken bilinmeyen baseline
@@ -467,17 +573,18 @@ class TransformJournal:
                 "lineart": (0.94, 0.97, 0.004),
                 "photo": (0.75, 0.65, 0.025),
             }.get(self.image_class, (0.94, 0.95, 0.006))
-            if self.image_class != "photo":
+            if self.image_class != "photo" and not verified_source_alpha:
                 if after["component_delta"] > 0:
                     reasons.append("topology_component_regression")
                 if after["hole_delta"] > 0:
                     reasons.append("topology_hole_regression")
             if after["ssim"] < absolute[0]:
                 reasons.append("ssim_absolute_gate")
-            if after["edge_f1_1px"] < absolute[1]:
-                reasons.append("edge_f1_absolute_gate")
-            if after["seam_ratio"] > absolute[2]:
-                reasons.append("seam_absolute_gate")
+            if not verified_source_alpha:
+                if after["edge_f1_1px"] < absolute[1]:
+                    reasons.append("edge_f1_absolute_gate")
+                if after["seam_ratio"] > absolute[2]:
+                    reasons.append("seam_absolute_gate")
 
         # Hard complexity budget: iyileşen weighted skor bile patlamayı örtemez.
         bp = max(1, int(before.get("path_count") or 0))
@@ -542,11 +649,20 @@ class TransformJournal:
                 after = self._measure(candidate_data)
             finally:
                 self._measurement_stage_id = previous_stage
-            reasons = self._decide(before, after, stage_id=stage_id)
+            reasons = self._decide(
+                before,
+                after,
+                stage_id=stage_id,
+                transform_report=transform_report,
+            )
             accepted = not reasons
             status = "accepted" if accepted else "rolled_back"
 
         accepted_sha = candidate_sha if accepted else parent_sha
+        source_alpha_contract_verified = (
+            accepted
+            and self._verified_source_alpha_contract(stage_id, transform_report)
+        )
         alpha_comparison = self._alpha_comparison(before or {}, after or {})
         render_comparison = self._render_comparison(before or {}, after or {})
         before_public = (
@@ -565,7 +681,9 @@ class TransformJournal:
             "candidate_byte_size": len(candidate_data),
             "duration_ms": round(duration_ms, 3),
             "status": status,
-            "reason_codes": reasons or ["metrics_non_regressing"],
+            "reason_codes": reasons or ([
+                "verified_source_alpha_contract"
+            ] if source_alpha_contract_verified else ["metrics_non_regressing"]),
             "before_metrics": before_public,
             "after_metrics": after_public,
             "alpha_comparison": alpha_comparison,
@@ -578,6 +696,9 @@ class TransformJournal:
             "required_unmeasured": (after or {}).get("required_unmeasured", []),
             "exception_type": exception_type,
             "transform_report": transform_report,
+            "source_alpha_contract_verified": bool(
+                source_alpha_contract_verified
+            ),
         }
         self.stages.append(stage)
         self.final_accepted_sha256 = accepted_sha

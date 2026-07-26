@@ -34,6 +34,7 @@ from app.alpha_candidate_knockout import (
     _viewbox,
     _write_tree_to_temp,
 )
+from app.alpha_artwork_identity import artwork_fingerprint
 from app.alpha_candidate_support import _PROTECTED_ROOT_TAGS, _SVG_NS, _strip_content_alpha
 
 
@@ -274,12 +275,24 @@ def apply_soft_ellipse_alpha(
         np.ascontiguousarray(source_alpha).tobytes()
     ).hexdigest()
     transaction_id = alpha_transaction_id(parent_sha, alpha_sha, mode, "soft-ellipse")
+    parent_artwork_fingerprint = artwork_fingerprint(
+        original_root, transaction_id
+    )
     candidate_root = _build_soft_ellipse_tree(
         original_root,
         source_alpha.shape,
         geometry,
         transaction_id,
     )
+    candidate_artwork_fingerprint = artwork_fingerprint(
+        candidate_root, transaction_id
+    )
+    if candidate_artwork_fingerprint != parent_artwork_fingerprint:
+        raise RuntimeError(
+            "source_alpha_soft_ellipse_artwork_identity_changed:"
+            f"{parent_artwork_fingerprint[:12]}!="
+            f"{candidate_artwork_fingerprint[:12]}"
+        )
     temporary = _write_tree_to_temp(candidate_root, target)
     try:
         limits = _journal_limits(original_root, before_size)
@@ -294,6 +307,7 @@ def apply_soft_ellipse_alpha(
             source_full,
             mode,
             parent_counts,
+            parent_path=target,
         )
         os.replace(temporary, target)
         temporary = None
@@ -314,6 +328,11 @@ def apply_soft_ellipse_alpha(
         "candidate_geometry_preserved": True,
         "candidate_path_data_preserved": True,
         "candidate_identity_preserved": True,
+        "artwork_identity_preserved": True,
+        "artwork_identity_authority": "provenance_fingerprint",
+        "parent_artwork_fingerprint": parent_artwork_fingerprint,
+        "candidate_artwork_fingerprint": candidate_artwork_fingerprint,
+        "alpha_transaction_id": transaction_id,
         "soft_ellipse_bbox": [int(value) for value in box],
         "soft_ellipse_geometry": [
             float(center_x),

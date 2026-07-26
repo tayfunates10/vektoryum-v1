@@ -568,6 +568,7 @@ _PAINTER_ASSESS_STATUSES = (
     "native_alpha_rejected",
     "bounded_alpha_rejected",
     "evaluator_rejected",
+    "appearance_rejected",
     "structure_rejected",
     "identity_rejected",
     "geometry_rejected",
@@ -583,6 +584,7 @@ def _assess_painter_candidate(
     parent_counts: tuple[int, int],
     transaction_id: str = "",
     parent_artwork_fingerprint: str | None = None,
+    parent_alpha_report: Any = None,
 ) -> dict[str, Any]:
     """Fail-closed dual-scale alfa değerlendirmesi — YAPILANDIRILMIŞ sonuç döner.
 
@@ -717,6 +719,33 @@ def _assess_painter_candidate(
         )
         return result
 
+    background_proof: dict[str, Any] = {
+        "source_alpha_background_non_regression": False,
+        "source_alpha_background_failure_codes": [
+            "source_alpha_parent_background_evidence_missing"
+        ],
+        "source_alpha_background_comparison": {},
+        "source_alpha_background_authority": "unmeasured",
+    }
+    if parent_alpha_report is not None:
+        from app.alpha_candidate_validation import (  # noqa: PLC0415
+            alpha_background_non_regression,
+        )
+
+        background_proof = alpha_background_non_regression(
+            parent_alpha_report, report
+        )
+        if not background_proof["source_alpha_background_non_regression"]:
+            result["status"] = "appearance_rejected"
+            result["validation_stage"] = "background_appearance"
+            result["exact_error_code"] = (
+                "source_alpha_candidate_painter_background_regression:"
+                + ",".join(
+                    background_proof["source_alpha_background_failure_codes"]
+                )
+            )
+            return result
+
     structure, _messages, structure_codes, root = _structure_check(
         Path(candidate_path).read_bytes()
     )
@@ -764,6 +793,13 @@ def _assess_painter_candidate(
     result["status"] = "accepted"
     result["validation_stage"] = "accepted"
     result["report"] = {
+        "status": "accepted",
+        "applied": True,
+        "schema": "rfv3d2-candidate-painter-reconstruction-v1",
+        "candidate_geometry_preserved": True,
+        "candidate_path_data_preserved": True,
+        "trace_rgb_bytes_preserved": True,
+        "candidate_identity_preserved": True,
         "painter_native_alpha_iou": float(native_metrics["alpha_iou"]),
         "painter_native_alpha_mae": float(native_metrics["alpha_mae"]),
         "source_truth_alpha_iou": float(direct_metrics["alpha_iou"]),
@@ -776,8 +812,13 @@ def _assess_painter_candidate(
         "final_evaluator_alpha_iou": float(evaluator_alpha_iou),
         "final_evaluator_alpha_mae": float(evaluator_alpha_mae),
         "final_evaluator_alpha_source_resolution": f"{source_width}x{source_height}",
-        "appearance_regression_authority": "transform_journal_parent_delta",
-        "non_alpha_regression_authority": "transform_journal_parent_delta",
+        "appearance_regression_authority": (
+            "final_artifact_evaluator_parent_candidate_exact_non_regression"
+        ),
+        "non_alpha_regression_authority": (
+            "transform_journal_verified_source_alpha_contract"
+        ),
+        **background_proof,
         "preserved_path_count": int(after_counts[0]),
         "preserved_node_count": int(after_counts[1]),
         "parent_path_count": int(parent_counts[0]),
@@ -1027,6 +1068,16 @@ def apply_candidate_painter_reconstruction(
     journal_image_class = _JOURNAL_MODE_CLASS.get(mode, "clean_logo")
     parent_journal_path = target.parent / f".{target.name}.painter-parent.svg"
     parent_journal_path.write_bytes(before_bytes)
+    from app.alpha_candidate_knockout import _source_rgb_on_white  # noqa: PLC0415
+    from app.final_artifact_evaluator import evaluate_final_svg  # noqa: PLC0415
+
+    parent_alpha_report = evaluate_final_svg(
+        parent_journal_path,
+        _source_rgb_on_white(source_rgba_full),
+        source_alpha=source_rgba_full[:, :, 3],
+        image_class=journal_image_class,
+        required_metrics={"alpha_fidelity"},
+    )
 
     byte_limit = int(limits["byte_limit"])
 
@@ -1158,6 +1209,7 @@ def apply_candidate_painter_reconstruction(
                     parent_counts,
                     transaction_id=txn,
                     parent_artwork_fingerprint=parent_artwork_fp,
+                    parent_alpha_report=parent_alpha_report,
                 )
                 for field in (
                     "validation_stage",
@@ -1319,6 +1371,7 @@ def apply_candidate_painter_reconstruction(
                 parent_counts,
                 transaction_id=txn,
                 parent_artwork_fingerprint=parent_artwork_fp,
+                parent_alpha_report=parent_alpha_report,
             )
             for field in (
                 "validation_stage",

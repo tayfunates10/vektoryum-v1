@@ -30,6 +30,85 @@ _ALPHA_APPEARANCE_PREFIXES = (
     "alpha_black_",
     "alpha_checker_",
 )
+_ALPHA_BACKGROUND_NAMES = ("white", "black", "checker")
+_ALPHA_BACKGROUND_HIGHER_IS_BETTER = ("ssim", "ms_ssim")
+_ALPHA_BACKGROUND_LOWER_IS_BETTER = ("rgb_mae", "rgb_p95")
+
+
+def alpha_background_non_regression(
+    parent_report: Any,
+    candidate_report: Any,
+) -> dict[str, Any]:
+    """Prove an alpha transform does not degrade any existing background metric.
+
+    No new threshold is introduced.  The exact FinalArtifactEvaluator metrics from
+    the accepted parent and the alpha candidate are compared on white, black and
+    checker backgrounds.  Every higher-is-better metric must be >= the parent and
+    every lower-is-better metric must be <= the parent.  Missing/non-finite evidence
+    is fail-closed.
+    """
+    import math
+
+    def _backgrounds(report: Any) -> dict[str, Any]:
+        metrics = getattr(report, "metrics", None)
+        if not isinstance(metrics, dict):
+            raise RuntimeError("source_alpha_background_report_unmeasured")
+        group = metrics.get("G_gradient_alpha") or {}
+        backgrounds = group.get("backgrounds") or {}
+        if not isinstance(backgrounds, dict):
+            raise RuntimeError("source_alpha_background_report_unmeasured")
+        return backgrounds
+
+    parent_backgrounds = _backgrounds(parent_report)
+    candidate_backgrounds = _backgrounds(candidate_report)
+    comparisons: dict[str, Any] = {}
+    failure_codes: list[str] = []
+    for background in _ALPHA_BACKGROUND_NAMES:
+        parent = parent_backgrounds.get(background) or {}
+        candidate = candidate_backgrounds.get(background) or {}
+        values: dict[str, Any] = {}
+        for metric in (
+            *_ALPHA_BACKGROUND_HIGHER_IS_BETTER,
+            *_ALPHA_BACKGROUND_LOWER_IS_BETTER,
+        ):
+            parent_value = parent.get(metric)
+            candidate_value = candidate.get(metric)
+            if not isinstance(parent_value, (int, float)) or isinstance(parent_value, bool):
+                raise RuntimeError(
+                    f"source_alpha_background_metric_unmeasured:{background}:{metric}:parent"
+                )
+            if not isinstance(candidate_value, (int, float)) or isinstance(candidate_value, bool):
+                raise RuntimeError(
+                    f"source_alpha_background_metric_unmeasured:{background}:{metric}:candidate"
+                )
+            parent_number = float(parent_value)
+            candidate_number = float(candidate_value)
+            if not math.isfinite(parent_number) or not math.isfinite(candidate_number):
+                raise RuntimeError(
+                    f"source_alpha_background_metric_nonfinite:{background}:{metric}"
+                )
+            if metric in _ALPHA_BACKGROUND_HIGHER_IS_BETTER:
+                passed = candidate_number >= parent_number
+            else:
+                passed = candidate_number <= parent_number
+            values[metric] = {
+                "parent": parent_number,
+                "candidate": candidate_number,
+                "non_regressing": bool(passed),
+            }
+            if not passed:
+                failure_codes.append(
+                    f"source_alpha_{background}_{metric}_regression"
+                )
+        comparisons[background] = values
+    return {
+        "source_alpha_background_non_regression": not failure_codes,
+        "source_alpha_background_failure_codes": failure_codes,
+        "source_alpha_background_comparison": comparisons,
+        "source_alpha_background_authority": (
+            "final_artifact_evaluator_parent_candidate_exact_non_regression"
+        ),
+    }
 
 
 def _release_transient_memory() -> None:
@@ -50,6 +129,7 @@ def validate_alpha_reconstruction_contract(
     source_rgba_full: np.ndarray,
     mode: str,
     parent_counts: tuple[int, int],
+    parent_path: Path | None = None,
 ) -> dict[str, Any]:
     """Validate owned alpha-plane metrics twice and preserve candidate geometry."""
     from app.alpha_svg_mask import _MODE_IMAGE_CLASS  # noqa: PLC0415
@@ -137,6 +217,33 @@ def validate_alpha_reconstruction_contract(
             + ",".join(plane_failure_codes)
         )
 
+    background_proof: dict[str, Any] = {
+        "source_alpha_background_non_regression": False,
+        "source_alpha_background_failure_codes": [
+            "source_alpha_parent_background_evidence_missing"
+        ],
+        "source_alpha_background_comparison": {},
+        "source_alpha_background_authority": "unmeasured",
+    }
+    if parent_path is not None:
+        parent_report = evaluate_final_svg(
+            Path(parent_path),
+            source_rgb,
+            source_alpha=source_alpha,
+            image_class=image_class,
+            required_metrics={"alpha_fidelity"},
+        )
+        background_proof = alpha_background_non_regression(
+            parent_report, report
+        )
+        if not background_proof["source_alpha_background_non_regression"]:
+            raise RuntimeError(
+                "source_alpha_candidate_background_regression:"
+                + ",".join(
+                    background_proof["source_alpha_background_failure_codes"]
+                )
+            )
+
     structure, _messages, structure_codes, root = _structure_check(
         Path(candidate_path).read_bytes()
     )
@@ -177,11 +284,22 @@ def validate_alpha_reconstruction_contract(
         "final_evaluator_alpha_plane_hard_fail_codes": [],
         "final_evaluator_alpha_appearance_codes": appearance_codes,
         "final_evaluator_other_hard_fail_codes": other_hard_codes,
-        "appearance_regression_authority": "transform_journal_parent_delta",
-        "non_alpha_regression_authority": "transform_journal_parent_delta",
+        "appearance_regression_authority": (
+            "final_artifact_evaluator_parent_candidate_exact_non_regression"
+            if background_proof["source_alpha_background_non_regression"]
+            else "transform_journal_parent_delta"
+        ),
+        "non_alpha_regression_authority": (
+            "transform_journal_verified_source_alpha_contract"
+            if background_proof["source_alpha_background_non_regression"]
+            else "transform_journal_parent_delta"
+        ),
+        **background_proof,
         "preserved_path_count": int(after_counts[0]),
         "preserved_node_count": int(after_counts[1]),
     }
+    if parent_path is not None:
+        del parent_report
     del report, root, source_rgb, source_alpha
     _release_transient_memory()
     return result
