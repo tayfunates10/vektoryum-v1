@@ -27,9 +27,10 @@ on:
 permissions:
   contents: read
   actions: read
+  statuses: write
 
 concurrency:
-  group: main-post-merge-smoke-${{ github.ref }}
+  group: main-post-merge-smoke-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 
 env:
@@ -207,6 +208,9 @@ jobs:
           CORE: ${{ needs.core-contracts.result }}
           EXPORT: ${{ needs.export-smoke.result }}
           DOCKER: ${{ needs.docker-production-smoke.result }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_REF: ${{ github.ref }}
+          STATUS_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           mkdir -p main-post-merge-smoke
@@ -214,6 +218,7 @@ jobs:
           import hashlib
           import json
           import os
+          import urllib.request
           from datetime import datetime, timezone
           from pathlib import Path
 
@@ -223,15 +228,28 @@ jobs:
               "docker_production_smoke": os.environ["DOCKER"],
           }
           smoke_passed = all(value == "success" for value in jobs.values())
+          event_name = os.environ["EVENT_NAME"]
+          event_ref = os.environ["EVENT_REF"]
+          is_main_push = event_name == "push" and event_ref == "refs/heads/main"
+          deployment_eligible = smoke_passed and is_main_push
+          evidence_context = (
+              "post_merge_main_push"
+              if is_main_push
+              else "pre_merge_or_manual_validation"
+          )
           payload = {
-              "schema": "vektoryum-main-post-merge-smoke-v1",
+              "schema": "vektoryum-main-post-merge-smoke-v2",
               "repository": os.environ["GITHUB_REPOSITORY"],
               "head_sha": os.environ["VALIDATION_SHA"],
               "workflow_run_id": os.environ["GITHUB_RUN_ID"],
+              "workflow_event": event_name,
+              "workflow_ref": event_ref,
+              "is_main_push": is_main_push,
+              "evidence_context": evidence_context,
               "timestamp_utc": datetime.now(timezone.utc).isoformat(),
               "jobs": jobs,
               "platform_smoke_passed": smoke_passed,
-              "deployment_eligible_from_platform_smoke": smoke_passed,
+              "deployment_eligible_from_platform_smoke": deployment_eligible,
               "engine_release_decision": "no-go",
               "production_rollout_allowed": False,
               "rfv4_allowed": False,
@@ -246,12 +264,54 @@ jobs:
           Path("main-post-merge-smoke/summary.md").write_text(
               "# Main post-merge smoke\n\n"
               + "\n".join(f"- {name}: {status}" for name, status in jobs.items())
-              + f"\n- platform_smoke_passed: {str(smoke_passed).lower()}\n"
+              + f"\n- workflow_event: {event_name}\n"
+              + f"- workflow_ref: {event_ref}\n"
+              + f"- is_main_push: {str(is_main_push).lower()}\n"
+              + f"- evidence_context: {evidence_context}\n"
+              + f"- platform_smoke_passed: {str(smoke_passed).lower()}\n"
+              + f"- deployment_eligible_from_platform_smoke: {str(deployment_eligible).lower()}\n"
               + "- engine_release_decision: no-go\n"
               + "- production_rollout_allowed: false\n"
               + "- rfv4_allowed: false\n",
               encoding="utf-8",
           )
+
+          status_payload = json.dumps(
+              {
+                  "state": "success" if smoke_passed else "failure",
+                  "target_url": (
+                      f"https://github.com/{os.environ['GITHUB_REPOSITORY']}"
+                      f"/actions/runs/{os.environ['GITHUB_RUN_ID']}"
+                  ),
+                  "description": (
+                      "Main-push platform smoke passed"
+                      if deployment_eligible
+                      else (
+                          "Smoke passed; not a main-push eligibility run"
+                          if smoke_passed
+                          else "Platform smoke failed"
+                      )
+                  ),
+                  "context": "main-post-merge-smoke/deployment-eligibility",
+              }
+          ).encode()
+          request = urllib.request.Request(
+              (
+                  f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}"
+                  f"/statuses/{os.environ['VALIDATION_SHA']}"
+              ),
+              data=status_payload,
+              method="POST",
+              headers={
+                  "Authorization": f"Bearer {os.environ['STATUS_TOKEN']}",
+                  "Accept": "application/vnd.github+json",
+                  "Content-Type": "application/json",
+                  "X-GitHub-Api-Version": "2022-11-28",
+              },
+          )
+          with urllib.request.urlopen(request, timeout=30) as response:
+              assert response.status == 201
+
           if not smoke_passed:
               raise SystemExit(1)
           PY
