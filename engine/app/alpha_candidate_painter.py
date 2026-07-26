@@ -943,6 +943,7 @@ def _run_painter_geometry_journal(
     journal_source_rgb: np.ndarray,
     image_class: str,
     transform_report: Any,
+    measurement_cache: dict[str, Any] | None = None,
 ) -> tuple[bool, list[str]]:
     """Adayı, aşağı-akış ile AYNI değişmemiş TransformJournal geometri kapılarından
     (SSIM/edge/seam/topology/node/byte) geçir. Kabul edilirse (True, []); aksi halde
@@ -957,6 +958,7 @@ def _run_painter_geometry_journal(
         journal_source_rgb,
         image_class=image_class,
         required_metrics=set(),
+        measurement_cache=measurement_cache,
     )
     accepted_path, stage = journal.consider_candidate(
         "source_alpha_painter_candidate",
@@ -1189,6 +1191,10 @@ def apply_candidate_painter_reconstruction(
         )
 
     attempts: list[dict[str, Any]] = []
+    # Ebeveyn baytı her denemede AYNIdır; paylaşılan önbellek onun render/metrik
+    # ölçümünü aday başına yeniden hesaplamayı önler. Kabul kararları ve bütçe
+    # muhasebesi değişmez (bkz. TransformJournal.measurement_cache).
+    journal_measurement_cache: dict[str, Any] = {}
 
     def _evaluate_phase(
         specs: list[tuple[str, str, str, np.ndarray, dict[int, float]]],
@@ -1258,6 +1264,21 @@ def apply_candidate_painter_reconstruction(
                     probe_temp.unlink(missing_ok=True)
                     continue
                 entry["preflight_status"] = "within_budget"
+                if best is not None and probe_size > int(best[0]):
+                    # Turnuva anahtarı (byte, path, node, sıra) sözlükseldir; baytı
+                    # KESİN olarak daha büyük bir aday bu karşılaştırmayı asla
+                    # kazanamaz. Bu nedenle pahalı alfa değerlendirmesi ve journal
+                    # render'ı atlanır. Seçilen aday ölçüm-eşdeğerdir: hiçbir eşik,
+                    # sıra veya kabul kuralı değişmez, yalnız boşa iş elenir.
+                    entry["status"] = "byte_dominated"
+                    entry["validation_stage"] = "tournament_prune"
+                    entry["exact_error_code"] = (
+                        "source_alpha_candidate_painter_byte_dominated:"
+                        f"{label}:{probe_size}>{int(best[0])}"
+                    )
+                    attempts.append(entry)
+                    probe_temp.unlink(missing_ok=True)
+                    continue
                 if (
                     canvas is not None
                     and float(stroke_width)
@@ -1314,6 +1335,7 @@ def apply_candidate_painter_reconstruction(
                         journal_source_rgb,
                         journal_image_class,
                         assessment["report"],
+                        measurement_cache=journal_measurement_cache,
                     )
                     entry["journal_passed"] = bool(journal_passed)
                     entry["journal_reason_codes"] = list(journal_codes)
@@ -1480,6 +1502,7 @@ def apply_candidate_painter_reconstruction(
                 journal_source_rgb,
                 journal_image_class,
                 assessment["report"],
+                measurement_cache=journal_measurement_cache,
             )
             entry["journal_passed"] = bool(journal_passed)
             entry["journal_reason_codes"] = list(journal_codes)

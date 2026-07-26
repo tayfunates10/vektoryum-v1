@@ -44,6 +44,14 @@ _ALPHA_FAILURE_PREFIXES = (
     "source_alpha_compact_mae_gate_failed:",
 )
 _PATH_COMMAND = re.compile(r"[MmLlHhVvCcSsQqTtAaZz]")
+# Clip geometrisi kodlamaları, ARTAN ölçüm riski sırasıyla denenir. "rect" bugünkü
+# kanıtlanmış davranıştır ve bütçeye sığdığı sürece bayt-aynı kalır. "path-transform"
+# YALNIZ rect bütçeyi aştığında devreye girer: aynı birleşmiş dikdörtgenleri tam sayı
+# raster koordinatlarında tek bir <path> olarak yazar ve raster→user dönüşümünü
+# clipPath'in kendi transform'una taşır. Geometri birebir aynıdır; kazanç yalnız
+# markup'tadır. Renderer bu alt kümeyi desteklemezse değişmemiş alpha IoU/MAE ve
+# journal kapıları adayı fail-closed reddeder.
+_CLIP_GEOMETRY_ENCODINGS = ("rect", "path-transform")
 
 
 def _local_name(name: str) -> str:
@@ -167,12 +175,29 @@ def _alpha_encodings(alpha: np.ndarray):
         yield "quantized_128", quantized, opacity_by_level
 
 
+def _clip_raster_path_data(level_rectangles: list[tuple[int, int, int, int]]) -> str:
+    """Birleşmiş dikdörtgenleri tam sayı raster uzayında tek path verisine yazar.
+
+    Her dikdörtgen kapalı bir alt yoldur; alt yollar ayrık olduğundan nonzero ve
+    even-odd doldurma kuralları aynı bölgeyi verir. Koordinatlar tam sayı olduğu
+    için yuvarlama kaybı yoktur.
+    """
+    parts: list[str] = []
+    for x, y, width, height in level_rectangles:
+        if width <= 0 or height <= 0:
+            continue
+        parts.append(f"M{x} {y}h{width}v{height}h-{width}z")
+    return "".join(parts)
+
+
 def _build_reconstruction_tree(
     original_root: ET.Element,
     canvas_element: ET.Element,
     quantized: np.ndarray,
     opacity_by_level: dict[int, float],
-) -> tuple[ET.Element, dict[str, int]]:
+    *,
+    clip_encoding: str = "rect",
+) -> tuple[ET.Element, dict[str, Any]]:
     from app.alpha_svg_mask import _merged_rectangles_by_level, _strip_content_alpha  # noqa: PLC0415
 
     root = copy.deepcopy(original_root)
@@ -234,32 +259,49 @@ def _build_reconstruction_tree(
         if not level_rectangles:
             continue
         clip_id = _unique_id(root, f"vektoryum-alpha-level-{level}")
-        clip = ET.SubElement(
-            defs,
-            qname("clipPath"),
-            {
-                "id": clip_id,
-                "clipPathUnits": "userSpaceOnUse",
-                "data-vektoryum-alpha-level": str(level),
-            },
-        )
-        for x, y, width, height in level_rectangles:
-            if width <= 0 or height <= 0:
-                continue
-            # Resvg supports a stricter clipPath subset than Cairo. Emit exact
-            # user-space rectangles directly instead of nesting a transformed
-            # group inside clipPath so both evaluator renderers agree.
-            ET.SubElement(
-                clip,
-                qname("rect"),
-                {
-                    "x": f"{view_x + x * sx:.12g}",
-                    "y": f"{view_y + y * sy:.12g}",
-                    "width": f"{width * sx:.12g}",
-                    "height": f"{height * sy:.12g}",
-                },
+        clip_attributes = {
+            "id": clip_id,
+            "clipPathUnits": "userSpaceOnUse",
+            "data-vektoryum-alpha-level": str(level),
+        }
+        if clip_encoding == "path-transform":
+            # Dönüşüm clipPath ELEMENTİNİN kendi transform'undadır; clipPath içine
+            # transform'lu bir <g> yuvalanmaz. Resvg'nin daraltılmış clipPath alt
+            # kümesi shape + transform'u destekler, yuvalanmış grubu desteklemez.
+            clip_attributes["transform"] = (
+                f"translate({view_x:.12g},{view_y:.12g}) scale({sx:.12g},{sy:.12g})"
             )
-            rectangle_count += 1
+        clip = ET.SubElement(defs, qname("clipPath"), clip_attributes)
+        if clip_encoding == "path-transform":
+            path_data = _clip_raster_path_data(level_rectangles)
+            if path_data:
+                ET.SubElement(
+                    clip,
+                    qname("path"),
+                    {"d": path_data, "clip-rule": "nonzero"},
+                )
+                rectangle_count += sum(
+                    1 for _x, _y, width, height in level_rectangles
+                    if width > 0 and height > 0
+                )
+        else:
+            for x, y, width, height in level_rectangles:
+                if width <= 0 or height <= 0:
+                    continue
+                # Resvg supports a stricter clipPath subset than Cairo. Emit exact
+                # user-space rectangles directly instead of nesting a transformed
+                # group inside clipPath so both evaluator renderers agree.
+                ET.SubElement(
+                    clip,
+                    qname("rect"),
+                    {
+                        "x": f"{view_x + x * sx:.12g}",
+                        "y": f"{view_y + y * sy:.12g}",
+                        "width": f"{width * sx:.12g}",
+                        "height": f"{height * sy:.12g}",
+                    },
+                )
+                rectangle_count += 1
         if len(clip) == 0:
             defs.remove(clip)
             continue
@@ -290,6 +332,7 @@ def _build_reconstruction_tree(
         "reconstruction_clip_count": int(clip_count),
         "reconstruction_rectangle_count": int(rectangle_count),
         "reconstruction_use_count": int(use_count),
+        "reconstruction_clip_encoding": clip_encoding,
     }
 
 
@@ -440,69 +483,71 @@ def apply_candidate_geometry_knockout(
     limits = _journal_limits(original_root, before_size)
     last_budget_error: str | None = None
     for encoding_name, quantized, opacity_by_level in _alpha_encodings(source_alpha):
-        try:
-            candidate_root, geometry = _build_reconstruction_tree(
-                original_root, canvas, quantized, opacity_by_level
-            )
-            temporary = _write_tree_to_temp(candidate_root, target)
+        for clip_encoding in _CLIP_GEOMETRY_ENCODINGS:
             try:
-                after_size = temporary.stat().st_size
-                if after_size > int(limits["byte_limit"]):
-                    last_budget_error = (
-                        "source_alpha_candidate_knockout_byte_budget_rejected:"
-                        f"{after_size}>{limits['byte_limit']}"
-                    )
-                    continue
-                with Image.open(source) as source_image:
-                    source_size = source_image.size
-                source_rgba_full = _rgba_from_source_at_size(source, source_size)
-                validation = _validate_reconstruction(
-                    temporary,
-                    source_rgba_full,
-                    mode,
-                    parent_counts,
+                candidate_root, geometry = _build_reconstruction_tree(
+                    original_root, canvas, quantized, opacity_by_level,
+                    clip_encoding=clip_encoding,
                 )
-                os.replace(temporary, target)
-                temporary = None
-            finally:
-                if temporary is not None:
-                    temporary.unlink(missing_ok=True)
-        except RuntimeError as exc:
-            if "byte_budget" in str(exc):
-                last_budget_error = str(exc)
-                continue
-            raise
+                temporary = _write_tree_to_temp(candidate_root, target)
+                try:
+                    after_size = temporary.stat().st_size
+                    if after_size > int(limits["byte_limit"]):
+                        last_budget_error = (
+                            "source_alpha_candidate_knockout_byte_budget_rejected:"
+                            f"{after_size}>{limits['byte_limit']}"
+                        )
+                        continue
+                    with Image.open(source) as source_image:
+                        source_size = source_image.size
+                    source_rgba_full = _rgba_from_source_at_size(source, source_size)
+                    validation = _validate_reconstruction(
+                        temporary,
+                        source_rgba_full,
+                        mode,
+                        parent_counts,
+                    )
+                    os.replace(temporary, target)
+                    temporary = None
+                finally:
+                    if temporary is not None:
+                        temporary.unlink(missing_ok=True)
+            except RuntimeError as exc:
+                if "byte_budget" in str(exc):
+                    last_budget_error = str(exc)
+                    continue
+                raise
 
-        after_sha = _sha256(target)
-        return {
-            "status": "accepted",
-            "applied": True,
-            "schema": "rfv3d2-candidate-geometry-knockout-v1",
-            "before_sha256": before_sha,
-            "after_sha256": after_sha,
-            "before_byte_size": int(before_size),
-            "after_byte_size": int(target.stat().st_size),
-            "threshold_image_class": {
-                "geometric_logo": "geometric",
-                "minimal_ai": "clean_logo",
-                "flat_logo": "clean_logo",
-                "logo_color": "clean_logo",
-                "photo_poster": "photo",
-            }.get(mode, "clean_logo"),
-            "mask_encoding": "candidate_geometry_knockout",
-            "reconstruction_alpha_encoding": encoding_name,
-            "candidate_canvas_knockout_count": 1,
-            "candidate_geometry_preserved": True,
-            "trace_rgb_bytes_preserved": True,
-            "candidate_identity_preserved": True,
-            "preflight_parent_path_count": int(parent_counts[0]),
-            "preflight_parent_node_count": int(parent_counts[1]),
-            "preflight_path_limit": int(limits["path_limit"]),
-            "preflight_node_limit": int(limits["node_limit"]),
-            "preflight_byte_limit": int(limits["byte_limit"]),
-            **geometry,
-            **validation,
-        }
+            after_sha = _sha256(target)
+            return {
+                "status": "accepted",
+                "applied": True,
+                "schema": "rfv3d2-candidate-geometry-knockout-v1",
+                "before_sha256": before_sha,
+                "after_sha256": after_sha,
+                "before_byte_size": int(before_size),
+                "after_byte_size": int(target.stat().st_size),
+                "threshold_image_class": {
+                    "geometric_logo": "geometric",
+                    "minimal_ai": "clean_logo",
+                    "flat_logo": "clean_logo",
+                    "logo_color": "clean_logo",
+                    "photo_poster": "photo",
+                }.get(mode, "clean_logo"),
+                "mask_encoding": "candidate_geometry_knockout",
+                "reconstruction_alpha_encoding": encoding_name,
+                "candidate_canvas_knockout_count": 1,
+                "candidate_geometry_preserved": True,
+                "trace_rgb_bytes_preserved": True,
+                "candidate_identity_preserved": True,
+                "preflight_parent_path_count": int(parent_counts[0]),
+                "preflight_parent_node_count": int(parent_counts[1]),
+                "preflight_path_limit": int(limits["path_limit"]),
+                "preflight_node_limit": int(limits["node_limit"]),
+                "preflight_byte_limit": int(limits["byte_limit"]),
+                **geometry,
+                **validation,
+            }
 
     raise RuntimeError(last_budget_error or "source_alpha_candidate_knockout_no_admissible_encoding")
 

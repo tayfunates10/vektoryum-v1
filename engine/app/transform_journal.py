@@ -274,6 +274,7 @@ class TransformJournal:
         budget_seconds: float | None = None,
         stage_timeout_seconds: float | None = None,
         max_side: int = 512,
+        measurement_cache: dict[str, Any] | None = None,
     ) -> None:
         self.baseline_path = Path(baseline_path)
         baseline = self.baseline_path.read_bytes()
@@ -298,7 +299,24 @@ class TransformJournal:
         self.started = time.perf_counter()
         self.evaluation_seconds = 0.0
         self.stages: list[dict[str, Any]] = []
-        self._cache: dict[str, dict[str, Any]] = {}
+        # Paylaşılan ölçüm önbelleği YALNIZ boşa render'ı eler. Aynı bayt dizisi,
+        # aynı source_rgb, aynı max_side ve aynı required_metrics için _measure_svg_bytes
+        # saf bir fonksiyondur; namespace bu üç konfigürasyonu anahtara katarak farklı
+        # journal'ların birbirine karışmasını engeller. Önbellek isabetinde ilk ölçümün
+        # SÜRESİ de yeniden işlenir: değerlendirme bütçesi muhasebesi ve dolayısıyla
+        # budget_exhausted davranışı birebir korunur, kazanç yalnız duvar saatindedir.
+        self._cache: dict[str, Any]
+        if measurement_cache is None:
+            self._cache = {}
+            self._cache_namespace = ""
+        else:
+            self._cache = measurement_cache
+            self._cache_namespace = (
+                _sha(np.ascontiguousarray(self.source_rgb).tobytes())[:16]
+                + f":{self.max_side}:"
+                + ",".join(sorted(self.required_metrics))
+                + "|"
+            )
         self.budget_exhausted = False
 
     def _elapsed(self) -> float:
@@ -311,7 +329,11 @@ class TransformJournal:
         sha = _sha(data)
         capture_render = self._measurement_stage_id == "restore_source_dimensions"
         measure_alpha = capture_render
-        cache_key = f"{sha}:alpha={int(measure_alpha)}:render={int(capture_render)}"
+        cache_key = (
+            f"{self._cache_namespace}{sha}"
+            f":alpha={int(measure_alpha)}:render={int(capture_render)}"
+        )
+        seconds_key = f"{cache_key}\x00seconds"
         if cache_key not in self._cache:
             started = time.perf_counter()
             try:
@@ -322,7 +344,11 @@ class TransformJournal:
                     capture_render=capture_render,
                 )
             finally:
-                self.evaluation_seconds += time.perf_counter() - started
+                elapsed = time.perf_counter() - started
+                self._cache[seconds_key] = elapsed
+                self.evaluation_seconds += elapsed
+        else:
+            self.evaluation_seconds += float(self._cache.get(seconds_key) or 0.0)
         return self._cache[cache_key]
 
     @staticmethod
