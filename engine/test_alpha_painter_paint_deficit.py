@@ -132,9 +132,6 @@ class PaintDeficitCandidateTests(unittest.TestCase):
         self.assertTrue(np.all(rendered[:, 3, 3] == 0))
 
     def test_cumulative_builder_is_vector_only_and_applies_alpha_once(self):
-        # Kümülatif kodlama üretim dalını uçtan uca doğrular: aynı korunan artwork +
-        # kompakt support tek maskeyle çizilir, kaynak alfa bir kez uygulanır (şeffaf
-        # sütun şeffaf kalır), çıktı deterministik/byte-birebir ve raster içermez.
         root, canvas = self._root()
         source = self._source()
         tree1, report1 = build_paint_deficit_reconstruction_tree(
