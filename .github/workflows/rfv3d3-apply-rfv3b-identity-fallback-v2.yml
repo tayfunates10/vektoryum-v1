@@ -1,0 +1,141 @@
+name: RFV-3D3 apply RFV-3B reviewed-identity fallback v2
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/rfv3d3-apply-rfv3b-identity-fallback-v2.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: rfv3d3-rfv3b-identity-v2-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  apply-tested-fallback:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Apply exact reviewed-identity control flow
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          live_path = Path('.github/workflows/real-world-fidelity-rfv3b-live.yml')
+          live = live_path.read_text()
+          old = '''              echo "RFV-3B source mode: live acquisition"
+            else
+              echo "RFV-3B live acquisition unavailable; restoring SHA-pinned immutable corpus"
+'''
+          new = '''              if RFV_OUT="${RFV_ROOT}/out" \\
+                REVIEWED_CASES_SHA256="5f151a6cb1a433b0cb0989a67bd7cc7940162f4b36d67903d6ccdd173f9e7d89" \\
+                python - <<'PYIDENTITY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["RFV_OUT"])
+          expected_cases = os.environ["REVIEWED_CASES_SHA256"]
+          bundle = root / "rfv2-public-corpus.tar.gz"
+          checksums = json.loads((root / "bundle-checksums.json").read_text())
+          assert checksums["schema"] == "vektoryum-rfv2-live-bundle-checksums-v1"
+          assert checksums["qualified_case_count"] == 24
+          assert bundle.stat().st_size == checksums["bundle_bytes"]
+          assert hashlib.sha256(bundle.read_bytes()).hexdigest() == checksums["bundle_sha256"]
+          actual_cases = checksums["cases_sha256"]
+          print(json.dumps({
+              "actual_cases_sha256": actual_cases,
+              "expected_reviewed_cases_sha256": expected_cases,
+              "status": "reviewed_identity_match" if actual_cases == expected_cases else "reviewed_identity_mismatch",
+          }, sort_keys=True))
+          raise SystemExit(0 if actual_cases == expected_cases else 42)
+          PYIDENTITY
+              then
+                echo "RFV-3B source mode: live acquisition with reviewed identity"
+              else
+                echo "RFV-3B live acquisition identity mismatch; restoring SHA-pinned immutable corpus"
+                acquired=0
+                rm -f "${RFV_ROOT}/out/"{rfv2-public-corpus.tar.gz,qualification-manifest.json,qualification-audit.json,bundle-checksums.json}
+              fi
+            fi
+
+            if [ "${acquired}" -eq 0 ]; then
+              echo "RFV-3B live acquisition unavailable or identity-mismatched; restoring SHA-pinned immutable corpus"
+'''
+          if live.count(old) != 1:
+              raise SystemExit(f'expected exactly one RFV-3B control-flow block, found {live.count(old)}')
+          live_path.write_text(live.replace(old, new, 1))
+
+          viewbox_path = Path('.github/workflows/real-world-fidelity-rfv3e-viewbox-fix.yml')
+          viewbox = viewbox_path.read_text()
+          trigger_anchor = '      - ".github/workflows/real-world-fidelity-rfv3e-viewbox-journal-diagnostics.yml"\n'
+          trigger_insert = trigger_anchor + '      - ".github/workflows/real-world-fidelity-rfv3b-live.yml"\n'
+          if '.github/workflows/real-world-fidelity-rfv3b-live.yml' not in viewbox:
+              if viewbox.count(trigger_anchor) != 1:
+                  raise SystemExit('RFV-3E trigger anchor is not unique')
+              viewbox = viewbox.replace(trigger_anchor, trigger_insert, 1)
+
+          scope_anchor = '              .github/workflows/real-world-fidelity-rfv3e-viewbox-journal-diagnostics.yml|\\\\\n'
+          scope_insert = scope_anchor + '              .github/workflows/real-world-fidelity-rfv3b-live.yml|\\\\\n'
+          if scope_insert not in viewbox:
+              if viewbox.count(scope_anchor) != 1:
+                  raise SystemExit('RFV-3E scope anchor is not unique')
+              viewbox = viewbox.replace(scope_anchor, scope_insert, 1)
+          viewbox_path.write_text(viewbox)
+          PY
+
+      - name: Validate workflow syntax and unchanged RFV contracts
+        run: |
+          python -m pip install --disable-pip-version-check PyYAML
+          python - <<'PY'
+          import yaml
+          from pathlib import Path
+
+          paths = [
+              Path('.github/workflows/real-world-fidelity-rfv3b-live.yml'),
+              Path('.github/workflows/real-world-fidelity-rfv3e-viewbox-fix.yml'),
+          ]
+          for path in paths:
+              document = yaml.safe_load(path.read_text())
+              if not isinstance(document, dict) or 'jobs' not in document:
+                  raise SystemExit(f'invalid workflow document: {path}')
+
+          document = yaml.safe_load(paths[0].read_text())
+          steps = document['jobs']['acquire']['steps']
+          acquire = next(step for step in steps if step.get('name') == 'Acquire or restore the exact 24 reviewed sources')
+          Path('/tmp/rfv3b-acquire.sh').write_text(acquire['run'])
+          PY
+          bash -n /tmp/rfv3b-acquire.sh
+          PYTHONPATH=engine python -m unittest \
+            engine.regression.test_rfv3_live_measurement \
+            engine.regression.test_rfv3_live_prepare
+          grep -Fq 'reviewed_identity_mismatch' .github/workflows/real-world-fidelity-rfv3b-live.yml
+          grep -Fq '5f151a6cb1a433b0cb0989a67bd7cc7940162f4b36d67903d6ccdd173f9e7d89' \
+            .github/workflows/real-world-fidelity-rfv3b-live.yml
+
+      - name: Commit reviewed-identity fallback
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          rm -f \
+            .github/workflows/rfv3d3-apply-rfv3b-identity-fallback.yml \
+            .github/workflows/rfv3d3-apply-rfv3b-identity-fallback-v2.yml
+          test -n "$(git status --porcelain)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A .github/workflows
+          git commit -m "Fail over RFV-3B on reviewed corpus identity mismatch"
+          git push origin "HEAD:${HEAD_REF}"
