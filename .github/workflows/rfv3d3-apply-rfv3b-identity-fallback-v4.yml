@@ -1,4 +1,4 @@
-name: RFV-3D3 apply RFV-3B reviewed-identity fallback v4
+name: RFV-3D3 validate RFV-3B reviewed-identity fallback
 
 on:
   pull_request:
@@ -7,14 +7,14 @@ on:
       - ".github/workflows/rfv3d3-apply-rfv3b-identity-fallback-v4.yml"
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: rfv3d3-rfv3b-identity-v4-${{ github.event.pull_request.number }}
   cancel-in-progress: false
 
 jobs:
-  apply-tested-fallback:
+  validate-fallback:
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -81,19 +81,18 @@ jobs:
           grep -Fq '.github/workflows/real-world-fidelity-rfv3b-live.yml' \
             .github/workflows/real-world-fidelity-rfv3e-viewbox-fix.yml
 
-      - name: Commit reviewed-identity fallback
-        env:
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      - name: Prepare validated workflow files
         run: |
-          rm -f \
-            .github/rfv3d3_apply_rfv3b_identity.py \
-            .github/workflows/rfv3d3-apply-rfv3b-identity-fallback.yml \
-            .github/workflows/rfv3d3-apply-rfv3b-identity-fallback-v2.yml \
-            .github/workflows/rfv3d3-apply-rfv3b-identity-fallback-v3.yml \
-            .github/workflows/rfv3d3-apply-rfv3b-identity-fallback-v4.yml
-          test -n "$(git status --porcelain)"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A .github
-          git commit -m "Fail over RFV-3B on reviewed corpus identity mismatch"
-          git push origin "HEAD:${HEAD_REF}"
+          mkdir -p /tmp/rfv3d3-validated
+          cp .github/workflows/real-world-fidelity-rfv3b-live.yml /tmp/rfv3d3-validated/
+          cp .github/workflows/real-world-fidelity-rfv3e-viewbox-fix.yml /tmp/rfv3d3-validated/
+          sha256sum /tmp/rfv3d3-validated/* > /tmp/rfv3d3-validated/SHA256SUMS
+
+      - name: Upload validated workflow files
+        uses: actions/upload-artifact@v4
+        with:
+          name: rfv3d3-validated-rfv3b-identity-fallback-${{ github.event.pull_request.head.sha }}
+          path: /tmp/rfv3d3-validated
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
