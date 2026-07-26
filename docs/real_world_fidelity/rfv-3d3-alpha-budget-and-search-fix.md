@@ -111,6 +111,27 @@ kabul edilen polygon adayından (2.702 bayt) sonra dört rect denemesi
 `byte_dominated` olarak elendi; hiçbiri alfa değerlendirmesine veya journal render'ına
 girmedi. Çıktı digest'i tekrarlar arasında aynıdır.
 
+## Zorunlu yerel regresyon
+
+- `engine/test_artifact_quality.py`: tüm kontroller PASS.
+- `engine/test_visual_regression.py`: `class_reklam` PASS, `gradient_logo` PASS,
+  **`arcaates` FAIL**.
+
+`arcaates` başarısızlığı bu düzeltmeden bağımsızdır ve `main`'in kendisinde mevcuttur.
+Aynı vaka üç ayrı ağaçta koşuldu ve **birebir aynı imzayı** verdi:
+
+| ağaç | sonuç | imza |
+| --- | --- | --- |
+| bu düzeltme (`ee39501`) | FAIL, exit 1 | `source_alpha_mask_rectangle_budget_exceeded:50488>8251` |
+| PR #121 head (`fdfbe63`) | FAIL, exit 1 | `source_alpha_mask_rectangle_budget_exceeded:50488>8251` |
+| `main` (`c76dfaa`) | FAIL, exit 1 | `source_alpha_mask_rectangle_budget_exceeded:50488>8251` |
+
+Kök neden `alpha_mask_budget._preflight`'tedir: ayrıntılı rect geometrisi bütçeyi aşar
+(50.488 dikdörtgen > 8.251 sınır) ve `_build_contour_plan` alternatifi path/node/byte
+limitlerini geçemediği için fail-closed hata atılır. Bu, bu PR'de knockout için çözülen
+sorunun **aynı sınıfı**dır ancak farklı bir üretim yolundadır; kapsam dışıdır ve ayrı,
+ölçüm-kapılı bir düzeltme gerektirir.
+
 ## Değişmeyenler
 
 - evaluator ve kalite eşikleri
