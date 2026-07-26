@@ -5,6 +5,7 @@ on:
     paths:
       - ".github/workflows/real-world-fidelity-rfv3e-viewbox-fix.yml"
       - ".github/workflows/real-world-fidelity-rfv3e-viewbox-journal-diagnostics.yml"
+      - ".github/workflows/real-world-fidelity-rfv3b-live.yml"
       - "engine/app/transform_journal.py"
       - "engine/app/alpha_candidate_validation.py"
       - "engine/app/alpha_soft_ellipse.py"
@@ -88,6 +89,7 @@ jobs:
             case "${path}" in
               .github/workflows/real-world-fidelity-rfv3e-viewbox-fix.yml|\
               .github/workflows/real-world-fidelity-rfv3e-viewbox-journal-diagnostics.yml|\
+              .github/workflows/real-world-fidelity-rfv3b-live.yml|\
               engine/app/transform_journal.py|\
               engine/app/alpha_candidate_validation.py|\
               engine/app/alpha_soft_ellipse.py|\

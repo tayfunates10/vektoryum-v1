@@ -142,9 +142,41 @@ jobs:
                 --audit "${RFV_ROOT}/out/qualification-audit.json" \
                 --bundle-out "${RFV_ROOT}/out/rfv2-public-corpus.tar.gz" \
                 --checksums-out "${RFV_ROOT}/out/bundle-checksums.json"
-              echo "RFV-3B source mode: live acquisition"
-            else
-              echo "RFV-3B live acquisition unavailable; restoring SHA-pinned immutable corpus"
+              if RFV_OUT="${RFV_ROOT}/out" \
+                REVIEWED_CASES_SHA256="5f151a6cb1a433b0cb0989a67bd7cc7940162f4b36d67903d6ccdd173f9e7d89" \
+                python - <<'PYIDENTITY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["RFV_OUT"])
+          expected_cases = os.environ["REVIEWED_CASES_SHA256"]
+          bundle = root / "rfv2-public-corpus.tar.gz"
+          checksums = json.loads((root / "bundle-checksums.json").read_text())
+          assert checksums["schema"] == "vektoryum-rfv2-live-bundle-checksums-v1"
+          assert checksums["qualified_case_count"] == 24
+          assert bundle.stat().st_size == checksums["bundle_bytes"]
+          assert hashlib.sha256(bundle.read_bytes()).hexdigest() == checksums["bundle_sha256"]
+          actual_cases = checksums["cases_sha256"]
+          print(json.dumps({
+              "actual_cases_sha256": actual_cases,
+              "expected_reviewed_cases_sha256": expected_cases,
+              "status": "reviewed_identity_match" if actual_cases == expected_cases else "reviewed_identity_mismatch",
+          }, sort_keys=True))
+          raise SystemExit(0 if actual_cases == expected_cases else 42)
+          PYIDENTITY
+              then
+                echo "RFV-3B source mode: live acquisition with reviewed identity"
+              else
+                echo "RFV-3B live acquisition identity mismatch; restoring SHA-pinned immutable corpus"
+                acquired=0
+                rm -f "${RFV_ROOT}/out/"{rfv2-public-corpus.tar.gz,qualification-manifest.json,qualification-audit.json,bundle-checksums.json}
+              fi
+            fi
+
+            if [ "${acquired}" -eq 0 ]; then
+              echo "RFV-3B live acquisition unavailable or identity-mismatched; restoring SHA-pinned immutable corpus"
               cache_zip="${RFV_ROOT}/pinned-rfv2-corpus.zip"
               curl \
                 --fail-with-body \
@@ -432,69 +464,20 @@ jobs:
             ${{ runner.temp }}/rfv3b-final/retry-audit.json
           if-no-files-found: warn
           retention-days: 14
-          compression-level: 0
+         ÛÛ\™\ÜÚ[Û‹[]™[ˆ‚ˆH˜[YNˆ\ØY[[]]X›H‘•‹LÈYX\Ý\™[Y[]šY[˜ÙBˆYˆ\ØY[YX\Ý\™[Y[ˆ\Ù\ÎˆXÝ[ÛœËÝ\ØYX\Y˜XÝˆÚ]‚ˆ˜[YNˆ™ŒË[]™K[YX\Ý\™[Y[IÞÈÚ]X‹™]™[œ[Ü™\]Y\ÝšXYœÚH_Bˆ]ˆˆ	ÞÈ[›™\‹[\_KÜ™ŒØ‹Yš[˜[Ü\[[™K\™\Ý[ËšœÛÛ‚ˆ	ÞÈ[›™\‹[\_KÜ™ŒØ‹Yš[˜[Ü™]žKX]Y]šœÛÛ‚ˆ	ÞÈ[›™\‹[\_KÜ™ŒØ‹Yš[˜[ÛYX\Ý\™[Y[Y[™[ÜKšœÛÛ‚ˆY‹[›ËYš[\ËY›Ý[™ˆ\œ›Ü‚ˆ™][[Û‹Y^\ÎˆLˆÛÛ\™\ÜÚ[Û‹[]™[ˆ‚ˆH˜[YNˆš[™YX\Ý\™[Y[\Y˜XÝY[]Bˆ[Ž‚ˆT•QPÕÒQˆ	ÞÈÝ\Ë\ØY[YX\Ý\™[Y[›Ý]]Ë˜\Y˜XÝZY_BˆT•QPÕÕT“ˆ	ÞÈÝ\Ë\ØY[YX\Ý\™[Y[›Ý]]Ë˜\Y˜XÝ]\›_BˆT•QPÕÑQÑTÕˆ	ÞÈÝ\Ë\ØY[YX\Ý\™[Y[›Ý]]Ë˜\Y˜XÝYYÙ\Ý_BˆPQÔÒNˆ	ÞÈÚ]X‹™]™[œ[Ü™\]Y\ÝšXYœÚH_Bˆ[Žˆˆ]ÛˆH	ÔIÂˆ[\ÜœÛÛ‚ˆ[\ÜÜÂˆ[\Ü™Bˆœ›ÛH]Xˆ[\Ü]‚ˆ›ÛÝH]
+ÜË™[š\›Û–ÉÔ•S“‘T—ÕST	×JHÈ	Ü™ŒØ‹Yš[˜[	Âˆ[™[ÜHHœÛÛ‹›ØYÊ
+›ÛÝÈ	ÛYX\Ý\™[Y[Y[™[ÜKšœÛÛ‰ÊKœ™XYÝ^
 
-      - name: Upload immutable RFV-3 measurement evidence
-        id: upload-measurement
-        uses: actions/upload-artifact@v4
-        with:
-          name: rfv3-live-measurement-${{ github.event.pull_request.head.sha }}
-          path: |
-            ${{ runner.temp }}/rfv3b-final/pipeline-results.json
-            ${{ runner.temp }}/rfv3b-final/retry-audit.json
-            ${{ runner.temp }}/rfv3b-final/measurement-envelope.json
-          if-no-files-found: error
-          retention-days: 90
-          compression-level: 0
+JBˆ\Y˜XÝÚYHÜË™[š\›Û–ÉÐT•QPÕÒQ	×Bˆ\Y˜XÝÝ\›HÜË™[š\›Û–ÉÐT•QPÕÕT“	×Bˆ\Y˜XÝÙYÙ\ÝHÜË™[š\›Û–ÉÐT•QPÕÑQÑTÕ	×BˆXYÜÚHHÜË™[š\›Û–ÉÒPQÔÒI×Bˆ\ÜÙ\\Y˜XÝÚYš\ÙYÚ]
 
-      - name: Bind measurement artifact identity
-        env:
-          ARTIFACT_ID: ${{ steps.upload-measurement.outputs.artifact-id }}
-          ARTIFACT_URL: ${{ steps.upload-measurement.outputs.artifact-url }}
-          ARTIFACT_DIGEST: ${{ steps.upload-measurement.outputs.artifact-digest }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          python - <<'PY'
-          import json
-          import os
-          import re
-          from pathlib import Path
-
-          root = Path(os.environ['RUNNER_TEMP']) / 'rfv3b-final'
-          envelope = json.loads((root / 'measurement-envelope.json').read_text())
-          artifact_id = os.environ['ARTIFACT_ID']
-          artifact_url = os.environ['ARTIFACT_URL']
-          artifact_digest = os.environ['ARTIFACT_DIGEST']
-          head_sha = os.environ['HEAD_SHA']
-          assert artifact_id.isdigit()
-          assert artifact_url.startswith('https://github.com/')
-          assert re.fullmatch(r'(?:sha256:)?[0-9a-f]{64}', artifact_digest)
-          assert re.fullmatch(r'[0-9a-f]{40}', head_sha)
-          publication = {
-              'schema': 'vektoryum-rfv3-actions-publication-envelope-v1',
-              'head_sha': head_sha,
-              'artifact_id': int(artifact_id),
-              'artifact_url': artifact_url,
-              'artifact_digest': artifact_digest,
-              'retention_days': 90,
-              'case_count': envelope['case_count'],
-              'repeat_sample_count': envelope['repeat_sample_count'],
-              'cases_sha256': envelope['cases_sha256'],
-              'pipeline_results_sha256': envelope['pipeline_results_sha256'],
-              'retry_audit_sha256': envelope['retry_audit_sha256'],
-              'raw_assets_in_repository': False,
-          }
-          (root / 'publication-envelope.json').write_text(
-              json.dumps(publication, indent=2, sort_keys=True) + '\n',
-              encoding='utf-8',
-          )
-          PY
-
-      - name: Upload publication envelope
-        uses: actions/upload-artifact@v4
-        with:
-          name: rfv3-publication-envelope-${{ github.event.pull_request.head.sha }}
-          path: ${{ runner.temp }}/rfv3b-final/publication-envelope.json
-          if-no-files-found: error
-          retention-days: 90
-          compression-level: 0
+Bˆ\ÜÙ\\Y˜XÝÝ\›œÝ\ÝÚ]
+	ÚÎ‹ËÙÚ]X‹˜ÛÛKÉÊBˆ\ÜÙ\™K™[X]Ú
+‰ÊÎœÚLMŽŠOÖÌNXKY—^ÍIË\Y˜XÝÙYÙ\Ý
+Bˆ\ÜÙ\™K™[X]Ú
+‰ÖÌNXKY—^ÍIËXYÜÚJBˆX›XØ][ÛˆHÂˆ	ÜØÚ[XIÎˆ	Ý™ZÝÜž][K\™ŒËXXÝ[ÛœË\X›XØ][Û‹Y[™[ÜK]ŒIËˆ	ÚXYÜÚIÎˆXYÜÚKˆ	Ø\Y˜XÝÚY	Îˆ[
+\Y˜XÝÚY
+Kˆ	Ø\Y˜XÝÝ\›	Îˆ\Y˜XÝÝ\›ˆ	Ø\Y˜XÝÙYÙ\Ý	Îˆ\Y˜XÝÙYÙ\Ýˆ	Ü™][[Û—Ù^\ÉÎˆLˆ	ØØ\ÙWØÛÝ[	Îˆ[™[ÜVÉØØ\ÙWØÛÝ[	×Kˆ	Ü™\X]ÜØ[\WØÛÝ[	Îˆ[™[ÜVÉÜ™\X]ÜØ[\WØÛÝ[	×Kˆ	ØØ\Ù\×ÜÚLM‰Îˆ[™[ÜVÉØØ\Ù\×ÜÚLM‰×Kˆ	Ü\[[™WÜ™\Ý[×ÜÚLM‰Îˆ[™[ÜVÉÜ\[[™WÜ™\Ý[×ÜÚLM‰×Kˆ	Ü™]žWØ]Y]ÜÚLM‰Îˆ[™[ÜVÉÜ™]žWØ]Y]ÜÚLM‰×Kˆ	Ü˜]×Ø\ÜÙ]×Ú[—Ü™\ÜÚ]ÜžIÎˆ˜[ÙKˆBˆ
+›ÛÝÈ	ÜX›XØ][Û‹Y[™[ÜKšœÛÛ‰ÊKÜš]WÝ^
+ˆœÛÛ‹™[\ÊX›XØ][Û‹[™[L‹ÛÜÚÙ^\ÏUYJH
+È	×‰Ëˆ[˜ÛÙ[™ÏIÝ]‹N	Ëˆ
+BˆB‚ˆH˜[YNˆ\ØYX›XØ][Ûˆ[™[ÜBˆ\Ù\ÎˆXÝ[ÛœËÝ\ØYX\Y˜XÝˆÚ]‚ˆ˜[YNˆ™ŒË\X›XØ][Û‹Y[™[ÜKIÞÈÚ]X‹™]™[œ[Ü™\]Y\ÝšXYœÚH_Bˆ]ˆ	ÞÈ[›™\‹[\_KÜ™ŒØ‹Yš[˜[ÜX›XØ][Û‹Y[™[ÜKšœÛÛ‚ˆY‹[›ËYš[\ËY›Ý[™ˆ\œ›Ü‚ˆ™][[Û‹Y^\ÎˆLˆÛÛ\™\ÜÚ[Û‹[]™[ˆ
