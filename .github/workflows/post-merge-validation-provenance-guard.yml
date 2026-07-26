@@ -1,0 +1,265 @@
+name: Post-merge validation provenance guard
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/post-merge-main-validation.yml"
+      - ".github/workflows/main-post-merge-smoke.yml"
+      - ".github/workflows/post-merge-validation-provenance-guard.yml"
+      - "engine/pytest.ini"
+      - "engine/requirements.txt"
+      - "engine/app/**"
+      - "Dockerfile"
+      - ".dockerignore"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/post-merge-main-validation.yml"
+      - ".github/workflows/main-post-merge-smoke.yml"
+      - ".github/workflows/post-merge-validation-provenance-guard.yml"
+      - "engine/pytest.ini"
+      - "engine/requirements.txt"
+      - "engine/app/**"
+      - "Dockerfile"
+      - ".dockerignore"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: post-merge-provenance-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+env:
+  EXPECTED_BASE_SHA: "8b4ac41ef627008931a5cd20389133cc78d8cdbe"
+  VALIDATION_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+  BASE_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
+
+jobs:
+  provenance-guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.VALIDATION_SHA }}
+          fetch-depth: 0
+
+      - name: Prove the validation tree contains the current base
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_REF: ${{ github.ref }}
+        run: |
+          set +e
+          mkdir -p provenance-guard
+          actual_sha="$(git rev-parse HEAD)"
+          reason_code=""
+          ancestry_valid=true
+
+          if [ "${actual_sha}" != "${VALIDATION_SHA}" ]; then
+            ancestry_valid=false
+            reason_code="checkout_sha_mismatch"
+          elif ! git merge-base --is-ancestor "${EXPECTED_BASE_SHA}" "${BASE_SHA}"; then
+            ancestry_valid=false
+            reason_code="expected_base_not_ancestor"
+          elif [ "${EVENT_NAME}" = "pull_request" ] && ! git merge-base --is-ancestor "${BASE_SHA}" "${VALIDATION_SHA}"; then
+            ancestry_valid=false
+            reason_code="pr_head_missing_current_base"
+          elif [ "${EVENT_NAME}" = "push" ] && [ "${EVENT_REF}" != "refs/heads/main" ]; then
+            ancestry_valid=false
+            reason_code="push_not_main"
+          fi
+
+          export ACTUAL_SHA="${actual_sha}"
+          export ANCESTRY_VALID="${ancestry_valid}"
+          export REASON_CODE="${reason_code}"
+          python - <<'PY'
+          import json
+          import os
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          event_name = os.environ["EVENT_NAME"]
+          ancestry_valid = os.environ["ANCESTRY_VALID"] == "true"
+          payload = {
+              "schema": "vektoryum-validation-ancestry-v1",
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "workflow_run_id": os.environ["GITHUB_RUN_ID"],
+              "workflow_event": event_name,
+              "workflow_ref": os.environ["EVENT_REF"],
+              "expected_base_sha": os.environ["EXPECTED_BASE_SHA"],
+              "base_sha": os.environ["BASE_SHA"],
+              "validation_sha": os.environ["VALIDATION_SHA"],
+              "actual_checkout_sha": os.environ["ACTUAL_SHA"],
+              "current_base_is_ancestor_of_validation_sha": ancestry_valid,
+              "merge_result_tree_equivalent_to_validated_head": (
+                  ancestry_valid and event_name == "pull_request"
+              ),
+              "reason_code": os.environ["REASON_CODE"] or None,
+              "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+          }
+          Path("provenance-guard/ancestry.json").write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+          if [ "${ancestry_valid}" != "true" ]; then
+            exit 1
+          fi
+
+      - name: Build the exact validation tree
+        run: docker build -t vektoryum-provenance:${VALIDATION_SHA} .
+
+      - name: Verify production image identity
+        run: |
+          set -euo pipefail
+          test "$(docker image inspect vektoryum-provenance:${VALIDATION_SHA} --format '{{.Config.User}}')" = "appuser"
+          docker image inspect vektoryum-provenance:${VALIDATION_SHA} --format '{{range .Config.Env}}{{println .}}{{end}}' > /tmp/provenance-image-env
+          grep -qx 'VEKTORYUM_ENVIRONMENT=production' /tmp/provenance-image-env
+          grep -qx 'VEKTORYUM_COOKIE_SECURE=1' /tmp/provenance-image-env
+
+      - name: Start bounded production container
+        run: >-
+          docker run -d --name vektoryum-provenance
+          --memory 4g --cpus 2 --pids-limit 256
+          -e VEKTORYUM_SERVICE_MODE=beta
+          -e VEKTORYUM_SOURCE_REVISION=${VALIDATION_SHA}
+          -p 7860:7860
+          vektoryum-provenance:${VALIDATION_SHA}
+
+      - name: Bind liveness and readiness to the exact validated SHA
+        run: |
+          set +e
+          python - <<'PY'
+          import json
+          import os
+          import time
+          import urllib.request
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          expected = os.environ["VALIDATION_SHA"]
+          result = {
+              "schema": "vektoryum-runtime-revision-provenance-v1",
+              "expected_revision": expected,
+              "endpoints": {},
+              "revision_exact": False,
+              "reason_code": None,
+              "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+          }
+          error = None
+          for attempt in range(45):
+              try:
+                  endpoints = {}
+                  for path in ("livez", "readyz"):
+                      with urllib.request.urlopen(
+                          f"http://127.0.0.1:7860/{path}", timeout=3
+                      ) as response:
+                          payload = json.load(response)
+                          headers = {
+                              key.lower(): value
+                              for key, value in response.headers.items()
+                          }
+                          assert payload["status"] in {"ok", "ready"}
+                          assert payload["revision"] == expected
+                          assert headers["x-content-type-options"] == "nosniff"
+                          assert headers["x-frame-options"] in {"DENY", "SAMEORIGIN"}
+                          assert headers["referrer-policy"]
+                          endpoints[path] = {
+                              "status": payload["status"],
+                              "revision": payload["revision"],
+                          }
+                  result["endpoints"] = endpoints
+                  result["revision_exact"] = True
+                  break
+              except Exception as exc:
+                  error = exc
+                  time.sleep(2)
+
+          if not result["revision_exact"]:
+              result["reason_code"] = "runtime_revision_mismatch_or_unavailable"
+              result["error_type"] = type(error).__name__ if error else "UnknownError"
+
+          Path("provenance-guard/runtime.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          if not result["revision_exact"]:
+              raise SystemExit(1)
+          PY
+
+      - name: Graceful shutdown
+        run: |
+          docker stop --time 20 vektoryum-provenance
+          test "$(docker inspect vektoryum-provenance --format '{{.State.ExitCode}}')" = "0"
+
+      - name: Cleanup
+        if: always()
+        run: docker rm -f vektoryum-provenance >/dev/null 2>&1 || true
+
+      - name: Write fail-closed provenance decision
+        if: always()
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          mkdir -p provenance-guard
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          def read_json(name: str):
+              path = Path("provenance-guard") / name
+              if not path.exists():
+                  return None
+              return json.loads(path.read_text(encoding="utf-8"))
+
+          ancestry = read_json("ancestry.json")
+          runtime = read_json("runtime.json")
+          ancestry_valid = bool(
+              ancestry
+              and ancestry.get("current_base_is_ancestor_of_validation_sha")
+          )
+          revision_exact = bool(runtime and runtime.get("revision_exact"))
+          passed = ancestry_valid and revision_exact
+          payload = {
+              "schema": "vektoryum-validation-provenance-decision-v1",
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "workflow_run_id": os.environ["GITHUB_RUN_ID"],
+              "workflow_event": os.environ["EVENT_NAME"],
+              "workflow_ref": os.environ["EVENT_REF"],
+              "base_sha": os.environ["BASE_SHA"],
+              "validation_sha": os.environ["VALIDATION_SHA"],
+              "ancestry_valid": ancestry_valid,
+              "runtime_revision_exact": revision_exact,
+              "provenance_guard_passed": passed,
+              "engine_release_decision": "no-go",
+              "production_rollout_allowed": False,
+              "rfv4_allowed": False,
+              "release_state": "RFV-3 pending / NO-GO / rfv4_allowed=false",
+              "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+          }
+          encoded = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode()
+          Path("provenance-guard/decision.json").write_bytes(encoded)
+          Path("provenance-guard/decision.sha256").write_text(
+              hashlib.sha256(encoded).hexdigest() + "\n",
+              encoding="utf-8",
+          )
+          if not passed:
+              raise SystemExit(1)
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: post-merge-validation-provenance-${{ github.run_id }}
+          path: provenance-guard
+          if-no-files-found: error
+          retention-days: 30
