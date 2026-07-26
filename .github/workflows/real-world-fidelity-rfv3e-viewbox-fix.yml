@@ -6,7 +6,11 @@ on:
       - ".github/workflows/real-world-fidelity-rfv3e-viewbox-fix.yml"
       - ".github/workflows/real-world-fidelity-rfv3e-viewbox-journal-diagnostics.yml"
       - "engine/app/transform_journal.py"
+      - "engine/app/alpha_candidate_validation.py"
+      - "engine/app/alpha_soft_ellipse.py"
+      - "engine/app/alpha_candidate_painter.py"
       - "engine/test_transform_journal.py"
+      - "engine/test_rfv3d3_source_alpha_journal.py"
       - "engine/regression/rfv3e_viewbox_journal_diagnostics.py"
       - "engine/regression/test_rfv3e_viewbox_journal_diagnostics.py"
       - "docs/real_world_fidelity/rfv-3e-exact-metric-path-viewbox-fix.md"
@@ -45,13 +49,21 @@ jobs:
         run: >-
           python -m py_compile
           engine/app/transform_journal.py
+          engine/app/alpha_candidate_validation.py
+          engine/app/alpha_soft_ellipse.py
+          engine/app/alpha_candidate_painter.py
           engine/test_transform_journal.py
+          engine/test_rfv3d3_source_alpha_journal.py
           engine/regression/rfv3e_viewbox_journal_diagnostics.py
           engine/regression/test_rfv3e_viewbox_journal_diagnostics.py
 
       - name: Run complete transform journal contract
         working-directory: engine
         run: pytest -q test_transform_journal.py
+
+      - name: Run RFV-3D3 source-alpha journal contract
+        working-directory: engine
+        run: pytest -q test_rfv3d3_source_alpha_journal.py test_alpha_candidate_validation.py
 
       - name: Verify stage-scoped alpha, gradient and coordinate render behavior
         working-directory: engine
@@ -77,14 +89,18 @@ jobs:
               .github/workflows/real-world-fidelity-rfv3e-viewbox-fix.yml|\
               .github/workflows/real-world-fidelity-rfv3e-viewbox-journal-diagnostics.yml|\
               engine/app/transform_journal.py|\
+              engine/app/alpha_candidate_validation.py|\
+              engine/app/alpha_soft_ellipse.py|\
+              engine/app/alpha_candidate_painter.py|\
               engine/test_transform_journal.py|\
+              engine/test_rfv3d3_source_alpha_journal.py|\
               engine/regression/rfv3e_viewbox_journal_diagnostics.py|\
               engine/regression/test_rfv3e_viewbox_journal_diagnostics.py|\
               docs/real_world_fidelity/rfv-3e-exact-metric-path-viewbox-fix.md|\
               docs/real_world_fidelity/rfv-3e-exact-metric-path-viewbox-diagnostics.md)
                 ;;
               *)
-                echo "Unexpected file in RFV-3E viewBox fix diff: ${path}"
+                echo "Unexpected file in RFV-3E viewBox/source-alpha diff: ${path}"
                 exit 1
                 ;;
             esac
