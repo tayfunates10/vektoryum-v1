@@ -464,20 +464,69 @@ jobs:
             ${{ runner.temp }}/rfv3b-final/retry-audit.json
           if-no-files-found: warn
           retention-days: 14
-         ÛÛ\™\ÜÚ[Û‹[]™[ˆ‚ˆH˜[YNˆ\ØY[[]]X›H‘•‹LÈYX\İ\™[Y[]šY[˜ÙBˆYˆ\ØY[YX\İ\™[Y[ˆ\Ù\ÎˆXİ[ÛœËİ\ØYX\Y˜XİˆÚ]‚ˆ˜[YNˆ™ŒË[]™K[YX\İ\™[Y[IŞÈÚ]X‹™]™[œ[Ü™\]Y\İšXYœÚH_Bˆ]ˆˆ	ŞÈ[›™\‹[\_KÜ™ŒØ‹Yš[˜[Ü\[[™K\™\İ[ËšœÛÛ‚ˆ	ŞÈ[›™\‹[\_KÜ™ŒØ‹Yš[˜[Ü™]KX]Y]šœÛÛ‚ˆ	ŞÈ[›™\‹[\_KÜ™ŒØ‹Yš[˜[ÛYX\İ\™[Y[Y[™[ÜKšœÛÛ‚ˆY‹[›ËYš[\ËY›İ[™ˆ\œ›Ü‚ˆ™][[Û‹Y^\ÎˆLˆÛÛ\™\ÜÚ[Û‹[]™[ˆ‚ˆH˜[YNˆš[™YX\İ\™[Y[\Y˜XİY[]Bˆ[‚ˆT•QPÕÒQˆ	ŞÈİ\Ë\ØY[YX\İ\™[Y[›İ]]Ë˜\Y˜XİZY_BˆT•QPÕÕT“ˆ	ŞÈİ\Ë\ØY[YX\İ\™[Y[›İ]]Ë˜\Y˜Xİ]\›_BˆT•QPÕÑQÑTÕˆ	ŞÈİ\Ë\ØY[YX\İ\™[Y[›İ]]Ë˜\Y˜XİYYÙ\İ_BˆPQÔÒNˆ	ŞÈÚ]X‹™]™[œ[Ü™\]Y\İšXYœÚH_Bˆ[ˆˆ]ÛˆH	ÔIÂˆ[\ÜœÛÛ‚ˆ[\ÜÜÂˆ[\Ü™Bˆœ›ÛH]Xˆ[\Ü]‚ˆ›ÛİH]
-ÜË™[š\›Û–ÉÔ•S“‘T—ÕST	×JHÈ	Ü™ŒØ‹Yš[˜[	Âˆ[™[ÜHHœÛÛ‹›ØYÊ
-›ÛİÈ	ÛYX\İ\™[Y[Y[™[ÜKšœÛÛ‰ÊKœ™XYİ^
+          compression-level: 0
 
-JBˆ\Y˜XİÚYHÜË™[š\›Û–ÉĞT•QPÕÒQ	×Bˆ\Y˜Xİİ\›HÜË™[š\›Û–ÉĞT•QPÕÕT“	×Bˆ\Y˜XİÙYÙ\İHÜË™[š\›Û–ÉĞT•QPÕÑQÑTÕ	×BˆXYÜÚHHÜË™[š\›Û–ÉÒPQÔÒI×Bˆ\ÜÙ\\Y˜XİÚYš\ÙYÚ]
+      - name: Upload immutable RFV-3 measurement evidence
+        id: upload-measurement
+        uses: actions/upload-artifact@v4
+        with:
+          name: rfv3-live-measurement-${{ github.event.pull_request.head.sha }}
+          path: |
+            ${{ runner.temp }}/rfv3b-final/pipeline-results.json
+            ${{ runner.temp }}/rfv3b-final/retry-audit.json
+            ${{ runner.temp }}/rfv3b-final/measurement-envelope.json
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
 
-Bˆ\ÜÙ\\Y˜Xİİ\›œİ\İÚ]
-	ÚÎ‹ËÙÚ]X‹˜ÛÛKÉÊBˆ\ÜÙ\™K™[X]Ú
-‰ÊÎœÚLMŠOÖÌNXKY—^ÍIË\Y˜XİÙYÙ\İ
-Bˆ\ÜÙ\™K™[X]Ú
-‰ÖÌNXKY—^ÍIËXYÜÚJBˆX›XØ][ÛˆHÂˆ	ÜØÚ[XIÎˆ	İ™ZİÜ][K\™ŒËXXİ[ÛœË\X›XØ][Û‹Y[™[ÜK]ŒIËˆ	ÚXYÜÚIÎˆXYÜÚKˆ	Ø\Y˜XİÚY	Îˆ[
-\Y˜XİÚY
-Kˆ	Ø\Y˜Xİİ\›	Îˆ\Y˜Xİİ\›ˆ	Ø\Y˜XİÙYÙ\İ	Îˆ\Y˜XİÙYÙ\İˆ	Ü™][[Û—Ù^\ÉÎˆLˆ	ØØ\ÙWØÛİ[	Îˆ[™[ÜVÉØØ\ÙWØÛİ[	×Kˆ	Ü™\X]ÜØ[\WØÛİ[	Îˆ[™[ÜVÉÜ™\X]ÜØ[\WØÛİ[	×Kˆ	ØØ\Ù\×ÜÚLM‰Îˆ[™[ÜVÉØØ\Ù\×ÜÚLM‰×Kˆ	Ü\[[™WÜ™\İ[×ÜÚLM‰Îˆ[™[ÜVÉÜ\[[™WÜ™\İ[×ÜÚLM‰×Kˆ	Ü™]WØ]Y]ÜÚLM‰Îˆ[™[ÜVÉÜ™]WØ]Y]ÜÚLM‰×Kˆ	Ü˜]×Ø\ÜÙ]×Ú[—Ü™\ÜÚ]ÜIÎˆ˜[ÙKˆBˆ
-›ÛİÈ	ÜX›XØ][Û‹Y[™[ÜKšœÛÛ‰ÊKÜš]Wİ^
-ˆœÛÛ‹™[\ÊX›XØ][Û‹[™[L‹ÛÜÚÙ^\ÏUYJH
-È	×‰Ëˆ[˜ÛÙ[™ÏIİ]‹N	Ëˆ
-BˆB‚ˆH˜[YNˆ\ØYX›XØ][Ûˆ[™[ÜBˆ\Ù\ÎˆXİ[ÛœËİ\ØYX\Y˜XİˆÚ]‚ˆ˜[YNˆ™ŒË\X›XØ][Û‹Y[™[ÜKIŞÈÚ]X‹™]™[œ[Ü™\]Y\İšXYœÚH_Bˆ]ˆ	ŞÈ[›™\‹[\_KÜ™ŒØ‹Yš[˜[ÜX›XØ][Û‹Y[™[ÜKšœÛÛ‚ˆY‹[›ËYš[\ËY›İ[™ˆ\œ›Ü‚ˆ™][[Û‹Y^\ÎˆLˆÛÛ\™\ÜÚ[Û‹[]™[ˆ
+      - name: Bind measurement artifact identity
+        env:
+          ARTIFACT_ID: ${{ steps.upload-measurement.outputs.artifact-id }}
+          ARTIFACT_URL: ${{ steps.upload-measurement.outputs.artifact-url }}
+          ARTIFACT_DIGEST: ${{ steps.upload-measurement.outputs.artifact-digest }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          root = Path(os.environ['RUNNER_TEMP']) / 'rfv3b-final'
+          envelope = json.loads((root / 'measurement-envelope.json').read_text())
+          artifact_id = os.environ['ARTIFACT_ID']
+          artifact_url = os.environ['ARTIFACT_URL']
+          artifact_digest = os.environ['ARTIFACT_DIGEST']
+          head_sha = os.environ['HEAD_SHA']
+          assert artifact_id.isdigit()
+          assert artifact_url.startswith('https://github.com/')
+          assert re.fullmatch(r'(?:sha256:)?[0-9a-f]{64}', artifact_digest)
+          assert re.fullmatch(r'[0-9a-f]{40}', head_sha)
+          publication = {
+              'schema': 'vektoryum-rfv3-actions-publication-envelope-v1',
+              'head_sha': head_sha,
+              'artifact_id': int(artifact_id),
+              'artifact_url': artifact_url,
+              'artifact_digest': artifact_digest,
+              'retention_days': 90,
+              'case_count': envelope['case_count'],
+              'repeat_sample_count': envelope['repeat_sample_count'],
+              'cases_sha256': envelope['cases_sha256'],
+              'pipeline_results_sha256': envelope['pipeline_results_sha256'],
+              'retry_audit_sha256': envelope['retry_audit_sha256'],
+              'raw_assets_in_repository': False,
+          }
+          (root / 'publication-envelope.json').write_text(
+              json.dumps(publication, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
+          )
+          PY
+
+      - name: Upload publication envelope
+        uses: actions/upload-artifact@v4
+        with:
+          name: rfv3-publication-envelope-${{ github.event.pull_request.head.sha }}
+          path: ${{ runner.temp }}/rfv3b-final/publication-envelope.json
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
