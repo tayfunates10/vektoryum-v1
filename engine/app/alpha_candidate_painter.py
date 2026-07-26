@@ -71,6 +71,79 @@ _PAINTER_EVAL_SIDE = 512.0
 _ALPHA_PLANE_FAILURE_CODES = {"alpha_iou_below_min", "alpha_mae_above_max"}
 
 
+def _source_alpha_paint_support_proof(
+    root: ET.Element,
+    comparison_canvas: ET.Element | None,
+    source_alpha: np.ndarray,
+    width: int,
+    height: int,
+) -> dict[str, Any]:
+    """Prove every source-alpha component intersects real non-canvas paint.
+
+    A full-canvas comparison background can reproduce an arbitrary source alpha
+    mask even when the selected artwork is elsewhere.  It is therefore excluded
+    from support.  The established alpha>=128 binary boundary and exact component
+    intersection are used; no quality tolerance or guessed distance is introduced.
+    """
+    from app.alpha_candidate_knockout import (  # noqa: PLC0415
+        _RENDERABLE_TAGS,
+        _local_name,
+        _probe_root,
+        _render_root,
+    )
+
+    plane = np.asarray(source_alpha, dtype=np.uint8)
+    binary = (plane >= 128).astype(np.uint8)
+    component_total, labels, _stats, _centroids = cv2.connectedComponentsWithStats(
+        binary, connectivity=8
+    )
+    source_component_count = int(component_total - 1)
+    if source_component_count <= 0:
+        raise RuntimeError(
+            "source_alpha_candidate_painter_paint_support_unmeasured:"
+            "no_alpha_component_at_128"
+        )
+
+    support = np.zeros((height, width), dtype=bool)
+    renderable_count = 0
+    for child in list(root):
+        if child is comparison_canvas:
+            continue
+        if _local_name(str(child.tag)).lower() not in _RENDERABLE_TAGS:
+            continue
+        rendered = _render_root(_probe_root(root, child), width, height)
+        if rendered is None:
+            raise RuntimeError(
+                "source_alpha_candidate_painter_paint_support_unmeasured:"
+                "non_canvas_render_failed"
+            )
+        renderable_count += 1
+        support |= np.asarray(rendered[:, :, 3], dtype=np.uint8) >= 128
+
+    unsupported = 0
+    for component_id in range(1, component_total):
+        component = labels == component_id
+        if not bool(np.any(component & support)):
+            unsupported += 1
+
+    proof = {
+        "source_alpha_paint_support_verified": unsupported == 0,
+        "source_alpha_component_count": source_component_count,
+        "source_alpha_unsupported_component_count": int(unsupported),
+        "source_alpha_non_canvas_renderable_count": int(renderable_count),
+        "source_alpha_paint_support_binary_alpha": 128,
+        "source_alpha_paint_support_authority": (
+            "exact_component_overlap_with_non_canvas_rendered_paint"
+        ),
+    }
+    if unsupported:
+        raise RuntimeError(
+            "source_alpha_candidate_painter_paint_support_missing:"
+            f"{unsupported}/{source_component_count}"
+        )
+    return proof
+
+
 def _painter_loops(
     quantized: np.ndarray,
     opacity_by_level: dict[int, float],
@@ -1034,6 +1107,9 @@ def apply_candidate_painter_reconstruction(
     )
     if background_status == "ambiguous":
         raise RuntimeError("source_alpha_candidate_painter_background_ambiguous")
+    paint_support_proof = _source_alpha_paint_support_proof(
+        original_root, canvas, grid_alpha, grid_width, grid_height
+    )
     limits = _journal_limits(original_root, before_size)
 
     # FAZ 3A — deterministik işlem kimliği + parent sanat parmak izi. Kimlik,
@@ -1211,6 +1287,8 @@ def apply_candidate_painter_reconstruction(
                     parent_artwork_fingerprint=parent_artwork_fp,
                     parent_alpha_report=parent_alpha_report,
                 )
+                if isinstance(assessment.get("report"), dict):
+                    assessment["report"].update(paint_support_proof)
                 for field in (
                     "validation_stage",
                     "status",
@@ -1373,6 +1451,8 @@ def apply_candidate_painter_reconstruction(
                 parent_artwork_fingerprint=parent_artwork_fp,
                 parent_alpha_report=parent_alpha_report,
             )
+            if isinstance(assessment.get("report"), dict):
+                assessment["report"].update(paint_support_proof)
             for field in (
                 "validation_stage",
                 "status",

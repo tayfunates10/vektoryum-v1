@@ -54,7 +54,17 @@ def _report(*, schema: str = "rfv3d3-soft-ellipse-alpha-v1") -> dict:
         ),
     }
     if schema == "rfv3d2-candidate-painter-reconstruction-v1":
-        report["trace_rgb_bytes_preserved"] = True
+        report.update({
+            "trace_rgb_bytes_preserved": True,
+            "source_alpha_paint_support_verified": True,
+            "source_alpha_component_count": 1,
+            "source_alpha_unsupported_component_count": 0,
+            "source_alpha_non_canvas_renderable_count": 1,
+            "source_alpha_paint_support_binary_alpha": 128,
+            "source_alpha_paint_support_authority": (
+                "exact_component_overlap_with_non_canvas_rendered_paint"
+            ),
+        })
     return report
 
 
@@ -159,6 +169,41 @@ def test_verified_source_alpha_skips_only_boundary_relative_vetoes(
     assert stage["status"] == "accepted"
     assert stage["reason_codes"] == ["verified_source_alpha_contract"]
     assert stage["source_alpha_contract_verified"] is True
+
+
+@pytest.mark.parametrize("proof_value", [None, False])
+def test_painter_support_proof_cannot_be_omitted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    proof_value: bool | None,
+) -> None:
+    import app.transform_journal as transform_journal
+    from app.transform_journal import TransformJournal
+
+    parent = tmp_path / "parent.svg"
+    candidate = tmp_path / "candidate.svg"
+    parent.write_bytes(b"<svg>parent</svg>")
+    candidate.write_bytes(b"<svg>candidate</svg>")
+
+    def measure(data: bytes, _source: np.ndarray, **_kwargs):
+        return _metric(data, candidate=b"candidate" in data)
+
+    monkeypatch.setattr(transform_journal, "_measure_svg_bytes", measure)
+    report = _report(schema="rfv3d2-candidate-painter-reconstruction-v1")
+    if proof_value is None:
+        report.pop("source_alpha_paint_support_verified")
+    else:
+        report["source_alpha_paint_support_verified"] = proof_value
+    journal = TransformJournal(parent, np.zeros((8, 8, 3), dtype=np.uint8))
+    accepted, stage = journal.consider_candidate(
+        "source_alpha_painter_candidate",
+        parent,
+        candidate,
+        transform_report=report,
+    )
+    assert accepted == parent
+    assert stage["source_alpha_contract_verified"] is False
+    assert "seam_regression" in stage["reason_codes"]
 
 
 def test_unverified_source_alpha_keeps_existing_journal_vetoes(

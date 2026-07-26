@@ -424,12 +424,37 @@ class TransformJournal:
         )
         if any(transform_report.get(key) is not True for key in required_true):
             return False
-        if (
+        painter_schema = (
             transform_report.get("schema")
             == "rfv3d2-candidate-painter-reconstruction-v1"
-            and transform_report.get("trace_rgb_bytes_preserved") is not True
-        ):
-            return False
+        )
+        if painter_schema:
+            if transform_report.get("trace_rgb_bytes_preserved") is not True:
+                return False
+            if transform_report.get("source_alpha_paint_support_verified") is not True:
+                return False
+            if transform_report.get("source_alpha_paint_support_authority") != (
+                "exact_component_overlap_with_non_canvas_rendered_paint"
+            ):
+                return False
+            try:
+                component_count = int(
+                    transform_report["source_alpha_component_count"]
+                )
+                unsupported_count = int(
+                    transform_report["source_alpha_unsupported_component_count"]
+                )
+                renderable_count = int(
+                    transform_report["source_alpha_non_canvas_renderable_count"]
+                )
+            except (KeyError, TypeError, ValueError):
+                return False
+            if (
+                component_count <= 0
+                or unsupported_count != 0
+                or renderable_count <= 0
+            ):
+                return False
         if transform_report.get("final_evaluator_alpha_plane_status") != "passed":
             return False
         if transform_report.get("final_evaluator_alpha_plane_hard_fail_codes"):
