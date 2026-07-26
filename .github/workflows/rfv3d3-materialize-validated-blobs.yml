@@ -1,0 +1,123 @@
+name: RFV-3D3 materialize validated workflow blobs
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/rfv3d3-materialize-validated-blobs.yml"
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  materialize:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Download exact validated artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          ARTIFACT_ID: "8631800875"
+        run: |
+          set -euo pipefail
+          curl --fail-with-body --location --silent --show-error \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header "Accept: application/vnd.github+json" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" \
+            --output /tmp/validated.zip
+          printf '%s  %s\n' \
+            'a66e3d51937a22d988aa67e69a63319e4e5f9d5180c8581f0629f75e7a0426f8' \
+            '/tmp/validated.zip' | sha256sum --check --strict
+
+      - name: Safely extract and verify source-of-truth files
+        run: |
+          python - <<'PY'
+          import hashlib
+          import stat
+          import zipfile
+          from pathlib import Path, PurePosixPath
+
+          archive = Path('/tmp/validated.zip')
+          destination = Path('/tmp/validated')
+          expected = {
+              'real-world-fidelity-rfv3b-live.yml': 'c3835101a041cae7a83d2c61bd48d054500ef174249e6926407e5725b2092edd',
+              'real-world-fidelity-rfv3e-viewbox-fix.yml': '41c307e5218aa343a119c4788ca40a0b809a0f986332f94dbf81d482538a3117',
+              'SHA256SUMS': None,
+          }
+          destination.mkdir(parents=True, exist_ok=True)
+          with zipfile.ZipFile(archive) as package:
+              infos = package.infolist()
+              names = [info.filename for info in infos]
+              assert len(names) == len(set(names))
+              assert set(names) == set(expected)
+              for info in infos:
+                  name = info.filename
+                  assert PurePosixPath(name).name == name
+                  assert not info.is_dir()
+                  assert not (info.flag_bits & 0x1)
+                  mode = (info.external_attr >> 16) & 0o170000
+                  assert mode in (0, stat.S_IFREG)
+                  data = package.read(info)
+                  (destination / name).write_bytes(data)
+          for name, digest in expected.items():
+              if digest is None:
+                  continue
+              actual = hashlib.sha256((destination / name).read_bytes()).hexdigest()
+              assert actual == digest, (name, actual, digest)
+          PY
+
+      - name: Create Git blobs without updating refs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          python - <<'PY'
+          import base64
+          import json
+          import os
+          import urllib.request
+          from pathlib import Path
+
+          repository = os.environ['REPOSITORY']
+          token = os.environ['GH_TOKEN']
+          root = Path('/tmp/validated')
+          outputs = {}
+          for name in (
+              'real-world-fidelity-rfv3b-live.yml',
+              'real-world-fidelity-rfv3e-viewbox-fix.yml',
+          ):
+              payload = json.dumps({
+                  'content': base64.b64encode((root / name).read_bytes()).decode('ascii'),
+                  'encoding': 'base64',
+              }).encode('utf-8')
+              request = urllib.request.Request(
+                  f'https://api.github.com/repos/{repository}/git/blobs',
+                  data=payload,
+                  method='POST',
+                  headers={
+                      'Authorization': f'Bearer {token}',
+                      'Accept': 'application/vnd.github+json',
+                      'X-GitHub-Api-Version': '2022-11-28',
+                      'Content-Type': 'application/json',
+                  },
+              )
+              with urllib.request.urlopen(request, timeout=60) as response:
+                  result = json.load(response)
+              outputs[name] = result['sha']
+          output_path = Path('/tmp/validated/blob-shas.json')
+          output_path.write_text(json.dumps(outputs, indent=2, sort_keys=True) + '\n')
+          print(output_path.read_text())
+          PY
+
+      - name: Upload verified blob identities
+        uses: actions/upload-artifact@v4
+        with:
+          name: rfv3d3-validated-git-blobs-${{ github.event.pull_request.head.sha }}
+          path: /tmp/validated/blob-shas.json
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
