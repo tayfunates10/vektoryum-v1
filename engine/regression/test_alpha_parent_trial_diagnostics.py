@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 
 import app.alpha_parent_selection as selection
-from app import alpha_candidate_knockout_base as knockout_base
+from app import alpha_candidate_knockout as knockout
 from app.alpha_candidate_knockout_compact import build_compact_knockout_reconstruction_tree
 from engine.regression.output_quality_root_cause import pipeline_snapshot
 
@@ -194,7 +194,7 @@ class CompactCandidateKnockoutTests(unittest.TestCase):
         alpha = np.where((xx + yy) % 2 == 0, 128, 255).astype(np.uint8)
         opacity = {128: 128 / 255.0, 255: 1.0}
 
-        legacy_root, legacy_stats = knockout_base._build_reconstruction_tree(
+        legacy_root, legacy_stats = knockout._legacy_build_reconstruction_tree(
             root, canvas, alpha, opacity
         )
         compact_root, compact_stats = build_compact_knockout_reconstruction_tree(
@@ -203,9 +203,9 @@ class CompactCandidateKnockoutTests(unittest.TestCase):
 
         legacy_bytes = ET.tostring(legacy_root, encoding="utf-8")
         compact_bytes = ET.tostring(compact_root, encoding="utf-8")
-        original_counts = knockout_base._path_node_counts(root)
-        self.assertEqual(knockout_base._path_node_counts(legacy_root), original_counts)
-        self.assertEqual(knockout_base._path_node_counts(compact_root), original_counts)
+        original_counts = knockout._path_node_counts(root)
+        self.assertEqual(knockout._path_node_counts(legacy_root), original_counts)
+        self.assertEqual(knockout._path_node_counts(compact_root), original_counts)
         self.assertEqual(
             compact_stats["reconstruction_rectangle_count"],
             legacy_stats["reconstruction_rectangle_count"],
