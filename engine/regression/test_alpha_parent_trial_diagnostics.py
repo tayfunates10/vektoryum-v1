@@ -3,7 +3,6 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 import app.alpha_parent_selection as selection
 from engine.regression.output_quality_root_cause import pipeline_snapshot
@@ -105,7 +104,7 @@ class AlphaParentTrialDiagnosticTests(unittest.TestCase):
                 2,
             )
 
-    def test_select_attaches_diagnostics_without_changing_quality_rule(self) -> None:
+    def test_quality_rule_and_diagnostic_attachment_remain_explicit(self) -> None:
         dense = {
             "candidate": {"name": "dense", "engine": "gradient"},
             "rendered_ok": True,
@@ -122,32 +121,25 @@ class AlphaParentTrialDiagnosticTests(unittest.TestCase):
             "path_count": 4,
             "byte_size": 2000,
         }
-        original_result = {"best": {"name": "dense"}}
 
-        def fake_select(result, source_path, job_dir):
-            chosen = selection._base.choose_alpha_parent_trial([dense, flat])
-            result["chosen_by_base"] = chosen["candidate"]["name"]
-            return result
+        chosen = selection._base.choose_alpha_parent_trial([dense, flat])
 
-        with patch.object(selection._base, "_select", side_effect=fake_select):
-            returned = selection._select(
-                original_result,
-                Path("source.png"),
-                Path("job"),
-            )
-
-        self.assertIs(returned, original_result)
-        self.assertEqual(returned["chosen_by_base"], "dense")
-        diagnostics = returned["alpha_parent_trial_diagnostics"]
+        self.assertIs(chosen, dense)
+        result: dict = {}
+        returned = selection._attach_diagnostics(
+            result,
+            status="original_parent_retained",
+            trials=[dense, flat],
+            chosen=chosen,
+        )
+        self.assertIs(returned, result)
+        diagnostics = result["alpha_parent_trial_diagnostics"]
+        self.assertEqual(diagnostics["status"], "original_parent_retained")
         self.assertEqual(diagnostics["trial_count"], 2)
         self.assertEqual(diagnostics["chosen_candidate_name"], "dense")
         self.assertEqual(
             diagnostics["shortlist_policy"],
             "legacy_plus_highest_fidelity_alternate_engine",
-        )
-        self.assertEqual(
-            [item["candidate_name"] for item in diagnostics["trials"]],
-            ["dense", "flat"],
         )
 
     def test_root_cause_snapshot_captures_alpha_trial_evidence(self) -> None:
@@ -158,10 +150,32 @@ class AlphaParentTrialDiagnosticTests(unittest.TestCase):
             "preprocess_report": {},
             "scored": [],
             "alpha_parent_trial_diagnostics": {
-                "schema": "vektoryum-alpha-parent-trial-diagnostics-v1",
+                "schema": "vektoryum-alpha-parent-trial-diagnostics-v2",
                 "shortlist_policy": "legacy_plus_highest_fidelity_alternate_engine",
+                "status": "original_parent_retained",
+                "shortlist_count": 2,
+                "shortlist": [
+                    {
+                        "shortlist_index": 1,
+                        "candidate_name": "gradient",
+                        "candidate_engine": "gradient",
+                        "fidelity_score_before_alpha": 92.5,
+                        "edge_f1_before_alpha": 0.91,
+                        "path_count_before_alpha": 2,
+                    }
+                ],
                 "trial_count": 1,
                 "chosen_candidate_name": "gradient",
+                "failures": [
+                    {
+                        "stage": "alpha_transform",
+                        "shortlist_index": 2,
+                        "candidate_name": "flat",
+                        "candidate_engine": "vtracer",
+                        "error_class": "ValueError",
+                        "error_message": "safe message",
+                    }
+                ],
                 "trials": [
                     {
                         "trial_index": 1,
@@ -181,11 +195,14 @@ class AlphaParentTrialDiagnosticTests(unittest.TestCase):
         snapshot = pipeline_snapshot(output)
 
         alpha = snapshot["alpha_parent_trials"]
+        self.assertEqual(alpha["status"], "original_parent_retained")
         self.assertEqual(alpha["chosen_candidate_name"], "gradient")
         self.assertEqual(
             alpha["shortlist_policy"],
             "legacy_plus_highest_fidelity_alternate_engine",
         )
+        self.assertEqual(alpha["shortlist"][0]["candidate_engine"], "gradient")
+        self.assertEqual(alpha["failures"][0]["stage"], "alpha_transform")
         self.assertEqual(alpha["trials"][0]["candidate_engine"], "gradient")
         self.assertNotIn("private", alpha["trials"][0])
 
