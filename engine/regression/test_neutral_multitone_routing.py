@@ -40,9 +40,14 @@ class NeutralMultitoneRoutingTests(unittest.TestCase):
 
         self.assertTrue(report["has_meaningful_neutral_midtone"])
         self.assertGreaterEqual(len(report["meaningful_neutral_midtones"]), 1)
-        self.assertEqual(report["recommended_mode"], "geometric_logo")
-        self.assertEqual(report["detected_type"], "geometric_logo")
+        self.assertEqual(report["recommended_mode"], "logo_color")
+        self.assertEqual(report["detected_type"], "logo_color")
+        self.assertTrue(report["likely_color_logo"])
         self.assertTrue(report["neutral_multitone_routing_guard"]["applied"])
+        self.assertEqual(
+            report["neutral_multitone_routing_guard"]["selected_mode"],
+            "logo_color",
+        )
         self.assertIn(
             report["neutral_multitone_routing_guard"]["previous_mode"],
             {"single_color", "lineart"},
@@ -62,7 +67,7 @@ class NeutralMultitoneRoutingTests(unittest.TestCase):
 
         self.assertEqual(tones, [])
         self.assertFalse(report["neutral_multitone_routing_guard"]["applied"])
-        self.assertNotEqual(report["recommended_mode"], "geometric_logo")
+        self.assertIn(report["recommended_mode"], {"single_color", "lineart"})
 
 
 if __name__ == "__main__":
