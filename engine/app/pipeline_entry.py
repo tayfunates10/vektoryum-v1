@@ -13,12 +13,14 @@ from typing import Any
 
 from PIL import Image
 
-# Alpha budget retry bağları pipeline çekirdeği içe aktarılmadan önce kurulmalıdır.
-# Böylece app.pipeline içindeki mevcut alpha wrapper'ları aynı global fonksiyon ve
-# TransformJournal sınıfı üzerinden dar, idempotent retry sözleşmesini görür.
+# Dar production bağları pipeline çekirdeği içe aktarılmadan önce kurulmalıdır.
+# Böylece app.pipeline içindeki runtime import'lar aynı global fonksiyon ve
+# TransformJournal sınıfı üzerinden idempotent sözleşmeleri görür.
 from app.alpha_budget_retry import install_alpha_budget_retry
+from app.counter_merge_local_classify import install_counter_merge_local_classify
 
 install_alpha_budget_retry()
+install_counter_merge_local_classify()
 
 from app.pipeline import WorkerFailure  # noqa: E402
 from app.pipeline import run_pipeline as _run_pipeline_core  # noqa: E402
