@@ -13,11 +13,18 @@ from typing import Any
 
 from PIL import Image
 
-from app.pipeline import WorkerFailure
-from app.pipeline import run_pipeline as _run_pipeline_core
-from app.pipeline_canonical_report import maybe_attach_canonical_svg_candidate
-from app.production_export_integration import register_pipeline_canonical_report
-from app.shadow_runtime import maybe_attach_shadow_telemetry
+# Alpha budget retry bağları pipeline çekirdeği içe aktarılmadan önce kurulmalıdır.
+# Böylece app.pipeline içindeki mevcut alpha wrapper'ları aynı global fonksiyon ve
+# TransformJournal sınıfı üzerinden dar, idempotent retry sözleşmesini görür.
+from app.alpha_budget_retry import install_alpha_budget_retry
+
+install_alpha_budget_retry()
+
+from app.pipeline import WorkerFailure  # noqa: E402
+from app.pipeline import run_pipeline as _run_pipeline_core  # noqa: E402
+from app.pipeline_canonical_report import maybe_attach_canonical_svg_candidate  # noqa: E402
+from app.production_export_integration import register_pipeline_canonical_report  # noqa: E402
+from app.shadow_runtime import maybe_attach_shadow_telemetry  # noqa: E402
 
 
 def _audit_path(job_dir: Path) -> Path | None:
