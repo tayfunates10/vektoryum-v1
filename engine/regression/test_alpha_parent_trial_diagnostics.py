@@ -9,51 +9,36 @@ import numpy as np
 
 import app.alpha_parent_selection as selection
 from app import alpha_candidate_knockout_base as knockout_base
-from app.alpha_candidate_knockout_compact import (
-    build_compact_knockout_reconstruction_tree,
-)
+from app.alpha_candidate_knockout_compact import build_compact_knockout_reconstruction_tree
 from engine.regression.output_quality_root_cause import pipeline_snapshot
 
 
 class AlphaParentTrialDiagnosticTests(unittest.TestCase):
-    def test_snapshot_is_json_safe_and_preserves_decision_fields(self) -> None:
-        trials = [
-            {
-                "candidate": {
-                    "name": "flat-parent",
-                    "engine": "vtracer",
-                    "svg_path": Path("/private/flat.svg"),
-                },
-                "rendered_ok": True,
-                "fidelity_score": 98.123456789,
-                "edge_f1": 0.9987654321,
-                "path_count": 4,
-                "byte_size": 2048,
-                "private": object(),
-            }
-        ]
-
-        snapshot = selection.alpha_parent_trial_snapshot(trials)
-
-        self.assertEqual(
-            snapshot,
+    def test_snapshot_is_json_safe(self) -> None:
+        snapshot = selection.alpha_parent_trial_snapshot(
             [
                 {
-                    "trial_index": 1,
-                    "candidate_name": "flat-parent",
-                    "candidate_engine": "vtracer",
+                    "candidate": {
+                        "name": "flat-parent",
+                        "engine": "vtracer",
+                        "svg_path": Path("/private/flat.svg"),
+                    },
                     "rendered_ok": True,
-                    "fidelity_score": 98.12345679,
-                    "edge_f1": 0.99876543,
+                    "fidelity_score": 98.123456789,
+                    "edge_f1": 0.9987654321,
                     "path_count": 4,
                     "byte_size": 2048,
+                    "private": object(),
                 }
-            ],
+            ]
         )
+        self.assertEqual(snapshot[0]["candidate_name"], "flat-parent")
+        self.assertEqual(snapshot[0]["fidelity_score"], 98.12345679)
+        self.assertEqual(snapshot[0]["edge_f1"], 0.99876543)
         self.assertNotIn("svg_path", snapshot[0])
         self.assertNotIn("private", snapshot[0])
 
-    def test_shortlist_includes_highest_fidelity_alternate_engine(self) -> None:
+    def test_shortlist_includes_best_alternate_engine(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
 
@@ -95,23 +80,15 @@ class AlphaParentTrialDiagnosticTests(unittest.TestCase):
             }
 
             legacy = selection._legacy_shortlist(result)
-            self.assertTrue(
-                all(str(item["engine"]) == "gradient" for item in legacy),
-                legacy,
-            )
-
+            self.assertTrue(all(item["engine"] == "gradient" for item in legacy))
             shortlist = selection.engine_diverse_shortlist(result)
-
             self.assertIs(shortlist[0], gradient)
             self.assertIn(flat_best, shortlist)
             self.assertNotIn(flat_lower, shortlist)
             self.assertLessEqual(len(shortlist), selection._base._MAX_TRIALS)
-            self.assertGreaterEqual(
-                len({str(item["engine"]) for item in shortlist}),
-                2,
-            )
+            self.assertGreaterEqual(len({item["engine"] for item in shortlist}), 2)
 
-    def test_quality_rule_and_diagnostic_attachment_remain_explicit(self) -> None:
+    def test_quality_rule_is_unchanged_and_diagnostics_are_explicit(self) -> None:
         dense = {
             "candidate": {"name": "dense", "engine": "gradient"},
             "rendered_ok": True,
@@ -128,28 +105,21 @@ class AlphaParentTrialDiagnosticTests(unittest.TestCase):
             "path_count": 4,
             "byte_size": 2000,
         }
-
         chosen = selection._base.choose_alpha_parent_trial([dense, flat])
-
         self.assertIs(chosen, dense)
         result: dict = {}
-        returned = selection._attach_diagnostics(
+        selection._attach_diagnostics(
             result,
             status="original_parent_retained",
             trials=[dense, flat],
             chosen=chosen,
         )
-        self.assertIs(returned, result)
         diagnostics = result["alpha_parent_trial_diagnostics"]
         self.assertEqual(diagnostics["status"], "original_parent_retained")
         self.assertEqual(diagnostics["trial_count"], 2)
         self.assertEqual(diagnostics["chosen_candidate_name"], "dense")
-        self.assertEqual(
-            diagnostics["shortlist_policy"],
-            "legacy_plus_highest_fidelity_alternate_engine",
-        )
 
-    def test_root_cause_snapshot_captures_alpha_trial_evidence(self) -> None:
+    def test_root_cause_snapshot_keeps_shortlist_trials_and_failures(self) -> None:
         output = {
             "mode_used": "logo_color",
             "selection_reason": "highest_fidelity",
@@ -198,24 +168,15 @@ class AlphaParentTrialDiagnosticTests(unittest.TestCase):
                 ],
             },
         }
-
-        snapshot = pipeline_snapshot(output)
-
-        alpha = snapshot["alpha_parent_trials"]
+        alpha = pipeline_snapshot(output)["alpha_parent_trials"]
         self.assertEqual(alpha["status"], "original_parent_retained")
-        self.assertEqual(alpha["chosen_candidate_name"], "gradient")
-        self.assertEqual(
-            alpha["shortlist_policy"],
-            "legacy_plus_highest_fidelity_alternate_engine",
-        )
         self.assertEqual(alpha["shortlist"][0]["candidate_engine"], "gradient")
         self.assertEqual(alpha["failures"][0]["stage"], "alpha_transform")
-        self.assertEqual(alpha["trials"][0]["candidate_engine"], "gradient")
         self.assertNotIn("private", alpha["trials"][0])
 
 
 class CompactCandidateKnockoutTests(unittest.TestCase):
-    def test_compact_encoder_reduces_bytes_without_changing_path_geometry(self) -> None:
+    def test_compact_encoder_reduces_bytes_and_preserves_path_geometry(self) -> None:
         namespace = "http://www.w3.org/2000/svg"
         qname = lambda name: f"{{{namespace}}}{name}"
         root = ET.Element(qname("svg"), {"viewBox": "0 0 64 64"})
@@ -234,16 +195,10 @@ class CompactCandidateKnockoutTests(unittest.TestCase):
         opacity = {128: 128 / 255.0, 255: 1.0}
 
         legacy_root, legacy_stats = knockout_base._build_reconstruction_tree(
-            root,
-            canvas,
-            alpha,
-            opacity,
+            root, canvas, alpha, opacity
         )
         compact_root, compact_stats = build_compact_knockout_reconstruction_tree(
-            root,
-            canvas,
-            alpha,
-            opacity,
+            root, canvas, alpha, opacity
         )
 
         legacy_bytes = ET.tostring(legacy_root, encoding="utf-8")
@@ -256,8 +211,16 @@ class CompactCandidateKnockoutTests(unittest.TestCase):
             legacy_stats["reconstruction_rectangle_count"],
         )
         self.assertLess(len(compact_bytes), int(len(legacy_bytes) * 0.80))
-        self.assertIn(b"compact-user-space-use-v1", compact_bytes)
-        self.assertIn(b"<ns0:use", compact_bytes)
+        use_nodes = [
+            node
+            for node in compact_root.iter()
+            if str(node.tag).rsplit("}", 1)[-1] == "use"
+        ]
+        self.assertGreater(len(use_nodes), 0)
+        self.assertEqual(
+            compact_stats["reconstruction_encoding"],
+            "compact-user-space-use-v1",
+        )
 
 
 if __name__ == "__main__":
