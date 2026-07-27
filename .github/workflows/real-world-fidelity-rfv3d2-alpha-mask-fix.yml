@@ -19,6 +19,7 @@ on:
       - "engine/app/alpha_candidate_validation.py"
       - "engine/app/alpha_candidate_painter.py"
       - "engine/app/alpha_budget_retry.py"
+      - "engine/app/counter_merge_local_classify.py"
       - "engine/app/transform_journal.py"
       - "engine/app/alpha_candidate_paint_deficit.py"
       - "engine/app/alpha_artwork_identity.py"
@@ -43,6 +44,7 @@ on:
       - "engine/test_rfv3d3_knockout_clip_encoding.py"
       - "engine/test_rfv3d3_search_pruning.py"
       - "engine/test_rfv3d3_alpha_budget_retry.py"
+      - "engine/test_rfv3d3_counter_merge_local_classify.py"
       - "engine/regression/rfv3_timeout_diagnostic.py"
       - "engine/regression/test_rfv3_timeout_diagnostic.py"
       - "engine/test_alpha_parent_selection.py"
@@ -112,6 +114,7 @@ jobs:
           engine/app/alpha_candidate_validation.py
           engine/app/alpha_candidate_painter.py
           engine/app/alpha_budget_retry.py
+          engine/app/counter_merge_local_classify.py
           engine/app/transform_journal.py
           engine/app/alpha_candidate_paint_deficit.py
           engine/app/alpha_artwork_identity.py
@@ -136,6 +139,7 @@ jobs:
           engine/test_rfv3d3_knockout_clip_encoding.py
           engine/test_rfv3d3_search_pruning.py
           engine/test_rfv3d3_alpha_budget_retry.py
+          engine/test_rfv3d3_counter_merge_local_classify.py
           engine/regression/rfv3_timeout_diagnostic.py
           engine/regression/test_rfv3_timeout_diagnostic.py
           engine/test_alpha_parent_selection.py
@@ -195,6 +199,7 @@ jobs:
           engine/test_rfv3d3_knockout_clip_encoding.py
           engine/test_rfv3d3_search_pruning.py
           engine/test_rfv3d3_alpha_budget_retry.py
+          engine/test_rfv3d3_counter_merge_local_classify.py
           engine/regression/test_rfv3_timeout_diagnostic.py
 
       - name: Upload alpha-mask test diagnostics
@@ -219,7 +224,7 @@ jobs:
           while IFS= read -r path; do
             [ -z "${path}" ] && continue
             case "${path}" in
-              .github/workflows/exact-final-svg.yml|.github/workflows/real-world-fidelity-rfv2e-live.yml|.github/workflows/real-world-fidelity-rfv3b-live.yml|.github/workflows/real-world-fidelity-rfv3d2-alpha-mask-fix.yml|.github/workflows/real-world-fidelity-rfv3d3-timeout-profile.yml|.github/workflows/real-world-fidelity-rfv3e-viewbox-fix.yml|engine/app/__init__.py|engine/app/alpha_candidate_background.py|engine/app/alpha_candidate_direct.py|engine/app/alpha_candidate_identity.py|engine/app/alpha_candidate_knockout.py|engine/app/alpha_candidate_paint_selection.py|engine/app/alpha_candidate_support.py|engine/app/alpha_candidate_support_compact.py|engine/app/alpha_candidate_validation.py|engine/app/alpha_candidate_painter.py|engine/app/alpha_budget_retry.py|engine/app/transform_journal.py|engine/app/alpha_candidate_paint_deficit.py|engine/app/alpha_artwork_identity.py|engine/app/alpha_parent_selection.py|engine/app/alpha_pipeline_retry.py|engine/app/alpha_mask_contour.py|engine/app/alpha_mask_adaptive.py|engine/app/alpha_preprocess.py|engine/app/alpha_mask_budget.py|engine/app/alpha_soft_ellipse.py|engine/app/alpha_svg_mask.py|engine/app/pipeline_entry.py|engine/test_alpha_candidate_background.py|engine/test_alpha_candidate_direct.py|engine/test_alpha_candidate_identity.py|engine/test_alpha_candidate_knockout.py|engine/test_alpha_candidate_paint_selection.py|engine/test_alpha_candidate_support.py|engine/test_alpha_candidate_validation.py|engine/test_alpha_candidate_painter.py|engine/test_rfv3d3_source_alpha_journal.py|engine/test_rfv3d3_knockout_clip_encoding.py|engine/test_rfv3d3_search_pruning.py|engine/test_rfv3d3_alpha_budget_retry.py|engine/regression/rfv3_timeout_diagnostic.py|engine/regression/test_rfv3_timeout_diagnostic.py|engine/test_alpha_parent_selection.py|engine/test_alpha_pipeline_retry.py|engine/test_alpha_mask_adaptive.py|engine/test_alpha_mask_transaction.py|engine/test_alpha_preprocess.py|engine/test_alpha_noop_preflight.py|engine/test_alpha_clip_encoding.py|engine/test_alpha_artwork_identity.py|engine/test_alpha_painter_encoding.py|engine/test_alpha_painter_ledger.py|engine/test_alpha_painter_retry.py|engine/test_alpha_painter_reconstruction_fidelity.py|engine/test_alpha_painter_stroke_continuation.py|engine/test_alpha_painter_paint_deficit.py|engine/test_alpha_painter_cumulative_threshold.py|docs/real_world_fidelity/rfv-3d3-alpha-budget-and-search-fix.md|docs/real_world_fidelity/rfv-3d2-alpha-mask-fix.md|docs/real_world_fidelity/faz-3d-painter-alpha-reconstruction-diagnostics.md|docs/real_world_fidelity/faz-3d-painter-alpha-reconstruction-fix.md|docs/real_world_fidelity/evidence/faz3d_painter_alpha_reconstruction_diagnostics.json) ;;
+              .github/workflows/exact-final-svg.yml|.github/workflows/real-world-fidelity-rfv2e-live.yml|.github/workflows/real-world-fidelity-rfv3b-live.yml|.github/workflows/real-world-fidelity-rfv3d2-alpha-mask-fix.yml|.github/workflows/real-world-fidelity-rfv3d3-timeout-profile.yml|.github/workflows/real-world-fidelity-rfv3e-viewbox-fix.yml|engine/app/__init__.py|engine/app/alpha_candidate_background.py|engine/app/alpha_candidate_direct.py|engine/app/alpha_candidate_identity.py|engine/app/alpha_candidate_knockout.py|engine/app/alpha_candidate_paint_selection.py|engine/app/alpha_candidate_support.py|engine/app/alpha_candidate_support_compact.py|engine/app/alpha_candidate_validation.py|engine/app/alpha_candidate_painter.py|engine/app/alpha_budget_retry.py|engine/app/counter_merge_local_classify.py|engine/app/transform_journal.py|engine/app/alpha_candidate_paint_deficit.py|engine/app/alpha_artwork_identity.py|engine/app/alpha_parent_selection.py|engine/app/alpha_pipeline_retry.py|engine/app/alpha_mask_contour.py|engine/app/alpha_mask_adaptive.py|engine/app/alpha_preprocess.py|engine/app/alpha_mask_budget.py|engine/app/alpha_soft_ellipse.py|engine/app/alpha_svg_mask.py|engine/app/pipeline_entry.py|engine/test_alpha_candidate_background.py|engine/test_alpha_candidate_direct.py|engine/test_alpha_candidate_identity.py|engine/test_alpha_candidate_knockout.py|engine/test_alpha_candidate_paint_selection.py|engine/test_alpha_candidate_support.py|engine/test_alpha_candidate_validation.py|engine/test_alpha_candidate_painter.py|engine/test_rfv3d3_source_alpha_journal.py|engine/test_rfv3d3_knockout_clip_encoding.py|engine/test_rfv3d3_search_pruning.py|engine/test_rfv3d3_alpha_budget_retry.py|engine/test_rfv3d3_counter_merge_local_classify.py|engine/regression/rfv3_timeout_diagnostic.py|engine/regression/test_rfv3_timeout_diagnostic.py|engine/test_alpha_parent_selection.py|engine/test_alpha_pipeline_retry.py|engine/test_alpha_mask_adaptive.py|engine/test_alpha_mask_transaction.py|engine/test_alpha_preprocess.py|engine/test_alpha_noop_preflight.py|engine/test_alpha_clip_encoding.py|engine/test_alpha_artwork_identity.py|engine/test_alpha_painter_encoding.py|engine/test_alpha_painter_ledger.py|engine/test_alpha_painter_retry.py|engine/test_alpha_painter_reconstruction_fidelity.py|engine/test_alpha_painter_stroke_continuation.py|engine/test_alpha_painter_paint_deficit.py|engine/test_alpha_painter_cumulative_threshold.py|docs/real_world_fidelity/rfv-3d3-alpha-budget-and-search-fix.md|docs/real_world_fidelity/rfv-3d2-alpha-mask-fix.md|docs/real_world_fidelity/faz-3d-painter-alpha-reconstruction-diagnostics.md|docs/real_world_fidelity/faz-3d-painter-alpha-reconstruction-fix.md|docs/real_world_fidelity/evidence/faz3d_painter_alpha_reconstruction_diagnostics.json) ;;
               *) echo "Unexpected RFV-3D2 alpha-fix file: ${path}"; exit 1 ;;
             esac
           done <<< "${changed}"
