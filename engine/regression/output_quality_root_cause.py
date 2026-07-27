@@ -9,6 +9,8 @@ for _name, _value in vars(_base).items():
     if not _name.startswith("__"):
         globals()[_name] = _value
 
+_original_pipeline_snapshot = _base.pipeline_snapshot
+
 _ALPHA_PARENT_FIELDS = (
     "schema",
     "trial_count",
@@ -40,7 +42,7 @@ def _safe_alpha_parent_diagnostics(value: object) -> dict[str, Any]:
 
 
 def pipeline_snapshot(output: object) -> dict[str, Any]:
-    snapshot = _base.pipeline_snapshot(output)
+    snapshot = _original_pipeline_snapshot(output)
     if isinstance(output, dict):
         alpha_parent = _safe_alpha_parent_diagnostics(
             output.get("alpha_parent_trial_diagnostics")
