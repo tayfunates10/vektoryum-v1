@@ -13,6 +13,7 @@ on:
       - "engine/regression/test_neutral_multitone_routing.py"
       - "engine/regression/test_alpha_parent_trial_diagnostics.py"
       - "engine/regression/test_gradient_chromatic_boundary.py"
+      - "engine/regression/test_evaluator_ssim_corroboration.py"
       - "engine/requirements.txt"
   workflow_dispatch:
   schedule:
@@ -56,6 +57,7 @@ jobs:
           engine/regression/test_neutral_multitone_routing.py
           engine/regression/test_alpha_parent_trial_diagnostics.py
           engine/regression/test_gradient_chromatic_boundary.py
+          engine/regression/test_evaluator_ssim_corroboration.py
 
       - name: Run base output diagnostic contracts
         run: >-
@@ -78,6 +80,9 @@ jobs:
 
       - name: Run chromatic gradient boundary contracts
         run: python -m unittest -v engine.regression.test_gradient_chromatic_boundary
+
+      - name: Run geometry-corroborated SSIM contracts
+        run: python -m unittest -v engine.regression.test_evaluator_ssim_corroboration
 
       - name: Verify diagnostic CLI entrypoint
         run: python -m engine.regression.output_quality_root_cause --help >/dev/null
