@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -46,7 +47,50 @@ class AlphaParentTrialDiagnosticTests(unittest.TestCase):
         self.assertNotIn("svg_path", snapshot[0])
         self.assertNotIn("private", snapshot[0])
 
-    def test_select_attaches_diagnostics_without_changing_choice(self) -> None:
+    def test_shortlist_includes_highest_fidelity_alternate_engine(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+
+            def candidate(name: str, engine: str, fidelity: float, paths: int):
+                svg = root / f"{name}.svg"
+                svg.write_text(
+                    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>',
+                    encoding="utf-8",
+                )
+                return {
+                    "name": name,
+                    "engine": engine,
+                    "svg_path": svg,
+                    "rendered_ok": True,
+                    "fidelity_score": fidelity,
+                    "score_details": {
+                        "path_count": paths,
+                        "edge_f1": 0.9 + fidelity / 1000.0,
+                        "has_bitmap": False,
+                    },
+                }
+
+            gradient = candidate("gradient", "gradient", 92.5, 2)
+            gradient_bnd = candidate("gradient_bnd", "gradient", 92.4, 2)
+            flat_best = candidate("flat_best", "vtracer", 55.0, 16)
+            flat_lower = candidate("flat_lower", "vtracer", 50.0, 8)
+            result = {
+                "best": gradient,
+                "scored": [gradient, gradient_bnd, flat_best, flat_lower],
+            }
+
+            shortlist = selection.engine_diverse_shortlist(result)
+
+            self.assertIs(shortlist[0], gradient)
+            self.assertIn(flat_best, shortlist)
+            self.assertNotIn(flat_lower, shortlist)
+            self.assertLessEqual(len(shortlist), selection._base._MAX_TRIALS)
+            self.assertGreaterEqual(
+                len({str(item["engine"]) for item in shortlist}),
+                2,
+            )
+
+    def test_select_attaches_diagnostics_without_changing_quality_rule(self) -> None:
         dense = {
             "candidate": {"name": "dense", "engine": "gradient"},
             "rendered_ok": True,
@@ -83,6 +127,10 @@ class AlphaParentTrialDiagnosticTests(unittest.TestCase):
         self.assertEqual(diagnostics["trial_count"], 2)
         self.assertEqual(diagnostics["chosen_candidate_name"], "dense")
         self.assertEqual(
+            diagnostics["shortlist_policy"],
+            "legacy_plus_highest_fidelity_alternate_engine",
+        )
+        self.assertEqual(
             [item["candidate_name"] for item in diagnostics["trials"]],
             ["dense", "flat"],
         )
@@ -96,6 +144,7 @@ class AlphaParentTrialDiagnosticTests(unittest.TestCase):
             "scored": [],
             "alpha_parent_trial_diagnostics": {
                 "schema": "vektoryum-alpha-parent-trial-diagnostics-v1",
+                "shortlist_policy": "legacy_plus_highest_fidelity_alternate_engine",
                 "trial_count": 1,
                 "chosen_candidate_name": "gradient",
                 "trials": [
@@ -118,6 +167,10 @@ class AlphaParentTrialDiagnosticTests(unittest.TestCase):
 
         alpha = snapshot["alpha_parent_trials"]
         self.assertEqual(alpha["chosen_candidate_name"], "gradient")
+        self.assertEqual(
+            alpha["shortlist_policy"],
+            "legacy_plus_highest_fidelity_alternate_engine",
+        )
         self.assertEqual(alpha["trials"][0]["candidate_engine"], "gradient")
         self.assertNotIn("private", alpha["trials"][0])
 
