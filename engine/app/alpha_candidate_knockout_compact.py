@@ -14,7 +14,7 @@ from typing import Any
 
 import numpy as np
 
-from app.alpha_candidate_knockout import _local_name, _viewbox
+from app.alpha_candidate_knockout_base import _local_name, _viewbox
 
 _SVG_NS = "http://www.w3.org/2000/svg"
 _PROTECTED_ROOT_TAGS = {"defs", "title", "desc", "metadata", "style"}
