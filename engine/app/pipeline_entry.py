@@ -17,10 +17,14 @@ from PIL import Image
 # Böylece app.pipeline içindeki runtime import'lar aynı global fonksiyon ve
 # TransformJournal sınıfı üzerinden idempotent sözleşmeleri görür.
 from app.alpha_budget_retry import install_alpha_budget_retry
+from app.alpha_budget_retry_scope import install_alpha_budget_retry_scope
 from app.counter_merge_local_classify import install_counter_merge_local_classify
+from app.local_refine_local_classify import install_local_refine_local_classify
 
 install_alpha_budget_retry()
+install_alpha_budget_retry_scope()
 install_counter_merge_local_classify()
+install_local_refine_local_classify()
 
 from app.pipeline import WorkerFailure  # noqa: E402
 from app.pipeline import run_pipeline as _run_pipeline_core  # noqa: E402
