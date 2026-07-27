@@ -7,6 +7,7 @@ on:
       - ".github/workflows/real-world-fidelity-rfv3e-viewbox-journal-diagnostics.yml"
       - ".github/workflows/real-world-fidelity-rfv3b-live.yml"
       - ".github/workflows/real-world-fidelity-rfv3d2-alpha-mask-fix.yml"
+      - ".github/workflows/real-world-fidelity-rfv3d3-timeout-profile.yml"
       - "engine/app/transform_journal.py"
       - "engine/app/alpha_candidate_validation.py"
       - "engine/app/alpha_soft_ellipse.py"
@@ -16,6 +17,8 @@ on:
       - "engine/test_rfv3d3_source_alpha_journal.py"
       - "engine/test_rfv3d3_knockout_clip_encoding.py"
       - "engine/test_rfv3d3_search_pruning.py"
+      - "engine/regression/rfv3_timeout_diagnostic.py"
+      - "engine/regression/test_rfv3_timeout_diagnostic.py"
       - "docs/real_world_fidelity/rfv-3d3-alpha-budget-and-search-fix.md"
       - "engine/regression/rfv3e_viewbox_journal_diagnostics.py"
       - "engine/regression/test_rfv3e_viewbox_journal_diagnostics.py"
@@ -63,6 +66,8 @@ jobs:
           engine/test_rfv3d3_source_alpha_journal.py
           engine/test_rfv3d3_knockout_clip_encoding.py
           engine/test_rfv3d3_search_pruning.py
+          engine/regression/rfv3_timeout_diagnostic.py
+          engine/regression/test_rfv3_timeout_diagnostic.py
           engine/regression/rfv3e_viewbox_journal_diagnostics.py
           engine/regression/test_rfv3e_viewbox_journal_diagnostics.py
 
@@ -78,6 +83,7 @@ jobs:
           test_alpha_candidate_validation.py
           test_rfv3d3_knockout_clip_encoding.py
           test_rfv3d3_search_pruning.py
+          regression/test_rfv3_timeout_diagnostic.py
 
       - name: Verify stage-scoped alpha, gradient and coordinate render behavior
         working-directory: engine
@@ -104,6 +110,7 @@ jobs:
               .github/workflows/real-world-fidelity-rfv3e-viewbox-journal-diagnostics.yml|\
               .github/workflows/real-world-fidelity-rfv3b-live.yml|\
               .github/workflows/real-world-fidelity-rfv3d2-alpha-mask-fix.yml|\
+              .github/workflows/real-world-fidelity-rfv3d3-timeout-profile.yml|\
               engine/app/transform_journal.py|\
               engine/app/alpha_candidate_validation.py|\
               engine/app/alpha_soft_ellipse.py|\
@@ -113,6 +120,8 @@ jobs:
               engine/test_rfv3d3_source_alpha_journal.py|\
               engine/test_rfv3d3_knockout_clip_encoding.py|\
               engine/test_rfv3d3_search_pruning.py|\
+              engine/regression/rfv3_timeout_diagnostic.py|\
+              engine/regression/test_rfv3_timeout_diagnostic.py|\
               engine/regression/rfv3e_viewbox_journal_diagnostics.py|\
               engine/regression/test_rfv3e_viewbox_journal_diagnostics.py|\
               docs/real_world_fidelity/rfv-3e-exact-metric-path-viewbox-fix.md|\
