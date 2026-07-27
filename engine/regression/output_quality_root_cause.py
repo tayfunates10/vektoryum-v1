@@ -13,6 +13,7 @@ _original_pipeline_snapshot = _base.pipeline_snapshot
 
 _ALPHA_PARENT_FIELDS = (
     "schema",
+    "shortlist_policy",
     "trial_count",
     "chosen_candidate_name",
 )
