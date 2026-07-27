@@ -12,6 +12,7 @@ on:
       - "engine/regression/test_output_quality_root_cause.py"
       - "engine/regression/test_neutral_multitone_routing.py"
       - "engine/regression/test_alpha_parent_trial_diagnostics.py"
+      - "engine/regression/test_gradient_chromatic_boundary.py"
       - "engine/requirements.txt"
   workflow_dispatch:
   schedule:
@@ -54,6 +55,7 @@ jobs:
           engine/regression/test_output_quality_root_cause.py
           engine/regression/test_neutral_multitone_routing.py
           engine/regression/test_alpha_parent_trial_diagnostics.py
+          engine/regression/test_gradient_chromatic_boundary.py
 
       - name: Run base output diagnostic contracts
         run: >-
@@ -73,6 +75,9 @@ jobs:
         run: >-
           python -m unittest -v
           engine.regression.test_alpha_parent_trial_diagnostics.CompactCandidateKnockoutTests
+
+      - name: Run chromatic gradient boundary contracts
+        run: python -m unittest -v engine.regression.test_gradient_chromatic_boundary
 
       - name: Verify diagnostic CLI entrypoint
         run: python -m engine.regression.output_quality_root_cause --help >/dev/null
