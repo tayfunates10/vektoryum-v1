@@ -73,3 +73,7 @@ def pipeline_snapshot(output: object) -> dict[str, Any]:
 
 
 _base.pipeline_snapshot = pipeline_snapshot
+
+
+if __name__ == "__main__":
+    _base.main()
