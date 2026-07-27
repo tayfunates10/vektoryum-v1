@@ -71,13 +71,28 @@ class AlphaParentTrialDiagnosticTests(unittest.TestCase):
                 }
 
             gradient = candidate("gradient", "gradient", 92.5, 2)
-            gradient_bnd = candidate("gradient_bnd", "gradient", 92.4, 2)
+            gradient_bnd = candidate("gradient_bnd", "gradient", 92.4, 3)
+            gradient_refit = candidate("gradient_refit", "gradient", 92.3, 4)
+            gradient_extra = candidate("gradient_extra", "gradient", 91.0, 5)
             flat_best = candidate("flat_best", "vtracer", 55.0, 16)
             flat_lower = candidate("flat_lower", "vtracer", 50.0, 8)
             result = {
                 "best": gradient,
-                "scored": [gradient, gradient_bnd, flat_best, flat_lower],
+                "scored": [
+                    gradient,
+                    gradient_bnd,
+                    gradient_refit,
+                    gradient_extra,
+                    flat_best,
+                    flat_lower,
+                ],
             }
+
+            legacy = selection._legacy_shortlist(result)
+            self.assertTrue(
+                all(str(item["engine"]) == "gradient" for item in legacy),
+                legacy,
+            )
 
             shortlist = selection.engine_diverse_shortlist(result)
 
