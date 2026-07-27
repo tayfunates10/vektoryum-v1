@@ -2,9 +2,16 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
+import numpy as np
+
 import app.alpha_parent_selection as selection
+from app import alpha_candidate_knockout_base as knockout_base
+from app.alpha_candidate_knockout_compact import (
+    build_compact_knockout_reconstruction_tree,
+)
 from engine.regression.output_quality_root_cause import pipeline_snapshot
 
 
@@ -205,6 +212,52 @@ class AlphaParentTrialDiagnosticTests(unittest.TestCase):
         self.assertEqual(alpha["failures"][0]["stage"], "alpha_transform")
         self.assertEqual(alpha["trials"][0]["candidate_engine"], "gradient")
         self.assertNotIn("private", alpha["trials"][0])
+
+
+class CompactCandidateKnockoutTests(unittest.TestCase):
+    def test_compact_encoder_reduces_bytes_without_changing_path_geometry(self) -> None:
+        namespace = "http://www.w3.org/2000/svg"
+        qname = lambda name: f"{{{namespace}}}{name}"
+        root = ET.Element(qname("svg"), {"viewBox": "0 0 64 64"})
+        canvas = ET.SubElement(
+            root,
+            qname("path"),
+            {"d": "M0 0H64V64H0Z", "fill": "#fff"},
+        )
+        ET.SubElement(
+            root,
+            qname("path"),
+            {"d": "M8 8H56V56H8Z", "fill": "#1677ff"},
+        )
+        yy, xx = np.indices((64, 64))
+        alpha = np.where((xx + yy) % 2 == 0, 128, 255).astype(np.uint8)
+        opacity = {128: 128 / 255.0, 255: 1.0}
+
+        legacy_root, legacy_stats = knockout_base._build_reconstruction_tree(
+            root,
+            canvas,
+            alpha,
+            opacity,
+        )
+        compact_root, compact_stats = build_compact_knockout_reconstruction_tree(
+            root,
+            canvas,
+            alpha,
+            opacity,
+        )
+
+        legacy_bytes = ET.tostring(legacy_root, encoding="utf-8")
+        compact_bytes = ET.tostring(compact_root, encoding="utf-8")
+        original_counts = knockout_base._path_node_counts(root)
+        self.assertEqual(knockout_base._path_node_counts(legacy_root), original_counts)
+        self.assertEqual(knockout_base._path_node_counts(compact_root), original_counts)
+        self.assertEqual(
+            compact_stats["reconstruction_rectangle_count"],
+            legacy_stats["reconstruction_rectangle_count"],
+        )
+        self.assertLess(len(compact_bytes), int(len(legacy_bytes) * 0.80))
+        self.assertIn(b"compact-user-space-use-v1", compact_bytes)
+        self.assertIn(b"<ns0:use", compact_bytes)
 
 
 if __name__ == "__main__":
