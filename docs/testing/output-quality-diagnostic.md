@@ -30,8 +30,10 @@ Kök dizin ayrıca şunları içerir:
 
 - `output-quality-report.json`
 - `output-quality-summary.md`
+- `output-quality-root-cause.json`
+- `output-quality-root-cause.md`
 
-JSON raporu SHA-256, pipeline durumu, artifact determinism, evaluator verdict, hata kodları ve aşağıdaki metrikleri taşır:
+JSON raporları SHA-256, pipeline durumu, artifact determinism, evaluator verdict, hata kodları ve aşağıdaki metrikleri taşır:
 
 - SSIM ve MS-SSIM
 - edge F1 1 px / 2 px
@@ -44,6 +46,17 @@ JSON raporu SHA-256, pipeline durumu, artifact determinism, evaluator verdict, h
 - alpha IoU / MAE
 - path, node ve SVG byte sayısı
 - median render süresi
+
+Kök-neden katmanı ayrıca her tekrar için güvenli karar kanıtlarını kaydeder:
+
+- analizörün önerdiği ve kullanılan mod
+- kazanan aday ve motor
+- seçim gerekçesi
+- aday fidelity / total score / path / edge özeti
+- renk ve görüntü sınıfı sinyalleri
+- ölçüme bağlı, kesinlik seviyesi belirtilmiş kök-neden hipotezleri
+
+Mutlak dosya yolları, kaynak byte'ları ve serbest-form dahili nesneler kök-neden raporuna alınmaz.
 
 ## Severity
 
@@ -59,23 +72,24 @@ JSON raporu SHA-256, pipeline durumu, artifact determinism, evaluator verdict, h
 - `structural`: eksik, tehlikeli, render edilemeyen veya nondeterministic çıktı varsa başarısız olur
 - `hard`: structural hatalara ek olarak evaluator hard kalite hatalarında da başarısız olur
 
-Pull request koşumu bir tekrar ve `structural` kapı kullanır. Manuel ve haftalık koşum iki tekrar ve `hard` kapı kullanır. Böylece PR hattı gerçek production kırılmalarını engellerken haftalık hat kalite eşiklerini de fail-closed uygular.
+Pull request, manuel ve haftalık koşumlar iki tekrar yapar. Pull request `structural` kapıyı kullanır; manuel ve haftalık koşumlar `hard` kapıyı kullanır. Böylece her PR'da byte determinism gerçekten ölçülür, production kırılmaları merge öncesi engellenir ve haftalık hat kalite eşiklerini fail-closed uygular.
 
 ## Yerel kullanım
 
 ```bash
-PYTHONPATH=.:engine python -m engine.regression.output_quality_suite \
+PYTHONPATH=.:engine python -m engine.regression.output_quality_root_cause \
   --output /tmp/vektoryum-output-quality \
   --engine-version "$(git rev-parse HEAD)" \
   --repeat-count 2 \
-  --fail-on hard
+  --fail-on structural
 ```
 
 Sözleşme testleri:
 
 ```bash
 PYTHONPATH=.:engine python -m unittest \
-  engine.regression.test_output_quality_suite
+  engine.regression.test_output_quality_suite \
+  engine.regression.test_output_quality_root_cause
 ```
 
 ## RFV ile ilişki
