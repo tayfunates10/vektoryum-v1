@@ -1,0 +1,117 @@
+name: Output quality diagnostic
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/output-quality-diagnostic.yml"
+      - "engine/app/**"
+      - "engine/benchmark/**"
+      - "engine/regression/output_quality_suite.py"
+      - "engine/regression/test_output_quality_suite.py"
+      - "engine/requirements.txt"
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * 0"
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: output-quality-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PYTHONPATH: .:engine
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: engine/requirements.txt
+
+      - name: Install production and test dependencies
+        run: python -m pip install --disable-pip-version-check -r engine/requirements.txt pytest
+
+      - name: Compile diagnostic files
+        run: >-
+          python -m py_compile
+          engine/regression/output_quality_suite.py
+          engine/regression/test_output_quality_suite.py
+
+      - name: Run diagnostic contract tests
+        run: python -m unittest engine.regression.test_output_quality_suite
+
+  production-output:
+    needs: contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      PYTHONHASHSEED: "0"
+      PYTHONPATH: .:engine
+      VEKTORYUM_WORKERS: "1"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: engine/requirements.txt
+
+      - name: Install system render validators
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ghostscript libcairo2
+
+      - name: Install production pipeline dependencies
+        run: python -m pip install --disable-pip-version-check -r engine/requirements.txt pytest
+
+      - name: Run production output diagnostic
+        shell: bash
+        run: |
+          set -o pipefail
+          OUTPUT="${RUNNER_TEMP}/output-quality"
+          REPEATS=1
+          FAIL_ON=structural
+          if [ "${GITHUB_EVENT_NAME}" != "pull_request" ]; then
+            REPEATS=2
+            FAIL_ON=hard
+          fi
+          python -m engine.regression.output_quality_suite \
+            --output "${OUTPUT}" \
+            --engine-version "${GITHUB_SHA}" \
+            --repeat-count "${REPEATS}" \
+            --fail-on "${FAIL_ON}" \
+            2>&1 | tee "${RUNNER_TEMP}/output-quality.log"
+
+      - name: Publish Markdown summary
+        if: always()
+        shell: bash
+        run: |
+          SUMMARY="${RUNNER_TEMP}/output-quality/output-quality-summary.md"
+          if [ -f "${SUMMARY}" ]; then
+            cat "${SUMMARY}" >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "Output-quality summary was not produced." >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
+      - name: Upload output-quality evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: output-quality-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            ${{ runner.temp }}/output-quality
+            ${{ runner.temp }}/output-quality.log
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 0
