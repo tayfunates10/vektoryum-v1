@@ -20,9 +20,11 @@ from app.alpha_budget_retry import install_alpha_budget_retry
 from app.alpha_budget_retry_scope import install_alpha_budget_retry_scope
 from app.counter_merge_local_classify import install_counter_merge_local_classify
 from app.local_refine_local_classify import install_local_refine_local_classify
+from app.painter_measurement_reuse import install_painter_measurement_reuse
 
 install_alpha_budget_retry()
 install_alpha_budget_retry_scope()
+install_painter_measurement_reuse()
 install_counter_merge_local_classify()
 install_local_refine_local_classify()
 
