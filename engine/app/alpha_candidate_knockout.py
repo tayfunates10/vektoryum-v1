@@ -13,6 +13,9 @@ for _name, _value in vars(_base).items():
     if not _name.startswith("__"):
         globals()[_name] = _value
 
+# Keep an immutable test/diagnostic reference before patching the base module.
+_legacy_build_reconstruction_tree = _base._build_reconstruction_tree
+
 from app.alpha_candidate_knockout_compact import (
     build_compact_knockout_reconstruction_tree,
 )
