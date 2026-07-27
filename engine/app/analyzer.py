@@ -57,25 +57,28 @@ def analyze_image_from_mem(image: Image.Image) -> dict[str, Any]:
     report["has_meaningful_neutral_midtone"] = bool(neutral_midtones)
 
     # Binary modes destroy a real gray band by construction. Route this narrow,
-    # evidence-backed class to the multi-region geometric pipeline instead.
+    # evidence-backed class to the color-preserving multi-region pipeline. The
+    # geometric profile snaps near-black to canonical black, which preserves shape
+    # but still creates a large tone/SSIM error for deliberate dark-gray artwork.
     if neutral_midtones and report.get("recommended_mode") in {"single_color", "lineart"}:
         previous_mode = str(report.get("recommended_mode"))
-        report["detected_type"] = "geometric_logo"
-        report["recommended_mode"] = "geometric_logo"
+        report["detected_type"] = "logo_color"
+        report["recommended_mode"] = "logo_color"
         report["is_flat_logo"] = True
-        report["likely_geometric_logo"] = True
+        report["likely_geometric_logo"] = False
+        report["likely_color_logo"] = True
         report["likely_single_color"] = False
         report["likely_line_art"] = False
         warnings = list(report.get("warnings") or [])
         warnings.append(
             "Substantial neutral mid-tone regions detected; "
-            f"auto mode changed from {previous_mode} to geometric_logo to preserve gray design layers."
+            f"auto mode changed from {previous_mode} to logo_color to preserve exact gray design layers."
         )
         report["warnings"] = warnings
         report["neutral_multitone_routing_guard"] = {
             "applied": True,
             "previous_mode": previous_mode,
-            "selected_mode": "geometric_logo",
+            "selected_mode": "logo_color",
             "tone_count": len(neutral_midtones),
         }
     else:
