@@ -55,13 +55,17 @@ jobs:
           engine/regression/test_neutral_multitone_routing.py
           engine/regression/test_alpha_parent_trial_diagnostics.py
 
-      - name: Run diagnostic contract tests
+      - name: Run base output diagnostic contracts
         run: >-
-          python -m unittest
+          python -m unittest -v
           engine.regression.test_output_quality_suite
           engine.regression.test_output_quality_root_cause
-          engine.regression.test_neutral_multitone_routing
-          engine.regression.test_alpha_parent_trial_diagnostics
+
+      - name: Run neutral multi-tone routing contracts
+        run: python -m unittest -v engine.regression.test_neutral_multitone_routing
+
+      - name: Run alpha parent and compact encoder contracts
+        run: python -m unittest -v engine.regression.test_alpha_parent_trial_diagnostics
 
       - name: Verify diagnostic CLI entrypoint
         run: python -m engine.regression.output_quality_root_cause --help >/dev/null
