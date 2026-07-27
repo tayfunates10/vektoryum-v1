@@ -281,6 +281,7 @@ def run_diagnostic_case(
 
         for repeat_index in range(1, repeat_count + 1):
             job_dir = case_root / "jobs" / f"repeat-{repeat_index}"
+            job_dir.mkdir(parents=True, exist_ok=True)
             started = time.perf_counter()
             try:
                 output = run_pipeline(
@@ -403,10 +404,14 @@ def run_diagnostic_case(
         },
     }
     result["structural_failures"] = _structural_failures(result)
-    result["severity"] = _case_severity(
-        result["hard_fail_codes"],
-        result["soft_warning_codes"],
-        result["unmeasured_required"],
+    result["severity"] = (
+        "critical"
+        if result["structural_failures"]
+        else _case_severity(
+            result["hard_fail_codes"],
+            result["soft_warning_codes"],
+            result["unmeasured_required"],
+        )
     )
     return result
 
