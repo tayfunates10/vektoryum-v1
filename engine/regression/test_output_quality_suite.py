@@ -3,15 +3,19 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 from PIL import Image
 
+import engine.regression.output_quality_suite as suite
 from engine.regression.output_quality_suite import (
     SCHEMA,
     build_report,
     difference_map,
     generate_cases,
+    run_diagnostic_case,
     should_fail,
 )
 
@@ -121,6 +125,86 @@ class OutputQualitySuiteContractTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             should_fail(report, "unknown")
+
+    def test_production_contract_creates_job_dir_and_emits_complete_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as fixture_tmp, tempfile.TemporaryDirectory() as output_tmp:
+            case = generate_cases(Path(fixture_tmp))[0]
+            output_root = Path(output_tmp)
+
+            def fake_pipeline(image, original_path, trace_mode, job_dir):
+                self.assertEqual(image.mode, "RGBA")
+                self.assertEqual(Path(original_path), case.source_path)
+                self.assertEqual(trace_mode, "auto")
+                self.assertTrue(Path(job_dir).is_dir())
+                selected = Path(job_dir) / "selected.svg"
+                selected.write_text(
+                    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">'
+                    '<rect width="256" height="256" fill="#ffffff"/></svg>',
+                    encoding="utf-8",
+                )
+                return {"best": {"svg_path": str(selected)}}
+
+            evaluator = SimpleNamespace(
+                verdict="production_ready",
+                hard_fail_codes=[],
+                soft_warning_codes=[],
+                unmeasured_required=[],
+                metrics={
+                    "B_visual": {"ssim": 1.0, "ms_ssim": 1.0},
+                    "C_color": {"de00_mean": 0.0, "de00_p95": 0.0, "palette_agree": 1.0},
+                    "D_edge_geometry": {
+                        "edge_f1_1px": 1.0,
+                        "edge_f1_2px": 1.0,
+                        "chamfer_p95": 0.0,
+                        "hausdorff_max": 0.0,
+                    },
+                    "E_topology": {"component_delta": 0, "hole_delta": 0},
+                    "F_small_detail": {"min_component_iou": 1.0, "mean_component_iou": 1.0},
+                    "G_gradient_alpha": {"seam_ratio": 0.0, "alpha_iou": 1.0, "alpha_mae": 0.0},
+                    "H_editability": {"path_count": 1, "node_count": 1, "nodes_per_path": 1.0},
+                },
+            )
+            rendered = np.full((256, 256, 4), 255, dtype=np.uint8)
+
+            with (
+                patch.object(suite, "run_pipeline", side_effect=fake_pipeline),
+                patch.object(suite, "evaluate_final_svg", return_value=evaluator),
+                patch.object(suite, "render_svg_to_rgba", return_value=rendered),
+            ):
+                result = run_diagnostic_case(
+                    case,
+                    output_root=output_root,
+                    engine_version="test-sha",
+                    repeat_count=1,
+                )
+
+            self.assertEqual(result["pipeline_status"], "ok")
+            self.assertTrue(result["selected_svg_present"])
+            self.assertEqual(result["render_status"], "ok")
+            self.assertEqual(result["severity"], "pass")
+            self.assertEqual(result["structural_failures"], [])
+            self.assertTrue(result["deterministic"])
+            self.assertTrue((output_root / "cases" / case.case_id / "selected.svg").is_file())
+            self.assertTrue((output_root / "cases" / case.case_id / "render.png").is_file())
+            self.assertTrue((output_root / "cases" / case.case_id / "difference.png").is_file())
+
+    def test_pipeline_failure_is_always_critical(self) -> None:
+        with tempfile.TemporaryDirectory() as fixture_tmp, tempfile.TemporaryDirectory() as output_tmp:
+            case = generate_cases(Path(fixture_tmp))[0]
+
+            with patch.object(suite, "run_pipeline", side_effect=RuntimeError("synthetic failure")):
+                result = run_diagnostic_case(
+                    case,
+                    output_root=Path(output_tmp),
+                    engine_version="test-sha",
+                    repeat_count=1,
+                )
+
+            self.assertEqual(result["pipeline_status"], "failed")
+            self.assertEqual(result["severity"], "critical")
+            self.assertIn("pipeline_exception", result["structural_failures"])
+            self.assertIn("selected_svg_file_missing", result["structural_failures"])
+            self.assertIn("render_failed", result["structural_failures"])
 
 
 if __name__ == "__main__":
