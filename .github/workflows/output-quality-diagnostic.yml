@@ -7,7 +7,9 @@ on:
       - "engine/app/**"
       - "engine/benchmark/**"
       - "engine/regression/output_quality_suite.py"
+      - "engine/regression/output_quality_root_cause.py"
       - "engine/regression/test_output_quality_suite.py"
+      - "engine/regression/test_output_quality_root_cause.py"
       - "engine/requirements.txt"
   workflow_dispatch:
   schedule:
@@ -45,10 +47,15 @@ jobs:
         run: >-
           python -m py_compile
           engine/regression/output_quality_suite.py
+          engine/regression/output_quality_root_cause.py
           engine/regression/test_output_quality_suite.py
+          engine/regression/test_output_quality_root_cause.py
 
       - name: Run diagnostic contract tests
-        run: python -m unittest engine.regression.test_output_quality_suite
+        run: >-
+          python -m unittest
+          engine.regression.test_output_quality_suite
+          engine.regression.test_output_quality_root_cause
 
   production-output:
     needs: contract
@@ -75,33 +82,38 @@ jobs:
       - name: Install production pipeline dependencies
         run: python -m pip install --disable-pip-version-check -r engine/requirements.txt pytest
 
-      - name: Run production output diagnostic
+      - name: Run repeat-aware production output diagnostic
         shell: bash
         run: |
           set -o pipefail
           OUTPUT="${RUNNER_TEMP}/output-quality"
-          REPEATS=1
           FAIL_ON=structural
           if [ "${GITHUB_EVENT_NAME}" != "pull_request" ]; then
-            REPEATS=2
             FAIL_ON=hard
           fi
-          python -m engine.regression.output_quality_suite \
+          python -m engine.regression.output_quality_root_cause \
             --output "${OUTPUT}" \
             --engine-version "${GITHUB_SHA}" \
-            --repeat-count "${REPEATS}" \
+            --repeat-count 2 \
             --fail-on "${FAIL_ON}" \
             2>&1 | tee "${RUNNER_TEMP}/output-quality.log"
 
-      - name: Publish Markdown summary
+      - name: Publish Markdown summaries
         if: always()
         shell: bash
         run: |
-          SUMMARY="${RUNNER_TEMP}/output-quality/output-quality-summary.md"
-          if [ -f "${SUMMARY}" ]; then
-            cat "${SUMMARY}" >> "${GITHUB_STEP_SUMMARY}"
-          else
-            echo "Output-quality summary was not produced." >> "${GITHUB_STEP_SUMMARY}"
+          found=0
+          for SUMMARY in \
+            "${RUNNER_TEMP}/output-quality/output-quality-summary.md" \
+            "${RUNNER_TEMP}/output-quality/output-quality-root-cause.md"; do
+            if [ -f "${SUMMARY}" ]; then
+              cat "${SUMMARY}" >> "${GITHUB_STEP_SUMMARY}"
+              printf '\n' >> "${GITHUB_STEP_SUMMARY}"
+              found=1
+            fi
+          done
+          if [ "${found}" -eq 0 ]; then
+            echo "Output-quality summaries were not produced." >> "${GITHUB_STEP_SUMMARY}"
           fi
 
       - name: Upload output-quality evidence
