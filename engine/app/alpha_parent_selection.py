@@ -19,6 +19,8 @@ for _name, _value in vars(_base).items():
     if not _name.startswith("__"):
         globals()[_name] = _value
 
+_legacy_shortlist = _base._shortlist
+
 
 def _identity(candidate: dict[str, Any]) -> str | None:
     path = _base._path(candidate)
@@ -55,7 +57,7 @@ def engine_diverse_shortlist(result: dict[str, Any]) -> list[dict[str, Any]]:
     then appends or substitutes only one highest-fidelity alternate-engine parent.
     Established alpha selection margins remain unchanged.
     """
-    legacy = list(_base._shortlist(result))
+    legacy = list(_legacy_shortlist(result))
     best = result.get("best")
     if not isinstance(best, dict):
         return legacy
