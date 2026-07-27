@@ -14,8 +14,18 @@ _original_pipeline_snapshot = _base.pipeline_snapshot
 _ALPHA_PARENT_FIELDS = (
     "schema",
     "shortlist_policy",
+    "status",
+    "shortlist_count",
     "trial_count",
     "chosen_candidate_name",
+)
+_ALPHA_SHORTLIST_FIELDS = (
+    "shortlist_index",
+    "candidate_name",
+    "candidate_engine",
+    "fidelity_score_before_alpha",
+    "edge_f1_before_alpha",
+    "path_count_before_alpha",
 )
 _ALPHA_TRIAL_FIELDS = (
     "trial_index",
@@ -27,18 +37,39 @@ _ALPHA_TRIAL_FIELDS = (
     "path_count",
     "byte_size",
 )
+_ALPHA_FAILURE_FIELDS = (
+    "stage",
+    "shortlist_index",
+    "candidate_name",
+    "candidate_engine",
+    "fidelity_score_before_alpha",
+    "edge_f1_before_alpha",
+    "path_count_before_alpha",
+    "error_class",
+    "error_message",
+)
+
+
+def _safe_list(value: object, fields: tuple[str, ...], limit: int = 8) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    output: list[dict[str, Any]] = []
+    for item in value:
+        snapshot = _base._safe_mapping(item, fields)
+        if snapshot:
+            output.append(snapshot)
+        if len(output) == limit:
+            break
+    return output
 
 
 def _safe_alpha_parent_diagnostics(value: object) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {}
     result = _base._safe_mapping(value, _ALPHA_PARENT_FIELDS)
-    trials: list[dict[str, Any]] = []
-    for trial in value.get("trials") or []:
-        snapshot = _base._safe_mapping(trial, _ALPHA_TRIAL_FIELDS)
-        if snapshot:
-            trials.append(snapshot)
-    result["trials"] = trials[:8]
+    result["shortlist"] = _safe_list(value.get("shortlist"), _ALPHA_SHORTLIST_FIELDS)
+    result["trials"] = _safe_list(value.get("trials"), _ALPHA_TRIAL_FIELDS)
+    result["failures"] = _safe_list(value.get("failures"), _ALPHA_FAILURE_FIELDS)
     return result
 
 
