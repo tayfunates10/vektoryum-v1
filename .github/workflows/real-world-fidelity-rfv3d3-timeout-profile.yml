@@ -1,0 +1,209 @@
+name: Real-world fidelity RFV-3D3 timeout profile
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/real-world-fidelity-rfv3d3-timeout-profile.yml"
+      - "engine/regression/rfv3_timeout_diagnostic.py"
+      - "engine/regression/test_rfv3_timeout_diagnostic.py"
+      - "docs/real_world_fidelity/rfv-3d3-alpha-budget-and-search-fix.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: rfv3d3-timeout-profile-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: engine:.
+    steps:
+      - name: Run actions/checkout@v4
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Run actions/setup-python@v5
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Compile diagnostic
+        run: >-
+          python -m py_compile
+          engine/regression/rfv3_timeout_diagnostic.py
+          engine/regression/test_rfv3_timeout_diagnostic.py
+
+      - name: Run diagnostic unit contract
+        run: python -m unittest engine.regression.test_rfv3_timeout_diagnostic -v
+
+      - name: Confirm diagnostic does not modify protected production contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          base_ref="${{ github.base_ref || 'main' }}"
+          git fetch origin "${base_ref}"
+          git diff --exit-code "origin/${base_ref}...HEAD" -- \
+            engine/app/final_artifact_evaluator.py \
+            engine/app/pipeline.py \
+            engine/benchmark \
+            engine/regression/rfv3_measurement_policy.json \
+            docs/real_world_fidelity_roadmap.json
+
+  profile:
+    needs: contract
+    strategy:
+      fail-fast: false
+      matrix:
+        case_id:
+          - qualification-public-11
+          - qualification-public-12
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      PYTHONHASHSEED: "0"
+      PYTHONPATH: engine:.
+      VEKTORYUM_WORKERS: "1"
+      PINNED_ARTIFACT_ID: "8354853386"
+      PINNED_ARTIFACT_SHA256: "a8be8c0782a8aeb037a2736de8adbd357c5074ad0da6355562e2543092d6af76"
+    steps:
+      - name: Run actions/checkout@v4
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Run actions/setup-python@v5
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: engine/requirements.txt
+
+      - name: Install system validators
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ghostscript libcairo2
+
+      - name: Install production dependencies
+        run: python -m pip install -r engine/requirements.txt pytest httpx
+
+      - name: Restore and verify SHA-pinned immutable corpus
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/rfv3d3-profile-input"
+          rm -rf "${root}"
+          mkdir -p "${root}/package" "${root}/prepared"
+          archive="${root}/pinned-rfv2-corpus.zip"
+          curl \
+            --fail-with-body \
+            --location \
+            --silent \
+            --show-error \
+            --retry 3 \
+            --retry-all-errors \
+            --header "Authorization: Bearer ${GITHUB_TOKEN}" \
+            --header "Accept: application/vnd.github+json" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${PINNED_ARTIFACT_ID}/zip" \
+            --output "${archive}"
+
+          ARCHIVE="${archive}" OUTPUT="${root}/package" \
+          PINNED_ARTIFACT_SHA256="${PINNED_ARTIFACT_SHA256}" python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import stat
+          import zipfile
+          from pathlib import Path, PurePosixPath
+
+          archive = Path(os.environ["ARCHIVE"])
+          output = Path(os.environ["OUTPUT"])
+          expected_archive = os.environ["PINNED_ARTIFACT_SHA256"]
+          expected_files = {
+              "rfv2-public-corpus.tar.gz": "1da641ad27b58985e4e1cf8d9972af5a15f5105e85e2c319151a5e373b6afc46",
+              "qualification-manifest.json": "c2b1f4381d4ac9cd96e1ce8ba27589103a3ee696838dbf3dc487db96e51130aa",
+              "qualification-audit.json": "cf42d7d4fb820c915a2023b242c10a54e21ca87c721f9b699d55d6a49bb0c0f0",
+              "bundle-checksums.json": "ff39ab6e320dbede7241ceefa9eea87d31c3b4e52bb31366aa49278067826655",
+          }
+          payload = archive.read_bytes()
+          assert len(payload) == 10910811
+          assert hashlib.sha256(payload).hexdigest() == expected_archive
+          with zipfile.ZipFile(archive) as package:
+              infos = package.infolist()
+              assert len(infos) == len(expected_files)
+              assert {item.filename for item in infos} == set(expected_files)
+              for item in infos:
+                  assert PurePosixPath(item.filename).name == item.filename
+                  assert not item.is_dir()
+                  assert not (item.flag_bits & 0x1)
+                  mode = (item.external_attr >> 16) & 0o170000
+                  assert mode in (0, stat.S_IFREG)
+                  data = package.read(item)
+                  assert hashlib.sha256(data).hexdigest() == expected_files[item.filename]
+                  (output / item.filename).write_bytes(data)
+          checksums = json.loads((output / "bundle-checksums.json").read_text())
+          assert checksums["cases_sha256"] == "5f151a6cb1a433b0cb0989a67bd7cc7940162f4b36d67903d6ccdd173f9e7d89"
+          assert checksums["raw_assets_in_repository"] is False
+          PY
+
+          python -m engine.regression.rfv3_live_prepare \
+            --bundle "${root}/package/rfv2-public-corpus.tar.gz" \
+            --checksums "${root}/package/bundle-checksums.json" \
+            --destination "${root}/prepared" \
+            --evidence-out "${root}/prepare-evidence.json"
+
+      - name: Profile one production repeat with durable heartbeat
+        id: profile
+        shell: bash
+        run: |
+          set +e
+          output="${RUNNER_TEMP}/rfv3d3-profile-${{ matrix.case_id }}"
+          mkdir -p "${output}"
+          timeout --signal=TERM --kill-after=30s 3600s \
+            python -m engine.regression.rfv3_timeout_diagnostic \
+              --corpus-root "${RUNNER_TEMP}/rfv3d3-profile-input/prepared" \
+              --output "${output}" \
+              --case-id "${{ matrix.case_id }}" \
+              --engine-version "${{ github.event.pull_request.head.sha || github.sha }}" \
+              --heartbeat-seconds 30 \
+              --near-timeout-seconds 3000 \
+              2>&1 | tee "${output}/diagnostic.log"
+          status=${PIPESTATUS[0]}
+          printf '%s\n' "${status}" > "${output}/exit-code.txt"
+          exit 0
+
+      - name: Upload SHA-bound timeout profile
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rfv3d3-timeout-profile-${{ matrix.case_id }}-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            ${{ runner.temp }}/rfv3d3-profile-input/prepare-evidence.json
+            ${{ runner.temp }}/rfv3d3-profile-${{ matrix.case_id }}/diagnostic.json
+            ${{ runner.temp }}/rfv3d3-profile-${{ matrix.case_id }}/progress.json
+            ${{ runner.temp }}/rfv3d3-profile-${{ matrix.case_id }}/near-timeout.json
+            ${{ runner.temp }}/rfv3d3-profile-${{ matrix.case_id }}/terminated.json
+            ${{ runner.temp }}/rfv3d3-profile-${{ matrix.case_id }}/events.jsonl
+            ${{ runner.temp }}/rfv3d3-profile-${{ matrix.case_id }}/diagnostic.log
+            ${{ runner.temp }}/rfv3d3-profile-${{ matrix.case_id }}/result-summary.json
+            ${{ runner.temp }}/rfv3d3-profile-${{ matrix.case_id }}/exit-code.txt
+          if-no-files-found: warn
+          retention-days: 14
+          compression-level: 0
+
+      - name: Preserve diagnostic failure status
+        if: always()
+        shell: bash
+        run: |
+          status="$(cat "${RUNNER_TEMP}/rfv3d3-profile-${{ matrix.case_id }}/exit-code.txt")"
+          if [ "${status}" -ne 0 ]; then
+            echo "Diagnostic exited with ${status}; evidence was uploaded first."
+            exit "${status}"
+          fi
