@@ -5,8 +5,9 @@ The established implementation is retained byte-for-byte in
 extension points:
 
 * reconstruction-tree serialization uses the established compact ``<use>`` form;
-* when exact and 128-level source alpha still exceed the unchanged byte budget,
-  a 64-level candidate is tried and must pass every existing alpha/evaluator gate.
+* when the legacy exact/128-level source alpha exceeds the unchanged byte budget,
+  progressively smaller 64/32/16/8-level candidates are tried in that order and
+  each must pass every existing alpha, evaluator, structure and byte gate.
 
 No byte, alpha, structure, evaluator or journal threshold is changed.
 """
@@ -39,10 +40,9 @@ def _quantize_alpha_step(
 ) -> tuple[np.ndarray, dict[int, float]]:
     """Quantize alpha without deleting the 1/254 support fringe.
 
-    ``step=4`` yields at most 67 values (0, 1, multiples of four, 254, 255).
-    Every ordinary sample moves by at most two alpha units. Exact transparent,
-    exact opaque and one-unit support pixels remain exact, keeping soft-edge
-    support stable while reducing repeated clip levels and rectangles.
+    Exact transparent, exact opaque and one-unit support pixels remain exact.
+    Ordinary samples move by at most half a quantization step, so every fallback
+    remains subject to the unchanged direct-alpha and FinalArtifactEvaluator gates.
     """
     if step < 2:
         raise ValueError("alpha quantization step must be >= 2")
@@ -71,11 +71,11 @@ def _encoding_identity(array: np.ndarray) -> str:
 def budget_resilient_alpha_encodings(
     alpha: np.ndarray,
 ) -> Iterator[tuple[str, np.ndarray, dict[int, float]]]:
-    """Yield legacy encodings first, then a bounded 64-level fallback.
+    """Yield authoritative legacy encodings, then bounded compact fallbacks.
 
-    The original exact and quantized-128 candidates retain their order and bytes.
-    The additional candidate is attempted only when those candidates fail later
-    gates (normally the unchanged byte budget). Duplicate rasters are suppressed.
+    Legacy candidates retain their order and bytes. Compact candidates are only
+    reached after earlier candidates fail a later gate, normally the unchanged
+    byte budget. Duplicate rasters are suppressed deterministically.
     """
     seen: set[str] = set()
     for name, quantized, opacity_by_level in _legacy_alpha_encodings(alpha):
@@ -85,10 +85,18 @@ def budget_resilient_alpha_encodings(
         seen.add(identity)
         yield name, quantized, opacity_by_level
 
-    quantized, opacity_by_level = _quantize_alpha_step(alpha, step=4)
-    identity = _encoding_identity(quantized)
-    if identity not in seen:
-        yield "quantized_64", quantized, opacity_by_level
+    for name, step in (
+        ("quantized_64", 4),
+        ("quantized_32", 8),
+        ("quantized_16", 16),
+        ("quantized_8", 32),
+    ):
+        quantized, opacity_by_level = _quantize_alpha_step(alpha, step=step)
+        identity = _encoding_identity(quantized)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        yield name, quantized, opacity_by_level
 
 
 _base._build_reconstruction_tree = build_compact_knockout_reconstruction_tree
