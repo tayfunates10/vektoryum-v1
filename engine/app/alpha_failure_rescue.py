@@ -86,6 +86,7 @@ def wrap_run_pipeline_with_alpha_failure_rescue(
         refine=True,
         edge_cleanup=True,
     ) -> dict[str, Any]:
+        trigger: str | None = None
         try:
             return original(
                 image,
@@ -95,13 +96,14 @@ def wrap_run_pipeline_with_alpha_failure_rescue(
                 refine=refine,
                 edge_cleanup=edge_cleanup,
             )
-        except RuntimeError as first_error:
-            if alpha_failure_rescue_enabled() or not _retryable(first_error):
+        except RuntimeError as error:
+            if alpha_failure_rescue_enabled() or not _retryable(error):
                 raise
             from app.alpha_pipeline_retry import _has_meaningful_transparency
 
             if not _has_meaningful_transparency(Path(original_path)):
                 raise
+            trigger = str(error)
 
         with alpha_failure_rescue_context(True):
             result = original(
@@ -116,7 +118,7 @@ def wrap_run_pipeline_with_alpha_failure_rescue(
             result["alpha_failure_rescue_report"] = {
                 "status": "engine_diverse_remediation_succeeded",
                 "attempt_count": 1,
-                "trigger": str(first_error),
+                "trigger": trigger,
                 "shortlist_policy": "legacy_plus_highest_fidelity_alternate_engine",
                 "thresholds_changed": False,
             }
