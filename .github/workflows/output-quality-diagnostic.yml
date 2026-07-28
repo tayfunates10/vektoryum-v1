@@ -14,6 +14,7 @@ on:
       - "engine/regression/test_alpha_parent_trial_diagnostics.py"
       - "engine/regression/test_gradient_chromatic_boundary.py"
       - "engine/regression/test_evaluator_ssim_corroboration.py"
+      - "engine/regression/test_lowres_neutral_fill_guard.py"
       - "engine/requirements.txt"
   workflow_dispatch:
   schedule:
@@ -58,6 +59,7 @@ jobs:
           engine/regression/test_alpha_parent_trial_diagnostics.py
           engine/regression/test_gradient_chromatic_boundary.py
           engine/regression/test_evaluator_ssim_corroboration.py
+          engine/regression/test_lowres_neutral_fill_guard.py
 
       - name: Run base output diagnostic contracts
         run: >-
@@ -83,6 +85,9 @@ jobs:
 
       - name: Run geometry-corroborated SSIM contracts
         run: python -m unittest -v engine.regression.test_evaluator_ssim_corroboration
+
+      - name: Run broad light-neutral fill contracts
+        run: python -m unittest -v engine.regression.test_lowres_neutral_fill_guard
 
       - name: Verify diagnostic CLI entrypoint
         run: python -m engine.regression.output_quality_root_cause --help >/dev/null
