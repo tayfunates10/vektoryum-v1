@@ -13,11 +13,21 @@ from typing import Any
 
 from PIL import Image
 
-from app.pipeline import WorkerFailure
-from app.pipeline import run_pipeline as _run_pipeline_core
-from app.pipeline_canonical_report import maybe_attach_canonical_svg_candidate
-from app.production_export_integration import register_pipeline_canonical_report
-from app.shadow_runtime import maybe_attach_shadow_telemetry
+# These adapters must be installed before importing app.pipeline because that module
+# binds counter/local-refine callables by value. They are bit-identical crop-only
+# replacements: candidate order, geometry, thresholds and acceptance decisions stay
+# unchanged while full-canvas palette maps are no longer materialized repeatedly.
+from app.counter_merge_local_classify import install_counter_merge_local_classify
+from app.local_refine_local_classify import install_local_refine_local_classify
+
+install_counter_merge_local_classify()
+install_local_refine_local_classify()
+
+from app.pipeline import WorkerFailure  # noqa: E402
+from app.pipeline import run_pipeline as _run_pipeline_core  # noqa: E402
+from app.pipeline_canonical_report import maybe_attach_canonical_svg_candidate  # noqa: E402
+from app.production_export_integration import register_pipeline_canonical_report  # noqa: E402
+from app.shadow_runtime import maybe_attach_shadow_telemetry  # noqa: E402
 
 
 def _audit_path(job_dir: Path) -> Path | None:
