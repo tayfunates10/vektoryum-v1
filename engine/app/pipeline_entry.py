@@ -13,15 +13,13 @@ from typing import Any
 
 from PIL import Image
 
-# These runtime adapters must be installed before importing app.pipeline because that
-# module binds refinement and TransformJournal callables by value. Crop-only palette
-# classification is bit-identical to the corresponding full-map slice. Painter metric
-# reuse is request-scoped and exact-SHA/proof gated; any mismatch uses fresh measurement.
+# These adapters must be installed before importing app.pipeline because that module
+# binds counter/local-refine callables by value. They are bit-identical crop-only
+# replacements: candidate order, geometry, thresholds and acceptance decisions stay
+# unchanged while full-canvas palette maps are no longer materialized repeatedly.
 from app.counter_merge_local_classify import install_counter_merge_local_classify
 from app.local_refine_local_classify import install_local_refine_local_classify
-from app.painter_measurement_reuse import install_painter_measurement_reuse
 
-install_painter_measurement_reuse()
 install_counter_merge_local_classify()
 install_local_refine_local_classify()
 
