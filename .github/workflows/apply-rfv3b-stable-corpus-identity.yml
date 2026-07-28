@@ -1,0 +1,131 @@
+name: Apply RFV-3B stable corpus identity fix
+
+on:
+  push:
+    branches:
+      - agent/rfv3b-stable-live-corpus-identity
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-rfv3b-stable-corpus-identity
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out exact branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/rfv3b-stable-live-corpus-identity
+          fetch-depth: 0
+
+      - name: Verify and apply bounded workflow patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          target=".github/workflows/real-world-fidelity-rfv3b-live.yml"
+          expected_blob="9c56e4fe13c07d49986aaca020a808e17ca8ba11"
+          actual_blob="$(git hash-object "${target}")"
+          test "${actual_blob}" = "${expected_blob}"
+
+          python - <<'PY'
+          from pathlib import Path
+
+          target = Path('.github/workflows/real-world-fidelity-rfv3b-live.yml')
+          text = target.read_text(encoding='utf-8')
+
+          old_compile = '''          python -m py_compile \\
+            engine/regression/rfv3_live_measurement.py \\
+            engine/regression/rfv3_live_prepare.py \\
+            engine/regression/test_rfv3_live_measurement.py \\
+            engine/regression/test_rfv3_live_prepare.py
+'''
+          new_compile = '''          python -m py_compile \\
+            engine/regression/rfv3_live_measurement.py \\
+            engine/regression/rfv3_live_prepare.py \\
+            engine/regression/rfv3_corpus_identity.py \\
+            engine/regression/test_rfv3_live_measurement.py \\
+            engine/regression/test_rfv3_live_prepare.py \\
+            engine/regression/test_rfv3_corpus_identity.py
+'''
+
+          old_tests = '''          python -m unittest
+          engine.regression.test_rfv3_live_measurement
+          engine.regression.test_rfv3_live_prepare
+'''
+          new_tests = '''          python -m unittest
+          engine.regression.test_rfv3_live_measurement
+          engine.regression.test_rfv3_live_prepare
+          engine.regression.test_rfv3_corpus_identity
+'''
+
+          old_validation = '''            RFV_OUT="${RFV_ROOT}/out" python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["RFV_OUT"])
+          bundle = root / "rfv2-public-corpus.tar.gz"
+          checksums = json.loads((root / "bundle-checksums.json").read_text())
+          assert checksums["schema"] == "vektoryum-rfv2-live-bundle-checksums-v1"
+          assert checksums["qualified_case_count"] == 24
+          assert checksums["cases_sha256"] == "5f151a6cb1a433b0cb0989a67bd7cc7940162f4b36d67903d6ccdd173f9e7d89"
+          assert bundle.stat().st_size == checksums["bundle_bytes"]
+          assert hashlib.sha256(bundle.read_bytes()).hexdigest() == checksums["bundle_sha256"]
+          PY
+'''
+          new_validation = '''            # Provider HTML proof bytes may change while the reviewed raster assets
+            # remain identical. Validate the full bundle internally, then hard-pin
+            # the stable source/case identity projection instead of volatile HTML.
+            python -m engine.regression.rfv3_corpus_identity \\
+              --manifest "${RFV_ROOT}/out/qualification-manifest.json" \\
+              --audit "${RFV_ROOT}/out/qualification-audit.json" \\
+              --checksums "${RFV_ROOT}/out/bundle-checksums.json" \\
+              --bundle "${RFV_ROOT}/out/rfv2-public-corpus.tar.gz"
+'''
+
+          replacements = (
+              (old_compile, new_compile, 'compile block'),
+              (old_tests, new_tests, 'contract test block'),
+              (old_validation, new_validation, 'live corpus validation block'),
+          )
+          for old, new, label in replacements:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label} match count was {count}, expected 1')
+              text = text.replace(old, new, 1)
+
+          target.write_text(text, encoding='utf-8')
+          Path('.github/workflows/apply-rfv3b-stable-corpus-identity.yml').unlink()
+          PY
+
+      - name: Run focused validation
+        run: |
+          python -m py_compile \
+            engine/regression/rfv3_corpus_identity.py \
+            engine/regression/test_rfv3_corpus_identity.py
+          python -m unittest engine.regression.test_rfv3_corpus_identity
+          git diff --check
+          test ! -e .github/workflows/apply-rfv3b-stable-corpus-identity.yml
+
+      - name: Commit bounded patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            .github/workflows/real-world-fidelity-rfv3b-live.yml \
+            .github/workflows/apply-rfv3b-stable-corpus-identity.yml
+          git diff --cached --name-only | sort > /tmp/changed-files.txt
+          printf '%s\n' \
+            .github/workflows/apply-rfv3b-stable-corpus-identity.yml \
+            .github/workflows/real-world-fidelity-rfv3b-live.yml | sort > /tmp/expected-files.txt
+          diff -u /tmp/expected-files.txt /tmp/changed-files.txt
+          git commit -m "Fix RFV-3B live corpus identity gate"
+          git push origin HEAD:agent/rfv3b-stable-live-corpus-identity
