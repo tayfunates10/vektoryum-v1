@@ -46,6 +46,25 @@ class BroadNeutralCanonicalSnapTests(unittest.TestCase):
             self.assertEqual(guard["evidence"]["dark"][0]["rgb"], [25, 25, 25])
             self.assertEqual(guard["evidence"]["light"][0]["rgb"], [235, 235, 235])
 
+    def test_broad_near_black_cleanup_cluster_keeps_legacy_black_snap(self) -> None:
+        svg = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+        <path fill="#ffffff" d="M0 0H100V100H0Z"/>
+        <path fill="#0c0c0c" d="M10 10H90V90H10Z"/>
+        </svg>"""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "near-black.svg"
+            path.write_text(svg, encoding="utf-8")
+            report = consolidate_svg_palette(
+                path,
+                max_colors=6,
+                canonical=[(0, 0, 0), (255, 255, 255), (255, 0, 0)],
+            )
+
+            self.assertIn("#000000", _fills(path))
+            guard = report.get("neutral_snap_guard")
+            if guard:
+                self.assertFalse(guard["black_snap_removed"])
+
     def test_tiny_light_neutral_antialias_path_keeps_legacy_white_snap(self) -> None:
         svg = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
         <path fill="#ffffff" d="M0 0H100V100H0Z"/>
