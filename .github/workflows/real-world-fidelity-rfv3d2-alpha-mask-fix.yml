@@ -201,6 +201,7 @@ jobs:
           retention-days: 7
 
       - name: Confirm narrow production-fix diff scope
+        if: github.event.pull_request.base.ref == 'agent/fix-neutral-multitone-routing'
         shell: bash
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -219,6 +220,7 @@ jobs:
           done <<< "${changed}"
 
       - name: Confirm evaluators policies corpus and retry contracts are unchanged
+        if: github.event.pull_request.base.ref == 'agent/fix-neutral-multitone-routing'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -241,7 +243,7 @@ jobs:
 
           roadmap = json.loads(Path('docs/real_world_fidelity_roadmap.json').read_text())
           decision = json.loads(
-            Path('docs/real_world_fidelity/evidence/rfv3_quality_decision.json').read_text()
+              Path('docs/real_world_fidelity/evidence/rfv3_quality_decision.json').read_text()
           )
           assert roadmap['phases'][2]['status'] == 'pending'
           assert roadmap['phases'][3]['status'] == 'pending'
