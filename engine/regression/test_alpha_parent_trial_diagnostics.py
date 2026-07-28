@@ -176,7 +176,8 @@ class AlphaParentTrialDiagnosticTests(unittest.TestCase):
 
 
 class CompactCandidateKnockoutTests(unittest.TestCase):
-    def test_compact_encoder_reduces_bytes_and_preserves_path_geometry(self) -> None:
+    @staticmethod
+    def _fixture() -> tuple[ET.Element, ET.Element]:
         namespace = "http://www.w3.org/2000/svg"
         qname = lambda name: f"{{{namespace}}}{name}"
         root = ET.Element(qname("svg"), {"viewBox": "0 0 64 64"})
@@ -190,6 +191,10 @@ class CompactCandidateKnockoutTests(unittest.TestCase):
             qname("path"),
             {"d": "M8 8H56V56H8Z", "fill": "#1677ff"},
         )
+        return root, canvas
+
+    def test_compact_encoder_reduces_bytes_and_preserves_path_geometry(self) -> None:
+        root, canvas = self._fixture()
         yy, xx = np.indices((64, 64))
         alpha = np.where((xx + yy) % 2 == 0, 128, 255).astype(np.uint8)
         opacity = {128: 128 / 255.0, 255: 1.0}
@@ -221,6 +226,41 @@ class CompactCandidateKnockoutTests(unittest.TestCase):
             compact_stats["reconstruction_encoding"],
             "compact-user-space-use-v1",
         )
+
+    def test_quantized_64_fallback_is_bounded_and_reduces_bytes(self) -> None:
+        source = np.tile(np.arange(256, dtype=np.uint8), (128, 1))
+        quantized, opacity = knockout._quantize_alpha_step(source, step=4)
+
+        self.assertEqual(int(quantized[0, 0]), 0)
+        self.assertEqual(int(quantized[0, 1]), 1)
+        self.assertEqual(int(quantized[0, 254]), 254)
+        self.assertEqual(int(quantized[0, 255]), 255)
+        self.assertLessEqual(len(opacity), 67)
+        mae = float(np.abs(source.astype(np.int16) - quantized.astype(np.int16)).mean() / 255.0)
+        self.assertLessEqual(mae, 0.005)
+
+        root, canvas = self._fixture()
+        legacy_quantized, legacy_opacity = list(knockout._legacy_alpha_encodings(source))[-1][1:]
+        legacy_tree, _ = build_compact_knockout_reconstruction_tree(
+            root, canvas, legacy_quantized, legacy_opacity
+        )
+        compact_tree, _ = build_compact_knockout_reconstruction_tree(
+            root, canvas, quantized, opacity
+        )
+        legacy_bytes = ET.tostring(legacy_tree, encoding="utf-8")
+        compact_bytes = ET.tostring(compact_tree, encoding="utf-8")
+        self.assertLess(len(compact_bytes), int(len(legacy_bytes) * 0.80))
+
+    def test_budget_resilient_order_preserves_legacy_first(self) -> None:
+        source = np.tile(np.arange(256, dtype=np.uint8), (8, 1))
+        encodings = list(knockout.budget_resilient_alpha_encodings(source))
+        names = [name for name, _array, _opacity in encodings]
+
+        legacy_names = [
+            name for name, _array, _opacity in knockout._legacy_alpha_encodings(source)
+        ]
+        self.assertEqual(names[: len(legacy_names)], legacy_names)
+        self.assertEqual(names[-1], "quantized_64")
 
 
 if __name__ == "__main__":
