@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
@@ -87,6 +89,31 @@ class AlphaParentTrialDiagnosticTests(unittest.TestCase):
             self.assertNotIn(flat_lower, shortlist)
             self.assertLessEqual(len(shortlist), selection._base._MAX_TRIALS)
             self.assertGreaterEqual(len({item["engine"] for item in shortlist}), 2)
+
+    def test_production_shortlist_keeps_legacy_hot_path(self) -> None:
+        legacy = [{"name": "legacy"}]
+        diagnostic = [{"name": "diagnostic"}]
+        with (
+            patch.object(selection, "_legacy_shortlist", return_value=legacy),
+            patch.object(selection, "engine_diverse_shortlist", return_value=diagnostic),
+            patch.dict(os.environ, {selection._DIAGNOSTIC_ENV: ""}, clear=False),
+        ):
+            self.assertEqual(selection.alpha_parent_shortlist({}), legacy)
+            self.assertEqual(selection._shortlist_policy(), "legacy_bounded_production")
+
+    def test_diagnostic_env_enables_engine_diverse_shortlist(self) -> None:
+        legacy = [{"name": "legacy"}]
+        diagnostic = [{"name": "diagnostic"}]
+        with (
+            patch.object(selection, "_legacy_shortlist", return_value=legacy),
+            patch.object(selection, "engine_diverse_shortlist", return_value=diagnostic),
+            patch.dict(os.environ, {selection._DIAGNOSTIC_ENV: "1"}, clear=False),
+        ):
+            self.assertEqual(selection.alpha_parent_shortlist({}), diagnostic)
+            self.assertEqual(
+                selection._shortlist_policy(),
+                "legacy_plus_highest_fidelity_alternate_engine",
+            )
 
     def test_quality_rule_is_unchanged_and_diagnostics_are_explicit(self) -> None:
         dense = {
