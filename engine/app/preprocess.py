@@ -1,4 +1,4 @@
-"""Geometric-logo preprocessing guard for broad intentional light-neutral fills.
+"""Geometric-logo guard for broad intentional neutral fills.
 
 The established implementation is retained byte-for-byte in
 ``app.preprocess_base``. This compatibility layer changes only geometric-logo
@@ -24,13 +24,13 @@ for _name, _value in vars(_base).items():
 _legacy_preprocess_geometric_logo = _base.preprocess_geometric_logo
 
 
-def _restore_broad_light_neutral_regions(
+def _restore_broad_intentional_neutral_regions(
     source_rgb: np.ndarray,
     processed: np.ndarray,
     *,
     scale: int,
 ) -> tuple[np.ndarray, list[dict[str, Any]]]:
-    """Restore only thick interior neutral fills that white hardening erased."""
+    """Restore only thick interior neutral fills erased by black/white hardening."""
     rgb = np.asarray(source_rgb, dtype=np.uint8)
     out = np.asarray(processed, dtype=np.uint8).copy()
     if rgb.shape != out.shape or rgb.ndim != 3 or rgb.shape[2] != 3:
@@ -59,7 +59,7 @@ def _restore_broad_light_neutral_regions(
     lightness = source_i.mean(axis=2)
     candidate = (
         (channel_spread <= 14)
-        & (lightness >= 160.0)
+        & (lightness >= 8.0)
         & (lightness <= background_mean - 8.0)
     ).astype(np.uint8)
 
@@ -100,7 +100,8 @@ def _restore_broad_light_neutral_regions(
             continue
         if float(np.linalg.norm(representative - background)) < 12.0:
             continue
-        if float(representative.mean()) > background_mean - 8.0:
+        representative_mean = float(representative.mean())
+        if not (8.0 <= representative_mean <= background_mean - 8.0):
             continue
 
         restored_rgb = np.clip(np.round(representative), 0, 255).astype(np.uint8)
@@ -111,6 +112,7 @@ def _restore_broad_light_neutral_regions(
                 "bbox": [x, y, component_width, component_height],
                 "eroded_survival": round(survival, 6),
                 "max_radius": round(max_radius, 4),
+                "tone_class": "light" if representative_mean >= 128.0 else "dark",
                 "rgb": [int(value) for value in restored_rgb],
             }
         )
@@ -126,19 +128,33 @@ def _restore_broad_light_neutral_regions(
     return out, accepted
 
 
+# Compatibility alias for the first targeted guard name.
+def _restore_broad_light_neutral_regions(
+    source_rgb: np.ndarray,
+    processed: np.ndarray,
+    *,
+    scale: int,
+) -> tuple[np.ndarray, list[dict[str, Any]]]:
+    return _restore_broad_intentional_neutral_regions(
+        source_rgb,
+        processed,
+        scale=scale,
+    )
+
+
 def preprocess_geometric_logo(arr: np.ndarray, report: dict[str, Any]) -> np.ndarray:
     processed = _legacy_preprocess_geometric_logo(arr, report)
     source_rgb = _base._rgba_to_rgb_on_white(arr)
     scale = 2 if report.get("supersampled") else 1
-    restored, accepted = _restore_broad_light_neutral_regions(
+    restored, accepted = _restore_broad_intentional_neutral_regions(
         source_rgb,
         processed,
         scale=scale,
     )
     if accepted:
-        report["steps"].append("restore_broad_light_neutral_regions")
+        report["steps"].append("restore_broad_intentional_neutral_regions")
         report["neutral_region_guard"] = {
-            "schema": "broad-light-neutral-region-v1",
+            "schema": "broad-intentional-neutral-region-v2",
             "accepted_count": len(accepted),
             "components": accepted,
         }
