@@ -7,7 +7,8 @@ low-chroma regions that are visibly distinct from a uniform white background are
 restored from source pixels, then the existing four-color dominant-palette reducer
 runs again. Dark and light neutral classes are segmented independently so directly
 touching design fills cannot merge into one oversized component. Thin antialias
-films, border-connected background and chromatic artwork retain legacy behavior.
+films, near-black cleanup tones, border-connected background and chromatic artwork
+retain legacy behavior.
 """
 from __future__ import annotations
 
@@ -24,7 +25,7 @@ for _name, _value in vars(_base).items():
 
 _legacy_preprocess_geometric_logo = _base.preprocess_geometric_logo
 _TONE_RANGES = (
-    ("dark", 8.0, 96.0),
+    ("dark", 16.0, 96.0),
     ("light", 160.0, None),
 )
 
@@ -55,7 +56,6 @@ def _restore_broad_intentional_neutral_regions(
     background_mean = float(background.mean())
     background_spread = float(background.max() - background.min())
 
-    # Fail closed: this guard is only for a uniform near-white canvas.
     if background_spread > 12.0 or background_mean < 245.0:
         return out, []
 
@@ -66,9 +66,6 @@ def _restore_broad_intentional_neutral_regions(
     kernel = np.ones((3, 3), np.uint8)
     accepted: list[dict[str, Any]] = []
 
-    # Dark and light neutral artwork may touch directly. Processing them as one
-    # binary mask makes the combined logo exceed the maximum component-area gate.
-    # Separate tone masks preserve the area/thickness proof for each intended fill.
     for tone_class, lower, configured_upper in _TONE_RANGES:
         upper = background_mean - 8.0 if configured_upper is None else configured_upper
         candidate = (
@@ -128,8 +125,6 @@ def _restore_broad_intentional_neutral_regions(
             )
 
     if accepted:
-        # Reuse the established reducer so restored fills do not introduce an
-        # extra antialias palette. The four dominant design colors remain.
         out = _base._reduce_to_dominant(
             out,
             k=4,
@@ -138,7 +133,6 @@ def _restore_broad_intentional_neutral_regions(
     return out, accepted
 
 
-# Compatibility alias for the first targeted guard name.
 def _restore_broad_light_neutral_regions(
     source_rgb: np.ndarray,
     processed: np.ndarray,
@@ -164,7 +158,7 @@ def preprocess_geometric_logo(arr: np.ndarray, report: dict[str, Any]) -> np.nda
     if accepted:
         report["steps"].append("restore_broad_intentional_neutral_regions")
         report["neutral_region_guard"] = {
-            "schema": "broad-intentional-neutral-region-v3",
+            "schema": "broad-intentional-neutral-region-v4",
             "segmentation": "independent-dark-light-components",
             "accepted_count": len(accepted),
             "components": accepted,
