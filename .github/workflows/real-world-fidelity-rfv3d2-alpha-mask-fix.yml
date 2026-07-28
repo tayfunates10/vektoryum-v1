@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - ".github/workflows/exact-final-svg.yml"
+      - ".github/workflows/output-quality-diagnostic.yml"
       - ".github/workflows/real-world-fidelity-rfv2e-live.yml"
       - ".github/workflows/real-world-fidelity-rfv3b-live.yml"
       - ".github/workflows/real-world-fidelity-rfv3d2-alpha-mask-fix.yml"
@@ -12,6 +13,8 @@ on:
       - "engine/app/alpha_candidate_direct.py"
       - "engine/app/alpha_candidate_identity.py"
       - "engine/app/alpha_candidate_knockout.py"
+      - "engine/app/alpha_candidate_knockout_base.py"
+      - "engine/app/alpha_candidate_knockout_compact.py"
       - "engine/app/alpha_candidate_paint_selection.py"
       - "engine/app/alpha_candidate_support.py"
       - "engine/app/alpha_candidate_support_compact.py"
@@ -20,6 +23,7 @@ on:
       - "engine/app/alpha_candidate_paint_deficit.py"
       - "engine/app/alpha_artwork_identity.py"
       - "engine/app/alpha_parent_selection.py"
+      - "engine/app/alpha_parent_selection_base.py"
       - "engine/app/alpha_pipeline_retry.py"
       - "engine/app/alpha_mask_contour.py"
       - "engine/app/alpha_mask_adaptive.py"
@@ -27,7 +31,13 @@ on:
       - "engine/app/alpha_mask_budget.py"
       - "engine/app/alpha_soft_ellipse.py"
       - "engine/app/alpha_svg_mask.py"
+      - "engine/app/gradient_vectorize.py"
+      - "engine/app/gradient_vectorize_base.py"
       - "engine/app/pipeline_entry.py"
+      - "engine/regression/output_quality_root_cause.py"
+      - "engine/regression/output_quality_root_cause_base.py"
+      - "engine/regression/test_alpha_parent_trial_diagnostics.py"
+      - "engine/regression/test_gradient_chromatic_boundary.py"
       - "engine/test_alpha_candidate_background.py"
       - "engine/test_alpha_candidate_direct.py"
       - "engine/test_alpha_candidate_identity.py"
@@ -51,6 +61,7 @@ on:
       - "engine/test_alpha_painter_stroke_continuation.py"
       - "engine/test_alpha_painter_paint_deficit.py"
       - "engine/test_alpha_painter_cumulative_threshold.py"
+      - "docs/testing/alpha-overlap-chromatic-boundary-validation-2026-07-27.md"
       - "docs/real_world_fidelity/rfv-3d2-alpha-mask-fix.md"
       - "docs/real_world_fidelity/faz-3d-painter-alpha-reconstruction-diagnostics.md"
       - "docs/real_world_fidelity/faz-3d-painter-alpha-reconstruction-fix.md"
@@ -96,6 +107,8 @@ jobs:
           engine/app/alpha_candidate_direct.py
           engine/app/alpha_candidate_identity.py
           engine/app/alpha_candidate_knockout.py
+          engine/app/alpha_candidate_knockout_base.py
+          engine/app/alpha_candidate_knockout_compact.py
           engine/app/alpha_candidate_paint_selection.py
           engine/app/alpha_candidate_support.py
           engine/app/alpha_candidate_support_compact.py
@@ -104,6 +117,7 @@ jobs:
           engine/app/alpha_candidate_paint_deficit.py
           engine/app/alpha_artwork_identity.py
           engine/app/alpha_parent_selection.py
+          engine/app/alpha_parent_selection_base.py
           engine/app/alpha_pipeline_retry.py
           engine/app/alpha_mask_contour.py
           engine/app/alpha_mask_adaptive.py
@@ -111,7 +125,13 @@ jobs:
           engine/app/alpha_mask_budget.py
           engine/app/alpha_soft_ellipse.py
           engine/app/alpha_svg_mask.py
+          engine/app/gradient_vectorize.py
+          engine/app/gradient_vectorize_base.py
           engine/app/pipeline_entry.py
+          engine/regression/output_quality_root_cause.py
+          engine/regression/output_quality_root_cause_base.py
+          engine/regression/test_alpha_parent_trial_diagnostics.py
+          engine/regression/test_gradient_chromatic_boundary.py
           engine/test_alpha_candidate_background.py
           engine/test_alpha_candidate_direct.py
           engine/test_alpha_candidate_identity.py
@@ -164,6 +184,8 @@ jobs:
             engine.test_alpha_painter_stroke_continuation \
             engine.test_alpha_painter_paint_deficit \
             engine.test_alpha_painter_cumulative_threshold \
+            engine.regression.test_alpha_parent_trial_diagnostics \
+            engine.regression.test_gradient_chromatic_boundary \
             -v > alpha-mask-tests.log 2>&1
           status=$?
           cat alpha-mask-tests.log
@@ -191,7 +213,7 @@ jobs:
           while IFS= read -r path; do
             [ -z "${path}" ] && continue
             case "${path}" in
-              .github/workflows/exact-final-svg.yml|.github/workflows/real-world-fidelity-rfv2e-live.yml|.github/workflows/real-world-fidelity-rfv3b-live.yml|.github/workflows/real-world-fidelity-rfv3d2-alpha-mask-fix.yml|engine/app/__init__.py|engine/app/alpha_candidate_background.py|engine/app/alpha_candidate_direct.py|engine/app/alpha_candidate_identity.py|engine/app/alpha_candidate_knockout.py|engine/app/alpha_candidate_paint_selection.py|engine/app/alpha_candidate_support.py|engine/app/alpha_candidate_support_compact.py|engine/app/alpha_candidate_validation.py|engine/app/alpha_candidate_painter.py|engine/app/alpha_candidate_paint_deficit.py|engine/app/alpha_artwork_identity.py|engine/app/alpha_parent_selection.py|engine/app/alpha_pipeline_retry.py|engine/app/alpha_mask_contour.py|engine/app/alpha_mask_adaptive.py|engine/app/alpha_preprocess.py|engine/app/alpha_mask_budget.py|engine/app/alpha_soft_ellipse.py|engine/app/alpha_svg_mask.py|engine/app/pipeline_entry.py|engine/test_alpha_candidate_background.py|engine/test_alpha_candidate_direct.py|engine/test_alpha_candidate_identity.py|engine/test_alpha_candidate_knockout.py|engine/test_alpha_candidate_paint_selection.py|engine/test_alpha_candidate_support.py|engine/test_alpha_candidate_validation.py|engine/test_alpha_candidate_painter.py|engine/test_alpha_parent_selection.py|engine/test_alpha_pipeline_retry.py|engine/test_alpha_mask_adaptive.py|engine/test_alpha_mask_transaction.py|engine/test_alpha_preprocess.py|engine/test_alpha_noop_preflight.py|engine/test_alpha_clip_encoding.py|engine/test_alpha_artwork_identity.py|engine/test_alpha_painter_encoding.py|engine/test_alpha_painter_ledger.py|engine/test_alpha_painter_retry.py|engine/test_alpha_painter_reconstruction_fidelity.py|engine/test_alpha_painter_stroke_continuation.py|engine/test_alpha_painter_paint_deficit.py|engine/test_alpha_painter_cumulative_threshold.py|docs/real_world_fidelity/rfv-3d2-alpha-mask-fix.md|docs/real_world_fidelity/faz-3d-painter-alpha-reconstruction-diagnostics.md|docs/real_world_fidelity/faz-3d-painter-alpha-reconstruction-fix.md|docs/real_world_fidelity/evidence/faz3d_painter_alpha_reconstruction_diagnostics.json) ;;
+              .github/workflows/exact-final-svg.yml|.github/workflows/output-quality-diagnostic.yml|.github/workflows/real-world-fidelity-rfv2e-live.yml|.github/workflows/real-world-fidelity-rfv3b-live.yml|.github/workflows/real-world-fidelity-rfv3d2-alpha-mask-fix.yml|engine/app/__init__.py|engine/app/alpha_candidate_background.py|engine/app/alpha_candidate_direct.py|engine/app/alpha_candidate_identity.py|engine/app/alpha_candidate_knockout.py|engine/app/alpha_candidate_knockout_base.py|engine/app/alpha_candidate_knockout_compact.py|engine/app/alpha_candidate_paint_selection.py|engine/app/alpha_candidate_support.py|engine/app/alpha_candidate_support_compact.py|engine/app/alpha_candidate_validation.py|engine/app/alpha_candidate_painter.py|engine/app/alpha_candidate_paint_deficit.py|engine/app/alpha_artwork_identity.py|engine/app/alpha_parent_selection.py|engine/app/alpha_parent_selection_base.py|engine/app/alpha_pipeline_retry.py|engine/app/alpha_mask_contour.py|engine/app/alpha_mask_adaptive.py|engine/app/alpha_preprocess.py|engine/app/alpha_mask_budget.py|engine/app/alpha_soft_ellipse.py|engine/app/alpha_svg_mask.py|engine/app/gradient_vectorize.py|engine/app/gradient_vectorize_base.py|engine/app/pipeline_entry.py|engine/regression/output_quality_root_cause.py|engine/regression/output_quality_root_cause_base.py|engine/regression/test_alpha_parent_trial_diagnostics.py|engine/regression/test_gradient_chromatic_boundary.py|engine/test_alpha_candidate_background.py|engine/test_alpha_candidate_direct.py|engine/test_alpha_candidate_identity.py|engine/test_alpha_candidate_knockout.py|engine/test_alpha_candidate_paint_selection.py|engine/test_alpha_candidate_support.py|engine/test_alpha_candidate_validation.py|engine/test_alpha_candidate_painter.py|engine/test_alpha_parent_selection.py|engine/test_alpha_pipeline_retry.py|engine/test_alpha_mask_adaptive.py|engine/test_alpha_mask_transaction.py|engine/test_alpha_preprocess.py|engine/test_alpha_noop_preflight.py|engine/test_alpha_clip_encoding.py|engine/test_alpha_artwork_identity.py|engine/test_alpha_painter_encoding.py|engine/test_alpha_painter_ledger.py|engine/test_alpha_painter_retry.py|engine/test_alpha_painter_reconstruction_fidelity.py|engine/test_alpha_painter_stroke_continuation.py|engine/test_alpha_painter_paint_deficit.py|engine/test_alpha_painter_cumulative_threshold.py|docs/testing/alpha-overlap-chromatic-boundary-validation-2026-07-27.md|docs/real_world_fidelity/rfv-3d2-alpha-mask-fix.md|docs/real_world_fidelity/faz-3d-painter-alpha-reconstruction-diagnostics.md|docs/real_world_fidelity/faz-3d-painter-alpha-reconstruction-fix.md|docs/real_world_fidelity/evidence/faz3d_painter_alpha_reconstruction_diagnostics.json) ;;
               *) echo "Unexpected RFV-3D2 alpha-fix file: ${path}"; exit 1 ;;
             esac
           done <<< "${changed}"
@@ -219,7 +241,7 @@ jobs:
 
           roadmap = json.loads(Path('docs/real_world_fidelity_roadmap.json').read_text())
           decision = json.loads(
-              Path('docs/real_world_fidelity/evidence/rfv3_quality_decision.json').read_text()
+            Path('docs/real_world_fidelity/evidence/rfv3_quality_decision.json').read_text()
           )
           assert roadmap['phases'][2]['status'] == 'pending'
           assert roadmap['phases'][3]['status'] == 'pending'
