@@ -16,19 +16,30 @@ from PIL import Image
 # Runtime adapters are installed before the public entry callable is captured. Crop
 # classifiers are bit-identical to full-map slices. Painter measurement capture reuses
 # metrics only after exact SHA/source/proof identity; every mismatch measures afresh.
+# Alpha failure rescue is ContextVar-scoped and runs only after a complete source-alpha
+# failure, adding one alternate engine through all unchanged quality and journal gates.
+from app.alpha_failure_rescue import (
+    install_alpha_failure_rescue_policy,
+    wrap_run_pipeline_with_alpha_failure_rescue,
+)
 from app.counter_merge_local_classify import install_counter_merge_local_classify
 from app.local_refine_local_classify import install_local_refine_local_classify
 from app.painter_measurement_capture import install_painter_measurement_capture
 
+install_alpha_failure_rescue_policy()
 install_painter_measurement_capture()
 install_counter_merge_local_classify()
 install_local_refine_local_classify()
 
 from app.pipeline import WorkerFailure  # noqa: E402
-from app.pipeline import run_pipeline as _run_pipeline_core  # noqa: E402
+from app.pipeline import run_pipeline as _pipeline_without_rescue  # noqa: E402
 from app.pipeline_canonical_report import maybe_attach_canonical_svg_candidate  # noqa: E402
 from app.production_export_integration import register_pipeline_canonical_report  # noqa: E402
 from app.shadow_runtime import maybe_attach_shadow_telemetry  # noqa: E402
+
+_run_pipeline_core = wrap_run_pipeline_with_alpha_failure_rescue(
+    _pipeline_without_rescue
+)
 
 
 def _audit_path(job_dir: Path) -> Path | None:
