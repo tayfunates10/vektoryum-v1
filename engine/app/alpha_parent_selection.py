@@ -1,12 +1,14 @@
-"""Engine-diverse, evidence-rich alpha-parent selection.
+"""Evidence-rich alpha-parent selection with production-cost isolation.
 
 The established production implementation is retained byte-for-byte in
 ``app.alpha_parent_selection_base``. This compatibility module re-exports its
-namespace and keeps the same quality margins/journal gates, while making the
-bounded parent shortlist engine-diverse and recording fail-closed trial outcomes.
+namespace and records fail-closed trial outcomes. The engine-diverse shortlist
+used for root-cause diagnosis is opt-in; ordinary production calls retain the
+legacy bounded shortlist and avoid an unnecessary alternate-engine render.
 """
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import tempfile
@@ -26,6 +28,13 @@ for _name, _value in vars(_base).items():
 _legacy_shortlist = _base._shortlist
 _ERROR_LIMIT = 180
 _ABSOLUTE_PATH = re.compile(r"(?:[A-Za-z]:)?(?:[\\/][\w.\-~+]+){2,}")
+_DIAGNOSTIC_ENV = "VEKTORYUM_ALPHA_PARENT_DIAGNOSTIC"
+_TRUTHY = {"1", "true", "yes", "on"}
+
+
+def _diagnostic_engine_diversity_enabled() -> bool:
+    """Return whether the expensive alternate-engine diagnostic is authorized."""
+    return str(os.environ.get(_DIAGNOSTIC_ENV, "")).strip().lower() in _TRUTHY
 
 
 def _identity(candidate: dict[str, Any]) -> str | None:
@@ -136,6 +145,21 @@ def engine_diverse_shortlist(result: dict[str, Any]) -> list[dict[str, Any]]:
     return output
 
 
+def alpha_parent_shortlist(result: dict[str, Any]) -> list[dict[str, Any]]:
+    """Use production legacy shortlist unless explicit diagnostic mode is enabled."""
+    if _diagnostic_engine_diversity_enabled():
+        return engine_diverse_shortlist(result)
+    return list(_legacy_shortlist(result))
+
+
+def _shortlist_policy() -> str:
+    return (
+        "legacy_plus_highest_fidelity_alternate_engine"
+        if _diagnostic_engine_diversity_enabled()
+        else "legacy_bounded_production"
+    )
+
+
 def alpha_parent_trial_snapshot(trials: object) -> list[dict[str, Any]]:
     if not isinstance(trials, list):
         return []
@@ -183,7 +207,7 @@ def _attach_diagnostics(
     )
     result["alpha_parent_trial_diagnostics"] = {
         "schema": "vektoryum-alpha-parent-trial-diagnostics-v2",
-        "shortlist_policy": "legacy_plus_highest_fidelity_alternate_engine",
+        "shortlist_policy": _shortlist_policy(),
         "status": status,
         "shortlist_count": len(shortlist or []),
         "shortlist": [
@@ -220,7 +244,7 @@ def _select(result: dict[str, Any], source_path: Path, job_dir: Path) -> dict[st
     if len(levels) <= 1 or len(levels) > _base._MAX_ALPHA_LEVELS:
         return _attach_diagnostics(result, status="alpha_level_count_not_supported")
 
-    shortlist = engine_diverse_shortlist(result)
+    shortlist = alpha_parent_shortlist(result)
     if len(shortlist) <= 1:
         return _attach_diagnostics(
             result,
