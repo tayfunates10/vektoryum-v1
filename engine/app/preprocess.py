@@ -5,8 +5,9 @@ The established implementation is retained byte-for-byte in
 preprocessing and only after the legacy pipeline has finished. Large, interior,
 low-chroma regions that are visibly distinct from a uniform white background are
 restored from source pixels, then the existing four-color dominant-palette reducer
-runs again. Thin antialias films, border-connected background and chromatic
-artwork remain under the legacy behavior.
+runs again. Dark and light neutral classes are segmented independently so directly
+touching design fills cannot merge into one oversized component. Thin antialias
+films, border-connected background and chromatic artwork retain legacy behavior.
 """
 from __future__ import annotations
 
@@ -22,6 +23,10 @@ for _name, _value in vars(_base).items():
         globals()[_name] = _value
 
 _legacy_preprocess_geometric_logo = _base.preprocess_geometric_logo
+_TONE_RANGES = (
+    ("dark", 8.0, 96.0),
+    ("light", 160.0, None),
+)
 
 
 def _restore_broad_intentional_neutral_regions(
@@ -30,7 +35,7 @@ def _restore_broad_intentional_neutral_regions(
     *,
     scale: int,
 ) -> tuple[np.ndarray, list[dict[str, Any]]]:
-    """Restore only thick interior neutral fills erased by black/white hardening."""
+    """Restore thick interior neutral fills erased by black/white hardening."""
     rgb = np.asarray(source_rgb, dtype=np.uint8)
     out = np.asarray(processed, dtype=np.uint8).copy()
     if rgb.shape != out.shape or rgb.ndim != 3 or rgb.shape[2] != 3:
@@ -57,65 +62,70 @@ def _restore_broad_intentional_neutral_regions(
     source_i = rgb.astype(np.int16)
     channel_spread = source_i.max(axis=2) - source_i.min(axis=2)
     lightness = source_i.mean(axis=2)
-    candidate = (
-        (channel_spread <= 14)
-        & (lightness >= 8.0)
-        & (lightness <= background_mean - 8.0)
-    ).astype(np.uint8)
-
-    component_count, labels, stats, _centroids = cv2.connectedComponentsWithStats(
-        candidate, connectivity=8
-    )
     min_area = max(80 * scale * scale, round(0.0025 * height * width))
     kernel = np.ones((3, 3), np.uint8)
     accepted: list[dict[str, Any]] = []
 
-    for component_id in range(1, component_count):
-        area = int(stats[component_id, cv2.CC_STAT_AREA])
-        if area < min_area or area > int(0.35 * height * width):
-            continue
-
-        x = int(stats[component_id, cv2.CC_STAT_LEFT])
-        y = int(stats[component_id, cv2.CC_STAT_TOP])
-        component_width = int(stats[component_id, cv2.CC_STAT_WIDTH])
-        component_height = int(stats[component_id, cv2.CC_STAT_HEIGHT])
-        if (
-            x <= 0
-            or y <= 0
-            or x + component_width >= width
-            or y + component_height >= height
-        ):
-            continue
-
-        mask = (labels == component_id).astype(np.uint8)
-        eroded = cv2.erode(mask, kernel, iterations=max(1, scale))
-        survival = float(eroded.sum()) / float(area)
-        distance = cv2.distanceTransform(mask, cv2.DIST_L2, 5)
-        max_radius = float(distance.max())
-        if survival < 0.45 or max_radius < 3.0 * scale:
-            continue
-
-        representative = np.median(rgb[mask > 0], axis=0)
-        if float(representative.max() - representative.min()) > 12.0:
-            continue
-        if float(np.linalg.norm(representative - background)) < 12.0:
-            continue
-        representative_mean = float(representative.mean())
-        if not (8.0 <= representative_mean <= background_mean - 8.0):
-            continue
-
-        restored_rgb = np.clip(np.round(representative), 0, 255).astype(np.uint8)
-        out[mask > 0] = restored_rgb
-        accepted.append(
-            {
-                "area": area,
-                "bbox": [x, y, component_width, component_height],
-                "eroded_survival": round(survival, 6),
-                "max_radius": round(max_radius, 4),
-                "tone_class": "light" if representative_mean >= 128.0 else "dark",
-                "rgb": [int(value) for value in restored_rgb],
-            }
+    # Dark and light neutral artwork may touch directly. Processing them as one
+    # binary mask makes the combined logo exceed the maximum component-area gate.
+    # Separate tone masks preserve the area/thickness proof for each intended fill.
+    for tone_class, lower, configured_upper in _TONE_RANGES:
+        upper = background_mean - 8.0 if configured_upper is None else configured_upper
+        candidate = (
+            (channel_spread <= 14)
+            & (lightness >= lower)
+            & (lightness <= upper)
+        ).astype(np.uint8)
+        component_count, labels, stats, _centroids = cv2.connectedComponentsWithStats(
+            candidate, connectivity=8
         )
+
+        for component_id in range(1, component_count):
+            area = int(stats[component_id, cv2.CC_STAT_AREA])
+            if area < min_area or area > int(0.35 * height * width):
+                continue
+
+            x = int(stats[component_id, cv2.CC_STAT_LEFT])
+            y = int(stats[component_id, cv2.CC_STAT_TOP])
+            component_width = int(stats[component_id, cv2.CC_STAT_WIDTH])
+            component_height = int(stats[component_id, cv2.CC_STAT_HEIGHT])
+            if (
+                x <= 0
+                or y <= 0
+                or x + component_width >= width
+                or y + component_height >= height
+            ):
+                continue
+
+            mask = (labels == component_id).astype(np.uint8)
+            eroded = cv2.erode(mask, kernel, iterations=max(1, scale))
+            survival = float(eroded.sum()) / float(area)
+            distance = cv2.distanceTransform(mask, cv2.DIST_L2, 5)
+            max_radius = float(distance.max())
+            if survival < 0.45 or max_radius < 3.0 * scale:
+                continue
+
+            representative = np.median(rgb[mask > 0], axis=0)
+            if float(representative.max() - representative.min()) > 12.0:
+                continue
+            if float(np.linalg.norm(representative - background)) < 12.0:
+                continue
+            representative_mean = float(representative.mean())
+            if not (lower <= representative_mean <= upper):
+                continue
+
+            restored_rgb = np.clip(np.round(representative), 0, 255).astype(np.uint8)
+            out[mask > 0] = restored_rgb
+            accepted.append(
+                {
+                    "area": area,
+                    "bbox": [x, y, component_width, component_height],
+                    "eroded_survival": round(survival, 6),
+                    "max_radius": round(max_radius, 4),
+                    "tone_class": tone_class,
+                    "rgb": [int(value) for value in restored_rgb],
+                }
+            )
 
     if accepted:
         # Reuse the established reducer so restored fills do not introduce an
@@ -154,7 +164,8 @@ def preprocess_geometric_logo(arr: np.ndarray, report: dict[str, Any]) -> np.nda
     if accepted:
         report["steps"].append("restore_broad_intentional_neutral_regions")
         report["neutral_region_guard"] = {
-            "schema": "broad-intentional-neutral-region-v2",
+            "schema": "broad-intentional-neutral-region-v3",
+            "segmentation": "independent-dark-light-components",
             "accepted_count": len(accepted),
             "components": accepted,
         }
