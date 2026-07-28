@@ -13,13 +13,14 @@ from typing import Any
 
 from PIL import Image
 
-# These adapters must be installed before importing app.pipeline because that module
-# binds counter/local-refine callables by value. They are bit-identical crop-only
-# replacements: candidate order, geometry, thresholds and acceptance decisions stay
-# unchanged while full-canvas palette maps are no longer materialized repeatedly.
+# Runtime adapters are installed before the public entry callable is captured. Crop
+# classifiers are bit-identical to full-map slices. Painter measurement capture reuses
+# metrics only after exact SHA/source/proof identity; every mismatch measures afresh.
 from app.counter_merge_local_classify import install_counter_merge_local_classify
 from app.local_refine_local_classify import install_local_refine_local_classify
+from app.painter_measurement_capture import install_painter_measurement_capture
 
+install_painter_measurement_capture()
 install_counter_merge_local_classify()
 install_local_refine_local_classify()
 
