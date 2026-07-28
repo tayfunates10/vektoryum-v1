@@ -287,7 +287,10 @@ class CompactCandidateKnockoutTests(unittest.TestCase):
             name for name, _array, _opacity in knockout._legacy_alpha_encodings(source)
         ]
         self.assertEqual(names[: len(legacy_names)], legacy_names)
-        self.assertEqual(names[-1], "quantized_64")
+        self.assertEqual(
+            names[len(legacy_names):],
+            ["quantized_64", "quantized_32", "quantized_16", "quantized_8"],
+        )
 
 
 if __name__ == "__main__":
