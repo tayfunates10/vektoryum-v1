@@ -58,6 +58,25 @@ class BroadIntentionalNeutralRegionGuardTests(unittest.TestCase):
             preprocess.preprocess_geometric_logo,
         )
 
+    def test_directly_touching_hard_edge_neutral_regions_are_independent(self) -> None:
+        source = np.full((128, 128, 3), 255, dtype=np.uint8)
+        cv2.rectangle(source, (20, 20), (107, 107), (25, 25, 25), thickness=-1)
+        cv2.rectangle(source, (38, 38), (89, 89), (235, 235, 235), thickness=-1)
+        processed = source.copy()
+        processed[np.all(processed == (25, 25, 25), axis=2)] = (0, 0, 0)
+        processed[np.all(processed == (235, 235, 235), axis=2)] = (255, 255, 255)
+
+        restored, accepted = preprocess._restore_broad_intentional_neutral_regions(
+            source,
+            processed,
+            scale=1,
+        )
+
+        self.assertEqual([entry["tone_class"] for entry in accepted], ["dark", "light"])
+        colors = {tuple(int(value) for value in color) for color in np.unique(restored.reshape(-1, 3), axis=0)}
+        self.assertIn((25, 25, 25), colors)
+        self.assertIn((235, 235, 235), colors)
+
     def test_thin_light_neutral_film_is_not_restored(self) -> None:
         source = np.full((128, 128, 3), 255, dtype=np.uint8)
         cv2.rectangle(source, (24, 24), (103, 103), (235, 235, 235), thickness=1)
