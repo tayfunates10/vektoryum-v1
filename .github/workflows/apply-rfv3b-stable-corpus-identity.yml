@@ -36,7 +36,7 @@ jobs:
           actual_blob="$(git hash-object "${target}")"
           test "${actual_blob}" = "${expected_blob}"
 
-          python - <<'PY'
+          python - <<'PATCHPY'
           from pathlib import Path
 
           target = Path('.github/workflows/real-world-fidelity-rfv3b-live.yml')
@@ -106,7 +106,7 @@ jobs:
 
           target.write_text(text, encoding='utf-8')
           Path('.github/workflows/apply-rfv3b-stable-corpus-identity.yml').unlink()
-          PY
+          PATCHPY
 
       - name: Run focused validation
         run: |
