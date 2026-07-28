@@ -5,8 +5,8 @@ The established geometry implementation is retained byte-for-byte in
 black/white snapping: when an SVG contains a separate substantial low-chroma
 neutral region near one of those canonical endpoints, that endpoint is removed
 from the canonical snap targets for the call. Exact black/white remain unchanged,
-nearby AA colors still merge into their traced clusters, and red canonical
-snapping is unchanged.
+near-black antialias clusters and tiny nearby colors keep legacy cleanup, and red
+canonical snapping is unchanged.
 """
 from __future__ import annotations
 
@@ -65,7 +65,7 @@ def _neutral_fill_evidence(svg_path: Path) -> dict[str, list[dict[str, Any]]]:
             "black_distance": round(black_distance, 4),
             "white_distance": round(white_distance, 4),
         }
-        if 8.0 <= mean <= 96.0 and 12.0 <= black_distance <= 90.0:
+        if 16.0 <= mean <= 96.0 and 24.0 <= black_distance <= 90.0:
             evidence["dark"].append(entry)
         if (
             white_weight / total_weight >= 0.05
@@ -77,7 +77,6 @@ def _neutral_fill_evidence(svg_path: Path) -> dict[str, list[dict[str, Any]]]:
 
 
 def _light_neutral_fill_evidence(svg_path: Path) -> list[dict[str, Any]]:
-    """Compatibility alias for the first targeted light-neutral guard."""
     return _neutral_fill_evidence(svg_path)["light"]
 
 
@@ -109,12 +108,11 @@ def consolidate_svg_palette(
     )
     if evidence["dark"] or evidence["light"]:
         result["neutral_snap_guard"] = {
-            "schema": "broad-intentional-neutral-canonical-snap-v2",
+            "schema": "broad-intentional-neutral-canonical-snap-v3",
             "black_snap_removed": _BLACK in removed,
             "white_snap_removed": _WHITE in removed,
             "evidence": evidence,
         }
-        # Preserve the original report key for consumers of the v1 light guard.
         if evidence["light"]:
             result["light_neutral_snap_guard"] = {
                 "schema": "broad-light-neutral-canonical-snap-v1",
