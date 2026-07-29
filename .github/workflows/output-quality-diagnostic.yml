@@ -10,6 +10,7 @@ on:
       - "engine/regression/output_quality_root_cause.py"
       - "engine/regression/test_output_quality_suite.py"
       - "engine/regression/test_output_quality_root_cause.py"
+      - "engine/regression/test_neutral_multitone_routing.py"
       - "engine/requirements.txt"
   workflow_dispatch:
   schedule:
@@ -50,12 +51,14 @@ jobs:
           engine/regression/output_quality_root_cause.py
           engine/regression/test_output_quality_suite.py
           engine/regression/test_output_quality_root_cause.py
+          engine/regression/test_neutral_multitone_routing.py
 
       - name: Run diagnostic contract tests
         run: >-
           python -m unittest
           engine.regression.test_output_quality_suite
           engine.regression.test_output_quality_root_cause
+          engine.regression.test_neutral_multitone_routing
 
   production-output:
     needs: contract
