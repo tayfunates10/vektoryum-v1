@@ -14,6 +14,7 @@ on:
       - "engine/analyzer_release_runner.py"
       - "engine/test_analyzer_release_contract.py"
       - "engine/test_analyzer_release_runner.py"
+      - "engine/test_benchmark_workflow_baseline.py"
       - "engine/ai_analyzer_roadmap.json"
       - "engine/test_ai_analyzer_roadmap.py"
   push:
@@ -28,6 +29,7 @@ on:
       - "engine/analyzer_release_runner.py"
       - "engine/test_analyzer_release_contract.py"
       - "engine/test_analyzer_release_runner.py"
+      - "engine/test_benchmark_workflow_baseline.py"
       - "engine/ai_analyzer_roadmap.json"
       - "engine/test_ai_analyzer_roadmap.py"
 
@@ -76,7 +78,8 @@ jobs:
           test_benchmark_release_gate.py
           test_benchmark_release_gate_cli.py
           test_benchmark_quality_report.py
-      - name: Generate same-run PR base timing baseline
+          test_benchmark_workflow_baseline.py
+      - name: Generate same-run PR base quality and timing baseline
         if: github.event_name == 'pull_request'
         shell: bash
         run: |
@@ -131,11 +134,11 @@ jobs:
         run: |
           set -euo pipefail
           args=(--current benchmark_artifacts/pipeline/pipeline_results.json --output benchmark_artifacts/pipeline/release_gate.json)
-          if [ -f baseline_artifact/pipeline/pipeline_results.json ]; then
-            args+=(--baseline baseline_artifact/pipeline/pipeline_results.json)
-          fi
-          if [ -f same_runner_baseline/pipeline_results.json ]; then
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ] && [ -f same_runner_baseline/pipeline_results.json ]; then
+            args+=(--baseline same_runner_baseline/pipeline_results.json)
             args+=(--timing-baseline same_runner_baseline/pipeline_results.json)
+          elif [ -f baseline_artifact/pipeline/pipeline_results.json ]; then
+            args+=(--baseline baseline_artifact/pipeline/pipeline_results.json)
           fi
           python -m benchmark.release_gate "${args[@]}"
       - name: Upload JSON HTML fixtures and real pipeline results
