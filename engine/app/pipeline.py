@@ -8,8 +8,8 @@ AI-2 manager-remediation policies at its public extension points:
   measured total/fidelity scores;
 * the pre-existing closed-filled-cycle structural invariant is an eligibility
   tier, never a numeric score offset;
-* neutral-palette restoration happens after candidate generation and before
-  scoring, so scoring/evaluation itself is byte-pure.
+* render-equivalent implicit fill cycles and neutral palette repair are finalized
+  after candidate generation and before scoring, so scoring/evaluation is byte-pure.
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ from app.neutral_palette import (
     geometric_preserves_neutral_palette,
     restore_layered_neutral_svg_palette,
 )
+from app.svg_lifecycle import close_implicit_fill_cycles
 
 # Preserve the existing public/compatibility surface, including internal helpers
 # imported by the repository's regression tests.
@@ -47,7 +48,7 @@ def _selection_tier(candidate: dict[str, Any]) -> int:
     Tier 2: structurally invalid open filled cycle.
 
     The tier is deliberately separate from total/fidelity score so quality
-    measurements stay numerically honest.  Within a tier the established
+    measurements stay numerically honest. Within a tier the established
     selector remains unchanged.
     """
     component = candidate.get("component_quality") or {}
@@ -91,7 +92,7 @@ def produce_candidate(
     original_path: Path | None = None,
     palette_cap: int | None = None,
 ) -> dict[str, Any]:
-    """Finalize narrow neutral-palette repair before any candidate scoring."""
+    """Finalize render-equivalent structural/palette cleanup before scoring."""
     result = _base_produce_candidate(
         name,
         spec,
@@ -105,9 +106,22 @@ def produce_candidate(
         "neutral_palette_restore",
         {"applied": False, "reason": "not_layered_neutral_geometric"},
     )
-    if not result.get("success") or original_path is None or mode != "geometric_logo":
+    result.setdefault(
+        "fill_cycle_normalization",
+        {"applied": False, "reason": "candidate_unavailable", "paths_changed": 0, "subpaths_closed": 0},
+    )
+    if not result.get("success"):
         return result
 
+    svg_path = Path(result["svg_path"])
+    # SVG fills already close their subpaths for rasterization. Adding a literal
+    # Z to fill-only paths therefore preserves rendering while satisfying the
+    # production structural contract. Visible-stroke paths are intentionally
+    # skipped by the lifecycle helper because closing those could alter output.
+    result["fill_cycle_normalization"] = close_implicit_fill_cycles(svg_path)
+
+    if original_path is None or mode != "geometric_logo":
+        return result
     neutral_report = detect_neutral_luminance_bands(original_path)
     if not geometric_preserves_neutral_palette(mode, neutral_report):
         return result
@@ -115,7 +129,7 @@ def produce_candidate(
     # This is candidate construction, not scoring. The returned SVG is the
     # exact immutable artifact score_vector_candidate() will observe.
     restore_report = restore_layered_neutral_svg_palette(
-        Path(result["svg_path"]), Path(original_path), mode=mode
+        svg_path, Path(original_path), mode=mode
     )
     result["neutral_palette_restore"] = restore_report
     return result
