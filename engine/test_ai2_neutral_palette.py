@@ -4,11 +4,12 @@ import sys
 from pathlib import Path
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw
 
 ENGINE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(ENGINE_DIR))
 
+from app.analyzer import analyze_image_from_mem  # noqa: E402
 from app.neutral_palette import (  # noqa: E402
     detect_neutral_luminance_bands,
     geometric_preserves_neutral_palette,
@@ -21,6 +22,16 @@ def _bands(values: list[tuple[int, int, int]], width: int = 48, height: int = 48
     for idx, value in enumerate(values):
         arr[:, idx * width:(idx + 1) * width] = value
     return Image.fromarray(arr, mode="RGB")
+
+
+def _gray_counter_fixture(size: int = 256) -> Image.Image:
+    image = Image.new("RGBA", (size, size), (255, 255, 255, 255))
+    draw = ImageDraw.Draw(image)
+    draw.rounded_rectangle((24, 36, 232, 220), radius=38, fill=(150, 150, 150, 255))
+    draw.rounded_rectangle((38, 50, 218, 206), radius=30, fill=(15, 15, 15, 255))
+    draw.ellipse((86, 78, 170, 174), fill=(255, 255, 255, 255))
+    draw.rectangle((122, 168, 144, 220), fill=(255, 255, 255, 255))
+    return image
 
 
 def test_layered_neutral_detector_requires_three_real_plateaus() -> None:
@@ -71,6 +82,18 @@ def test_single_color_layered_neutral_auto_route_is_narrow() -> None:
     assert route_auto_layered_neutral_mode("geometric_logo", layered) == "geometric_logo"
     assert route_auto_layered_neutral_mode("logo_color", layered) == "logo_color"
     assert route_auto_layered_neutral_mode("photo_poster", layered) == "photo_poster"
+
+
+def test_gray_border_counter_is_not_left_on_binary_single_color_route() -> None:
+    fixture = _gray_counter_fixture()
+    neutral = detect_neutral_luminance_bands(fixture)
+    analysis = analyze_image_from_mem(fixture)
+
+    assert neutral["layered_neutral"] is True
+    assert analysis["neutral_luminance_report"] is not None
+    assert analysis["neutral_luminance_report"]["layered_neutral"] is True
+    assert analysis["recommended_mode"] == "geometric_logo"
+    assert analysis["detected_type"] == "geometric_logo"
 
 
 def test_neutral_tone_steps_fixture_is_deterministic() -> None:
