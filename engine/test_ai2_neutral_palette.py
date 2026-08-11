@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import sys
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -153,6 +155,14 @@ def test_neutral_tone_steps_fixture_is_deterministic() -> None:
 
 def test_issue_137_native_256_named_reproducers_meet_all_acceptance_axes(tmp_path: Path) -> None:
     report = build_acceptance_report(tmp_path)
+    # Pytest displays warnings even on success; this makes the exact before/after
+    # evidence auditable in the focused GitHub Actions log without changing the
+    # workflow or depending on a mutable artifact upload step.
+    warnings.warn(
+        "AI2_ACCEPTANCE_METRICS=" + json.dumps(report, sort_keys=True),
+        UserWarning,
+        stacklevel=1,
+    )
 
     assert validate_report(report) == []
     assert set(report["cases"]) == {
