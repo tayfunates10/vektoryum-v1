@@ -102,6 +102,25 @@ def test_pareto_dominated_high_global_candidate_cannot_win() -> None:
     assert safe["fidelity_score"] > unsafe["fidelity_score"]
 
 
+def test_all_failed_candidates_keep_legacy_score_ordering() -> None:
+    failed = {
+        "applicable": True,
+        "measured": True,
+        "status": "fail",
+        "source_cc_recall": 0.5,
+        "render_cc_precision": 0.5,
+        "min_true_cc_iou": 0.5,
+    }
+    legacy_winner = gate_candidate_scores(93.94, 62.12, failed)
+    legacy_runner_up = gate_candidate_scores(85.05, 33.28, failed)
+
+    assert legacy_winner["selection_disqualified"] is True
+    assert legacy_runner_up["selection_disqualified"] is True
+    assert legacy_winner["total_score"] > legacy_runner_up["total_score"]
+    assert legacy_winner["fidelity_score"] > legacy_runner_up["fidelity_score"]
+    assert round(legacy_winner["total_score"] - legacy_runner_up["total_score"], 2) == 8.89
+
+
 def test_missing_applicable_measurement_is_fail_closed_needs_review() -> None:
     missing = {
         "applicable": True,
