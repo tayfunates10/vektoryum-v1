@@ -185,12 +185,36 @@ def test_open_filled_cycle_is_rejected_but_open_stroke_is_allowed(tmp_path: Path
     assert has_open_required_cycle(closed_fill) is False
 
 
-def test_release_safety_failure_uses_same_band_as_component_failure() -> None:
+def test_filled_cycle_parser_accepts_implicit_curve_and_relative_endpoint_closure(tmp_path: Path) -> None:
+    implicit_curve = tmp_path / "implicit-curve.svg"
+    implicit_curve.write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">'
+        '<path d="M 2 2 C 8 0 14 0 18 2 C 18 10 10 18 2 2" fill="#000"/></svg>',
+        encoding="utf-8",
+    )
+    relative_closed = tmp_path / "relative-closed.svg"
+    relative_closed.write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">'
+        '<path d="m 2 2 l 12 0 l -6 12 l -6 -12" fill="#000"/></svg>',
+        encoding="utf-8",
+    )
+    relative_open = tmp_path / "relative-open.svg"
+    relative_open.write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">'
+        '<path d="m 2 2 l 12 0 l -6 12" fill="#000"/></svg>',
+        encoding="utf-8",
+    )
+
+    assert has_open_required_cycle(implicit_curve) is False
+    assert has_open_required_cycle(relative_closed) is False
+    assert has_open_required_cycle(relative_open) is True
+
+
+def test_release_structural_failure_ranks_below_component_failure() -> None:
     # Regression from the explicit single_color release corpus: the new CC gate
     # briefly promoted a raster-exact but geometrically open filled candidate.
-    # Structural-release failure and measured CC failure must be in the same
-    # disqualified band so, when no fully eligible candidate exists, the old
-    # score ordering is preserved rather than promoting the open candidate.
+    # Existing release-structural invalidity must sit below ordinary CC failure,
+    # so an open raster-perfect artifact cannot win by its global fidelity.
     open_exact = {
         "applicable": True,
         "measured": True,
