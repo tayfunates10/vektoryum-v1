@@ -28,7 +28,6 @@ from typing import Any
 import cv2
 import numpy as np
 from defusedxml import ElementTree as SafeET
-from svgpathtools import parse_path
 
 # Preserve the production component-support floor already used by fidelity.py.
 _MIN_COMPONENT_PIXELS = 48
@@ -51,6 +50,10 @@ _STRUCTURAL_FAIL_SCORE_OFFSET = 1500.0
 _UNMEASURED_SCORE_OFFSET = 2000.0
 
 _STYLE_FILL = re.compile(r"(?:^|;)\s*fill\s*:\s*([^;]+)", re.I)
+_PATH_NUM_RE = re.compile(r"[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?")
+_PATH_CMD_RE = re.compile(r"([MmLlHhVvCcSsQqTtAaZz])([^MmLlHhVvCcSsQqTtAaZz]*)")
+_PATH_GROUP = {"L": 2, "T": 2, "H": 1, "V": 1, "C": 6, "S": 4, "Q": 4, "A": 7}
+_CLOSE_EPS = 1e-6
 
 
 @dataclass(frozen=True)
@@ -81,12 +84,105 @@ def _path_fill(element: Any) -> str:
     return match.group(1).strip().lower() if match else "black"
 
 
+def _filled_path_subpaths_closed(d: str) -> bool:
+    """Dependency-free geometric closure check for SVG path subpaths.
+
+    The repository has workflows that deliberately install only a minimal
+    measurement dependency set.  Winner scoring therefore cannot import the
+    optional ``svgpathtools`` package at module import time.  For the release
+    invariant we only need endpoint semantics, so this parser tracks the SVG
+    command endpoint for every subpath, supports relative commands, explicit Z,
+    and the tracer pattern where the final curve endpoint returns to the M point
+    without emitting Z.
+    """
+    tokens = list(_PATH_CMD_RE.finditer(d or ""))
+    if not tokens:
+        return False
+
+    cur = (0.0, 0.0)
+    start: tuple[float, float] | None = None
+    explicit_closed = False
+    saw_segment = False
+    closed: list[bool] = []
+
+    def _finish() -> None:
+        nonlocal start, explicit_closed, saw_segment
+        if start is None:
+            return
+        endpoint_closed = (
+            abs(cur[0] - start[0]) <= _CLOSE_EPS
+            and abs(cur[1] - start[1]) <= _CLOSE_EPS
+        )
+        closed.append(bool(saw_segment and (explicit_closed or endpoint_closed)))
+        start = None
+        explicit_closed = False
+        saw_segment = False
+
+    for match in tokens:
+        cmd = match.group(1)
+        c = cmd.upper()
+        rel = cmd.islower()
+        try:
+            nums = [float(value) for value in _PATH_NUM_RE.findall(match.group(2))]
+        except ValueError:
+            return False
+
+        if c == "M":
+            if len(nums) < 2 or len(nums) % 2:
+                return False
+            _finish()
+            for index in range(0, len(nums), 2):
+                x, y = nums[index], nums[index + 1]
+                if rel:
+                    x += cur[0]
+                    y += cur[1]
+                cur = (x, y)
+                if index == 0:
+                    start = cur
+                else:
+                    saw_segment = True  # extra moveto pairs are implicit lineto
+            continue
+
+        if start is None:
+            return False
+        if c == "Z":
+            if nums:
+                return False
+            explicit_closed = True
+            saw_segment = True
+            cur = start
+            continue
+
+        group = _PATH_GROUP.get(c)
+        if group is None or not nums or len(nums) % group:
+            return False
+        for index in range(0, len(nums), group):
+            values = nums[index:index + group]
+            x, y = cur
+            if c == "H":
+                x = values[0] + (cur[0] if rel else 0.0)
+            elif c == "V":
+                y = values[0] + (cur[1] if rel else 0.0)
+            else:
+                # L/T endpoints use their final pair; C/S/Q/A likewise encode
+                # their endpoint in the final pair of each segment group.
+                x, y = values[-2], values[-1]
+                if rel:
+                    x += cur[0]
+                    y += cur[1]
+            cur = (x, y)
+            saw_segment = True
+
+    _finish()
+    return bool(closed) and all(closed)
+
+
 def has_open_required_cycle(svg_path: Path) -> bool:
     """Mirror the existing release invariant for geometrically open fills.
 
-    A literal ``Z`` is not mandatory: tracers may serialize a closed curve by
-    returning the final point to the first point.  ``svgpathtools`` therefore
-    decides geometric closure.  Open stroke-only paths remain valid.
+    A literal ``Z`` is not mandatory: production tracers can serialize a closed
+    curve by returning its final endpoint to the first point.  Open stroke-only
+    paths remain valid.  Parsing errors fail closed.
     """
     try:
         root = SafeET.parse(str(svg_path)).getroot()
@@ -98,11 +194,7 @@ def has_open_required_cycle(svg_path: Path) -> bool:
         if _path_fill(element) == "none":
             continue
         d = str(element.attrib.get("d") or "")
-        try:
-            subpaths = parse_path(d).continuous_subpaths()
-        except Exception:
-            return True
-        if not subpaths or any(not subpath.isclosed() for subpath in subpaths):
+        if not _filled_path_subpaths_closed(d):
             return True
     return False
 
