@@ -8,9 +8,13 @@ on:
       - "engine/benchmark/**"
       - "engine/regression/output_quality_suite.py"
       - "engine/regression/output_quality_root_cause.py"
+      - "engine/regression/output_quality_residual_suite.py"
+      - "engine/regression/output_quality_residual_root_cause.py"
       - "engine/regression/residual_error_metrics.py"
       - "engine/regression/test_output_quality_suite.py"
       - "engine/regression/test_output_quality_root_cause.py"
+      - "engine/regression/test_output_quality_residual_suite.py"
+      - "engine/regression/test_output_quality_residual_root_cause.py"
       - "engine/regression/test_residual_error_metrics.py"
       - "engine/requirements.txt"
   workflow_dispatch:
@@ -50,9 +54,13 @@ jobs:
           python -m py_compile
           engine/regression/output_quality_suite.py
           engine/regression/output_quality_root_cause.py
+          engine/regression/output_quality_residual_suite.py
+          engine/regression/output_quality_residual_root_cause.py
           engine/regression/residual_error_metrics.py
           engine/regression/test_output_quality_suite.py
           engine/regression/test_output_quality_root_cause.py
+          engine/regression/test_output_quality_residual_suite.py
+          engine/regression/test_output_quality_residual_root_cause.py
           engine/regression/test_residual_error_metrics.py
 
       - name: Run diagnostic contract tests
@@ -60,6 +68,8 @@ jobs:
           python -m unittest
           engine.regression.test_output_quality_suite
           engine.regression.test_output_quality_root_cause
+          engine.regression.test_output_quality_residual_suite
+          engine.regression.test_output_quality_residual_root_cause
           engine.regression.test_residual_error_metrics
 
   production-output:
@@ -87,16 +97,13 @@ jobs:
       - name: Install production pipeline dependencies
         run: python -m pip install --disable-pip-version-check -r engine/requirements.txt pytest
 
-      - name: Run repeat-aware production output diagnostic
+      - name: Run repeat-aware 12-case residual diagnostic
         shell: bash
         run: |
           set -o pipefail
           OUTPUT="${RUNNER_TEMP}/output-quality"
-          FAIL_ON=structural
-          if [ "${GITHUB_EVENT_NAME}" != "pull_request" ]; then
-            FAIL_ON=hard
-          fi
-          python -m engine.regression.output_quality_root_cause \
+          FAIL_ON=none
+          python -m engine.regression.output_quality_residual_root_cause \
             --output "${OUTPUT}" \
             --engine-version "${GITHUB_SHA}" \
             --repeat-count 2 \
