@@ -14,6 +14,7 @@ from contextvars import ContextVar
 from copy import deepcopy
 from typing import Any
 
+import numpy as np
 from PIL import Image
 
 from app.analyzer_contracts import (
@@ -29,6 +30,15 @@ AUTO_DECISION_SCHEMA_VERSION = "analyzer-auto-decision-v1"
 MIN_AUTO_CONFIDENCE = 0.50
 MIN_AUTO_MARGIN = 0.05
 REVIEW_FALLBACK_MODE = "logo_color"
+_NEUTRAL_GUARDED_MODES = frozenset(
+    {"single_color", "lineart", "minimal_ai", "geometric_logo"}
+)
+_NEUTRAL_MAX_CHANNEL_SPREAD = 18
+_NEUTRAL_LUMA_BUCKET_WIDTH = 4
+_NEUTRAL_MIN_AREA_RATIO = 0.004
+_NEUTRAL_MIN_CORE_RETENTION = 0.12
+_NEUTRAL_MIN_SEPARATION = 12.0
+_NEUTRAL_ANALYSIS_MAX_SIDE = 384
 _PRECOMPUTED_ANALYSIS: ContextVar[dict[str, Any] | None] = ContextVar(
     "vektoryum_precomputed_analysis", default=None
 )
@@ -57,6 +67,89 @@ def _same_digest(left: Any, right: Any) -> bool:
         and len(left) == len(right) == 64
         and hmac.compare_digest(left, right)
     )
+
+
+def _neutral_luminance_band_count(image: Image.Image) -> int:
+    """Count spatially persistent low-chroma luminance bands deterministically.
+
+    Binary/line-art routes intentionally collapse tone. A source with three or
+    more real neutral luminance layers therefore needs a color-preserving route.
+    Nearest-neighbour downsampling avoids inventing intermediate anti-alias tones;
+    a 3x3 interior-support test rejects thin edge films that remain in the source.
+    """
+    rgba_image = image.convert("RGBA")
+    width, height = rgba_image.size
+    longest = max(width, height)
+    if longest > _NEUTRAL_ANALYSIS_MAX_SIDE:
+        scale = _NEUTRAL_ANALYSIS_MAX_SIDE / float(longest)
+        rgba_image = rgba_image.resize(
+            (
+                max(1, int(round(width * scale))),
+                max(1, int(round(height * scale))),
+            ),
+            Image.Resampling.NEAREST,
+        )
+
+    rgba = np.asarray(rgba_image, dtype=np.uint8)
+    if rgba.ndim != 3 or rgba.shape[2] != 4 or rgba.size == 0:
+        return 0
+    alpha = rgba[:, :, 3].astype(np.float32) / 255.0
+    rgb = rgba[:, :, :3].astype(np.float32)
+    composited = np.rint(
+        rgb * alpha[:, :, None] + 255.0 * (1.0 - alpha[:, :, None])
+    ).astype(np.uint8)
+    channel_spread = composited.max(axis=2).astype(np.int16) - composited.min(axis=2).astype(np.int16)
+    neutral = channel_spread <= _NEUTRAL_MAX_CHANNEL_SPREAD
+    if not bool(neutral.any()):
+        return 0
+
+    luminance = np.rint(
+        0.2126 * composited[:, :, 0]
+        + 0.7152 * composited[:, :, 1]
+        + 0.0722 * composited[:, :, 2]
+    ).astype(np.uint8)
+    buckets = luminance.astype(np.int16) // _NEUTRAL_LUMA_BUCKET_WIDTH
+    total = int(neutral.size)
+    min_area = max(8, int(round(total * _NEUTRAL_MIN_AREA_RATIO)))
+    centers: list[tuple[float, int]] = []
+
+    for bucket in np.unique(buckets[neutral]).tolist():
+        mask = neutral & (buckets == int(bucket))
+        area = int(mask.sum())
+        if area < min_area:
+            continue
+        if mask.shape[0] < 3 or mask.shape[1] < 3:
+            continue
+        core = mask[1:-1, 1:-1].copy()
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                if dx == 0 and dy == 0:
+                    continue
+                core &= mask[
+                    1 + dy : mask.shape[0] - 1 + dy,
+                    1 + dx : mask.shape[1] - 1 + dx,
+                ]
+        core_area = int(core.sum())
+        if core_area < 1 or core_area / float(area) < _NEUTRAL_MIN_CORE_RETENTION:
+            continue
+        values = luminance[mask].astype(np.float64)
+        centers.append((float(values.mean()), area))
+
+    if not centers:
+        return 0
+    centers.sort(key=lambda item: item[0])
+    merged: list[tuple[float, int]] = []
+    for center, area in centers:
+        if not merged or center - merged[-1][0] >= _NEUTRAL_MIN_SEPARATION:
+            merged.append((center, area))
+            continue
+        previous_center, previous_area = merged[-1]
+        combined_area = previous_area + area
+        merged[-1] = (
+            (previous_center * previous_area + center * area) / float(combined_area),
+            combined_area,
+        )
+    return len(merged)
 
 
 def _version_errors(contract: dict[str, Any]) -> list[str]:
@@ -152,6 +245,7 @@ def decide_trace_mode(
             "verified_recommendation_digest": None,
         }
 
+    neutral_luminance_band_count = _neutral_luminance_band_count(image)
     contract, errors = verify_stored_contract(analysis, image)
     if contract is None:
         return {
@@ -167,10 +261,32 @@ def decide_trace_mode(
             "runner_up_mode": None,
             "runner_up_margin": None,
             "verified_recommendation_digest": None,
+            "neutral_luminance_band_count": neutral_luminance_band_count,
         }
 
     confidence = contract.get("confidence")
     margin = contract.get("runner_up_margin")
+    selected = str(analysis.get("recommended_mode"))
+    if (
+        neutral_luminance_band_count >= 3
+        and selected in _NEUTRAL_GUARDED_MODES
+    ):
+        return {
+            "schema_version": AUTO_DECISION_SCHEMA_VERSION,
+            "status": "needs_review",
+            "requested_mode": "auto",
+            "recommended_mode": selected,
+            "execution_mode": REVIEW_FALLBACK_MODE,
+            "abstained": True,
+            "fallback_applied": True,
+            "reason_codes": ["neutral_luminance_band_guard"],
+            "confidence": confidence,
+            "runner_up_mode": contract.get("runner_up_mode"),
+            "runner_up_margin": margin,
+            "verified_recommendation_digest": contract.get("recommendation_digest"),
+            "neutral_luminance_band_count": neutral_luminance_band_count,
+        }
+
     reason_codes: list[str] = []
     if not isinstance(confidence, (int, float)):
         reason_codes.append("confidence_missing")
@@ -200,6 +316,7 @@ def decide_trace_mode(
         "runner_up_mode": contract.get("runner_up_mode"),
         "runner_up_margin": margin,
         "verified_recommendation_digest": contract.get("recommendation_digest"),
+        "neutral_luminance_band_count": neutral_luminance_band_count,
     }
 
 
