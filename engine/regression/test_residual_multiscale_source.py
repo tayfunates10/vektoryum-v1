@@ -50,9 +50,9 @@ class CanonicalSourceMultiscaleTests(unittest.TestCase):
         self.assertEqual(result["min_source_component_recall"], 1.0)
         self.assertEqual(result["min_small_component_recall"], 1.0)
         self.assertEqual(result["max_normalized_boundary_excess_px"], 0.0)
-        self.assertEqual(result["source_scale_policy"], "resize_canonical_base_raster_v1")
+        self.assertEqual(result["source_scale_policy"], "resize_canonical_palette_nearest_v2")
 
-    def test_downscale_uses_area_and_upscale_uses_lanczos_shape_contract(self) -> None:
+    def test_resize_preserves_palette_exactly_at_both_directions(self) -> None:
         canonical = self._base()
         down = _resize_canonical_rgba(canonical, 32)
         up = _resize_canonical_rgba(canonical, 128)
@@ -61,10 +61,25 @@ class CanonicalSourceMultiscaleTests(unittest.TestCase):
         self.assertEqual(down.dtype, np.uint8)
         self.assertEqual(up.dtype, np.uint8)
 
-        expected_down = cv2.resize(canonical, (32, 32), interpolation=cv2.INTER_AREA)
-        expected_up = cv2.resize(canonical, (128, 128), interpolation=cv2.INTER_LANCZOS4)
+        interpolation = getattr(cv2, "INTER_NEAREST_EXACT", cv2.INTER_NEAREST)
+        expected_down = cv2.resize(canonical, (32, 32), interpolation=interpolation)
+        expected_up = cv2.resize(canonical, (128, 128), interpolation=interpolation)
         self.assertTrue(np.array_equal(down, expected_down))
         self.assertTrue(np.array_equal(up, expected_up))
+
+        original_palette = set(map(tuple, canonical.reshape(-1, 4).tolist()))
+        self.assertTrue(set(map(tuple, down.reshape(-1, 4).tolist())).issubset(original_palette))
+        self.assertTrue(set(map(tuple, up.reshape(-1, 4).tolist())).issubset(original_palette))
+
+    def test_nearest_upscale_does_not_create_false_components(self) -> None:
+        canonical = np.full((16, 16, 4), 255, dtype=np.uint8)
+        canonical[4:12, 7:9, :3] = 0
+        up = _resize_canonical_rgba(canonical, 64)
+        self.assertEqual(set(np.unique(up[:, :, 0]).tolist()), {0, 255})
+
+        black = (up[:, :, 0] == 0).astype(np.uint8)
+        count, _labels, _stats, _centroids = cv2.connectedComponentsWithStats(black, connectivity=8)
+        self.assertEqual(count - 1, 1)
 
     def test_missing_render_remains_fail_closed(self) -> None:
         canonical = self._base()

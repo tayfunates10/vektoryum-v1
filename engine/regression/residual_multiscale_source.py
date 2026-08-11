@@ -5,6 +5,12 @@ pixel coordinates even when passed another size. Re-running those builders at
 64/128/512/1024 therefore changes or clips the source geometry. Multi-scale
 fidelity must instead compare SVG rasterization against deterministic resizes of
 the same canonical source raster.
+
+The reference resize is deliberately nearest-neighbour. Area/Lanczos filtering
+creates RGB values and ringing that are absent from the canonical source, which
+then appear as false palette classes and false connected components. The source
+reference may lose sub-pixel samples as resolution decreases, but it must never
+invent new colors/components merely because the diagnostic changed scale.
 """
 from __future__ import annotations
 
@@ -29,7 +35,7 @@ def _resize_canonical_rgba(source: np.ndarray, size: int) -> np.ndarray:
         raise ValueError("canonical multi-scale source RGBA olmalı")
     if rgba.shape[:2] == (size, size):
         return rgba.copy()
-    interpolation = cv2.INTER_AREA if size < max(rgba.shape[:2]) else cv2.INTER_LANCZOS4
+    interpolation = getattr(cv2, "INTER_NEAREST_EXACT", cv2.INTER_NEAREST)
     return cv2.resize(rgba, (int(size), int(size)), interpolation=interpolation)
 
 
@@ -40,7 +46,7 @@ def measure_multiscale_svg_from_base(
     base_size: int = 256,
     scales: Iterable[float] = SCALES,
 ) -> dict[str, Any]:
-    """Measure one SVG against resizes of one canonical source raster."""
+    """Measure one SVG against palette-preserving scales of one source raster."""
     requested_scales = tuple(float(scale) for scale in scales)
     canonical = np.asarray(
         source_builder(int(base_size)).convert("RGBA"),
@@ -102,5 +108,5 @@ def measure_multiscale_svg_from_base(
         ),
         "max_visible_error_ratio": max(visible_ratio) if visible_ratio else None,
         "all_scales_measured": not missing and len(levels) == len(requested_scales),
-        "source_scale_policy": "resize_canonical_base_raster_v1",
+        "source_scale_policy": "resize_canonical_palette_nearest_v2",
     }
