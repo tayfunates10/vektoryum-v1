@@ -12,21 +12,27 @@ class TopologyHardStopTests(unittest.TestCase):
         src=self.boundary(); m=measure_label_topology(src,src.copy()); s=m["shared_boundary"]
         self.assertTrue(m["complete"]); self.assertEqual(m["adjacency_loss_count"],0); self.assertEqual(s["max_gap_ratio"],0.0); self.assertEqual(s["max_double_line_ratio"],0.0); self.assertEqual(s["max_overlap_ratio"],0.0); self.assertEqual(s["max_drift_p95_px"],0.0)
 
+    def test_one_pixel_raster_quantization_is_not_a_false_hard_stop(self):
+        src=self.boundary(); r=src.copy(); r[8:56,32]=1; m=measure_label_topology(src,r); s=m["shared_boundary"]
+        self.assertEqual(m["adjacency_loss_count"],0); self.assertEqual(s["max_gap_ratio"],0.0); self.assertEqual(s["max_double_line_ratio"],0.0); self.assertEqual(s["max_overlap_ratio"],0.0); self.assertEqual(s["max_drift_p95_px"],0.0); self.assertGreaterEqual(s["max_raw_drift_p95_px"],1.0)
+
     def test_gap_is_hard_stop_signal(self):
         src=self.boundary(); r=src.copy(); r[8:56,31:33]=0; m=measure_label_topology(src,r)
         self.assertGreater(m["shared_boundary"]["max_gap_ratio"],0.0); self.assertGreater(m["adjacency_loss_count"],0)
 
     def test_double_line_is_hard_stop_signal(self):
-        src=self.boundary(); r=src.copy(); r[8:56,30]=2; r[8:56,31]=1; r[8:56,32]=2; m=measure_label_topology(src,r)
+        src=self.boundary(); r=src.copy(); r[8:56,30:32]=2; r[8:56,32:34]=1; m=measure_label_topology(src,r)
         self.assertGreater(m["shared_boundary"]["max_double_line_ratio"],0.0)
 
-    def test_overlap_is_hard_stop_signal(self):
-        src=self.boundary(); r=src.copy(); r[8:12,32]=1; m=measure_label_topology(src,r)
+    def test_overlap_beyond_quantization_is_hard_stop_signal(self):
+        src=self.boundary(); r=src.copy(); r[8:12,32:34]=1; m=measure_label_topology(src,r)
         self.assertGreater(m["shared_boundary"]["max_overlap_ratio"],0.01)
+        self.assertGreater(m["shared_boundary"]["max_overlap_depth_px"],1.414)
 
-    def test_boundary_drift_is_hard_stop_signal(self):
+    def test_boundary_drift_beyond_quantization_is_hard_stop_signal(self):
         src=self.boundary(); r=src.copy(); r[8:56,32:34]=1; m=measure_label_topology(src,r)
         self.assertGreater(m["shared_boundary"]["max_drift_p95_px"],0.75)
+        self.assertGreaterEqual(m["shared_boundary"]["max_raw_drift_p95_px"],2.0)
 
     def test_adjacent_region_separation_is_hard_stop_signal(self):
         src=self.boundary(); r=src.copy(); r[8:56,31:34]=0; m=measure_label_topology(src,r)

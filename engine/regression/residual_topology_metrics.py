@@ -4,6 +4,11 @@ This module is production-neutral. It measures semantic topology that global
 SSIM/boundary aggregates can hide: hole/ring loss, adjacency loss, and common
 shared-boundary gap/double-line/overlap/drift defects. Missing measurements fail
 closed when appended to the near-zero diagnostic contract.
+
+Shared-boundary measurements explicitly tolerate one raster-quantization pixel
+so an otherwise native-PASS vector is not failed merely because antialiasing
+moves a classified boundary by one pixel. Defects must exceed that allowance;
+raw drift/depth are retained as evidence.
 """
 from __future__ import annotations
 
@@ -18,7 +23,9 @@ from app.graph_source import canonical_segmentation
 from app.palette_ops import classify_rgb
 from app.source_truth import composite_rgba
 
-TOPOLOGY_POLICY_VERSION = "vektoryum-topology-hard-stop-v1"
+TOPOLOGY_POLICY_VERSION = "vektoryum-topology-hard-stop-v2"
+SHARED_BOUNDARY_RASTER_ALLOWANCE_PX = 1.0
+SHARED_BOUNDARY_OVERLAP_ALLOWANCE_PX = math.sqrt(2.0)
 TOPOLOGY_BLOCKER_CODES = (
     "topology_metric_missing",
     "topology_hole_loss",
@@ -67,28 +74,47 @@ def _compress(values: Iterable[int]) -> list[int]:
     return out
 
 
+def _runs(values: Iterable[int]) -> list[tuple[int,int,int,int]]:
+    seq=[int(v) for v in values]
+    if not seq: return []
+    out=[]; start=0; current=seq[0]
+    for index,value in enumerate(seq[1:],1):
+        if value!=current:
+            out.append((current,start,index-1,index-start)); current=value; start=index
+    out.append((current,start,len(seq)-1,len(seq)-start))
+    return out
+
+
 def _scan_interface(source: np.ndarray, rendered: np.ndarray, a: int, b: int, background: int) -> dict[str, Any]:
-    h,w=source.shape; radius=max(3,round(min(h,w)*3/256)); total=gap=double=overlap=0; drifts=[]
+    h,w=source.shape; radius=max(3,round(min(h,w)*3/256)); total=gap=double=0; raw_drifts=[]; drift_excess=[]; matched=0
 
     def inspect(seq: list[int], expected_left: int, expected_right: int, seam_index: int) -> None:
-        nonlocal total,gap,double,overlap
+        nonlocal total,gap,double,matched
         total+=1
-        core_left=seq[seam_index]; core_right=seq[seam_index+1]
-        if core_left==background or core_right==background or (core_left not in (a,b) or core_right not in (a,b)):
-            gap+=1
-        if core_left==expected_right or core_right==expected_left:
-            overlap+=1
-        pair_only=[v for v in seq if v in (a,b)]
-        compact=_compress(pair_only)
-        if len(compact)>=3:
+        # A one-pixel non-semantic seam is raster quantization, not a real gap.
+        for value,start,end,length in _runs(seq):
+            if value not in (a,b) and start<=seam_index+1 and end>=seam_index and length>SHARED_BOUNDARY_RASTER_ALLOWANCE_PX:
+                gap+=1; break
+        # Ignore one-pixel A/B islands caused by antialias classification.
+        pair_runs=_runs(v for v in seq if v in (a,b))
+        if len(pair_runs)>=3 and any(length>SHARED_BOUNDARY_RASTER_ALLOWANCE_PX for _value,_start,_end,length in pair_runs[1:-1]):
             double+=1
+
         best=None
         for i in range(len(seq)-1):
-            if {seq[i],seq[i+1]}=={a,b}:
-                # transition lies between i and i+1; seam is between seam_index and +1
-                d=abs((i+0.5)-(seam_index+0.5))
-                best=d if best is None else min(best,d)
-        if best is not None: drifts.append(float(best))
+            if seq[i]==expected_left and seq[i+1]==expected_right:
+                d=abs((i+0.5)-(seam_index+0.5)); best=d if best is None else min(best,d)
+        # Tolerate a single classified background/third-color bridge at the seam.
+        if best is None:
+            for i in range(len(seq)):
+                if seq[i]!=expected_left: continue
+                for j in range(i+1,min(len(seq),i+3)):
+                    if seq[j]!=expected_right: continue
+                    middle=seq[i+1:j]
+                    if len(middle)<=SHARED_BOUNDARY_RASTER_ALLOWANCE_PX and all(v not in (a,b) for v in middle):
+                        d=abs(((i+j)/2.0)-(seam_index+0.5)); best=d if best is None else min(best,d)
+        if best is not None:
+            matched+=1; raw_drifts.append(float(best)); drift_excess.append(max(0.0,float(best)-SHARED_BOUNDARY_RASTER_ALLOWANCE_PX))
 
     left,right=source[:,:-1],source[:,1:]
     mask=((left==a)&(right==b))|((left==b)&(right==a))
@@ -108,14 +134,30 @@ def _scan_interface(source: np.ndarray, rendered: np.ndarray, a: int, b: int, ba
         if seam<0 or seam+1>=len(seq): continue
         inspect(seq,int(source[y,x]),int(source[y+1,x]),seam)
 
+    # Overlap uses Euclidean penetration depth instead of a 1-D seam sample.
+    # A diagonal/curved antialiased boundary can look two pixels deep in a row
+    # while still being only sqrt(2) from the true source boundary.
+    source_a=(source==a).astype(np.uint8); source_b=(source==b).astype(np.uint8)
+    dist_a=cv2.distanceTransform(source_a,cv2.DIST_L2,5); dist_b=cv2.distanceTransform(source_b,cv2.DIST_L2,5)
+    wrong_b_in_a=(rendered==b)&(source==a); wrong_a_in_b=(rendered==a)&(source==b)
+    deep_overlap=(wrong_b_in_a&(dist_a>SHARED_BOUNDARY_OVERLAP_ALLOWANCE_PX+1e-6))|(wrong_a_in_b&(dist_b>SHARED_BOUNDARY_OVERLAP_ALLOWANCE_PX+1e-6))
+    max_overlap_depth=max(
+        float(dist_a[wrong_b_in_a].max()) if np.any(wrong_b_in_a) else 0.0,
+        float(dist_b[wrong_a_in_b].max()) if np.any(wrong_a_in_b) else 0.0,
+    )
+
     return {
         "pair":[int(a),int(b)],
         "sample_count":int(total),
+        "raster_allowance_px":SHARED_BOUNDARY_RASTER_ALLOWANCE_PX,
+        "overlap_allowance_px":SHARED_BOUNDARY_OVERLAP_ALLOWANCE_PX,
         "gap_ratio":(float(gap/total) if total else None),
         "double_line_ratio":(float(double/total) if total else None),
-        "overlap_ratio":(float(overlap/total) if total else None),
-        "drift_p95_px":(float(np.percentile(np.asarray(drifts,dtype=np.float64),95)) if drifts else None),
-        "matched_transition_ratio":(float(len(drifts)/total) if total else None),
+        "overlap_ratio":(float(int(deep_overlap.sum())/total) if total else None),
+        "max_overlap_depth_px":float(max_overlap_depth),
+        "raw_drift_p95_px":(float(np.percentile(np.asarray(raw_drifts,dtype=np.float64),95)) if raw_drifts else None),
+        "drift_p95_px":(float(np.percentile(np.asarray(drift_excess,dtype=np.float64),95)) if drift_excess else None),
+        "matched_transition_ratio":(float(matched/total) if total else None),
     }
 
 
@@ -135,15 +177,19 @@ def measure_label_topology(source_labels: np.ndarray, render_labels: np.ndarray)
         if render_adj.get(pair,0)==0: adjacency_loss.append({"pair":list(pair),"source_contact_px":int(count)})
         scans.append(_scan_interface(source,rendered,pair[0],pair[1],background))
     def finite_vals(key): return [float(x[key]) for x in scans if isinstance(x.get(key),(int,float)) and math.isfinite(float(x[key]))]
-    gaps=finite_vals("gap_ratio"); doubles=finite_vals("double_line_ratio"); overlaps=finite_vals("overlap_ratio"); drifts=finite_vals("drift_p95_px"); matched=finite_vals("matched_transition_ratio")
+    gaps=finite_vals("gap_ratio"); doubles=finite_vals("double_line_ratio"); overlaps=finite_vals("overlap_ratio"); drifts=finite_vals("drift_p95_px"); raw_drifts=finite_vals("raw_drift_p95_px"); overlap_depths=finite_vals("max_overlap_depth_px"); matched=finite_vals("matched_transition_ratio")
     shared_applicable=bool(scans)
     shared={
         "applicable":shared_applicable,
         "pair_count":len(scans),
+        "raster_allowance_px":SHARED_BOUNDARY_RASTER_ALLOWANCE_PX,
+        "overlap_allowance_px":SHARED_BOUNDARY_OVERLAP_ALLOWANCE_PX,
         "pairs":scans,
         "max_gap_ratio":max(gaps) if gaps else (0.0 if not shared_applicable else None),
         "max_double_line_ratio":max(doubles) if doubles else (0.0 if not shared_applicable else None),
         "max_overlap_ratio":max(overlaps) if overlaps else (0.0 if not shared_applicable else None),
+        "max_overlap_depth_px":max(overlap_depths) if overlap_depths else (0.0 if not shared_applicable else None),
+        "max_raw_drift_p95_px":max(raw_drifts) if raw_drifts else (0.0 if not shared_applicable else None),
         "max_drift_p95_px":max(drifts) if drifts else (0.0 if not shared_applicable else None),
         "min_matched_transition_ratio":min(matched) if matched else (1.0 if not shared_applicable else None),
     }
