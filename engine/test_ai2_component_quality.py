@@ -12,6 +12,7 @@ sys.path.insert(0, str(ENGINE_DIR))
 from app.component_quality import (  # noqa: E402
     component_gate_applicability,
     gate_candidate_scores,
+    has_open_required_cycle,
     measure_component_integrity_arrays,
 )
 
@@ -157,3 +158,64 @@ def test_component_metrics_are_deterministic_across_two_loops() -> None:
     second = measure_component_integrity_arrays(source.copy(), render.copy(), k=2)
 
     assert first == second
+
+
+def test_open_filled_cycle_is_rejected_but_open_stroke_is_allowed(tmp_path: Path) -> None:
+    open_fill = tmp_path / "open-fill.svg"
+    open_fill.write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">'
+        '<path d="M 2 2 L 14 2 L 8 14" fill="#000000"/></svg>',
+        encoding="utf-8",
+    )
+    open_stroke = tmp_path / "open-stroke.svg"
+    open_stroke.write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">'
+        '<path d="M 2 2 L 14 2 L 8 14" fill="none" stroke="#000000"/></svg>',
+        encoding="utf-8",
+    )
+    closed_fill = tmp_path / "closed-fill.svg"
+    closed_fill.write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">'
+        '<path d="M 2 2 L 14 2 L 8 14 Z" fill="#000000"/></svg>',
+        encoding="utf-8",
+    )
+
+    assert has_open_required_cycle(open_fill) is True
+    assert has_open_required_cycle(open_stroke) is False
+    assert has_open_required_cycle(closed_fill) is False
+
+
+def test_release_safety_failure_uses_same_band_as_component_failure() -> None:
+    # Regression from the explicit single_color release corpus: the new CC gate
+    # briefly promoted a raster-exact but geometrically open filled candidate.
+    # Structural-release failure and measured CC failure must be in the same
+    # disqualified band so, when no fully eligible candidate exists, the old
+    # score ordering is preserved rather than promoting the open candidate.
+    open_exact = {
+        "applicable": True,
+        "measured": True,
+        "status": "fail",
+        "reason": "open_required_cycle",
+        "source_cc_recall": 1.0,
+        "render_cc_precision": 1.0,
+        "min_true_cc_iou": 1.0,
+        "open_required_cycle": True,
+    }
+    closed_component_review = {
+        "applicable": True,
+        "measured": True,
+        "status": "fail",
+        "reason": "component_integrity_fail",
+        "source_cc_recall": 1.0,
+        "render_cc_precision": 1.0,
+        "min_true_cc_iou": 0.9369,
+        "open_required_cycle": False,
+    }
+
+    open_gated = gate_candidate_scores(81.26, 100.0, open_exact)
+    closed_gated = gate_candidate_scores(86.90, 94.53, closed_component_review)
+
+    assert open_gated["selection_disqualified"] is True
+    assert closed_gated["selection_disqualified"] is True
+    assert closed_gated["total_score"] > open_gated["total_score"]
+    assert closed_gated["fidelity_score"] > open_gated["fidelity_score"]
