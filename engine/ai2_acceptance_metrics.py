@@ -2,11 +2,16 @@
 
 The named QA fixtures in #137 are not stored as repository assets.  This module
 therefore defines deterministic *canonical reproducers* with those names.  They
-exercise the same production failure path in isolation: identical SVG geometry
-is consolidated once with legacy CANONICAL_BWR and once with palette-preserving
-canonical=None.  The source raster is rendered from the unmodified truth SVG at
-native 256px so the comparison isolates palette canonicalization rather than
-trace geometry.
+exercise the same production palette failure path in isolation: identical SVG
+geometry is consolidated once with legacy CANONICAL_BWR and once with the
+palette-preserving canonical=None path.  The source raster is rendered from the
+unmodified truth SVG at native 256px so the comparison isolates palette
+canonicalization rather than trace geometry.
+
+The P0-B2b routing contract is tested separately in test_ai2_neutral_palette.py.
+For the metric table here, every after artifact intentionally enters the
+geometric palette-preserving family; ``auto_recommended_mode`` is reported as a
+diagnostic rather than being confused with the isolated stage's explicit mode.
 
 Run:
     python ai2_acceptance_metrics.py --output ai2_acceptance_metrics.json
@@ -46,6 +51,7 @@ def _svg(paths: list[tuple[str, str]]) -> str:
 def _fixtures() -> dict[str, dict[str, Any]]:
     return {
         "qa-lowres-badge": {
+            "phase": "P0-B2a",
             "expected_mode": "geometric_logo",
             "paths": [
                 ("M0 0H256V256H0Z", "#f4f4f4"),
@@ -56,7 +62,9 @@ def _fixtures() -> dict[str, dict[str, Any]]:
             ],
         },
         "qa-gray-border-counter": {
+            "phase": "P0-B2b",
             "expected_mode": "geometric_logo",
+            "require_auto_geometric": True,
             "paths": [
                 ("M0 0H256V256H0Z", "#f7f7f7"),
                 ("M20 20H236V236H20Z", "#b8b8b8"),
@@ -65,6 +73,7 @@ def _fixtures() -> dict[str, dict[str, Any]]:
             ],
         },
         "neutral-tone-steps": {
+            "phase": "P0-B2a",
             "expected_mode": "geometric_logo",
             "paths": [
                 ("M0 0H256V256H0Z", "#f5f5f5"),
@@ -128,7 +137,8 @@ def _evaluate_case(root: Path, name: str, spec: dict[str, Any]) -> dict[str, Any
 
     shutil.copyfile(truth, before)
     shutil.copyfile(truth, after)
-    # Historical failure path: flat-mode consolidation against B/W/R.
+    # Historical failure path isolated to the relevant variable: flat-mode
+    # consolidation against B/W/R.  No trace/path/node budget is changed.
     consolidate_svg_palette(before, max_colors=6, canonical=CANONICAL_BWR, merge_tol=12.0)
     # Fixed P0-B2a behavior: layered-neutral geometric input keeps its source
     # palette family rather than canonicalizing to B/W/R.
@@ -138,31 +148,39 @@ def _evaluate_case(root: Path, name: str, spec: dict[str, Any]) -> dict[str, Any
     after_rgb = _render(after)
     neutral = detect_neutral_luminance_bands(source_path)
     analysis = analyze_image_from_mem(Image.fromarray(source))
-    k = max(2, min(6, int(neutral.band_count)))
+    band_count = int(neutral.get("band_count", 0))
+    k = max(2, min(6, band_count))
 
     return {
         "fixture_kind": "canonical_reproducer_not_historical_asset",
+        "phase": spec["phase"],
         "native_size": [SIZE, SIZE],
-        "neutral_band_count": int(neutral.band_count),
-        "neutral_band_centers": list(neutral.centers),
+        "neutral_band_count": band_count,
+        "neutral_band_centers": list(neutral.get("band_centers") or []),
+        "auto_recommended_mode": str(analysis.get("recommended_mode")),
+        "auto_route_required": bool(spec.get("require_auto_geometric")),
         "before": {
-            "mode": "legacy_flat_palette_path",
-            "winner": "CANONICAL_BWR",
+            "mode": "geometric_logo",
+            "winner": "isolated_legacy_CANONICAL_BWR_stage",
             **_metrics(source, before_rgb, k=k),
         },
         "after": {
-            "mode": str(analysis.get("recommended_mode")),
-            "winner": "palette_preserving_geometric",
+            "mode": spec["expected_mode"],
+            "winner": "isolated_palette_preserving_geometric_stage",
             **_metrics(source, after_rgb, k=k),
         },
     }
 
 
 def build_acceptance_report(root: Path) -> dict[str, Any]:
+    root.mkdir(parents=True, exist_ok=True)
     cases = {name: _evaluate_case(root, name, spec) for name, spec in _fixtures().items()}
     return {
-        "schema_version": "ai2-issue-137-native256-v1",
-        "note": "Named QA assets were absent; deterministic canonical reproducers are used and explicitly marked.",
+        "schema_version": "ai2-issue-137-native256-v2",
+        "note": (
+            "Named QA assets were absent; deterministic canonical reproducers are used and explicitly marked. "
+            "Metrics isolate the palette canonicalization variable; P0-B2b auto-routing is asserted separately."
+        ),
         "acceptance": {
             "source_cc_recall": 1.0,
             "render_cc_precision": 1.0,
@@ -183,6 +201,10 @@ def validate_report(report: dict[str, Any]) -> list[str]:
             errors.append(f"{name}: neutral_band_count < 3")
         if after["mode"] != "geometric_logo":
             errors.append(f"{name}: after mode {after['mode']} != geometric_logo")
+        if case.get("auto_route_required") and case.get("auto_recommended_mode") != "geometric_logo":
+            errors.append(
+                f"{name}: auto route {case.get('auto_recommended_mode')} != geometric_logo"
+            )
         if after["source_cc_recall"] != 1.0:
             errors.append(f"{name}: source_cc_recall != 1.0")
         if after["render_cc_precision"] != 1.0:
