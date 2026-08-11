@@ -379,10 +379,9 @@ def produce_candidate(
                 n_traced_paths = 0
             if not (mode in FIDELITY_LED_MODES and n_traced_paths > 700):
                 canonical = CANONICAL_BWR if mode in FLAT_PALETTE_MODES else None
-                # P0-B2a: a geometric logo with three or more *real source*
-                # neutral luminance plateaus must keep those greys.  Only the
-                # canonical snap is disabled; palette cap, trace family and
-                # winner heuristics remain byte-for-byte policy-equivalent.
+                # AI-2 P0-B2a: yalnız source'ta gerçek 3+ nötr luminance bandı
+                # bulunan geometric_logo, B/W/R snap yerine kendi paletini korur.
+                # PALETTE_CAP / trace family / winner heuristics değişmez.
                 if canonical is not None and original_path is not None:
                     neutral_report = detect_neutral_luminance_bands(original_path)
                     if geometric_preserves_neutral_palette(mode, neutral_report):
@@ -407,12 +406,21 @@ def produce_candidate(
             except Exception as reg_err:  # noqa: BLE001
                 logger.debug("regularize atlandı (%s): %s", name, reg_err)
         elif engine in {"vtracer", "gradient"}:
+            # renkli modlarda yalnız BÜTÜNSEL şekil oturtma: organik path'lere
+            # dokunulmaz, gerçekten daire/elips/dikdörtgen olan alt yollar
+            # ideal parametrik şekle döner (çift yönlü sapma toleransı sıkı).
+            # Gradient motoru konturu polygon olarak çıkarır; fill url(#...)
+            # korunurken roundrect/circle sınırını analitik eğriye oturtmak
+            # görünür köşe kırıklarını giderir.
             try:
                 candidate_journal.run_in_place(
                     "whole_shape_fitting", svg_path, fit_whole_shapes_svg,
                 )
             except Exception as ws_err:  # noqa: BLE001
                 logger.debug("whole-shape fitting atlandı (%s): %s", name, ws_err)
+        # eğri pürüzsüzleştirme (tangent matching): spline eklemlerindeki küçük
+        # açılı kinkler G1 sürekliliğe çekilir; köşeler ve düz çizgiler korunur.
+        # Gradyan adayı atlanır (tek path, el-yapımı geometri).
         if engine == "vtracer":
             try:
                 candidate_journal.run_in_place(
@@ -430,6 +438,7 @@ def produce_candidate(
             "error": None,
         }
     except FileNotFoundError as e:
+        # opsiyonel CLI yok (potrace/autotrace)
         return {"name": name, "success": False, "error": str(e), "engine": spec["engine"]}
     except Exception as e:  # noqa: BLE001
         logger.warning("Aday '%s' üretilemedi: %s", name, e)
@@ -456,9 +465,17 @@ def score_candidate(
 
 
 # ---------------------------------------------------------------------------
-# Paralel aday üretimi
+# Paralel aday üretimi (üret + skorla tek işçide; profil: aday-başına iş
+# ~25s'lik bölümdü, 4 çekirdekte ~3x kısalır). VEKTORYUM_WORKERS=1 kapatır.
 # ---------------------------------------------------------------------------
 def _pool_size() -> int:
+    """Havuzun SABİT işçi sayısı (iş sayısından bağımsız).
+
+    Havuz boyu istek başına değişmez: eşzamanlı isteklerde küçük-işli bir
+    çağrının kurduğu dar havuzu geniş-işli çağrının kapatıp değiştirmesi,
+    uçuştaki map'in future'larını iptal edip yarım çıktı yarışına yol açar
+    (PR incelemesinde işaret edildi). Tek sabit boy = değiştirme yolu yok.
+    """
     env = os.environ.get("VEKTORYUM_WORKERS", "").strip()
     if env:
         try:
@@ -469,16 +486,28 @@ def _pool_size() -> int:
 
 
 def _pool_init() -> None:
+    # işçi başına cv2 iç thread'lerini kıs: N işçi x M thread çekirdek
+    # kapışmasına (thrash) dönmesin
     try:
         cv2.setNumThreads(1)
     except Exception:  # noqa: BLE001
         pass
 
 
+# Havuz TEKİLDİR ve SPAWN bağlamıyla kurulur: fork, thread'li native kütüphane
+# (cv2/BLAS/resvg) yüklü ebeveynden kopyalanınca çocuklar kilitlenebiliyor
+# (ölçüldü: 4 işçi 0 CPU ile asılı kaldı). Spawn temiz süreç başlatır; ~1-2s/işçi
+# kurulum maliyeti tekil havuzla yalnız İLK kullanımda ödenir (sunucuda istekler
+# arasında amorti olur).
 _POOL: ProcessPoolExecutor | None = None
 
 
 def _get_pool() -> ProcessPoolExecutor | None:
+    """Tekil, SABİT boyutlu havuz; süreç ömrü boyunca asla kapatılmaz.
+
+    (Önceki sürüm dar havuzu genişletmek için shutdown ediyordu — eşzamanlı
+    isteklerde uçuştaki map iptal olup yarım dosya yarışı doğabilirdi.)
+    """
     global _POOL
     if _POOL is not None:
         return _POOL
@@ -488,6 +517,13 @@ def _get_pool() -> ProcessPoolExecutor | None:
     try:
         import multiprocessing as mp  # noqa: PLC0415
 
+        # Başlatma yöntemi: fork DEĞİL (thread'li native kütüphane yüklü
+        # ebeveynden fork kilitlenme yaptı — ölçüldü); tercihen forkserver
+        # (çocuklar __main__'i yeniden import etmez: korumasız çağıran betik
+        # sonsuz yinelenmez), yoksa spawn (Windows).
+        # işçiler native kütüphane thread'lerini TEKLİ kullansın (BLAS/OMP/
+        # RAYON=vtracer): N işçi x M thread çekirdek kapışması ölçülür şekilde
+        # yavaşlatıyor. Çocuklar ebeveyn env'ini devralır.
         thread_env = {
             "OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1",
             "MKL_NUM_THREADS": "1", "NUMEXPR_NUM_THREADS": "1",
@@ -501,6 +537,8 @@ def _get_pool() -> ProcessPoolExecutor | None:
                 max_workers=workers, initializer=_pool_init,
                 mp_context=mp.get_context(method),
             )
+            # işçiler İLK submit'te doğar; env penceresi kapanmadan hepsini
+            # doğurt (CPython ilk submit'te max_workers'a tamamlar)
             _POOL.submit(_pool_init).result(timeout=180)
         finally:
             for k, v in saved.items():
@@ -515,6 +553,13 @@ def _get_pool() -> ProcessPoolExecutor | None:
 
 
 def _produce_and_score_job(args: tuple) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Tek işçi görevi: (opsiyonel ön işleme) -> üret -> skorla.
+
+    args: (name, spec, preprocessed_path|None, mode, job_dir, original_path,
+           palette_cap, analysis, pp_override)  — pp_override verilirse işçi
+    önce preprocess_for_mode çalıştırır (refine k-bump yolu; ağır k-means da
+    işçiye taşınır).
+    """
     (name, spec, preprocessed_path, mode, job_dir,
      original_path, palette_cap, analysis, pp_override) = args
     if pp_override is not None:
@@ -533,10 +578,16 @@ def _produce_and_score_job(args: tuple) -> tuple[dict[str, Any], dict[str, Any] 
 
 
 class WorkerFailure(RuntimeError):
-    """Paralel aday havuzu başarısız/zaman aşımı — KONTROLLÜ hata."""
+    """Paralel aday havuzu başarısız/zaman aşımı — KONTROLLÜ hata.
+
+    Kritik: parallel deneme başarısız olduysa aynı ağır işleri INLINE SIRALI
+    yeniden ÇALIŞTIRMAYIZ. Eski davranış (timeout/BrokenPool sonrası tüm işleri
+    sıralı tekrar) çift CPU-ağır iş + event-loop kilidi + /api/health zaman aşımı
+    doğuruyordu. Çağıran bunu temiz bir 503'e çevirir; havuz sıfırlanmış olur."""
 
 
 def _job_timeout() -> float:
+    """Paralel aday map zaman aşımı (sn). VEKTORYUM_JOB_TIMEOUT ile ayarlanır."""
     env = os.environ.get("VEKTORYUM_JOB_TIMEOUT", "").strip()
     if env:
         try:
@@ -547,6 +598,10 @@ def _job_timeout() -> float:
 
 
 def _reset_pool(kill: bool = True) -> None:
+    """Kırık/asılı havuzu kapatır ve tekilliği temizler (sonraki istek TAZE kurar).
+
+    ``kill``: ProcessPool timeout NATIVE çocuk işi öldürmez (asılı vtracer/BLAS
+    CPU yakmaya devam eder). Çocuk süreçleri açıkça terminate ederiz."""
     global _POOL
     pool = _POOL
     _POOL = None
@@ -563,7 +618,7 @@ def _reset_pool(kill: bool = True) -> None:
             pass
     try:
         pool.shutdown(wait=False, cancel_futures=True)
-    except TypeError:
+    except TypeError:                       # eski Python: cancel_futures yok
         try:
             pool.shutdown(wait=False)
         except Exception:  # noqa: BLE001
@@ -573,23 +628,33 @@ def _reset_pool(kill: bool = True) -> None:
 
 
 def _run_jobs(jobs: list[tuple]) -> list[tuple[dict[str, Any], dict[str, Any] | None]]:
+    """İş listesini paralel çalıştırır; havuz yoksa tek işçide sıralı.
+
+    Paralel deneme başarısız/zaman aşımıysa havuzu (çocukları öldürerek) sıfırlar
+    ve ``WorkerFailure`` üretir — aynı işleri inline sıralı yeniden ÇALIŞTIRMAZ."""
     if len(jobs) <= 1 or _pool_size() <= 1:
         return [_produce_and_score_job(j) for j in jobs]
     pool = _get_pool()
-    if pool is None:
+    if pool is None:                        # havuz hiç kurulamadı → sıralı (çift-iş değil)
         return [_produce_and_score_job(j) for j in jobs]
     try:
         return list(pool.map(_produce_and_score_job, jobs, timeout=_job_timeout()))
     except Exception as e:  # noqa: BLE001
-        logger.warning("Paralel aday üretimi başarısız (%s) — havuz sıfırlanıyor; inline sıralı yeniden çalıştırma YAPILMIYOR", e)
+        logger.warning("Paralel aday üretimi başarısız (%s) — havuz sıfırlanıyor; "
+                       "inline sıralı yeniden çalıştırma YAPILMIYOR", e)
         _reset_pool(kill=True)
         raise WorkerFailure(str(e)) from e
 
 
 # ---------------------------------------------------------------------------
-# Refinement
+# Refinement: en iyi adayın hata-güdümlü iyileştirilmesi (kapalı döngü)
 # ---------------------------------------------------------------------------
 def _refine_variants(spec: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    """En iyi adayın spec'ine göre güdümlü VTracer parametre varyantları.
+
+    Yön: daha çok detay/renk katmanı (color_precision↑, filter_speckle↓,
+    layer_difference↓) — renkli logoda kayıp detay/bantlaşmayı geri kazandırır.
+    """
     base = dict(spec.get("vtracer_params") or {})
     if not base:
         return []
@@ -613,15 +678,29 @@ def _refine_variants(spec: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
 
 
 def refine_best(
-    best: dict[str, Any], mode: str, analysis: dict[str, Any], original_path: Path,
-    preprocessed_path: Path, job_dir: Path, scored: list[dict[str, Any]],
+    best: dict[str, Any],
+    mode: str,
+    analysis: dict[str, Any],
+    original_path: Path,
+    preprocessed_path: Path,
+    job_dir: Path,
+    scored: list[dict[str, Any]],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    """En iyi adayın komşuluğunda güdümlü arama yapıp daha sadık varyant arar.
+
+    İki kaldıraç: (1) VTracer parametre varyantları (mevcut ön işlenmiş görselde),
+    (2) renk-sayısı bump'ı — ΔE'yi düşürmenin asıl yolu; daha yüksek k ile yeniden
+    ön işleyip yeniden trace eder. Yalnızca sadakati ``_REFINE_MIN_GAIN`` kadar
+    artıran varyant benimsenir; aksi halde orijinal en iyi korunur.
+
+    Döner: (yeni_best, refine_info). ``scored`` listesi yeni adaylarla genişler.
+    """
     info: dict[str, Any] = {"applied": False}
     if mode not in FIDELITY_LED_MODES or best is None or not best.get("rendered_ok"):
         return best, info
 
     base_fid = float(best.get("fidelity_score") or 0.0)
-    if base_fid >= 99.0:
+    if base_fid >= 99.0:  # zaten kusursuza yakın
         return best, info
 
     spec = build_vector_candidates(mode).get(best["name"])
@@ -630,11 +709,16 @@ def refine_best(
 
     pool: list[dict[str, Any]] = [best]
     tried: list[dict[str, Any]] = []
+
+    # Varyant işleri tek listede toplanıp paralel çalıştırılır (profil: k-bump
+    # ön işlemeleri — ağır k-means — dahil aday-başına iş işçilere dağılır).
     jobs: list[tuple] = []
+    # 1) VTracer parametre varyantları (mevcut ön işlenmiş görsel)
     for vname, vparams in _refine_variants(spec):
         vspec = {"engine": "vtracer", "vtracer_params": vparams, "cleanup": spec.get("cleanup")}
         jobs.append((vname, vspec, preprocessed_path, mode, job_dir,
                      original_path, None, analysis, None))
+    # 2) Renk-sayısı bump'ı (ΔE odaklı): işçi önce yüksek k ile yeniden ön işler
     cur_k = int(analysis.get("estimated_color_count", 14))
     for bump in (8, 16):
         k = min(64, max(16, cur_k + bump))
@@ -654,6 +738,8 @@ def refine_best(
         if sc.get("rendered_ok") and sc.get("fidelity_score") is not None:
             pool.append(sc)
 
+    # Benimseme: seçimle AYNI sıralama anahtarı (fidelity → az path → total).
+    # Orijinal best havuzda; kazanan oysa hiçbir şey değişmez.
     improved = max(pool, key=_fidelity_rank_key)
     applied = improved is not best
     info = {
@@ -666,19 +752,41 @@ def refine_best(
     return improved, info
 
 
+# ---------------------------------------------------------------------------
+# Renk refit (kapalı-form renk optimizasyonu; bkz. app/color_refit.py)
+# ---------------------------------------------------------------------------
+# Refit uygulanan modlar: renk sadakati hedef olan renkli modlar + geometrik
+# logo (kanonik palet orijinal mürekkep tonundan sapabilir; refit ölçülen
+# sadakat artarsa gerçek tona çeker). Düz/binary modlarda kanonik siyah-beyaz
+# stilizasyon bilinçli tercih olduğundan dokunulmaz.
 _COLOR_REFIT_MODES = {"logo_color", "photo_poster", "geometric_logo"}
+
+
+# Ön-seçim refit'inde en çok kaç adaya bakılacağı (fidelity sırasına göre).
+# Refit ID-render başına bir render maliyeti taşır; yalnız seçime aday
+# olabilecek en yüksek sadakatli birkaç adayı optimize etmek yeterlidir.
 _REFIT_TOP_N = 4
 
 
 def _refit_one(
-    cand: dict[str, Any], mode: str, analysis: dict[str, Any],
-    original_path: Path, job_dir: Path,
+    cand: dict[str, Any],
+    mode: str,
+    analysis: dict[str, Any],
+    original_path: Path,
+    job_dir: Path,
 ) -> dict[str, Any] | None:
+    """Tek adayın dolgularını orijinale yeniden oturtup skorlar (ölçüm korumalı).
+
+    Refit yeni bir SVG'ye yazılır ve aynı skorlayıcıyla puanlanır. YALNIZCA
+    ölçülen fidelity ARTARSA yeni skorlanmış aday döner; aksi halde ``None``
+    (aday kötüleşmez). Gradyan uzanımı yalnız fidelity-led modlarda denenir.
+    Uygun olmayan aday (gradyan motoru, foto-yoğun, zaten refit) için ``None``.
+    """
     if (
         not cand.get("rendered_ok")
         or cand.get("fidelity_score") is None
-        or cand.get("engine") == "gradient"
-        or cand["name"].endswith("_refit")
+        or cand.get("engine") == "gradient"  # url() dolguları zaten optimize
+        or cand["name"].endswith("_refit")   # tekrar refit yok
         or mode not in _COLOR_REFIT_MODES
     ):
         return None
@@ -687,16 +795,25 @@ def _refit_one(
     src = Path(cand["svg_path"])
     dst = job_dir / f"{src.stem}_refit.svg"
     path_count = int((cand.get("score_details") or {}).get("path_count", 0))
+    # foto-yoğun ÇIKTI (>700 path — grup modunun ölçülür şekilde zarar ettiği
+    # rejim): palet tutarlılığı değil yerel ton doğruluğu esastır -> per-path
+    # bağımsız refit (aynı kuantize renk uzak bölgelere dağılıyor, global havuz
+    # yerel tonu bozuyor; izleme/konsolidasyonun yuttuğu tonlar per-path geri
+    # gelir). Logo/markada (<=700 path) grup modu kalır: kaynak palet asla
+    # bölünmez/şişmez. Sinyal analizör tahmini değil çıktının kendisidir
+    # (mangal: est=20 ama 5002 path — foto-yoğun).
     photo_rich = path_count > 700
     try:
         if photo_rich:
-            if path_count > 12000:
+            if path_count > 12000:  # vektörize yol (~1-2s @11k path); aşırı uçta atla
                 return None
             rep = refit_svg_colors_per_path(src, original_path, dst)
         else:
             if path_count > 700:
                 return None
-            rep = refit_svg_colors(src, original_path, dst, gradients=(mode in FIDELITY_LED_MODES))
+            rep = refit_svg_colors(
+                src, original_path, dst, gradients=(mode in FIDELITY_LED_MODES)
+            )
     except Exception as e:  # noqa: BLE001
         logger.debug("color refit atlandı (%s): %s", cand["name"], e)
         return None
@@ -713,6 +830,7 @@ def _refit_one(
             ):
                 required_metrics.add("alpha_fidelity")
     except Exception:  # noqa: BLE001
+        # Source okunamıyorsa aşağıdaki journal ölçümü zaten fail-closed olur.
         pass
     if analysis.get("has_gradient"):
         required_metrics.add("gradient_fidelity")
@@ -729,7 +847,10 @@ def _refit_one(
         logger.debug("color refit journal kurulamadı (%s): %s", cand["name"], e)
         return None
     if accepted_path != dst:
-        logger.debug("color refit journal tarafından geri alındı (%s): %s", cand["name"], refit_stage["reason_codes"])
+        logger.debug(
+            "color refit journal tarafından geri alındı (%s): %s",
+            cand["name"], refit_stage["reason_codes"],
+        )
         return None
 
     res = {
@@ -758,9 +879,22 @@ def _refit_one(
 
 
 def _refit_candidates_preselect(
-    scored: list[dict[str, Any]], mode: str, analysis: dict[str, Any],
-    original_path: Path, job_dir: Path,
+    scored: list[dict[str, Any]],
+    mode: str,
+    analysis: dict[str, Any],
+    original_path: Path,
+    job_dir: Path,
 ) -> dict[str, Any]:
+    """Seçimden ÖNCE en yüksek sadakatli ``_REFIT_TOP_N`` adayı renk-refit eder.
+
+    Refit edilmiş varyantlar (yalnız iyileşenler) ``scored``'a eklenir; böylece
+    hem sadakat-öncelikli seçim hem düzenlenebilirlik tercihi RENK-OPTİMİZE
+    edilmiş adaylar arasından seçer. Saf iyileştirme: hiçbir aday kötüleşmez
+    (her refit yalnız kendi tabanını geçtiğinde eklenir). Kazanan tek adaya
+    sonradan refit uygulamak yerine bu geçidi kullanırız — çünkü düzenlenebilirlik
+    tercihi bazen sadakat-en-iyisinden farklı, refit'ten fayda görecek bir adayı
+    seçer ve o adayın da refit'li hâli değerlendirilmelidir.
+    """
     if mode not in _COLOR_REFIT_MODES:
         return {"applied": False}
     rendered = [
@@ -782,9 +916,20 @@ def _refit_candidates_preselect(
 
 
 def _apply_boundary_refit(
-    best: dict[str, Any], mode: str, analysis: dict[str, Any],
-    original_path: Path, job_dir: Path, scored: list[dict[str, Any]],
+    best: dict[str, Any],
+    mode: str,
+    analysis: dict[str, Any],
+    original_path: Path,
+    job_dir: Path,
+    scored: list[dict[str, Any]],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Kazananın path sınırlarını orijinalin alt-piksel kenarlarına oturtur.
+
+    Renk refit ile aynı sözleşme: yeni SVG ayrı dosyaya yazılır, aynı
+    skorlayıcıyla puanlanır, YALNIZCA ölçülen fidelity artarsa benimsenir.
+    (bkz. app/boundary_refit.py — kenar-örneklemeli LSQ, DiffVG geometri
+    adımının tek Gauss-Newton iterasyonu.)
+    """
     info: dict[str, Any] = {"applied": False}
     if (
         best is None
@@ -793,6 +938,10 @@ def _apply_boundary_refit(
         or mode not in _COLOR_REFIT_MODES
     ):
         return best, info
+    # Geçit 2000: temiz kenarlı illüstrasyonlar orta path sayısında gelir ve
+    # sınır oturtmasından kazanır (~10-20s, ölçüm korumalı). Dokulu foto
+    # çıktıları (5000+ path) dışarıda — orada profil varsayımı bozuluyor ve
+    # ölçülen sonuç negatifti (mangal 82.1 -> 80.5).
     if int((best.get("score_details") or {}).get("path_count", 0)) > 2000:
         return best, {"applied": False, "skipped": "high_path_count"}
 
@@ -834,6 +983,21 @@ def _apply_boundary_refit(
 
 
 def _restore_source_dimensions(svg_path: Path, analysis: dict[str, Any]) -> None:
+    """Kazanan SVG'yi KAYNAK koordinat uzayına normalize eder.
+
+    Ön işleme izleme rasterini ölçekler (küçük girdide süperörnekleme, büyükte
+    izleme tavanı); izlenen SVG'nin koordinatları o rasterin uzayındadır.
+    Yalnız width/height'ı kaynağa çekmek üç ayrı ölçek doğurur (kaynak 1536 /
+    viewBox 2200 / width 3840 — kullanıcı incelemesinde işaret edildi):
+    boyutlar tutarsız görünür, toleransların hangi uzaya ait olduğu
+    belirsizleşir. Burada path KOORDİNATLARI kaynak uzaya ölçeklenir,
+    element translate'leri düzleştirilir (flatten), viewBox/width/height
+    üçü de kaynak boyuta eşitlenir ve hassasiyet 0.01 birime sınırlanır.
+
+    svgpathtools yoksa ya da path dışı geometri (rect/circle) varsa güvenli
+    eski davranışa düşülür: viewBox iz uzayında kalır, yalnız width/height
+    kaynağa çekilir (oran korunduğundan görünüm birebir aynıdır).
+    """
     ow, oh = int(analysis.get("width", 0) or 0), int(analysis.get("height", 0) or 0)
     if ow <= 0 or oh <= 0:
         return
@@ -866,15 +1030,26 @@ def _restore_source_dimensions(svg_path: Path, analysis: dict[str, Any]) -> None
         except (IndexError, ValueError):
             _finish()
             return
-        has_xf = any(el.get("transform") for el in root.iter() if el.tag.split("}")[-1] == "path")
+        has_xf = any(
+            el.get("transform")
+            for el in root.iter()
+            if el.tag.split("}")[-1] == "path"
+        )
         if abs(vbw - ow) < 1e-6 and abs(vbh - oh) < 1e-6 and not has_xf:
             _finish()
             return
+        # NOT: iz uzayı == kaynak boyut olsa bile path'lerde translate varsa
+        # düzleştirme yolu KOŞULMALI (sx=sy=1). Erken çıkış bu vakada
+        # transform'ları belgede bırakıyordu; sözleşme "transform yok" der ve
+        # sonraki aşamalar (counter_merge/local_refine) transform görünce
+        # kendilerini güvenli kapatır — canlı akış testinde yakalandı.
+
+        # koordinat normalizasyonu: iz uzayı -> kaynak uzay
         try:
             import numpy as _np  # noqa: PLC0415
             from svgpathtools import parse_path  # noqa: PLC0415
             from svgpathtools.path import transform as _svgt_transform  # noqa: PLC0415
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 (opsiyonel bağımlılık yok: eski davranış)
             _finish()
             return
         geo_tags = {"rect", "circle", "ellipse", "line", "polygon", "polyline"}
@@ -884,8 +1059,14 @@ def _restore_source_dimensions(svg_path: Path, analysis: dict[str, Any]) -> None
         sx, sy = ow / vbw, oh / vbh
 
         def _round_d(d: str) -> str:
-            return _re.sub(r"-?\d+\.\d+", lambda m: f"{float(m.group()):.2f}".rstrip("0").rstrip("."), d)
+            return _re.sub(
+                r"-?\d+\.\d+",
+                lambda m: f"{float(m.group()):.2f}".rstrip("0").rstrip("."),
+                d,
+            )
 
+        # 1. geçiş: hiçbir şeyi DEĞİŞTİRMEDEN tüm transform'ları doğrula —
+        # ortada bilinmeyen bir dönüşüm varsa yarı-normalize SVG yazılmamalı.
         plan: list[tuple[Any, float, float, str]] = []
         for el in root.iter():
             if el.tag.split("}")[-1] != "path" or not el.get("d"):
@@ -895,10 +1076,11 @@ def _restore_source_dimensions(svg_path: Path, analysis: dict[str, Any]) -> None
             if tr:
                 m = _re.fullmatch(r"translate\(\s*([-\d.eE]+)\s*[, ]?\s*([-\d.eE]+)?\s*\)", tr)
                 if not m:
-                    _finish()
+                    _finish()  # bilinmeyen dönüşüm: normalize etme, eski davranış
                     return
                 tx, ty = float(m.group(1)), float(m.group(2) or 0.0)
             plan.append((el, tx, ty, tr))
+        # 2. geçiş: uygula
         for el, tx, ty, tr in plan:
             mat = _np.array([[sx, 0, sx * tx], [0, sy, sy * ty], [0, 0, 1]], dtype=float)
             p2 = _svgt_transform(parse_path(el.get("d")), mat)
@@ -911,6 +1093,9 @@ def _restore_source_dimensions(svg_path: Path, analysis: dict[str, Any]) -> None
         logger.debug("Kaynak boyut geri yüklemesi atlandı: %s", e)
 
 
+# ---------------------------------------------------------------------------
+# Çekirdek pipeline
+# ---------------------------------------------------------------------------
 def run_pipeline(
     image: Image.Image,
     original_path: Path,
@@ -919,15 +1104,30 @@ def run_pipeline(
     refine: bool = True,
     edge_cleanup: bool = True,
 ) -> dict[str, Any]:
+    """Analiz → ön işleme → aday → temizleme → skor → seçim → refinement akışı.
+
+    Export yapılmaz. Dönen sözlük:
+    ``analysis, mode_used, mode_warning, preprocess_report, results, scored,
+    best, raw_best, selection_reason, refine_info``. ``scored`` boşsa ``best``
+    ``None`` olur. ``refine=False`` ile refinement kapatılabilir (ölçüm/karşılaştırma).
+    """
+    # 1. Analiz
     analysis = analyze_image_from_mem(image)
     mode_used = analysis["recommended_mode"] if trace_mode == "auto" else trace_mode
     mode_warning = compute_mode_warning(trace_mode, mode_used, analysis)
 
+    # 2. Ön işleme
     preprocessed_path, preprocess_report = preprocess_for_mode(
         original_path, mode_used, job_dir, analysis=analysis
     )
 
+    # 3. + 4. Aday üretimi + geometri temizleme
     candidates = build_vector_candidates(mode_used)
+    # Gradyan-farkındalıklı aday yalnızca gradyan olasılığı olan renkli logolarda
+    # eklenir (çok-renkli düz logolarda boşuna çalışmasın). Gradyanlar çoğu kez az
+    # sayıda baskın renge çöküp 'color logo' olarak okunur; bu yüzden has_gradient
+    # YA DA (color logo + az renk) tetikler. Ham görselde çalışır, <linearGradient>
+    # üretir; fidelity yargılar, uygun değilse elenir.
     if mode_used == "logo_color" and (
         analysis.get("has_gradient")
         or (analysis.get("likely_color_logo") and int(analysis.get("estimated_color_count", 99)) <= 8)
@@ -936,6 +1136,10 @@ def run_pipeline(
             **candidates,
             "logo_gradient": {"engine": "gradient", "params": {"epsilon": 0.3}, "cleanup": None},
         }
+    # logo_color'da palet cap'i preprocess renk bütçesine bağlanır (sabit 22 yerine):
+    # üretilen renkler kırpılmaz, renk-zengini logolarda ΔE düşer. Hata-güdümlü
+    # eklenen aksan kümeleri k'yı aşabildiğinden GERÇEK renk sayısı esas alınır
+    # (aksi halde konsolidasyon kırmızı/turuncu aksanları geri kırpar).
     lc_cap = None
     if mode_used == "logo_color":
         lc_cap = max(
@@ -943,7 +1147,8 @@ def run_pipeline(
             int(preprocess_report.get("actual_color_count") or 0),
         ) or None
         if lc_cap:
-            lc_cap = min(64, lc_cap)
+            lc_cap = min(64, lc_cap)  # üretim paleti üst sınırı (quality eşiği 64)
+    # 4.5 + 5. Üretim + skorlama (paralel: üret+skorla tek işçide)
     jobs = [
         (name, spec, preprocessed_path, mode_used, job_dir,
          original_path, lc_cap, analysis, None)
@@ -960,22 +1165,46 @@ def run_pipeline(
     refit_info: dict[str, Any] = {"applied": False}
     transform_journal = None
     if scored:
+        # 6. + 7. Seçim (fidelity-led; refinement'ı tohumlar)
         best, raw_best, selection_reason = select_best(scored, mode_used)
+        # 8. Refinement (kapalı döngü): en iyi adayı hata-güdümlü iyileştir
         if refine:
             best, refine_info = refine_best(
                 best, mode_used, analysis, original_path, preprocessed_path, job_dir, scored
             )
             if refine_info.get("applied"):
                 selection_reason = "refined"
-        refit_info = _refit_candidates_preselect(scored, mode_used, analysis, original_path, job_dir)
+        # 8.5 Renk refit (kapalı-form renk optimizasyonu) — SEÇİMDEN ÖNCE: en
+        # yüksek sadakatli birkaç adayın dolguları orijinal görüntünün bölge
+        # medyanlarına oturtulur (ölçüm korumalı; yalnız iyileşen eklenir).
+        # Böylece hem sadakat-öncelikli seçim hem düzenlenebilirlik tercihi
+        # RENK-OPTİMİZE adaylar arasından seçer. İzleme sonrası kaybın ana
+        # bileşeni renktir (tavan analizi: sabit dolgu ΔE sapması). Refine
+        # varyantları da havuzda olduğundan onlar da refit'e aday olur.
+        refit_info = _refit_candidates_preselect(
+            scored, mode_used, analysis, original_path, job_dir
+        )
         if refit_info.get("applied"):
+            # refit sonrası sadakat-en-iyisi değişmiş olabilir; yeniden seç
             best, raw_best, selection_reason = select_best(scored, mode_used)
             selection_reason = f"{selection_reason}+color_refit"
+        # 9. Düzenlenebilirlik-duyarlı son seçim (renkli modlar): sadakat marjı
+        # içinde çok daha az path'li/gradyanlı adayı tercih et. FOTO-ZENGİN
+        # görsellerde (est >= 22: çok tonlu fotoğrafik içerik) uygulanmaz —
+        # orada detay ürünün kendisidir; az-path uğruna sadakatten ödün vermek
+        # çıktıyı gözle görülür düzleştirir.
         if mode_used in FIDELITY_LED_MODES and int(analysis.get("estimated_color_count", 0)) < 22:
             edit_best, edit_reason = _apply_editability_preference(scored, best)
             if edit_best is not best:
                 best = edit_best
-                selection_reason = f"{edit_reason}+color_refit" if best["name"].endswith("_refit") else edit_reason
+                selection_reason = (
+                    f"{edit_reason}+color_refit" if best["name"].endswith("_refit") else edit_reason
+                )
+        # 9.5 Son-kazanan refit'i: düzenlenebilirlik tercihi genellikle sadakat-
+        # en-iyisinden (top-N ön-refit kapsamı) farklı, DAHA LEAN bir adayı seçer;
+        # onun refit'li hâli ön-geçitte üretilmemiş olabilir. Nihai kazanan henüz
+        # refit değilse burada refit edilir (ölçüm korumalı) ki lean seçim de
+        # renk-optimize olsun.
         if best is not None and not best["name"].endswith("_refit"):
             sc = _refit_one(best, mode_used, analysis, original_path, job_dir)
             if sc is not None:
@@ -985,13 +1214,18 @@ def run_pipeline(
                 refit_info = {"applied": True, **rep, "candidate": sc["name"]}
                 if not selection_reason.endswith("+color_refit"):
                     selection_reason = f"{selection_reason}+color_refit"
+        # Seçilmiş artifact'tan sonraki bütün production mutasyonları artık
+        # ham-byte transaction journal'ı üzerinden kabul/rollback edilir.
         from app.transform_journal import TransformJournal  # noqa: PLC0415
 
-        if image.mode in ("RGBA", "LA", "PA") or (image.mode == "P" and "transparency" in image.info):
+        if image.mode in ("RGBA", "LA", "PA") or (
+            image.mode == "P" and "transparency" in image.info
+        ):
             rgba = np.asarray(image.convert("RGBA"))
             alpha = rgba[:, :, 3].astype(np.float32)[:, :, None] / 255.0
             journal_source_rgb = np.clip(
-                rgba[:, :, :3].astype(np.float32) * alpha + 255.0 * (1.0 - alpha), 0, 255,
+                rgba[:, :, :3].astype(np.float32) * alpha + 255.0 * (1.0 - alpha),
+                0, 255,
             ).astype(np.uint8)
             journal_required = {"alpha_fidelity"}
         else:
@@ -1006,15 +1240,27 @@ def run_pipeline(
         )
         selected_candidate_history = best.get("candidate_transform_journal")
 
+        # Kaynak koordinat sözleşmesi bütün opsiyonel refit'lerden ÖNCE
+        # kurulur. Böylece viewBox/transform bağımlı aşamalar geçerli source
+        # uzayında çalışır ve pahalı bir refit sonraki zorunlu normalizasyonu
+        # bütçe nedeniyle aç bırakamaz.
         _accepted, restore_rep, restore_stage = journal.run_in_place(
-            "restore_source_dimensions", Path(best["svg_path"]),
-            lambda path: (_restore_source_dimensions(path, analysis) or {"attempted": True}),
+            "restore_source_dimensions",
+            Path(best["svg_path"]),
+            lambda path: (_restore_source_dimensions(path, analysis)
+                          or {"attempted": True}),
         )
         refit_info = {**refit_info, "restore_source_dimensions": {
-            **(restore_rep or {}), "journal_status": restore_stage["status"],
+            **(restore_rep or {}),
+            "journal_status": restore_stage["status"],
             "journal_reasons": restore_stage["reason_codes"],
         }}
 
+        # 9.6 Sınır refit'i (alt-piksel kenar oturtma): kazananın çapaları
+        # orijinaldeki AA rampasının kodladığı gerçek kenar konumlarına LSQ ile
+        # çekilir (ölçüm korumalı). Renk refit'ten kalan kaybın ana bileşeni
+        # yerel yarım-piksel sınır sapmasıdır (faz-korelasyon ölçümü global
+        # kaymayı ekarte etti).
         pre_bnd_best = best
         bnd_candidate, bnd_info = _apply_boundary_refit(
             pre_bnd_best, mode_used, analysis, original_path, job_dir, scored
@@ -1036,9 +1282,14 @@ def run_pipeline(
             best = pre_bnd_best
             journal.record_noop(
                 "boundary_refit", Path(pre_bnd_best["svg_path"]),
-                reason_codes=["boundary_refit_not_applied"], transform_report=bnd_info,
+                reason_codes=["boundary_refit_not_applied"],
+                transform_report=bnd_info,
             )
         refit_info = {**refit_info, "boundary": bnd_info}
+        # 9.7 Kenar temizleme (VARSAYILAN AÇIK): kontur yumuşatma + Schneider
+        # eğri basitleştirme + ada-yutma. Her adım ÖLÇÜM KORUMALI (tolerans
+        # kapısı) — zarar veren adım kendini devre dışı bırakır; kullanıcı
+        # ``edge_cleanup="off"`` ile tümden kapatabilir.
         if edge_cleanup and best is not None:
             from app.edge_cleanup import apply_edge_cleanup  # noqa: PLC0415
 
@@ -1050,6 +1301,16 @@ def run_pipeline(
                 logger.debug("edge_cleanup atlandı: %s", e)
                 ec_rep = {"applied": False, "error": str(e)}
             if ec_rep.get("applied"):
+                # Kenar temizleme sadakati tolerans dahilinde DÜŞÜREBİLİR. Yalnız
+                # svg_path'i değiştirip eski skoru korumak, düşük-sadakat temizlenmiş
+                # dosyayı temizleme-öncesi skor/durumla (hatta production_ready)
+                # raporlamaya yol açardı (PR incelemesinde işaret edildi). Kazanan,
+                # dışa aktarılan dosya üzerinden YENİDEN skorlanır — fidelity_score,
+                # total_score, score_details ve geometri hepsi taze/tutarlı olur.
+                # cleanup_report (geometri düzenleme skoru) korunur — o, geometri
+                # temizleme AŞAMASININ yapısal ölçüsüdür; kenar temizleme yalnız
+                # konturu yumuşatır. Yeniden skorlama fidelity'yi (taze render) ve
+                # istatistikleri (path/düğüm sayısı) temiz dosyadan günceller.
                 cleaned = {**best, "svg_path": ec_dst}
                 rescored = score_candidate(cleaned, original_path, analysis, mode_used)
                 edge_candidate = rescored if rescored is not None else cleaned
@@ -1065,10 +1326,16 @@ def run_pipeline(
                               "journal_reasons": ec_stage["reason_codes"]}
             else:
                 journal.record_noop(
-                    "edge_cleanup", src_svg, reason_codes=["edge_cleanup_not_applied"],
+                    "edge_cleanup", src_svg,
+                    reason_codes=["edge_cleanup_not_applied"],
                     transform_report=ec_rep,
                 )
             refit_info = {**refit_info, "edge_cleanup": ec_rep}
+        # 9.8 Küçük bileşen hizalama refiti: izleme tavanı küçültmesi ve
+        # ölçek gidiş-dönüşü küçük ama anlamlı bileşenleri (ör. ® simgesi)
+        # birkaç piksel kaydırabilir; ince şekillerde bölgesel IoU çöker ama
+        # global skor bunu görmez. Ölçüm kapılıdır: sadakat + en kötü bileşen
+        # IoU'su iyileşmezse dosya değişmez.
         if best is not None:
             from app.component_align import apply_component_align  # noqa: PLC0415
 
@@ -1094,14 +1361,27 @@ def run_pipeline(
                               "journal_status": ca_stage["status"],
                               "journal_reasons": ca_stage["reason_codes"]}
             else:
-                skip_code = "viewbox_missing_precondition" if ca_rep.get("reason") == "viewBox_yok" else "component_align_not_applied"
+                skip_code = (
+                    "viewbox_missing_precondition"
+                    if ca_rep.get("reason") == "viewBox_yok"
+                    else "component_align_not_applied"
+                )
                 journal.record_noop(
-                    "component_align", ca_src, reason_codes=[skip_code], transform_report=ca_rep,
+                    "component_align", ca_src,
+                    reason_codes=[skip_code], transform_report=ca_rep,
                 )
             refit_info = {**refit_info, "component_align": ca_rep}
+        # İstek-kapsamlı önbellek: 9.85–9.89 aşamaları aynı SVG'yi ve aynı
+        # sınıflandırmayı defalarca üretiyordu (ölçüldü). Önbellek TEK istek
+        # boyunca yaşar, sonunda serbest bırakılır; anahtar SVG içerik-hash'i
+        # (geometry_version değil) — stale/karışma imkânsız. Kaynak RGB bir
+        # kez hesaplanır. VEKTORYUM_REFINE_CACHE=off kapatır (aşamalar yine
+        # doğrudan render/sınıflandırma yapar).
         refine_cache = None
         src_rgb_arr = journal_source_rgb if best is not None else None
-        if best is not None and os.environ.get("VEKTORYUM_REFINE_CACHE", "on").strip().lower() not in {"off", "0", "false"}:
+        if best is not None and os.environ.get(
+            "VEKTORYUM_REFINE_CACHE", "on"
+        ).strip().lower() not in {"off", "0", "false"}:
             try:
                 from app.refine_cache import RefinementCache  # noqa: PLC0415
 
@@ -1111,7 +1391,13 @@ def run_pipeline(
                 refine_cache = None
         _render_fn = refine_cache.render if refine_cache is not None else None
 
-        if best is not None and os.environ.get("VEKTORYUM_COUNTER_MERGE", "on").strip().lower() not in {"off", "0", "false"}:
+        # 9.85 Eğri koruyan sayaç birleştirme: zemin-renkli örtme path'leri
+        # gerçek evenodd deliklerine gömülür (geometri yeniden örneklenmez,
+        # komut sayısı artmaz). Ölçüm kapılı: render farkı toleransı aşarsa
+        # o birleştirme geri alınır. VEKTORYUM_COUNTER_MERGE=off kapatır.
+        if best is not None and os.environ.get(
+            "VEKTORYUM_COUNTER_MERGE", "on"
+        ).strip().lower() not in {"off", "0", "false"}:
             try:
                 from app.counter_merge import merge_counters  # noqa: PLC0415
                 from app.fidelity import render_svg_to_rgb  # noqa: PLC0415
@@ -1120,20 +1406,28 @@ def run_pipeline(
                 cm_h = int(analysis.get("height", 0) or 0)
                 if cm_w > 0 and cm_h > 0:
                     _cm_ok, cm_rep, cm_stage = journal.run_in_place(
-                        "counter_merge", Path(best["svg_path"]),
+                        "counter_merge",
+                        Path(best["svg_path"]),
                         lambda path: merge_counters(
                             path, cm_w, cm_h, _render_fn or render_svg_to_rgb,
                             source_rgb=src_rgb_arr, cache=refine_cache,
                         ),
                     )
                     refit_info = {**refit_info, "counter_merge": {
-                        **(cm_rep or {}), "journal_status": cm_stage["status"],
+                        **(cm_rep or {}),
+                        "journal_status": cm_stage["status"],
                         "journal_reasons": cm_stage["reason_codes"],
                     }}
             except Exception as e:  # noqa: BLE001
                 logger.debug("counter_merge atlandı: %s", e)
                 refit_info = {**refit_info, "counter_merge": {"status": "failed", "error": str(e)}}
-        if best is not None and os.environ.get("VEKTORYUM_LOCAL_REFINE", "on").strip().lower() not in {"off", "0", "false"}:
+        # 9.87 Kritik küçük bileşen yerel refit'i: ® halkası gibi küçük ama
+        # anlamlı bileşenler kaynak coverage'ına alt-piksel oturtulur (daireler
+        # analitik, genel yollar çapa-kaydırma). Bileşen kırpımında kaynak
+        # uyumu iyileşmezse geri alınır. VEKTORYUM_LOCAL_REFINE=off kapatır.
+        if best is not None and os.environ.get(
+            "VEKTORYUM_LOCAL_REFINE", "on"
+        ).strip().lower() not in {"off", "0", "false"}:
             try:
                 from app.fidelity import render_svg_to_rgb  # noqa: PLC0415
                 from app.local_refine import refine_critical_components  # noqa: PLC0415
@@ -1142,20 +1436,30 @@ def run_pipeline(
                 lr_h = int(analysis.get("height", 0) or 0)
                 if lr_w > 0 and lr_h > 0:
                     _lr_ok, lr_rep, lr_stage = journal.run_in_place(
-                        "local_refine", Path(best["svg_path"]),
+                        "local_refine",
+                        Path(best["svg_path"]),
                         lambda path: refine_critical_components(
                             path, src_rgb_arr, lr_w, lr_h,
                             _render_fn or render_svg_to_rgb, cache=refine_cache,
                         ),
                     )
                     refit_info = {**refit_info, "local_refine": {
-                        **(lr_rep or {}), "journal_status": lr_stage["status"],
+                        **(lr_rep or {}),
+                        "journal_status": lr_stage["status"],
                         "journal_reasons": lr_stage["reason_codes"],
                     }}
             except Exception as e:  # noqa: BLE001
                 logger.debug("local_refine atlandı: %s", e)
                 refit_info = {**refit_info, "local_refine": {"status": "failed", "error": str(e)}}
-        if best is not None and os.environ.get("VEKTORYUM_RENDER_REFINE", "on").strip().lower() not in {"off", "0", "false"}:
+        # 9.88 Hata-güdümlü render-and-refine: kaynak-render sınıf uyuşmazlığı
+        # blobları (ör. G iç gövdesi sapmaları, ortak sınır sliver'ları)
+        # bulunur ve yalnız o bölgelerle kesişen path'lerin çapaları geniş
+        # pencereli alt-piksel snap ile kaynağa oturtulur. Toplam maddi hata
+        # azalmıyorsa veya bölge dışına hata taşıyorsa tur geri alınır.
+        # VEKTORYUM_RENDER_REFINE=off kapatır.
+        if best is not None and os.environ.get(
+            "VEKTORYUM_RENDER_REFINE", "on"
+        ).strip().lower() not in {"off", "0", "false"}:
             try:
                 from app.fidelity import render_svg_to_rgb  # noqa: PLC0415
                 from app.local_refine import refine_error_regions  # noqa: PLC0415
@@ -1164,20 +1468,30 @@ def run_pipeline(
                 er_h = int(analysis.get("height", 0) or 0)
                 if er_w > 0 and er_h > 0:
                     _er_ok, er_rep, er_stage = journal.run_in_place(
-                        "error_refine", Path(best["svg_path"]),
+                        "error_refine",
+                        Path(best["svg_path"]),
                         lambda path: refine_error_regions(
                             path, src_rgb_arr, er_w, er_h,
                             _render_fn or render_svg_to_rgb, cache=refine_cache,
                         ),
                     )
                     refit_info = {**refit_info, "error_refine": {
-                        **(er_rep or {}), "journal_status": er_stage["status"],
+                        **(er_rep or {}),
+                        "journal_status": er_stage["status"],
                         "journal_reasons": er_stage["reason_codes"],
                     }}
             except Exception as e:  # noqa: BLE001
                 logger.debug("error_refine atlandı: %s", e)
                 refit_info = {**refit_info, "error_refine": {"status": "failed", "error": str(e)}}
-        if best is not None and os.environ.get("VEKTORYUM_CUSP_REFINE", "on").strip().lower() not in {"off", "0", "false"}:
+        # 9.89 Dar kama / cusp segment bölme: çapa taşımanın erişemediği
+        # bloblarda (kaynak cusp'ı iki çapa ARASINDA kalan uzun segmentler)
+        # segment De Casteljau ile tam bölünür ve yeni ortak çapa kaynak
+        # cusp'ına taşınır; kama iki komşu rengin ortak sınırıysa iki path
+        # de AYNI float koordinata bölünür (kanonik ortak düğüm, sliver
+        # kapanır). Bütçeli + ölçüm kapılı. VEKTORYUM_CUSP_REFINE=off kapatır.
+        if best is not None and os.environ.get(
+            "VEKTORYUM_CUSP_REFINE", "on"
+        ).strip().lower() not in {"off", "0", "false"}:
             try:
                 from app.cusp_refine import refine_cusp_regions  # noqa: PLC0415
                 from app.fidelity import render_svg_to_rgb  # noqa: PLC0415
@@ -1190,25 +1504,37 @@ def run_pipeline(
                             path, src_rgb_arr, cr_w, cr_h,
                             _render_fn or render_svg_to_rgb, cache=refine_cache,
                         )
-                        return {k: v for k, v in report.items() if k != "candidates"} | {"candidate_count": len(report.get("candidates", []))}
+                        return {
+                            k: v for k, v in report.items() if k != "candidates"
+                        } | {"candidate_count": len(report.get("candidates", []))}
 
                     _cu_ok, cu_rep, cu_stage = journal.run_in_place(
                         "cusp_refine", Path(best["svg_path"]), _cusp_transform,
                     )
                     refit_info = {**refit_info, "cusp_refine": {
-                        **(cu_rep or {}), "journal_status": cu_stage["status"],
+                        **(cu_rep or {}),
+                        "journal_status": cu_stage["status"],
                         "journal_reasons": cu_stage["reason_codes"],
                     }}
             except Exception as e:  # noqa: BLE001
                 logger.debug("cusp_refine atlandı: %s", e)
                 refit_info = {**refit_info, "cusp_refine": {"status": "failed", "error": str(e)}}
+        # önbellek istatistiği rapora eklenir, büyük diziler serbest bırakılır
         if refine_cache is not None:
             refit_info = {**refit_info, "refine_cache": refine_cache.stats()}
             refine_cache.close()
         from app.transform_journal import merge_journal_reports  # noqa: PLC0415
 
-        transform_journal = merge_journal_reports(selected_candidate_history, journal.to_dict())
+        transform_journal = merge_journal_reports(
+            selected_candidate_history, journal.to_dict(),
+        )
 
+        # Aşağıdaki in-place aşamalar (counter/local/error/cusp) aynı dosyanın
+        # baytlarını değiştirebilir. Aday seçimi sırasında hesaplanan skor bu
+        # noktada artık kanonik artifact'a ait değildir. Kesin final SVG'yi
+        # yeniden skorla; API/quality katmanına stale candidate metriği taşıma.
+        # Skorlama ölçülemezse eski değeri koruyup başarılı gibi davranmak
+        # yerine fail-closed, açıkça ölçülemeyen bir best kaydı üret.
         try:
             final_scored = score_candidate(best, original_path, analysis, mode_used)
         except Exception as e:  # noqa: BLE001
@@ -1220,19 +1546,27 @@ def run_pipeline(
         if final_scored is not None and final_scored.get("rendered_ok"):
             best = final_scored
             refit_info = {**refit_info, "final_rescore": {
-                "status": "measured", "fidelity_score": best.get("fidelity_score"),
+                "status": "measured",
+                "fidelity_score": best.get("fidelity_score"),
                 "svg_sha256": journal.final_accepted_sha256,
             }}
         else:
             best = {
-                **best, "rendered_ok": False, "fidelity_score": None,
+                **best,
+                "rendered_ok": False,
+                "fidelity_score": None,
                 "final_rescore_error": final_rescore_error or "measurement_unavailable",
             }
             refit_info = {**refit_info, "final_rescore": {
-                "status": "unmeasured", "error": best["final_rescore_error"],
+                "status": "unmeasured",
+                "error": best["final_rescore_error"],
                 "svg_sha256": journal.final_accepted_sha256,
             }}
 
+    # 10. Yapı bütünlüğü denetimi (kırık/eksik çizgi, hayalet çizik): nihai
+    # çıktıda orijinaldeki her kontur karşılanıyor mu? Foto benzeri sürekli-tonlu
+    # girdilerde ve düz olmayan zeminlerde mürekkep eşiği güvenilir olmadığından
+    # atlanır. Render backend'i yoksa None kalır (çökme yok).
     structure_report = None
     if (
         best is not None
@@ -1241,6 +1575,10 @@ def run_pipeline(
     ):
         structure_report = score_structure_integrity(best["svg_path"], original_path)
 
+    # NamedTemporaryFile adayları normalde journal ``finally`` bloğunda
+    # silinir. Yine de optional/native mutator'ların erken dönüşlerine karşı
+    # job sınırında defense-in-depth temizliği yap: iş dizini istek-özel ve
+    # response'a girmeyen yalnız bu kesin pattern hedeflenir.
     for transaction_tmp in Path(job_dir).glob(".*.candidate.svg"):
         try:
             transaction_tmp.unlink(missing_ok=True)
