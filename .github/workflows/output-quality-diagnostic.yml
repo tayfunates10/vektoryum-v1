@@ -8,8 +8,10 @@ on:
       - "engine/benchmark/**"
       - "engine/regression/output_quality_suite.py"
       - "engine/regression/output_quality_root_cause.py"
+      - "engine/regression/residual_error_metrics.py"
       - "engine/regression/test_output_quality_suite.py"
       - "engine/regression/test_output_quality_root_cause.py"
+      - "engine/regression/test_residual_error_metrics.py"
       - "engine/requirements.txt"
   workflow_dispatch:
   schedule:
@@ -48,14 +50,17 @@ jobs:
           python -m py_compile
           engine/regression/output_quality_suite.py
           engine/regression/output_quality_root_cause.py
+          engine/regression/residual_error_metrics.py
           engine/regression/test_output_quality_suite.py
           engine/regression/test_output_quality_root_cause.py
+          engine/regression/test_residual_error_metrics.py
 
       - name: Run diagnostic contract tests
         run: >-
           python -m unittest
           engine.regression.test_output_quality_suite
           engine.regression.test_output_quality_root_cause
+          engine.regression.test_residual_error_metrics
 
   production-output:
     needs: contract
