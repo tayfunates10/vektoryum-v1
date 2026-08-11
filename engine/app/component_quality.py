@@ -12,9 +12,10 @@ is never treated as a quality pass.
 
 Candidate eligibility also preserves the repository's pre-existing release
 invariant for filled geometry: a filled subpath must be geometrically closed.
-This matters when the new CC gate would otherwise promote a visually exact but
-structurally open candidate over the legacy safe winner.  It is not a new
-quality threshold; it mirrors the existing ``core_release_runner`` contract.
+A raster-exact but structurally open filled candidate sits below ordinary
+component failures so the CC guard cannot promote an artifact the existing
+release contract already rejects.  This is not a new quality threshold; it
+mirrors the existing ``core_release_runner`` structural invariant.
 """
 
 from __future__ import annotations
@@ -42,11 +43,11 @@ _REQUIRED_SOURCE_CC_RECALL = 1.0
 _REQUIRED_RENDER_CC_PRECISION = 1.0
 _REQUIRED_MIN_TRUE_CC_IOU = 0.95
 
-# Failed candidates must live below every measured-pass candidate, but if ALL
-# candidates fail the new gate their *legacy ordering* must remain unchanged.
-# A constant offset preserves every old score delta / near-score heuristic while
-# still ensuring a safe candidate (normal non-negative score range) always wins.
+# Selection-only bands.  Equal-status candidates retain their legacy score
+# differences.  Structural-invalid filled paths are deliberately below ordinary
+# CC failures because the repository release contract already rejects them.
 _FAIL_SCORE_OFFSET = 1000.0
+_STRUCTURAL_FAIL_SCORE_OFFSET = 1500.0
 _UNMEASURED_SCORE_OFFSET = 2000.0
 
 _STYLE_FILL = re.compile(r"(?:^|;)\s*fill\s*:\s*([^;]+)", re.I)
@@ -361,13 +362,13 @@ def gate_candidate_scores(
     fidelity_score: float | None,
     component_report: dict[str, Any],
 ) -> dict[str, Any]:
-    """Apply the independent CC eligibility gate without re-ranking failures.
+    """Apply the independent CC/structure eligibility bands for selection.
 
-    A passing/non-applicable candidate keeps its exact legacy score.  A measured
-    failure gets a constant negative offset, so any passing candidate outranks
-    it but all old score differences and geometric near-score heuristics are
-    preserved if every candidate fails.  Missing applicable measurement is a
-    separate, lower fail-closed band and carries ``needs_review``.
+    Passing/non-applicable candidates keep their exact legacy score.  Ordinary
+    measured CC failures share a constant band, preserving their old relative
+    ordering.  A pre-existing release-structural failure (open filled cycle) is
+    lower than that band, and missing applicable measurement is lowest and
+    carries ``needs_review``.  No existing fidelity/release threshold changes.
     """
     status = str(component_report.get("status") or "needs_review")
     applicable = bool(component_report.get("applicable"))
@@ -381,11 +382,12 @@ def gate_candidate_scores(
         return result
 
     result["selection_disqualified"] = True
-    offset = (
-        _UNMEASURED_SCORE_OFFSET
-        if status == "needs_review" or not component_report.get("measured")
-        else _FAIL_SCORE_OFFSET
-    )
+    if status == "needs_review" or not component_report.get("measured"):
+        offset = _UNMEASURED_SCORE_OFFSET
+    elif component_report.get("reason") == "open_required_cycle" or component_report.get("open_required_cycle"):
+        offset = _STRUCTURAL_FAIL_SCORE_OFFSET
+    else:
+        offset = _FAIL_SCORE_OFFSET
     result["total_score"] = float(total_score) - offset
     result["fidelity_score"] = (
         float(fidelity_score) - offset if fidelity_score is not None else None
