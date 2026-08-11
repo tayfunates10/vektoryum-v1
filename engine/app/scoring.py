@@ -18,6 +18,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
+from app.component_quality import gate_candidate_scores, score_svg_component_integrity
 from app.fidelity import score_svg_fidelity
 from app.geometry_cleanup import compute_geometry_report_for_svg, extract_points_from_path_data
 
@@ -238,8 +239,27 @@ def score_vector_candidate(
         + geometry_score * w.get("geometry", 0.0)
     )
 
+    raw_total_score = round(total, 2)
+    raw_fidelity_score = (
+        float(fidelity.get("fidelity_score", edge_score)) if rendered_ok else None
+    )
+
+    # AI-2 P1-A: connected-component integrity is an independent winner gate.
+    # Existing weighted scores are calculated first and retained verbatim.  A
+    # palette-like candidate that loses/splits/invents components is then made
+    # ineligible to beat a measured-pass candidate, regardless of global SSIM.
+    # Missing applicable measurement is fail-closed as needs_review.  Photo/
+    # gradient inputs are explicitly not-applicable and preserve legacy ranking.
+    component_quality = score_svg_component_integrity(
+        Path(svg_path), Path(original_path), mode=mode, analysis=analysis_report
+    )
+    gated = gate_candidate_scores(raw_total_score, raw_fidelity_score, component_quality)
+    if gated["selection_disqualified"]:
+        warnings.append(f"component_quality_{gated['component_quality_status']}")
+
     return {
-        "total_score": round(total, 2),
+        "total_score": round(float(gated["total_score"]), 2),
+        "raw_total_score": raw_total_score,
         "color_score": round(color_score, 2),
         "edge_score": round(edge_score, 2),
         "detail_score": round(detail_score, 2),
@@ -250,8 +270,12 @@ def score_vector_candidate(
         "axis_alignment_score": round(axis_alignment_score, 2),
         "geometry_score": round(geometry_score, 2),
         "rendered_ok": rendered_ok,
-        "fidelity_score": float(fidelity.get("fidelity_score", edge_score)) if rendered_ok else None,
+        "fidelity_score": gated["fidelity_score"],
+        "raw_fidelity_score": raw_fidelity_score,
         "fidelity": fidelity or None,
+        "selection_disqualified": bool(gated["selection_disqualified"]),
+        "component_quality_status": gated["component_quality_status"],
+        "component_quality": component_quality,
         "score_details": {
             "path_count": stats["path_count"],
             "node_count": stats["node_count"],
@@ -261,5 +285,10 @@ def score_vector_candidate(
             "ssim": fidelity.get("ssim"),
             "mean_delta_e": fidelity.get("mean_delta_e"),
             "edge_f1": fidelity.get("edge_f1"),
+            "source_cc_recall": component_quality.get("source_cc_recall"),
+            "render_cc_precision": component_quality.get("render_cc_precision"),
+            "min_true_cc_iou": component_quality.get("min_true_cc_iou"),
+            "component_quality_status": gated["component_quality_status"],
+            "component_quality_applicable": component_quality.get("applicable"),
         },
     }
