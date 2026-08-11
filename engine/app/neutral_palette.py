@@ -17,6 +17,7 @@ from dataclasses import asdict, dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
+import xml.etree.ElementTree as ET
 
 import cv2
 import numpy as np
@@ -31,6 +32,11 @@ _MIN_BAND_SEPARATION = 12
 _MIN_OPAQUE_ALPHA = 250
 _MIN_FLAT_PIXELS = 6
 _MIN_FLAT_FRACTION = 0.0005
+
+# Same distance used by the existing canonical palette snap.  This is not a
+# relaxed acceptance threshold; it only re-targets neutral snaps to source
+# plateaus instead of hard-coded #000/#fff when P0-B2a proves layered neutral.
+_NEUTRAL_SOURCE_SNAP_TOL = 42.0
 
 # P0-B2b deliberately reuses the geometric candidate family: it preserves the
 # limited neutral palette without opening the broad ``logo_color`` path.
@@ -180,3 +186,80 @@ def route_auto_layered_neutral_mode(recommended_mode: str, report: dict[str, Any
     if recommended_mode == "single_color" and bool(report.get("layered_neutral")):
         return _LAYERED_NEUTRAL_AUTO_MODE
     return recommended_mode
+
+
+def restore_layered_neutral_svg_palette(
+    svg_path: Path | str,
+    source: Image.Image | Path | str,
+    *,
+    mode: str,
+) -> dict[str, Any]:
+    """Restore source neutral plateaus on layered-neutral geometric candidates.
+
+    P0-B2a initially removes the destructive CANONICAL_BWR snap, but geometric
+    preprocessing itself may already have hardened a near-black source plateau
+    (for example #0f0f0f) to #000000 before tracing.  This final, deterministic
+    candidate repair maps only *neutral* SVG fills that are within the existing
+    42-RGB snap radius to the nearest proven source luminance plateau.  Chromatic
+    fills are never touched, so this is not a broad recolouring path and does not
+    route through ``logo_color``.
+    """
+    report = detect_neutral_luminance_bands(source)
+    if not geometric_preserves_neutral_palette(mode, report):
+        return {"applied": False, "reason": "not_layered_neutral_geometric"}
+
+    centers = [int(v) for v in report.get("band_centers") or []]
+    if len(centers) < 3:
+        return {"applied": False, "reason": "insufficient_source_bands"}
+
+    path = Path(svg_path)
+    try:
+        ET.register_namespace("", "http://www.w3.org/2000/svg")
+        tree = ET.parse(str(path))
+        root = tree.getroot()
+    except Exception as exc:  # noqa: BLE001
+        return {"applied": False, "reason": f"svg_parse_error:{type(exc).__name__}"}
+
+    snap2 = _NEUTRAL_SOURCE_SNAP_TOL * _NEUTRAL_SOURCE_SNAP_TOL
+    changed = 0
+    mapped: dict[str, str] = {}
+    for element in root.iter():
+        if element.tag.split("}")[-1] != "path":
+            continue
+        fill = (element.get("fill") or "").strip()
+        if not fill.startswith("#"):
+            continue
+        value = fill[1:]
+        if len(value) == 3:
+            value = "".join(ch * 2 for ch in value)
+        if len(value) != 6:
+            continue
+        try:
+            rgb = tuple(int(value[i:i + 2], 16) for i in (0, 2, 4))
+        except ValueError:
+            continue
+        if max(rgb) - min(rgb) > _NEUTRAL_CHANNEL_SPREAD:
+            continue
+        best = min(centers, key=lambda center: sum((channel - center) ** 2 for channel in rgb))
+        dist2 = sum((channel - best) ** 2 for channel in rgb)
+        if dist2 > snap2:
+            continue
+        target = f"#{best:02x}{best:02x}{best:02x}"
+        if fill.lower() != target:
+            element.set("fill", target)
+            mapped[fill.lower()] = target
+            changed += 1
+
+    if changed:
+        try:
+            tree.write(str(path), encoding="utf-8", xml_declaration=True)
+        except Exception as exc:  # noqa: BLE001
+            return {"applied": False, "reason": f"svg_write_error:{type(exc).__name__}"}
+
+    return {
+        "applied": bool(changed),
+        "reason": "source_neutral_palette_restored" if changed else "already_source_aligned",
+        "changed_paths": changed,
+        "mapped_fills": mapped,
+        "band_centers": centers,
+    }
