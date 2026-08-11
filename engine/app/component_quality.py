@@ -33,11 +33,12 @@ _REQUIRED_SOURCE_CC_RECALL = 1.0
 _REQUIRED_RENDER_CC_PRECISION = 1.0
 _REQUIRED_MIN_TRUE_CC_IOU = 0.95
 
-# Disqualified candidates are kept in the list for deterministic safe fallback
-# and diagnostics, but live in a score range that no measured-pass candidate can
-# lose to.  Original scores are always retained alongside the gated scores.
-_FAIL_SCORE_BASE = -1000.0
-_UNMEASURED_SCORE = -2000.0
+# Failed candidates must live below every measured-pass candidate, but if ALL
+# candidates fail the new gate their *legacy ordering* must remain unchanged.
+# A constant offset preserves every old score delta / near-score heuristic while
+# still ensuring a safe candidate (normal non-negative score range) always wins.
+_FAIL_SCORE_OFFSET = 1000.0
+_UNMEASURED_SCORE_OFFSET = 2000.0
 
 
 @dataclass(frozen=True)
@@ -298,7 +299,14 @@ def gate_candidate_scores(
     fidelity_score: float | None,
     component_report: dict[str, Any],
 ) -> dict[str, Any]:
-    """Apply independent CC selection gate while retaining original metrics."""
+    """Apply the independent CC eligibility gate without re-ranking failures.
+
+    A passing/non-applicable candidate keeps its exact legacy score.  A measured
+    failure gets a constant negative offset, so any passing candidate outranks
+    it but all old score differences and geometric near-score heuristics are
+    preserved if every candidate fails.  Missing applicable measurement is a
+    separate, lower fail-closed band and carries ``needs_review``.
+    """
     status = str(component_report.get("status") or "needs_review")
     applicable = bool(component_report.get("applicable"))
     result = {
@@ -311,19 +319,13 @@ def gate_candidate_scores(
         return result
 
     result["selection_disqualified"] = True
-    if status == "needs_review" or not component_report.get("measured"):
-        result["total_score"] = _UNMEASURED_SCORE
-        result["fidelity_score"] = _UNMEASURED_SCORE if fidelity_score is not None else None
-        return result
-
-    # Measured failure: keep deterministic ordering among unsafe fallbacks by
-    # the three independent CC axes.  Any measured pass remains >=0 and thus
-    # always outranks this negative range regardless of global SSIM/DeltaE.
-    recall = float(component_report.get("source_cc_recall") or 0.0)
-    precision = float(component_report.get("render_cc_precision") or 0.0)
-    min_iou = float(component_report.get("min_true_cc_iou") or 0.0)
-    integrity = (recall + precision + min_iou) / 3.0
-    gated = _FAIL_SCORE_BASE + 100.0 * integrity
-    result["total_score"] = gated
-    result["fidelity_score"] = gated if fidelity_score is not None else None
+    offset = (
+        _UNMEASURED_SCORE_OFFSET
+        if status == "needs_review" or not component_report.get("measured")
+        else _FAIL_SCORE_OFFSET
+    )
+    result["total_score"] = float(total_score) - offset
+    result["fidelity_score"] = (
+        float(fidelity_score) - offset if fidelity_score is not None else None
+    )
     return result
