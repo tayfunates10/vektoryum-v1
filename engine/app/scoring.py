@@ -21,6 +21,7 @@ from typing import Any
 from app.component_quality import gate_candidate_scores, score_svg_component_integrity
 from app.fidelity import score_svg_fidelity
 from app.geometry_cleanup import compute_geometry_report_for_svg, extract_points_from_path_data
+from app.neutral_palette import restore_layered_neutral_svg_palette
 
 logger = logging.getLogger(__name__)
 
@@ -178,6 +179,13 @@ def score_vector_candidate(
     geometry_report: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Bir vektör adayını puanlar ve detaylı skor sözlüğü döndürür."""
+    # P0-B2a source-neutral correction happens before any candidate metric is
+    # computed, so global fidelity and the P1-A component gate both judge the
+    # exact artifact that can win.  The helper is a no-op outside layered-neutral
+    # geometric_logo and never touches chromatic fills.
+    neutral_palette_restore = restore_layered_neutral_svg_palette(
+        Path(svg_path), Path(original_path), mode=mode
+    )
     stats = _parse_svg_stats(Path(svg_path))
 
     # geometri skorları: cleanup raporu varsa onu kullan, yoksa SVG'den hesapla
@@ -276,6 +284,7 @@ def score_vector_candidate(
         "selection_disqualified": bool(gated["selection_disqualified"]),
         "component_quality_status": gated["component_quality_status"],
         "component_quality": component_quality,
+        "neutral_palette_restore": neutral_palette_restore,
         "score_details": {
             "path_count": stats["path_count"],
             "node_count": stats["node_count"],
@@ -290,5 +299,6 @@ def score_vector_candidate(
             "min_true_cc_iou": component_quality.get("min_true_cc_iou"),
             "component_quality_status": gated["component_quality_status"],
             "component_quality_applicable": component_quality.get("applicable"),
+            "neutral_palette_restore_applied": neutral_palette_restore.get("applied"),
         },
     }
