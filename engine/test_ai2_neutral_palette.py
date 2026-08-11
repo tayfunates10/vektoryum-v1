@@ -13,6 +13,7 @@ from app.analyzer import analyze_image_from_mem  # noqa: E402
 from app.neutral_palette import (  # noqa: E402
     detect_neutral_luminance_bands,
     geometric_preserves_neutral_palette,
+    restore_layered_neutral_svg_palette,
     route_auto_layered_neutral_mode,
 )
 
@@ -94,6 +95,45 @@ def test_gray_border_counter_is_not_left_on_binary_single_color_route() -> None:
     assert analysis["neutral_luminance_report"]["layered_neutral"] is True
     assert analysis["recommended_mode"] == "geometric_logo"
     assert analysis["detected_type"] == "geometric_logo"
+
+
+def test_source_neutral_palette_restore_maps_only_neutral_fills(tmp_path: Path) -> None:
+    source = _gray_counter_fixture()
+    svg_path = tmp_path / "candidate.svg"
+    svg_path.write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">'
+        '<path fill="#000000" d="M0 0h80v80H0z"/>'
+        '<path fill="#959595" d="M80 0h80v80H80z"/>'
+        '<path fill="#ffffff" d="M160 0h96v80h-96z"/>'
+        '<path fill="#e02020" d="M0 80h80v80H0z"/>'
+        '</svg>',
+        encoding="utf-8",
+    )
+
+    report = restore_layered_neutral_svg_palette(
+        svg_path, source, mode="geometric_logo"
+    )
+    text = svg_path.read_text(encoding="utf-8").lower()
+
+    assert report["applied"] is True
+    assert '#0f0f0f' in text
+    assert '#969696' in text
+    assert '#ffffff' in text
+    assert '#e02020' in text
+
+
+def test_source_neutral_palette_restore_is_noop_outside_geometric(tmp_path: Path) -> None:
+    source = _gray_counter_fixture()
+    svg_path = tmp_path / "candidate.svg"
+    svg_path.write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg"><path fill="#000000" d="M0 0h10v10z"/></svg>',
+        encoding="utf-8",
+    )
+
+    report = restore_layered_neutral_svg_palette(svg_path, source, mode="logo_color")
+
+    assert report["applied"] is False
+    assert '#000000' in svg_path.read_text(encoding="utf-8").lower()
 
 
 def test_neutral_tone_steps_fixture_is_deterministic() -> None:
