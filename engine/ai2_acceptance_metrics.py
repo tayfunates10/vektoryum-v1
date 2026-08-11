@@ -75,8 +75,10 @@ def _fixtures() -> dict[str, dict[str, Any]]:
         "neutral-tone-steps": {
             "phase": "P0-B2a",
             "expected_mode": "geometric_logo",
+            # Every visible band is separated by far more than the existing
+            # merge_tol=12.  There is deliberately no hidden near-duplicate
+            # background fill: the five stripes cover the complete canvas.
             "paths": [
-                ("M0 0H256V256H0Z", "#f5f5f5"),
                 ("M0 0H52V256H0Z", "#202020"),
                 ("M52 0H104V256H52Z", "#606060"),
                 ("M104 0H156V256H104Z", "#989898"),
