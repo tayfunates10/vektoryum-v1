@@ -6,6 +6,8 @@ AI-2 manager-remediation policies at its public extension points:
 
 * connected-component safety filters candidate selection without rewriting
   measured total/fidelity scores;
+* the pre-existing closed-filled-cycle structural invariant is an eligibility
+  tier, never a numeric score offset;
 * neutral-palette restoration happens after candidate generation and before
   scoring, so scoring/evaluation itself is byte-pure.
 """
@@ -37,26 +39,44 @@ _base_refit_one = _core._refit_one
 _base_apply_boundary_refit = _core._apply_boundary_refit
 
 
-def _selection_pool(scored: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Prefer measured-safe candidates; keep legacy ranking if none are safe."""
-    safe = [
-        candidate
-        for candidate in scored
-        if bool(
-            candidate.get(
-                "selection_safe",
-                not candidate.get("selection_disqualified", False),
-            )
+def _selection_tier(candidate: dict[str, Any]) -> int:
+    """Return independent eligibility tier; lower is safer.
+
+    Tier 0: component-safe / component gate not applicable.
+    Tier 1: applicable CC fail or needs_review.
+    Tier 2: structurally invalid open filled cycle.
+
+    The tier is deliberately separate from total/fidelity score so quality
+    measurements stay numerically honest.  Within a tier the established
+    selector remains unchanged.
+    """
+    component = candidate.get("component_quality") or {}
+    if bool(component.get("open_required_cycle")):
+        return 2
+    if bool(
+        candidate.get(
+            "selection_safe",
+            not candidate.get("selection_disqualified", False),
         )
-    ]
-    return safe or scored
+    ):
+        return 0
+    return 1
+
+
+def _selection_pool(scored: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Select only the best available eligibility tier, preserving legacy rank."""
+    if not scored:
+        return scored
+    best_tier = min(_selection_tier(candidate) for candidate in scored)
+    pool = [candidate for candidate in scored if _selection_tier(candidate) == best_tier]
+    return pool or scored
 
 
 def select_best(scored: list[dict[str, Any]], mode: str) -> tuple[dict, dict, str]:
-    """Run the legacy selector inside the independent component-safe pool."""
+    """Run the legacy selector inside the independent safety/structure pool."""
     legacy_chosen, legacy_raw, legacy_reason = _base_select_best(scored, mode)
     pool = _selection_pool(scored)
-    if pool is scored or len(pool) == len(scored):
+    if len(pool) == len(scored):
         return legacy_chosen, legacy_raw, legacy_reason
     chosen, _safe_raw, reason = _base_select_best(pool, mode)
     return chosen, legacy_raw, f"component_integrity_guard+{reason}"
@@ -111,8 +131,6 @@ def _apply_editability_preference(
 ) -> tuple[dict[str, Any], str]:
     pool = _selection_pool(scored)
     if current_best not in pool:
-        # This can only occur if a newly-added safe candidate appeared after the
-        # prior selection. Re-seed with the highest-fidelity safe candidate.
         current_best = max(pool, key=_core._fidelity_rank_key)
     return _base_apply_editability_preference(pool, current_best)
 
@@ -129,7 +147,7 @@ def refine_best(
     refined, info = _base_refine_best(
         best, mode, analysis, original_path, preprocessed_path, job_dir, scored
     )
-    if best.get("selection_safe") is True and refined.get("selection_safe") is not True:
+    if _selection_tier(refined) > _selection_tier(best):
         return best, {
             **info,
             "applied": False,
@@ -146,11 +164,7 @@ def _refit_one(
     job_dir: Path,
 ) -> dict[str, Any] | None:
     refined = _base_refit_one(cand, mode, analysis, original_path, job_dir)
-    if (
-        refined is not None
-        and cand.get("selection_safe") is True
-        and refined.get("selection_safe") is not True
-    ):
+    if refined is not None and _selection_tier(refined) > _selection_tier(cand):
         return None
     return refined
 
@@ -166,7 +180,7 @@ def _apply_boundary_refit(
     candidate, info = _base_apply_boundary_refit(
         best, mode, analysis, original_path, job_dir, scored
     )
-    if best.get("selection_safe") is True and candidate.get("selection_safe") is not True:
+    if _selection_tier(candidate) > _selection_tier(best):
         return best, {
             **info,
             "applied": False,
