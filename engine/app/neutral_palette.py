@@ -2,7 +2,7 @@
 
 The detector intentionally answers a narrow question: does the *source* contain
 at least three spatially supported, neutral, distinct luminance plateaus?  It is
-not a generic colour classifier and it does not route images to ``logo_color``.
+not a generic colour classifier and it never routes images to ``logo_color``.
 
 Anti-aliased black/white edges contain many intermediate grey pixels, so simply
 counting RGB/luminance values would create false "third bands".  We therefore
@@ -31,6 +31,10 @@ _MIN_BAND_SEPARATION = 12
 _MIN_OPAQUE_ALPHA = 250
 _MIN_FLAT_PIXELS = 6
 _MIN_FLAT_FRACTION = 0.0005
+
+# P0-B2b deliberately reuses the geometric candidate family: it preserves the
+# limited neutral palette without opening the broad ``logo_color`` path.
+_LAYERED_NEUTRAL_AUTO_MODE = "geometric_logo"
 
 
 @dataclass(frozen=True)
@@ -163,3 +167,16 @@ def detect_neutral_luminance_bands(source: Image.Image | Path | str) -> dict[str
 def geometric_preserves_neutral_palette(mode: str, report: dict[str, Any]) -> bool:
     """P0-B2a guard: *only* layered-neutral ``geometric_logo`` bypasses B/W/R."""
     return mode == "geometric_logo" and bool(report.get("layered_neutral"))
+
+
+def route_auto_layered_neutral_mode(recommended_mode: str, report: dict[str, Any]) -> str:
+    """P0-B2b: narrowly escape binary ``single_color`` for true neutral layers.
+
+    Only an analyzer recommendation of ``single_color`` is eligible, and only
+    when the same source detector proves 3+ spatially-supported neutral luminance
+    plateaus.  Explicit user-selected modes are handled by the caller and never
+    reach this helper.  ``logo_color`` is intentionally not a target.
+    """
+    if recommended_mode == "single_color" and bool(report.get("layered_neutral")):
+        return _LAYERED_NEUTRAL_AUTO_MODE
+    return recommended_mode
