@@ -7,6 +7,7 @@ on:
       - "engine/app/analyzer.py"
       - "engine/app/neutral_palette.py"
       - "engine/app/component_quality.py"
+      - "engine/app/svg_lifecycle.py"
       - "engine/app/fidelity.py"
       - "engine/app/scoring.py"
       - "engine/app/pipeline.py"
@@ -42,7 +43,7 @@ jobs:
       - name: Compile AI-2 modules
         run: >-
           python -m py_compile
-          app/analyzer.py app/neutral_palette.py app/component_quality.py app/scoring.py
-          test_ai2_neutral_palette.py test_ai2_component_quality.py
+          app/analyzer.py app/neutral_palette.py app/component_quality.py app/svg_lifecycle.py app/scoring.py app/pipeline.py
+          test_ai2_neutral_palette.py test_ai2_component_quality.py test_ai2_lifecycle.py
       - name: Run AI-2 focused tests
-        run: python -m pytest -q test_ai2_neutral_palette.py test_ai2_component_quality.py
+        run: python -m pytest -q test_ai2_neutral_palette.py test_ai2_component_quality.py test_ai2_lifecycle.py
