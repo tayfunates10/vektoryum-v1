@@ -4,10 +4,13 @@ import hashlib
 import sys
 from pathlib import Path
 
+import numpy as np
+
 ENGINE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(ENGINE_DIR))
 
 from app.component_quality import has_open_required_cycle  # noqa: E402
+from app.pipeline import _FillCycleJournal  # noqa: E402
 from app.svg_lifecycle import close_implicit_fill_cycles  # noqa: E402
 
 
@@ -67,3 +70,35 @@ def test_already_closed_fill_is_idempotent(tmp_path: Path) -> None:
     assert first["applied"] is False
     assert second["applied"] is False
     assert _sha(svg) == before_sha
+
+
+def test_exact_render_fill_cycle_repair_is_journal_accepted(tmp_path: Path) -> None:
+    """Implicit-vs-explicit fill closure may repair structure without changing pixels."""
+    svg = tmp_path / "implicit.svg"
+    svg.write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20">'
+        '<path fill="#000" d="M2 2L18 2L18 18L2 18"/>'
+        '</svg>',
+        encoding="utf-8",
+    )
+    # Deliberately unrelated source pixels: acceptance must be based on exact
+    # parent/candidate render preservation plus structural repair, not on a
+    # newly invented source-fidelity threshold.
+    source_rgb = np.full((20, 20, 3), 127, dtype=np.uint8)
+    journal = _FillCycleJournal.build(
+        svg,
+        source_rgb,
+        image_class="clean_logo",
+        required_metrics=set(),
+    )
+    accepted, report, stage = journal.run_in_place(
+        "explicit_fill_cycle_normalization",
+        svg,
+        close_implicit_fill_cycles,
+    )
+    assert accepted is True
+    assert report["applied"] is True
+    assert stage["status"] == "accepted"
+    assert stage["reason_codes"] == ["metrics_non_regressing"]
+    assert stage["before_metrics"]["render_rgb_sha256"] == stage["after_metrics"]["render_rgb_sha256"]
+    assert has_open_required_cycle(svg) is False
