@@ -9,6 +9,7 @@ from PIL import Image, ImageDraw
 ENGINE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(ENGINE_DIR))
 
+from ai2_acceptance_metrics import build_acceptance_report, validate_report  # noqa: E402
 from app.analyzer import analyze_image_from_mem  # noqa: E402
 from app.neutral_palette import (  # noqa: E402
     detect_neutral_luminance_bands,
@@ -148,3 +149,30 @@ def test_neutral_tone_steps_fixture_is_deterministic() -> None:
     assert first == second
     assert first["layered_neutral"] is True
     assert first["band_count"] >= 3
+
+
+def test_issue_137_native_256_named_reproducers_meet_all_acceptance_axes(tmp_path: Path) -> None:
+    report = build_acceptance_report(tmp_path)
+
+    assert validate_report(report) == []
+    assert set(report["cases"]) == {
+        "qa-lowres-badge",
+        "qa-gray-border-counter",
+        "neutral-tone-steps",
+    }
+    for case in report["cases"].values():
+        assert case["fixture_kind"] == "canonical_reproducer_not_historical_asset"
+        assert case["native_size"] == [256, 256]
+        assert case["after"]["source_cc_recall"] == 1.0
+        assert case["after"]["render_cc_precision"] == 1.0
+        assert case["after"]["min_true_cc_iou"] >= 0.95
+        assert case["after"]["visible_residual"] <= 0.01
+        assert case["after"]["de00_p95"] <= 1.0
+        assert case["after"]["boundary_p95_px"] <= 0.75
+
+
+def test_issue_137_native_256_metrics_are_deterministic_across_two_loops(tmp_path: Path) -> None:
+    first = build_acceptance_report(tmp_path)
+    second = build_acceptance_report(tmp_path)
+
+    assert first == second
