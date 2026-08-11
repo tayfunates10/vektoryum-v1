@@ -30,6 +30,7 @@ for _name in dir(_core):
 
 _base_select_best = _core.select_best
 _base_produce_candidate = _core.produce_candidate
+_base_produce_and_score_job = _core._produce_and_score_job
 _base_apply_editability_preference = _core._apply_editability_preference
 _base_refine_best = _core.refine_best
 _base_refit_one = _core._refit_one
@@ -91,13 +92,18 @@ def produce_candidate(
     if not geometric_preserves_neutral_palette(mode, neutral_report):
         return result
 
-    # This is candidate construction, not scoring.  The returned SVG is the
+    # This is candidate construction, not scoring. The returned SVG is the
     # exact immutable artifact score_vector_candidate() will observe.
     restore_report = restore_layered_neutral_svg_palette(
         Path(result["svg_path"]), Path(original_path), mode=mode
     )
     result["neutral_palette_restore"] = restore_report
     return result
+
+
+def _produce_and_score_job(args: tuple) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Picklable facade entrypoint so worker processes install the same policy."""
+    return _base_produce_and_score_job(args)
 
 
 def _apply_editability_preference(
@@ -170,9 +176,12 @@ def _apply_boundary_refit(
 
 
 # pipeline_core functions resolve these names from their own module globals at
-# call time; install the policy hooks before exporting run_pipeline.
+# call time; install the policy hooks before exporting run_pipeline. In
+# particular, the worker entrypoint is patched so spawn/forkserver children
+# import app.pipeline and install this same policy before candidate work starts.
 _core.select_best = select_best
 _core.produce_candidate = produce_candidate
+_core._produce_and_score_job = _produce_and_score_job
 _core._apply_editability_preference = _apply_editability_preference
 _core.refine_best = refine_best
 _core._refit_one = _refit_one
