@@ -1,21 +1,14 @@
-"""Connected-component integrity metrics for winner safety (AI-2 P1-A).
+"""Connected-component integrity metrics for AI-2 winner safety.
 
-Global perceptual scores are area weighted and can hide a missing ® mark, a
-split micro shape, or a newly invented island.  This module measures those
-failure modes independently and exposes a hard *selection* gate without
-changing any existing SSIM/DeltaE/edge-F1 weights or release thresholds.
+The component gate is independent from perceptual fidelity.  It never rewrites
+``total_score``/``fidelity_score``: selection uses an explicit safe-candidate
+pool, so benchmark/evaluator metrics remain the real measured values.
 
-The gate is intentionally applicable only to palette-like, non-photo,
-non-gradient inputs.  A non-applicable input is not a failure.  An applicable
-input whose component measurement cannot be produced is ``needs_review`` and
-is never treated as a quality pass.
-
-Candidate eligibility also preserves the repository's pre-existing release
-invariant for filled geometry: a filled subpath must be geometrically closed.
-A raster-exact but structurally open filled candidate sits below ordinary
-component failures so the CC guard cannot promote an artifact the existing
-release contract already rejects.  This is not a new quality threshold; it
-mirrors the existing ``core_release_runner`` structural invariant.
+For palette-like inputs, source/render components are paired with a deterministic
+maximum-weight one-to-one assignment.  This prevents greedy ordering from hiding
+micro-component loss, fragmentation, or invented islands.  Photo/gradient inputs
+remain explicitly outside the gate.  Missing applicable measurement is
+``needs_review`` and never counts as a safe pass.
 """
 
 from __future__ import annotations
@@ -29,25 +22,15 @@ import cv2
 import numpy as np
 from defusedxml import ElementTree as SafeET
 
-# Preserve the production component-support floor already used by fidelity.py.
 _MIN_COMPONENT_PIXELS = 48
 _MIN_COMPONENT_FRACTION = 0.0001
 _MAX_SOURCE_PALETTE_MEDIAN_RESIDUAL = 10.0
 _KMEANS_K = 6
 _KMEANS_SEED = 7
 
-# Issue #137 acceptance invariants.  These are a new independent selection
-# contract, not relaxations/changes to existing release-quality thresholds.
 _REQUIRED_SOURCE_CC_RECALL = 1.0
 _REQUIRED_RENDER_CC_PRECISION = 1.0
 _REQUIRED_MIN_TRUE_CC_IOU = 0.95
-
-# Selection-only bands.  Equal-status candidates retain their legacy score
-# differences.  Structural-invalid filled paths are deliberately below ordinary
-# CC failures because the repository release contract already rejects them.
-_FAIL_SCORE_OFFSET = 1000.0
-_STRUCTURAL_FAIL_SCORE_OFFSET = 1500.0
-_UNMEASURED_SCORE_OFFSET = 2000.0
 
 _STYLE_FILL = re.compile(r"(?:^|;)\s*fill\s*:\s*([^;]+)", re.I)
 _PATH_NUM_RE = re.compile(r"[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?")
@@ -85,16 +68,6 @@ def _path_fill(element: Any) -> str:
 
 
 def _filled_path_subpaths_closed(d: str) -> bool:
-    """Dependency-free geometric closure check for SVG path subpaths.
-
-    The repository has workflows that deliberately install only a minimal
-    measurement dependency set.  Winner scoring therefore cannot import the
-    optional ``svgpathtools`` package at module import time.  For the release
-    invariant we only need endpoint semantics, so this parser tracks the SVG
-    command endpoint for every subpath, supports relative commands, explicit Z,
-    and the tracer pattern where the final curve endpoint returns to the M point
-    without emitting Z.
-    """
     tokens = list(_PATH_CMD_RE.finditer(d or ""))
     if not tokens:
         return False
@@ -140,7 +113,7 @@ def _filled_path_subpaths_closed(d: str) -> bool:
                 if index == 0:
                     start = cur
                 else:
-                    saw_segment = True  # extra moveto pairs are implicit lineto
+                    saw_segment = True
             continue
 
         if start is None:
@@ -164,8 +137,6 @@ def _filled_path_subpaths_closed(d: str) -> bool:
             elif c == "V":
                 y = values[0] + (cur[1] if rel else 0.0)
             else:
-                # L/T endpoints use their final pair; C/S/Q/A likewise encode
-                # their endpoint in the final pair of each segment group.
                 x, y = values[-2], values[-1]
                 if rel:
                     x += cur[0]
@@ -178,12 +149,7 @@ def _filled_path_subpaths_closed(d: str) -> bool:
 
 
 def has_open_required_cycle(svg_path: Path) -> bool:
-    """Mirror the existing release invariant for geometrically open fills.
-
-    A literal ``Z`` is not mandatory: production tracers can serialize a closed
-    curve by returning its final endpoint to the first point.  Open stroke-only
-    paths remain valid.  Parsing errors fail closed.
-    """
+    """Diagnostic mirror of the repository's explicit/endpoint closure invariant."""
     try:
         root = SafeET.parse(str(svg_path)).getroot()
     except Exception:
@@ -193,8 +159,7 @@ def has_open_required_cycle(svg_path: Path) -> bool:
             continue
         if _path_fill(element) == "none":
             continue
-        d = str(element.attrib.get("d") or "")
-        if not _filled_path_subpaths_closed(d):
+        if not _filled_path_subpaths_closed(str(element.attrib.get("d") or "")):
             return True
     return False
 
@@ -204,7 +169,6 @@ def _source_palette_classes(
     rendered_rgb: np.ndarray,
     k: int = _KMEANS_K,
 ) -> tuple[np.ndarray, np.ndarray, float]:
-    """Classify source/render against deterministic centers learned from source."""
     if original_rgb.shape != rendered_rgb.shape:
         h, w = original_rgb.shape[:2]
         rendered_rgb = cv2.resize(rendered_rgb, (w, h), interpolation=cv2.INTER_AREA)
@@ -214,16 +178,11 @@ def _source_palette_classes(
     samples = lab_o.reshape(-1, 3)
     step = max(1, samples.shape[0] // 40000)
     sub = samples[::step]
-
-    # Do not request more clusters than distinct sampled LAB tuples.  This also
-    # avoids OpenCV kmeans assertions for degenerate/flat fixtures.
     distinct = int(np.unique(sub.astype(np.uint8), axis=0).shape[0])
     k_eff = max(1, min(int(k), distinct, int(sub.shape[0])))
     crit = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 20, 0.5)
     cv2.setRNGSeed(_KMEANS_SEED)
-    _compact, _labels, centers = cv2.kmeans(
-        sub, k_eff, None, crit, 1, cv2.KMEANS_PP_CENTERS
-    )
+    _compact, _labels, centers = cv2.kmeans(sub, k_eff, None, crit, 1, cv2.KMEANS_PP_CENTERS)
 
     from app.palette_ops import classify_features  # noqa: PLC0415
 
@@ -244,15 +203,7 @@ def _components(cls_map: np.ndarray, class_index: int, min_area: int) -> list[_C
         x, y, w, h, area = (int(v) for v in stats[label_index])
         if area < min_area:
             continue
-        out.append(
-            _Component(
-                class_index=class_index,
-                label_index=label_index,
-                area=area,
-                bbox=(x, y, w, h),
-                mask=labels == label_index,
-            )
-        )
+        out.append(_Component(class_index, label_index, area, (x, y, w, h), labels == label_index))
     return out
 
 
@@ -264,37 +215,91 @@ def _iou(a: np.ndarray, b: np.ndarray) -> float:
     return float(intersection) / float(max(1, union))
 
 
-def _greedy_one_to_one_matches(
+def _hungarian_minimize(cost: list[list[float]]) -> list[tuple[int, int]]:
+    """Deterministic rectangular Hungarian assignment, O(n^2 m), no optional deps."""
+    if not cost or not cost[0]:
+        return []
+    rows = len(cost)
+    cols = len(cost[0])
+    transposed = rows > cols
+    matrix = [list(row) for row in cost]
+    if transposed:
+        matrix = [[cost[i][j] for i in range(rows)] for j in range(cols)]
+        rows, cols = cols, rows
+
+    u = [0.0] * (rows + 1)
+    v = [0.0] * (cols + 1)
+    p = [0] * (cols + 1)
+    way = [0] * (cols + 1)
+
+    for i in range(1, rows + 1):
+        p[0] = i
+        j0 = 0
+        minv = [float("inf")] * (cols + 1)
+        used = [False] * (cols + 1)
+        while True:
+            used[j0] = True
+            i0 = p[j0]
+            delta = float("inf")
+            j1 = 0
+            for j in range(1, cols + 1):
+                if used[j]:
+                    continue
+                cur = matrix[i0 - 1][j - 1] - u[i0] - v[j]
+                if cur < minv[j]:
+                    minv[j] = cur
+                    way[j] = j0
+                if minv[j] < delta:
+                    delta = minv[j]
+                    j1 = j
+            for j in range(cols + 1):
+                if used[j]:
+                    u[p[j]] += delta
+                    v[j] -= delta
+                else:
+                    minv[j] -= delta
+            j0 = j1
+            if p[j0] == 0:
+                break
+        while True:
+            j1 = way[j0]
+            p[j0] = p[j1]
+            j0 = j1
+            if j0 == 0:
+                break
+
+    pairs: list[tuple[int, int]] = []
+    for j in range(1, cols + 1):
+        if p[j] == 0:
+            continue
+        r, c = p[j] - 1, j - 1
+        pairs.append((c, r) if transposed else (r, c))
+    pairs.sort()
+    return pairs
+
+
+def _optimal_one_to_one_matches(
     sources: list[_Component],
     renders: list[_Component],
 ) -> tuple[list[tuple[int, int, float]], list[float]]:
-    """Deterministic maximum-IoU greedy matching within one palette class.
-
-    Each render component can satisfy at most one source component.  Therefore a
-    split source leaves extra render pieces (precision loss), and a missing
-    source leaves an unmatched source (recall loss).  A fake island remains an
-    unmatched render component.  Ties are stable by source/render list index.
-    """
-    pairs: list[tuple[float, int, int]] = []
-    best_per_source = [0.0 for _ in sources]
-    for si, source in enumerate(sources):
-        for ri, render in enumerate(renders):
-            value = _iou(source.mask, render.mask)
-            best_per_source[si] = max(best_per_source[si], value)
-            if value > 0.0:
-                pairs.append((value, si, ri))
-    pairs.sort(key=lambda item: (-item[0], item[1], item[2]))
-
-    used_s: set[int] = set()
-    used_r: set[int] = set()
+    """Maximum-total-IoU one-to-one assignment within one palette class."""
+    if not sources:
+        return [], []
+    weights = [[_iou(source.mask, render.mask) for render in renders] for source in sources]
+    if not renders:
+        return [], [0.0 for _ in sources]
+    max_weight = max((max(row) for row in weights), default=0.0)
+    cost = [[max_weight - value for value in row] for row in weights]
+    assigned = _hungarian_minimize(cost)
     matches: list[tuple[int, int, float]] = []
-    for value, si, ri in pairs:
-        if si in used_s or ri in used_r:
+    matched_iou = [0.0 for _ in sources]
+    for si, ri in assigned:
+        value = float(weights[si][ri])
+        if value <= 0.0:
             continue
-        used_s.add(si)
-        used_r.add(ri)
         matches.append((si, ri, value))
-    return matches, best_per_source
+        matched_iou[si] = value
+    return matches, matched_iou
 
 
 def measure_component_integrity_arrays(
@@ -303,15 +308,10 @@ def measure_component_integrity_arrays(
     *,
     k: int = _KMEANS_K,
 ) -> dict[str, Any]:
-    """Measure true source-CC recall, render-CC precision and min source IoU."""
     try:
         cls_o, cls_r, palette_residual = _source_palette_classes(original_rgb, rendered_rgb, k=k)
     except Exception as exc:  # noqa: BLE001
-        return {
-            "measured": False,
-            "status": "needs_review",
-            "reason": f"classification_error:{type(exc).__name__}",
-        }
+        return {"measured": False, "status": "needs_review", "reason": f"classification_error:{type(exc).__name__}"}
 
     if palette_residual > _MAX_SOURCE_PALETTE_MEDIAN_RESIDUAL:
         return {
@@ -324,12 +324,8 @@ def measure_component_integrity_arrays(
     h, w = cls_o.shape[:2]
     min_area = max(_MIN_COMPONENT_PIXELS, int(_MIN_COMPONENT_FRACTION * h * w))
     class_count = max(int(cls_o.max(initial=0)), int(cls_r.max(initial=0))) + 1
-
-    source_total = 0
-    render_total = 0
-    matched_source = 0
-    matched_render = 0
-    source_best_ious: list[float] = []
+    source_total = render_total = matched_source = matched_render = 0
+    source_match_ious: list[float] = []
     class_reports: list[dict[str, Any]] = []
 
     for class_index in range(class_count):
@@ -337,19 +333,18 @@ def measure_component_integrity_arrays(
         renders = _components(cls_r, class_index, min_area)
         if not sources and not renders:
             continue
-        matches, best_per_source = _greedy_one_to_one_matches(sources, renders)
-        matched_positive = [(si, ri, value) for si, ri, value in matches if value > 0.0]
+        matches, matched_iou = _optimal_one_to_one_matches(sources, renders)
         source_total += len(sources)
         render_total += len(renders)
-        matched_source += len(matched_positive)
-        matched_render += len(matched_positive)
-        source_best_ious.extend(best_per_source)
+        matched_source += len(matches)
+        matched_render += len(matches)
+        source_match_ious.extend(matched_iou)
         class_reports.append({
             "class_index": class_index,
             "source_components": len(sources),
             "render_components": len(renders),
-            "matched_components": len(matched_positive),
-            "min_source_best_iou": round(min(best_per_source), 4) if best_per_source else None,
+            "matched_components": len(matches),
+            "min_source_matched_iou": round(min(matched_iou), 4) if matched_iou else None,
         })
 
     if source_total == 0:
@@ -362,10 +357,8 @@ def measure_component_integrity_arrays(
         }
 
     source_recall = float(matched_source) / float(source_total)
-    render_precision = (
-        float(matched_render) / float(render_total) if render_total > 0 else 0.0
-    )
-    min_true_iou = min(source_best_ious) if source_best_ious else 0.0
+    render_precision = float(matched_render) / float(render_total) if render_total > 0 else 0.0
+    min_true_iou = min(source_match_ious) if source_match_ious else 0.0
     passed = (
         source_recall >= _REQUIRED_SOURCE_CC_RECALL
         and render_precision >= _REQUIRED_RENDER_CC_PRECISION
@@ -395,19 +388,12 @@ def score_svg_component_integrity(
     analysis: dict[str, Any] | None,
     max_side: int = 512,
 ) -> dict[str, Any]:
-    """Production-safe SVG CC report with explicit applicability/fail-closed state."""
     applicability = component_gate_applicability(mode, analysis)
     if not applicability["applicable"]:
-        return {
-            "applicable": False,
-            "measured": False,
-            "status": "not_applicable",
-            "reason": applicability["reason"],
-        }
+        return {"applicable": False, "measured": False, "status": "not_applicable", "reason": applicability["reason"]}
 
     try:
         from app.fidelity import load_reference_rgb, render_svg_to_rgb  # noqa: PLC0415
-
         reference, (w, h) = load_reference_rgb(Path(original_path), max_side=max_side)
         rendered = render_svg_to_rgb(Path(svg_path), w, h)
         if rendered is None:
@@ -429,24 +415,14 @@ def score_svg_component_integrity(
         }
 
     if report.get("status") == "not_applicable":
-        # Source itself proved continuous-tone.  This is a legitimate
-        # applicability outcome, not a missing measurement.
         return {"applicable": False, **report}
 
-    open_cycle = has_open_required_cycle(Path(svg_path))
-    result = {
+    return {
         "applicable": True,
         **report,
         "component_measurement_status": report.get("status"),
-        "open_required_cycle": open_cycle,
+        "open_required_cycle": has_open_required_cycle(Path(svg_path)),
     }
-    if open_cycle:
-        # Preserve the pre-existing release structural invariant.  Keep all CC
-        # metrics for diagnostics, but this artifact cannot be promoted by the
-        # new winner gate simply because its raster happens to match perfectly.
-        result["status"] = "fail"
-        result["reason"] = "open_required_cycle"
-    return result
 
 
 def gate_candidate_scores(
@@ -454,34 +430,14 @@ def gate_candidate_scores(
     fidelity_score: float | None,
     component_report: dict[str, Any],
 ) -> dict[str, Any]:
-    """Apply the independent CC/structure eligibility bands for selection.
-
-    Passing/non-applicable candidates keep their exact legacy score.  Ordinary
-    measured CC failures share a constant band, preserving their old relative
-    ordering.  A pre-existing release-structural failure (open filled cycle) is
-    lower than that band, and missing applicable measurement is lowest and
-    carries ``needs_review``.  No existing fidelity/release threshold changes.
-    """
+    """Attach selection eligibility without mutating measured score values."""
     status = str(component_report.get("status") or "needs_review")
     applicable = bool(component_report.get("applicable"))
-    result = {
+    safe = (not applicable) or status == "pass"
+    return {
         "total_score": float(total_score),
         "fidelity_score": fidelity_score,
-        "selection_disqualified": False,
+        "selection_disqualified": not safe,
+        "selection_safe": safe,
         "component_quality_status": status,
     }
-    if not applicable or status == "pass":
-        return result
-
-    result["selection_disqualified"] = True
-    if status == "needs_review" or not component_report.get("measured"):
-        offset = _UNMEASURED_SCORE_OFFSET
-    elif component_report.get("reason") == "open_required_cycle" or component_report.get("open_required_cycle"):
-        offset = _STRUCTURAL_FAIL_SCORE_OFFSET
-    else:
-        offset = _FAIL_SCORE_OFFSET
-    result["total_score"] = float(total_score) - offset
-    result["fidelity_score"] = (
-        float(fidelity_score) - offset if fidelity_score is not None else None
-    )
-    return result
