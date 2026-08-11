@@ -6,16 +6,19 @@ AI-2 manager-remediation policies at its public extension points:
 
 * connected-component safety filters candidate selection without rewriting
   measured total/fidelity scores;
-* the pre-existing closed-filled-cycle structural invariant is an eligibility
-  tier, never a numeric score offset;
-* render-equivalent implicit fill cycles and neutral palette repair are finalized
-  after candidate generation and before scoring, so scoring/evaluation is byte-pure.
+* neutral-palette repair is finalized after candidate generation and before its
+  first score, so scoring itself is byte-pure;
+* render-equivalent explicit fill-cycle closure is a final journaled lifecycle
+  transform, followed by a final score of those exact artifact bytes.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+
+import numpy as np
+from PIL import Image
 
 from app import pipeline_core as _core
 from app.neutral_palette import (
@@ -25,8 +28,6 @@ from app.neutral_palette import (
 )
 from app.svg_lifecycle import close_implicit_fill_cycles
 
-# Preserve the existing public/compatibility surface, including internal helpers
-# imported by the repository's regression tests.
 for _name in dir(_core):
     if not (_name.startswith("__") and _name.endswith("__")):
         globals().setdefault(_name, getattr(_core, _name))
@@ -38,43 +39,26 @@ _base_apply_editability_preference = _core._apply_editability_preference
 _base_refine_best = _core.refine_best
 _base_refit_one = _core._refit_one
 _base_apply_boundary_refit = _core._apply_boundary_refit
+_base_run_pipeline = _core.run_pipeline
 
 
-def _selection_tier(candidate: dict[str, Any]) -> int:
-    """Return independent eligibility tier; lower is safer.
-
-    Tier 0: component-safe / component gate not applicable.
-    Tier 1: applicable CC fail or needs_review.
-    Tier 2: structurally invalid open filled cycle.
-
-    The tier is deliberately separate from total/fidelity score so quality
-    measurements stay numerically honest. Within a tier the established
-    selector remains unchanged.
-    """
-    component = candidate.get("component_quality") or {}
-    if bool(component.get("open_required_cycle")):
-        return 2
-    if bool(
+def _is_selection_safe(candidate: dict[str, Any]) -> bool:
+    return bool(
         candidate.get(
             "selection_safe",
             not candidate.get("selection_disqualified", False),
         )
-    ):
-        return 0
-    return 1
+    )
 
 
 def _selection_pool(scored: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Select only the best available eligibility tier, preserving legacy rank."""
-    if not scored:
-        return scored
-    best_tier = min(_selection_tier(candidate) for candidate in scored)
-    pool = [candidate for candidate in scored if _selection_tier(candidate) == best_tier]
-    return pool or scored
+    """Prefer component-safe candidates; preserve legacy ranking if none pass."""
+    safe = [candidate for candidate in scored if _is_selection_safe(candidate)]
+    return safe or scored
 
 
 def select_best(scored: list[dict[str, Any]], mode: str) -> tuple[dict, dict, str]:
-    """Run the legacy selector inside the independent safety/structure pool."""
+    """Run the established selector inside the independent CC-safe pool."""
     legacy_chosen, legacy_raw, legacy_reason = _base_select_best(scored, mode)
     pool = _selection_pool(scored)
     if len(pool) == len(scored):
@@ -92,7 +76,7 @@ def produce_candidate(
     original_path: Path | None = None,
     palette_cap: int | None = None,
 ) -> dict[str, Any]:
-    """Finalize render-equivalent structural/palette cleanup before scoring."""
+    """Finalize the narrow neutral-palette repair before candidate scoring."""
     result = _base_produce_candidate(
         name,
         spec,
@@ -106,32 +90,16 @@ def produce_candidate(
         "neutral_palette_restore",
         {"applied": False, "reason": "not_layered_neutral_geometric"},
     )
-    result.setdefault(
-        "fill_cycle_normalization",
-        {"applied": False, "reason": "candidate_unavailable", "paths_changed": 0, "subpaths_closed": 0},
-    )
-    if not result.get("success"):
+    if not result.get("success") or original_path is None or mode != "geometric_logo":
         return result
 
-    svg_path = Path(result["svg_path"])
-    # SVG fills already close their subpaths for rasterization. Adding a literal
-    # Z to fill-only paths therefore preserves rendering while satisfying the
-    # production structural contract. Visible-stroke paths are intentionally
-    # skipped by the lifecycle helper because closing those could alter output.
-    result["fill_cycle_normalization"] = close_implicit_fill_cycles(svg_path)
-
-    if original_path is None or mode != "geometric_logo":
-        return result
     neutral_report = detect_neutral_luminance_bands(original_path)
     if not geometric_preserves_neutral_palette(mode, neutral_report):
         return result
 
-    # This is candidate construction, not scoring. The returned SVG is the
-    # exact immutable artifact score_vector_candidate() will observe.
-    restore_report = restore_layered_neutral_svg_palette(
-        svg_path, Path(original_path), mode=mode
+    result["neutral_palette_restore"] = restore_layered_neutral_svg_palette(
+        Path(result["svg_path"]), Path(original_path), mode=mode
     )
-    result["neutral_palette_restore"] = restore_report
     return result
 
 
@@ -161,7 +129,7 @@ def refine_best(
     refined, info = _base_refine_best(
         best, mode, analysis, original_path, preprocessed_path, job_dir, scored
     )
-    if _selection_tier(refined) > _selection_tier(best):
+    if _is_selection_safe(best) and not _is_selection_safe(refined):
         return best, {
             **info,
             "applied": False,
@@ -178,7 +146,11 @@ def _refit_one(
     job_dir: Path,
 ) -> dict[str, Any] | None:
     refined = _base_refit_one(cand, mode, analysis, original_path, job_dir)
-    if refined is not None and _selection_tier(refined) > _selection_tier(cand):
+    if (
+        refined is not None
+        and _is_selection_safe(cand)
+        and not _is_selection_safe(refined)
+    ):
         return None
     return refined
 
@@ -194,7 +166,7 @@ def _apply_boundary_refit(
     candidate, info = _base_apply_boundary_refit(
         best, mode, analysis, original_path, job_dir, scored
     )
-    if _selection_tier(candidate) > _selection_tier(best):
+    if _is_selection_safe(best) and not _is_selection_safe(candidate):
         return best, {
             **info,
             "applied": False,
@@ -203,10 +175,117 @@ def _apply_boundary_refit(
     return candidate, info
 
 
-# pipeline_core functions resolve these names from their own module globals at
-# call time; install the policy hooks before exporting run_pipeline. In
-# particular, the worker entrypoint is patched so spawn/forkserver children
-# import app.pipeline and install this same policy before candidate work starts.
+def _finalize_fill_cycle_lifecycle(
+    result: dict[str, Any],
+    *,
+    image: Image.Image,
+    original_path: Path,
+) -> dict[str, Any]:
+    """Journal explicit fill closure on the final artifact, then rescore it."""
+    best = result.get("best")
+    if not best or not best.get("svg_path"):
+        return result
+
+    analysis = result.get("analysis") or {}
+    mode = str(result.get("mode_used") or "")
+    svg_path = Path(best["svg_path"])
+
+    from app.transform_journal import TransformJournal, merge_journal_reports  # noqa: PLC0415
+
+    if image.mode in ("RGBA", "LA", "PA") or (
+        image.mode == "P" and "transparency" in image.info
+    ):
+        rgba = np.asarray(image.convert("RGBA"), dtype=np.uint8)
+        alpha = rgba[:, :, 3:4].astype(np.float32) / 255.0
+        source_rgb = np.clip(
+            rgba[:, :, :3].astype(np.float32) * alpha + 255.0 * (1.0 - alpha),
+            0,
+            255,
+        ).astype(np.uint8)
+        required_metrics = {"alpha_fidelity"}
+    else:
+        source_rgb = np.asarray(image.convert("RGB"), dtype=np.uint8)
+        required_metrics: set[str] = set()
+    if analysis.get("has_gradient"):
+        required_metrics.add("gradient_fidelity")
+
+    journal = TransformJournal(
+        svg_path,
+        source_rgb,
+        image_class=_core._JOURNAL_IMAGE_CLASS.get(mode, "clean_logo"),
+        required_metrics=required_metrics,
+    )
+    _accepted, lifecycle_report, stage = journal.run_in_place(
+        "explicit_fill_cycle_normalization",
+        svg_path,
+        close_implicit_fill_cycles,
+    )
+    result["transform_journal"] = merge_journal_reports(
+        result.get("transform_journal"), journal.to_dict()
+    )
+    result["refit_info"] = {
+        **(result.get("refit_info") or {}),
+        "fill_cycle_normalization": {
+            **(lifecycle_report or {}),
+            "journal_status": stage["status"],
+            "journal_reasons": stage["reason_codes"],
+        },
+    }
+
+    if not (lifecycle_report or {}).get("applied") or stage["status"] != "accepted":
+        return result
+
+    rescored = _core.score_candidate(best, Path(original_path), analysis, mode)
+    if rescored is not None and rescored.get("rendered_ok"):
+        result["best"] = rescored
+        result["refit_info"]["final_rescore_after_fill_cycle"] = {
+            "status": "measured",
+            "fidelity_score": rescored.get("fidelity_score"),
+        }
+        if (
+            mode != "photo_poster"
+            and (analysis.get("background") or {}).get("is_uniform_background")
+        ):
+            result["structure_report"] = _core.score_structure_integrity(
+                rescored["svg_path"], Path(original_path)
+            )
+    else:
+        result["best"] = {
+            **best,
+            "rendered_ok": False,
+            "fidelity_score": None,
+            "final_rescore_error": "fill_cycle_measurement_unavailable",
+        }
+        result["refit_info"]["final_rescore_after_fill_cycle"] = {
+            "status": "unmeasured",
+            "error": "fill_cycle_measurement_unavailable",
+        }
+    return result
+
+
+def run_pipeline(
+    image: Image.Image,
+    original_path: Path,
+    trace_mode: str,
+    job_dir: Path,
+    refine: bool = True,
+    edge_cleanup: bool = True,
+) -> dict[str, Any]:
+    result = _base_run_pipeline(
+        image,
+        original_path,
+        trace_mode,
+        job_dir,
+        refine=refine,
+        edge_cleanup=edge_cleanup,
+    )
+    return _finalize_fill_cycle_lifecycle(
+        result,
+        image=image,
+        original_path=Path(original_path),
+    )
+
+
 _core.select_best = select_best
 _core.produce_candidate = produce_candidate
 _core._produce_and_score_job = _produce_and_score_job
@@ -215,7 +294,6 @@ _core.refine_best = refine_best
 _core._refit_one = _refit_one
 _core._apply_boundary_refit = _apply_boundary_refit
 
-run_pipeline = _core.run_pipeline
 WorkerFailure = _core.WorkerFailure
 
 
