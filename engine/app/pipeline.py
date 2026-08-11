@@ -14,6 +14,8 @@ AI-2 manager-remediation policies at its public extension points:
 
 from __future__ import annotations
 
+import hashlib
+import time
 from pathlib import Path
 from typing import Any
 
@@ -175,6 +177,74 @@ def _apply_boundary_refit(
     return candidate, info
 
 
+class _FillCycleJournal:
+    """Factory namespace for the exact-render structural repair journal."""
+
+    @staticmethod
+    def build(
+        baseline_path: Path,
+        source_rgb: np.ndarray,
+        *,
+        image_class: str,
+        required_metrics: set[str],
+    ) -> Any:
+        from app import transform_journal as _tj  # noqa: PLC0415
+
+        class _ExactRenderRepairJournal(_tj.TransformJournal):
+            """Accept only exact-render-preserving structural normalization."""
+
+            def _measure(self, data: bytes) -> dict[str, Any]:
+                sha = hashlib.sha256(data).hexdigest()
+                measure_alpha = "alpha_fidelity" in self.required_metrics
+                cache_key = f"{sha}:fill_cycle_exact:alpha={int(measure_alpha)}"
+                if cache_key not in self._cache:
+                    started = time.perf_counter()
+                    try:
+                        self._cache[cache_key] = _tj._measure_svg_bytes(
+                            data,
+                            self.source_rgb,
+                            max_side=self.max_side,
+                            required_metrics=self.required_metrics,
+                            measure_alpha=measure_alpha,
+                            capture_render=True,
+                        )
+                    finally:
+                        self.evaluation_seconds += time.perf_counter() - started
+                return self._cache[cache_key]
+
+            def _decide(
+                self,
+                before: dict[str, Any],
+                after: dict[str, Any],
+                *,
+                stage_id: str,
+            ) -> list[str]:
+                if stage_id == "explicit_fill_cycle_normalization":
+                    required_ok = not after.get("required_unmeasured")
+                    structural_ok = bool(after.get("structural_safe"))
+                    gradient_ok = int(after.get("gradient_definition_count") or 0) >= int(
+                        before.get("gradient_definition_count") or 0
+                    )
+                    rgb_before = before.get("render_rgb_sha256")
+                    rgb_after = after.get("render_rgb_sha256")
+                    rgb_exact = bool(rgb_before) and rgb_before == rgb_after
+                    alpha_exact = True
+                    if "alpha_fidelity" in self.required_metrics:
+                        alpha_before = before.get("alpha_sha256")
+                        alpha_after = after.get("alpha_sha256")
+                        alpha_exact = bool(alpha_before) and alpha_before == alpha_after
+                    if required_ok and structural_ok and gradient_ok and rgb_exact and alpha_exact:
+                        return []
+                return super()._decide(before, after, stage_id=stage_id)
+
+        return _ExactRenderRepairJournal(
+            baseline_path,
+            source_rgb,
+            image_class=image_class,
+            required_metrics=required_metrics,
+        )
+
+
 def _finalize_fill_cycle_lifecycle(
     result: dict[str, Any],
     *,
@@ -190,7 +260,7 @@ def _finalize_fill_cycle_lifecycle(
     mode = str(result.get("mode_used") or "")
     svg_path = Path(best["svg_path"])
 
-    from app.transform_journal import TransformJournal, merge_journal_reports  # noqa: PLC0415
+    from app.transform_journal import merge_journal_reports  # noqa: PLC0415
 
     if image.mode in ("RGBA", "LA", "PA") or (
         image.mode == "P" and "transparency" in image.info
@@ -209,13 +279,13 @@ def _finalize_fill_cycle_lifecycle(
     if analysis.get("has_gradient"):
         required_metrics.add("gradient_fidelity")
 
-    journal = TransformJournal(
+    journal = _FillCycleJournal.build(
         svg_path,
         source_rgb,
         image_class=_core._JOURNAL_IMAGE_CLASS.get(mode, "clean_logo"),
         required_metrics=required_metrics,
     )
-    _accepted, lifecycle_report, stage = journal.run_in_place(
+    accepted, lifecycle_report, stage = journal.run_in_place(
         "explicit_fill_cycle_normalization",
         svg_path,
         close_implicit_fill_cycles,
@@ -232,7 +302,7 @@ def _finalize_fill_cycle_lifecycle(
         },
     }
 
-    if not (lifecycle_report or {}).get("applied") or stage["status"] != "accepted":
+    if not accepted or not (lifecycle_report or {}).get("applied"):
         return result
 
     rescored = _core.score_candidate(best, Path(original_path), analysis, mode)
