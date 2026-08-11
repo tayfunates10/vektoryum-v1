@@ -10,7 +10,9 @@ from ai2_acceptance_metrics import build_acceptance_report, validate_report  # n
 
 
 def test_issue_137_named_canonical_reproducers_meet_all_native_256_gates(tmp_path: Path) -> None:
-    report = build_acceptance_report(tmp_path / "first")
+    root = tmp_path / "first"
+    root.mkdir()
+    report = build_acceptance_report(root)
 
     assert validate_report(report) == []
     assert set(report["cases"]) == {
@@ -31,7 +33,11 @@ def test_issue_137_named_canonical_reproducers_meet_all_native_256_gates(tmp_pat
 
 
 def test_issue_137_native_256_evidence_is_deterministic_across_two_loops(tmp_path: Path) -> None:
-    first = build_acceptance_report(tmp_path / "first")
-    second = build_acceptance_report(tmp_path / "second")
+    first_root = tmp_path / "first"
+    second_root = tmp_path / "second"
+    first_root.mkdir()
+    second_root.mkdir()
+    first = build_acceptance_report(first_root)
+    second = build_acceptance_report(second_root)
 
     assert first == second
