@@ -497,6 +497,7 @@ def _dominant_saturation_stats(dominant_colors: list[dict[str, Any]]) -> dict[st
 
         if saturation_like >= 55:
             saturated_ratio += ratio
+
         if saturation_like <= 30:
             neutral_ratio += ratio
 
@@ -941,6 +942,24 @@ def analyze_image_from_mem(image: Image.Image) -> dict[str, Any]:
         detected_type = "logo_color"
         recommended_mode = "logo_color"
 
+    # AI-2 P0-B2b: analyzer gerçekten single_color önerdiyse ve kaynakta 3+
+    # spatially-supported nötr luminance platosu varsa binary yola sokma.
+    # Hedef geometric_logo; logo_color'a genel fallback yapılmaz. Explicit
+    # kullanıcı trace_mode seçimi pipeline'da analyzer önerisini kullanmadığı
+    # için bu yönlendirmeden etkilenmez.
+    neutral_luminance_report: dict[str, Any] | None = None
+    if recommended_mode == "single_color":
+        from app.neutral_palette import (  # noqa: PLC0415
+            detect_neutral_luminance_bands,
+            route_auto_layered_neutral_mode,
+        )
+
+        neutral_luminance_report = detect_neutral_luminance_bands(image)
+        routed_mode = route_auto_layered_neutral_mode(recommended_mode, neutral_luminance_report)
+        if routed_mode != recommended_mode:
+            recommended_mode = routed_mode
+            detected_type = routed_mode
+
     if detected_type in ["minimal_ai", "geometric_logo", "single_color", "lineart"]:
         warnings = [
             warning for warning in warnings
@@ -969,6 +988,7 @@ def analyze_image_from_mem(image: Image.Image) -> dict[str, Any]:
         "quality_score": quality_score,
         "detected_type": detected_type,
         "recommended_mode": recommended_mode,
+        "neutral_luminance_report": neutral_luminance_report,
         "warnings": warnings,
         "is_flat_logo": geometry_flags["is_flat_logo"],
         "likely_geometric_logo": geometry_flags["likely_geometric_logo"],
