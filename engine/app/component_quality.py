@@ -9,16 +9,25 @@ The gate is intentionally applicable only to palette-like, non-photo,
 non-gradient inputs.  A non-applicable input is not a failure.  An applicable
 input whose component measurement cannot be produced is ``needs_review`` and
 is never treated as a quality pass.
+
+Candidate eligibility also preserves the repository's pre-existing release
+invariant for filled geometry: a filled subpath must be geometrically closed.
+This matters when the new CC gate would otherwise promote a visually exact but
+structurally open candidate over the legacy safe winner.  It is not a new
+quality threshold; it mirrors the existing ``core_release_runner`` contract.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import cv2
 import numpy as np
+from defusedxml import ElementTree as SafeET
+from svgpathtools import parse_path
 
 # Preserve the production component-support floor already used by fidelity.py.
 _MIN_COMPONENT_PIXELS = 48
@@ -40,6 +49,8 @@ _REQUIRED_MIN_TRUE_CC_IOU = 0.95
 _FAIL_SCORE_OFFSET = 1000.0
 _UNMEASURED_SCORE_OFFSET = 2000.0
 
+_STYLE_FILL = re.compile(r"(?:^|;)\s*fill\s*:\s*([^;]+)", re.I)
+
 
 @dataclass(frozen=True)
 class _Component:
@@ -58,6 +69,41 @@ def component_gate_applicability(mode: str, analysis: dict[str, Any] | None) -> 
     if bool(analysis.get("has_gradient")) or bool(analysis.get("tonal_gradient_foreground")):
         return {"applicable": False, "reason": "gradient_input"}
     return {"applicable": True, "reason": "palette_like_input"}
+
+
+def _path_fill(element: Any) -> str:
+    direct = element.attrib.get("fill")
+    if direct is not None:
+        return str(direct).strip().lower()
+    style = str(element.attrib.get("style") or "")
+    match = _STYLE_FILL.search(style)
+    return match.group(1).strip().lower() if match else "black"
+
+
+def has_open_required_cycle(svg_path: Path) -> bool:
+    """Mirror the existing release invariant for geometrically open fills.
+
+    A literal ``Z`` is not mandatory: tracers may serialize a closed curve by
+    returning the final point to the first point.  ``svgpathtools`` therefore
+    decides geometric closure.  Open stroke-only paths remain valid.
+    """
+    try:
+        root = SafeET.parse(str(svg_path)).getroot()
+    except Exception:
+        return True
+    for element in root.iter():
+        if str(element.tag).split("}")[-1].lower() != "path":
+            continue
+        if _path_fill(element) == "none":
+            continue
+        d = str(element.attrib.get("d") or "")
+        try:
+            subpaths = parse_path(d).continuous_subpaths()
+        except Exception:
+            return True
+        if not subpaths or any(not subpath.isclosed() for subpath in subpaths):
+            return True
+    return False
 
 
 def _source_palette_classes(
@@ -277,6 +323,7 @@ def score_svg_component_integrity(
                 "measured": False,
                 "status": "needs_review",
                 "reason": "render_unavailable",
+                "open_required_cycle": has_open_required_cycle(Path(svg_path)),
             }
         report = measure_component_integrity_arrays(reference, rendered)
     except Exception as exc:  # noqa: BLE001
@@ -285,13 +332,28 @@ def score_svg_component_integrity(
             "measured": False,
             "status": "needs_review",
             "reason": f"measurement_error:{type(exc).__name__}",
+            "open_required_cycle": has_open_required_cycle(Path(svg_path)),
         }
 
     if report.get("status") == "not_applicable":
         # Source itself proved continuous-tone.  This is a legitimate
         # applicability outcome, not a missing measurement.
         return {"applicable": False, **report}
-    return {"applicable": True, **report}
+
+    open_cycle = has_open_required_cycle(Path(svg_path))
+    result = {
+        "applicable": True,
+        **report,
+        "component_measurement_status": report.get("status"),
+        "open_required_cycle": open_cycle,
+    }
+    if open_cycle:
+        # Preserve the pre-existing release structural invariant.  Keep all CC
+        # metrics for diagnostics, but this artifact cannot be promoted by the
+        # new winner gate simply because its raster happens to match perfectly.
+        result["status"] = "fail"
+        result["reason"] = "open_required_cycle"
+    return result
 
 
 def gate_candidate_scores(
