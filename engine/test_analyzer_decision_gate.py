@@ -10,6 +10,7 @@ import app
 import app.analyzer as analyzer
 import app.analyzer_decision_gate as gate
 import app.pipeline as pipeline
+from app.analyzer_contracts import attach_analyzer_contract
 from app.analyzer_decision_gate import (
     REVIEW_FALLBACK_MODE,
     apply_auto_decision_to_final_artifact,
@@ -34,6 +35,20 @@ def _geometric_logo() -> Image.Image:
     arr[355:385, 35:605] = 0
     arr[110:280, 130:310] = (230, 25, 35)
     arr[100:320, 365:520] = 0
+    return Image.fromarray(arr, "RGB")
+
+
+def _three_neutral_band_logo() -> Image.Image:
+    arr = np.full((320, 480, 3), 255, dtype=np.uint8)
+    arr[30:290, 40:440] = 214
+    arr[70:250, 90:390] = 142
+    arr[110:210, 145:335] = 0
+    return Image.fromarray(arr, "RGB")
+
+
+def _binary_bw_logo() -> Image.Image:
+    arr = np.full((320, 480, 3), 255, dtype=np.uint8)
+    arr[70:250, 90:390] = 0
     return Image.fromarray(arr, "RGB")
 
 
@@ -105,6 +120,39 @@ def test_manual_mode_is_unchanged(monkeypatch) -> None:
     assert decision["status"] == "manual"
     assert decision["execution_mode"] == "centerline"
     assert decision["reason_codes"] == ["manual_mode_bypass"]
+
+
+def test_three_neutral_bands_force_color_preserving_auto_fallback(monkeypatch) -> None:
+    monkeypatch.setattr(analyzer, "calculate_semantic_edge_stats", lambda _image: None)
+    image = _three_neutral_band_logo()
+    report = analyzer.analyze_image_from_mem(image)
+    for key in (
+        "analyzer_contract",
+        "recommendation_confidence",
+        "recommendation_margin",
+        "recommendation_digest",
+        "auto_decision",
+    ):
+        report.pop(key, None)
+    report["recommended_mode"] = "single_color"
+    report["detected_type"] = "single_color"
+    report["likely_single_color"] = True
+    report["likely_line_art"] = False
+    report["likely_color_logo"] = False
+    attach_analyzer_contract(report, image)
+    assert report["analyzer_contract"]["status"] == "valid"
+
+    decision = decide_trace_mode(report, image, "auto")
+
+    assert decision["status"] == "needs_review"
+    assert decision["execution_mode"] == REVIEW_FALLBACK_MODE
+    assert decision["fallback_applied"] is True
+    assert decision["reason_codes"] == ["neutral_luminance_band_guard"]
+    assert decision["neutral_luminance_band_count"] >= 3
+
+
+def test_binary_bw_image_does_not_invent_third_neutral_band() -> None:
+    assert gate._neutral_luminance_band_count(_binary_bw_logo()) == 2
 
 
 def test_precomputed_report_is_single_use(monkeypatch) -> None:
