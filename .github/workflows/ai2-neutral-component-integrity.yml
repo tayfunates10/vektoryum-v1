@@ -40,6 +40,9 @@ jobs:
       - name: Install production and test dependencies
         run: python -m pip install --disable-pip-version-check -r requirements.txt pytest
       - name: Compile AI-2 modules
-        run: python -m py_compile app/analyzer.py app/neutral_palette.py test_ai2_neutral_palette.py
+        run: >-
+          python -m py_compile
+          app/analyzer.py app/neutral_palette.py app/component_quality.py app/scoring.py
+          test_ai2_neutral_palette.py test_ai2_component_quality.py
       - name: Run AI-2 focused tests
-        run: python -m pytest -q test_ai2_neutral_palette.py
+        run: python -m pytest -q test_ai2_neutral_palette.py test_ai2_component_quality.py
