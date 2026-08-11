@@ -12,6 +12,7 @@ sys.path.insert(0, str(ENGINE_DIR))
 from app.neutral_palette import (  # noqa: E402
     detect_neutral_luminance_bands,
     geometric_preserves_neutral_palette,
+    route_auto_layered_neutral_mode,
 )
 
 
@@ -59,3 +60,28 @@ def test_geometric_neutral_canonicalization_guard_is_narrow() -> None:
     assert geometric_preserves_neutral_palette("geometric_logo", not_layered) is False
     assert geometric_preserves_neutral_palette("single_color", layered) is False
     assert geometric_preserves_neutral_palette("logo_color", layered) is False
+
+
+def test_single_color_layered_neutral_auto_route_is_narrow() -> None:
+    layered = {"layered_neutral": True}
+    not_layered = {"layered_neutral": False}
+
+    assert route_auto_layered_neutral_mode("single_color", layered) == "geometric_logo"
+    assert route_auto_layered_neutral_mode("single_color", not_layered) == "single_color"
+    assert route_auto_layered_neutral_mode("geometric_logo", layered) == "geometric_logo"
+    assert route_auto_layered_neutral_mode("logo_color", layered) == "logo_color"
+    assert route_auto_layered_neutral_mode("photo_poster", layered) == "photo_poster"
+
+
+def test_neutral_tone_steps_fixture_is_deterministic() -> None:
+    fixture = _bands(
+        [(12, 12, 12), (72, 72, 72), (136, 136, 136), (204, 204, 204), (248, 248, 248)],
+        width=52,
+        height=64,
+    )
+    first = detect_neutral_luminance_bands(fixture)
+    second = detect_neutral_luminance_bands(fixture.copy())
+
+    assert first == second
+    assert first["layered_neutral"] is True
+    assert first["band_count"] >= 3
