@@ -4,18 +4,25 @@ on:
   push:
     branches:
       - codex/ai3-alpha-transparency
+      - codex/ai3-round2-visible-alpha
     paths:
       - "engine/app/alpha_candidate_support.py"
       - "engine/app/alpha_candidate_validation.py"
+      - "engine/app/alpha_pipeline_retry.py"
+      - "engine/app/alpha_visible_paint.py"
       - "engine/test_alpha_candidate_validation.py"
       - "engine/test_issue138_alpha_transparency.py"
+      - "engine/test_issue145_visible_alpha.py"
       - ".github/workflows/ai3-alpha-transparency.yml"
   pull_request:
     paths:
       - "engine/app/alpha_candidate_support.py"
       - "engine/app/alpha_candidate_validation.py"
+      - "engine/app/alpha_pipeline_retry.py"
+      - "engine/app/alpha_visible_paint.py"
       - "engine/test_alpha_candidate_validation.py"
       - "engine/test_issue138_alpha_transparency.py"
+      - "engine/test_issue145_visible_alpha.py"
       - ".github/workflows/ai3-alpha-transparency.yml"
   workflow_dispatch:
 
@@ -29,7 +36,7 @@ concurrency:
 jobs:
   alpha-contract:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 35
     defaults:
       run:
         working-directory: engine
@@ -49,9 +56,10 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ghostscript libcairo2
       - name: Install Python dependencies
         run: python -m pip install -r requirements.txt pytest httpx
-      - name: Issue 138 historical-equivalent and composite-aware alpha gates
+      - name: Issue 138 and 145 alpha/composite contracts
         run: >-
           python -m pytest -q -s
+          test_issue145_visible_alpha.py
           test_issue138_alpha_transparency.py
           test_alpha_candidate_validation.py
           test_alpha_candidate_knockout.py
