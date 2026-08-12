@@ -126,6 +126,17 @@ def _classification_stable_color(
     return best[3], float(-best[0])
 
 
+def serialize_compact_visible_alpha_svg(root: ET.Element) -> bytes:
+    """Serialize a repaired SVG without optional XML declaration bytes."""
+    ET.register_namespace("", _SVG_NS)
+    return ET.tostring(
+        root,
+        encoding="utf-8",
+        xml_declaration=False,
+        short_empty_elements=True,
+    )
+
+
 def build_boundary_stable_source_paint_group(
     root: ET.Element,
     source_rgba: np.ndarray,
@@ -145,17 +156,21 @@ def build_boundary_stable_source_paint_group(
 
     qname = lambda name: f"{{{_SVG_NS}}}{name}"
     view_x, view_y, view_width, view_height = _viewbox(root)
-    group = ET.Element(
-        qname("g"),
-        {
-            "data-vektoryum-visible-alpha-paint": "source-class-stable-v3",
-            "transform": (
+    group = ET.Element(qname("g"))
+    if (
+        view_x != 0.0
+        or view_y != 0.0
+        or view_width != float(grid_width)
+        or view_height != float(grid_height)
+    ):
+        group.set(
+            "transform",
+            (
                 f"translate({view_x:.12g} {view_y:.12g}) "
                 f"scale({view_width / float(grid_width):.12g} "
                 f"{view_height / float(grid_height):.12g})"
             ),
-        },
-    )
+        )
 
     path_count = 0
     loop_count = 0
@@ -175,17 +190,15 @@ def build_boundary_stable_source_paint_group(
             visible_palette,
             label,
         )
-        ET.SubElement(
-            group,
-            qname("path"),
-            {
-                "d": path_data,
-                "fill": "#{:02x}{:02x}{:02x}".format(
-                    int(color[0]), int(color[1]), int(color[2])
-                ),
-                "fill-rule": "evenodd",
-            },
-        )
+        attributes = {
+            "d": path_data,
+            "fill": "#{:02x}{:02x}{:02x}".format(
+                int(color[0]), int(color[1]), int(color[2])
+            ),
+        }
+        if len(loops) > 1:
+            attributes["fill-rule"] = "evenodd"
+        ET.SubElement(group, qname("path"), attributes)
         path_count += 1
         loop_count += len(loops)
         agreements.append(agreement)
@@ -201,3 +214,10 @@ def build_boundary_stable_source_paint_group(
         "visible_paint_mean_source_class_agreement": float(np.mean(agreements)),
         "visible_paint_color_selection": "max_class_agreement_then_visible_mse_v1",
     }
+
+
+# ``alpha_visible_paint`` is loaded before this module by the production alpha
+# factory. Bind only its repair serializer; direct alpha helpers do not call it.
+from app import alpha_visible_paint as _alpha_visible_paint  # noqa: E402
+
+_alpha_visible_paint._serialized = serialize_compact_visible_alpha_svg
