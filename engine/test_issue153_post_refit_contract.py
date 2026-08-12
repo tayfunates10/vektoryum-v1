@@ -50,10 +50,10 @@ def test_source_rgb_palette_guard_detects_semantic_colour_island() -> None:
     assert report["measurement_space"] == "source_snapped_rgb_palette"
 
 
-def test_alpha_parent_selection_has_no_source_level_count_ceiling() -> None:
-    """Continuous alpha may probe parents, while the candidate trial count stays bounded."""
+def test_alpha_parent_selection_retains_bounded_source_level_scope() -> None:
+    """Dense continuous alpha stays on the proven alpha path; parent probing stays bounded."""
     module = __import__("app.alpha_parent_selection", fromlist=["_select"])
     source = __import__("inspect").getsource(module._select)
-    assert "len(levels) >" not in source
-    assert "len(levels) <= 1" in source
+    assert "len(levels) <= 1 or len(levels) > _MAX_ALPHA_LEVELS" in source
+    assert module._MAX_ALPHA_LEVELS == 4
     assert module._MAX_TRIALS == 4
