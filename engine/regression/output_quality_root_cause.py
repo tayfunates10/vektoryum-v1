@@ -9,6 +9,7 @@ are never published.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -52,6 +53,7 @@ _SCORE_FIELDS = (
     "geometry_score",
     "editability_score",
 )
+_REJECTED_JOURNAL_STATUSES = {"rolled_back", "failed", "budget_exhausted"}
 
 
 def _safe_scalar(value: object) -> str | int | float | bool | None:
@@ -73,24 +75,94 @@ def _safe_mapping(value: object, fields: tuple[str, ...]) -> dict[str, Any]:
     return output
 
 
-def candidate_snapshot(candidate: object) -> dict[str, Any] | None:
+def _file_sha256(value: object) -> str | None:
+    if not isinstance(value, (str, Path)):
+        return None
+    try:
+        path = Path(value)
+        if not path.is_file():
+            return None
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def _journal_rejections(output: dict[str, Any]) -> tuple[set[str], list[dict[str, Any]]]:
+    """Return candidate SHAs explicitly rejected by the production journal."""
+    report = output.get("transform_journal") or {}
+    rejected: set[str] = set()
+    evidence: list[dict[str, Any]] = []
+    for stage in report.get("stages") or []:
+        if not isinstance(stage, dict):
+            continue
+        status = str(stage.get("status") or "")
+        candidate_sha = stage.get("candidate_sha256")
+        accepted_sha = stage.get("accepted_sha256")
+        if (
+            status not in _REJECTED_JOURNAL_STATUSES
+            or not isinstance(candidate_sha, str)
+            or candidate_sha == accepted_sha
+        ):
+            continue
+        rejected.add(candidate_sha)
+        evidence.append(
+            {
+                "stage_id": _safe_scalar(stage.get("stage_id")),
+                "status": status,
+                "candidate_sha256": candidate_sha,
+                "accepted_sha256": _safe_scalar(accepted_sha),
+                "reason_codes": [
+                    str(code) for code in (stage.get("reason_codes") or [])
+                    if isinstance(code, (str, int, float, bool))
+                ],
+            }
+        )
+    return rejected, evidence
+
+
+def candidate_snapshot(
+    candidate: object,
+    *,
+    rejected_candidate_shas: set[str] | None = None,
+) -> dict[str, Any] | None:
     if not isinstance(candidate, dict):
         return None
     snapshot: dict[str, Any] = {}
-    for field in ("name", "engine", "rendered_ok", "fidelity_score", "total_score"):
+    for field in (
+        "name",
+        "engine",
+        "rendered_ok",
+        "fidelity_score",
+        "total_score",
+        "selection_safe",
+        "selection_disqualified",
+    ):
         scalar = _safe_scalar(candidate.get(field))
         if scalar is not None:
             snapshot[field] = scalar
     details = _safe_mapping(candidate.get("score_details"), _SCORE_FIELDS)
     if details:
         snapshot["score_details"] = details
+    svg_sha = _file_sha256(candidate.get("svg_path"))
+    if svg_sha is not None:
+        snapshot["svg_sha256"] = svg_sha
+        snapshot["final_eligible"] = svg_sha not in (rejected_candidate_shas or set())
+    else:
+        # Missing diagnostic SHA is not proof of a rollback. Preserve the legacy
+        # candidate visibility and let downstream fail-closed checks use the
+        # explicit journal evidence when available.
+        snapshot["final_eligible"] = True
     return snapshot or None
 
 
 def pipeline_snapshot(output: object) -> dict[str, Any]:
     if not isinstance(output, dict):
         return {"capture_status": "invalid_pipeline_output"}
-    scored = [candidate_snapshot(item) for item in (output.get("scored") or [])]
+    rejected_shas, journal_rejections = _journal_rejections(output)
+    scored = [
+        candidate_snapshot(item, rejected_candidate_shas=rejected_shas)
+        for item in (output.get("scored") or [])
+    ]
     candidates = [item for item in scored if item]
     candidates.sort(
         key=lambda item: (
@@ -106,10 +178,11 @@ def pipeline_snapshot(output: object) -> dict[str, Any]:
         "selection_reason": _safe_scalar(output.get("selection_reason")),
         "analysis": _safe_mapping(output.get("analysis"), _ANALYSIS_FIELDS),
         "preprocess": _safe_mapping(output.get("preprocess_report"), _PREPROCESS_FIELDS),
-        "best": candidate_snapshot(output.get("best")),
-        "raw_best": candidate_snapshot(output.get("raw_best")),
+        "best": candidate_snapshot(output.get("best"), rejected_candidate_shas=rejected_shas),
+        "raw_best": candidate_snapshot(output.get("raw_best"), rejected_candidate_shas=rejected_shas),
         "candidate_count": len(candidates),
         "candidates": candidates[:16],
+        "journal_rejections": journal_rejections,
     }
 
 

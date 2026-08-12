@@ -1,11 +1,15 @@
 """Pipeline public facade with AI-2 selection/lifecycle policy.
 
 The established pipeline implementation lives in :mod:`app.pipeline_core`.
-This facade keeps that implementation byte-identical while applying the small
-AI-2 manager-remediation policies at its public extension points:
+This facade keeps that implementation isolated while applying the small AI-2
+policies at public extension points:
 
 * connected-component safety filters candidate selection without rewriting
   measured total/fidelity scores;
+* an exact source-palette path candidate is available only for fully opaque,
+  low-color geometric/single-color artwork already inside the existing palette
+  cap; it never embeds raster data or increases a shared budget;
+* Pareto-dominated candidates cannot win inside the component-safe pool;
 * neutral-palette repair is finalized after candidate generation and before its
   first score, so scoring itself is byte-pure;
 * render-equivalent explicit fill-cycle closure is a final journaled lifecycle
@@ -15,6 +19,7 @@ AI-2 manager-remediation policies at its public extension points:
 from __future__ import annotations
 
 import hashlib
+import math
 import time
 from pathlib import Path
 from typing import Any
@@ -27,6 +32,10 @@ from app.neutral_palette import (
     detect_neutral_luminance_bands,
     geometric_preserves_neutral_palette,
     restore_layered_neutral_svg_palette,
+)
+from app.source_palette_vector import (
+    SourcePaletteNotApplicable,
+    vectorize_source_palette_paths,
 )
 from app.svg_lifecycle import close_implicit_fill_cycles
 
@@ -41,7 +50,11 @@ _base_apply_editability_preference = _core._apply_editability_preference
 _base_refine_best = _core.refine_best
 _base_refit_one = _core._refit_one
 _base_apply_boundary_refit = _core._apply_boundary_refit
+_base_build_vector_candidates = _core.build_vector_candidates
 _base_run_pipeline = _core.run_pipeline
+
+_SOURCE_PALETTE_MODES = {"geometric_logo", "single_color"}
+_SOURCE_PALETTE_CANDIDATE = "source_palette_exact"
 
 
 def _is_selection_safe(candidate: dict[str, Any]) -> bool:
@@ -53,20 +66,172 @@ def _is_selection_safe(candidate: dict[str, Any]) -> bool:
     )
 
 
+def _finite(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _fidelity_axes(candidate: dict[str, Any]) -> dict[str, tuple[float, bool]] | None:
+    """Return independent measured fidelity axes as ``value, higher_is_better``."""
+    details = candidate.get("score_details") or {}
+    component = candidate.get("component_quality") or {}
+    axes: dict[str, tuple[float, bool]] = {}
+    for name, value, higher in (
+        ("fidelity", candidate.get("fidelity_score"), True),
+        ("ssim", details.get("ssim"), True),
+        ("mean_delta_e", details.get("mean_delta_e"), False),
+        ("edge_f1", details.get("edge_f1"), True),
+    ):
+        measured = _finite(value)
+        if measured is None:
+            return None
+        axes[name] = (measured, higher)
+
+    if component.get("applicable"):
+        for name in (
+            "source_cc_recall",
+            "render_cc_precision",
+            "min_true_cc_iou",
+        ):
+            measured = _finite(component.get(name))
+            if measured is None:
+                return None
+            axes[name] = (measured, True)
+    return axes
+
+
+def _dominates(candidate: dict[str, Any], other: dict[str, Any]) -> bool:
+    """True iff candidate is no worse on every independent fidelity axis."""
+    left = _fidelity_axes(candidate)
+    right = _fidelity_axes(other)
+    if left is None or right is None or set(left) != set(right):
+        return False
+    strictly_better = False
+    for name in left:
+        left_value, higher = left[name]
+        right_value, _ = right[name]
+        if higher:
+            if left_value < right_value:
+                return False
+            strictly_better |= left_value > right_value
+        else:
+            if left_value > right_value:
+                return False
+            strictly_better |= left_value < right_value
+    return bool(strictly_better)
+
+
+def _pareto_front(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Remove candidates strictly dominated on independent fidelity axes."""
+    if len(candidates) < 2:
+        return candidates
+    front: list[dict[str, Any]] = []
+    for candidate in candidates:
+        if any(
+            other is not candidate and _dominates(other, candidate)
+            for other in candidates
+        ):
+            continue
+        front.append(candidate)
+    return front or candidates
+
+
 def _selection_pool(scored: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Prefer component-safe candidates; preserve legacy ranking if none pass."""
+    """Prefer CC-safe Pareto candidates; preserve legacy ranking if none pass."""
     safe = [candidate for candidate in scored if _is_selection_safe(candidate)]
-    return safe or scored
+    if not safe:
+        return scored
+    return _pareto_front(safe)
 
 
 def select_best(scored: list[dict[str, Any]], mode: str) -> tuple[dict, dict, str]:
-    """Run the established selector inside the independent CC-safe pool."""
+    """Run the established selector inside the independent safe Pareto pool."""
     legacy_chosen, legacy_raw, legacy_reason = _base_select_best(scored, mode)
     pool = _selection_pool(scored)
-    if len(pool) == len(scored):
+    if len(pool) == len(scored) and all(a is b for a, b in zip(pool, scored)):
         return legacy_chosen, legacy_raw, legacy_reason
     chosen, _safe_raw, reason = _base_select_best(pool, mode)
-    return chosen, legacy_raw, f"component_integrity_guard+{reason}"
+    guard = "component_integrity_pareto_guard" if any(
+        _is_selection_safe(candidate) for candidate in scored
+    ) else "component_integrity_guard"
+    return chosen, legacy_raw, f"{guard}+{reason}"
+
+
+def build_vector_candidates(mode: str) -> dict[str, dict[str, Any]]:
+    """Add a narrow exact-palette candidate without changing existing families."""
+    candidates = dict(_base_build_vector_candidates(mode))
+    if mode in _SOURCE_PALETTE_MODES:
+        candidates.setdefault(
+            _SOURCE_PALETTE_CANDIDATE,
+            {
+                "engine": _SOURCE_PALETTE_CANDIDATE,
+                "source_palette_exact": True,
+            },
+        )
+    return candidates
+
+
+def _source_palette_candidate(
+    name: str,
+    spec: dict[str, Any],
+    mode: str,
+    job_dir: Path,
+    original_path: Path | None,
+    palette_cap: int | None,
+) -> dict[str, Any]:
+    if original_path is None or mode not in _SOURCE_PALETTE_MODES:
+        return {
+            "name": name,
+            "success": False,
+            "error": "source_palette_not_applicable:mode_or_source",
+            "engine": spec.get("engine"),
+        }
+    cap = palette_cap if palette_cap is not None else _core.PALETTE_CAP.get(mode)
+    if not cap:
+        return {
+            "name": name,
+            "success": False,
+            "error": "source_palette_not_applicable:no_existing_palette_cap",
+            "engine": spec.get("engine"),
+        }
+    svg_path = Path(job_dir) / f"{name}.svg"
+    try:
+        report = vectorize_source_palette_paths(
+            Path(original_path),
+            svg_path,
+            max_colors=int(cap),
+        )
+    except SourcePaletteNotApplicable as exc:
+        return {
+            "name": name,
+            "success": False,
+            "error": f"source_palette_not_applicable:{exc}",
+            "engine": spec.get("engine"),
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "name": name,
+            "success": False,
+            "error": f"source_palette_candidate_failed:{type(exc).__name__}:{exc}",
+            "engine": spec.get("engine"),
+        }
+    return {
+        "name": name,
+        "success": True,
+        "engine": spec.get("engine"),
+        "svg_path": str(svg_path),
+        "source_palette_vector": report,
+        "cleanup_report": {},
+        "regularize_report": {},
+        "palette_report": {
+            "status": "preserved",
+            "reason": "exact_source_palette_within_existing_cap",
+            "palette_cap": int(cap),
+        },
+    }
 
 
 def produce_candidate(
@@ -78,7 +243,17 @@ def produce_candidate(
     original_path: Path | None = None,
     palette_cap: int | None = None,
 ) -> dict[str, Any]:
-    """Finalize the narrow neutral-palette repair before candidate scoring."""
+    """Finalize narrow candidate construction before any candidate scoring."""
+    if spec.get("engine") == _SOURCE_PALETTE_CANDIDATE:
+        return _source_palette_candidate(
+            name,
+            spec,
+            mode,
+            job_dir,
+            original_path,
+            palette_cap,
+        )
+
     result = _base_produce_candidate(
         name,
         spec,
@@ -137,6 +312,12 @@ def refine_best(
             "applied": False,
             "component_integrity_rejected": refined.get("name"),
         }
+    if _is_selection_safe(best) and _dominates(best, refined):
+        return best, {
+            **info,
+            "applied": False,
+            "pareto_integrity_rejected": refined.get("name"),
+        }
     return refined, info
 
 
@@ -153,6 +334,8 @@ def _refit_one(
         and _is_selection_safe(cand)
         and not _is_selection_safe(refined)
     ):
+        return None
+    if refined is not None and _is_selection_safe(cand) and _dominates(cand, refined):
         return None
     return refined
 
@@ -173,6 +356,12 @@ def _apply_boundary_refit(
             **info,
             "applied": False,
             "reason": "component_integrity_regression",
+        }
+    if _is_selection_safe(best) and _dominates(best, candidate):
+        return best, {
+            **info,
+            "applied": False,
+            "reason": "pareto_integrity_regression",
         }
     return candidate, info
 
@@ -357,6 +546,7 @@ def run_pipeline(
 
 
 _core.select_best = select_best
+_core.build_vector_candidates = build_vector_candidates
 _core.produce_candidate = produce_candidate
 _core._produce_and_score_job = _produce_and_score_job
 _core._apply_editability_preference = _apply_editability_preference
