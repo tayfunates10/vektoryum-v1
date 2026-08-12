@@ -43,3 +43,5 @@ jobs:
           git diff --cached --check
           git commit -m 'fix(issue153): satisfy manager benchmark and exact-final remediation'
           git push origin HEAD:codex/ai4-round3-gradient-topology
+
+# rerun after bounded-alpha contract alignment
