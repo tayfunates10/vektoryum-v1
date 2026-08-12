@@ -1,0 +1,40 @@
+name: Issue153 selection balance2
+on:
+  push:
+    branches:
+      - codex/ai4-round3-gradient-topology
+    paths:
+      - ".github/workflows/issue153-selection-balance2.yml"
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      PYTHONPATH: .:engine
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/ai4-round3-gradient-topology
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check -r engine/requirements.txt pytest
+      - name: Apply patch
+        run: python .github/issue153_selection_balance.py
+      - name: Verify focused contracts
+        run: |
+          python -m py_compile engine/app/analyzer.py engine/app/pipeline.py
+          python -m pytest -q engine/test_analyzer_contracts.py engine/test_ai2_component_quality.py engine/test_issue153_post_refit_contract.py engine/test_transform_journal.py
+      - name: Commit source and tests
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add engine/app/analyzer.py engine/app/pipeline.py engine/test_analyzer_contracts.py engine/test_ai2_component_quality.py
+          git diff --cached --check
+          git commit -m 'fix(issue153): balance benchmark stability with topology guard'
+          git push origin HEAD:codex/ai4-round3-gradient-topology
