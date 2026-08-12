@@ -48,3 +48,11 @@ def test_source_rgb_palette_guard_detects_semantic_colour_island() -> None:
     assert report["source_cc_recall"] == 1.0
     assert report["render_cc_precision"] < 1.0
     assert report["measurement_space"] == "source_snapped_rgb_palette"
+
+
+def test_alpha_parent_selection_has_no_source_level_count_ceiling() -> None:
+    source = __import__("inspect").getsource(
+        __import__("app.alpha_parent_selection", fromlist=["_select"])._select
+    )
+    assert "len(levels) >" not in source
+    assert "len(levels) <= 1" in source
