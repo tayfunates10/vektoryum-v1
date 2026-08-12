@@ -1,3 +1,5 @@
+"""Issue #153 post-refit topology safety regression contracts."""
+
 from __future__ import annotations
 
 import numpy as np
