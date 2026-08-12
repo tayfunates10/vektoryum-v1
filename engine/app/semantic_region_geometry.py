@@ -24,6 +24,7 @@ _SMALL_RECT_EPS = 0.01
 _ELLIPSE_INSET = 0.10
 _NESTED_INSET = 0.20
 _RING_EXPAND = 0.25
+_COMPOUND_PARENT_EXPAND = 0.25
 _COMPOUND_CHILD_INSET = 0.01
 
 
@@ -122,10 +123,7 @@ def _rect_d(bounds: tuple[float, float, float, float]) -> str:
     y0 -= epsilon
     x1 += epsilon
     y1 += epsilon
-    return (
-        f"M{_fmt(x0)} {_fmt(y0)}L{_fmt(x1)} {_fmt(y0)}"
-        f"L{_fmt(x1)} {_fmt(y1)}L{_fmt(x0)} {_fmt(y1)}Z"
-    )
+    return f"M{_fmt(x0)} {_fmt(y0)}L{_fmt(x1)} {_fmt(y0)}L{_fmt(x1)} {_fmt(y1)}L{_fmt(x0)} {_fmt(y1)}Z"
 
 
 def _ellipse_d(x0: float, y0: float, x1: float, y1: float) -> str | None:
@@ -169,7 +167,6 @@ def _fit_single_outer(points: list[tuple[int, int]]) -> tuple[list[str], str] | 
         arr = np.asarray(points, dtype=np.float64)
         try:
             from app.shape_fitting import try_fit_whole_shape  # noqa: PLC0415
-
             fitted = try_fit_whole_shape(arr, True)
         except Exception:  # noqa: BLE001
             fitted = None
@@ -201,7 +198,6 @@ def _filled_external_region(region_mask: np.ndarray) -> np.ndarray:
 
 
 def _fit_ellipse_axis_arms(region_mask: np.ndarray) -> tuple[list[str], str] | None:
-    """Propose an ellipse-like outer region intersected by narrow axis arms."""
     external = _filled_external_region(region_mask)
     ys, xs = np.nonzero(external)
     if len(xs) < 16:
@@ -265,9 +261,7 @@ def _connected_region_graph(
     node_map = np.full((h, w), -1, dtype=np.int32)
     nodes: list[dict[str, Any]] = []
     for color_index in range(color_count):
-        count, component_map = cv2.connectedComponents(
-            (labels == color_index).astype(np.uint8), connectivity=8
-        )
+        count, component_map = cv2.connectedComponents((labels == color_index).astype(np.uint8), connectivity=8)
         for local_index in range(1, int(count)):
             node_id = len(nodes)
             region = component_map == local_index
@@ -277,10 +271,7 @@ def _connected_region_graph(
         raise SemanticRegionFitError("region_graph_unassigned_pixels")
 
     edges: list[set[int]] = [set() for _ in nodes]
-    for first_map, second_map in (
-        (node_map[:, :-1], node_map[:, 1:]),
-        (node_map[:-1, :], node_map[1:, :]),
-    ):
+    for first_map, second_map in ((node_map[:, :-1], node_map[:, 1:]), (node_map[:-1, :], node_map[1:, :])):
         different = first_map != second_map
         first = first_map[different].astype(int)
         second = second_map[different].astype(int)
@@ -289,10 +280,7 @@ def _connected_region_graph(
                 edges[left].add(right)
                 edges[right].add(left)
 
-    corner_nodes = np.asarray(
-        [node_map[0, 0], node_map[0, -1], node_map[-1, 0], node_map[-1, -1]],
-        dtype=np.int32,
-    )
+    corner_nodes = np.asarray([node_map[0, 0], node_map[0, -1], node_map[-1, 0], node_map[-1, -1]], dtype=np.int32)
     root = int(np.argmax(np.bincount(corner_nodes)))
     depth = [-1] * len(nodes)
     parent: list[int | None] = [None] * len(nodes)
@@ -323,11 +311,7 @@ def _bbox_transform(mask: np.ndarray, inset: float) -> str | None:
         return None
     cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
     sx, sy = target_width / width, target_height / height
-    return (
-        f"translate({_fmt(cx)} {_fmt(cy)}) "
-        f"scale({_fmt(sx)} {_fmt(sy)}) "
-        f"translate({_fmt(-cx)} {_fmt(-cy)})"
-    )
+    return f"translate({_fmt(cx)} {_fmt(cy)}) scale({_fmt(sx)} {_fmt(sy)}) translate({_fmt(-cx)} {_fmt(-cy)})"
 
 
 def _bbox_occupancy(mask: np.ndarray) -> float:
@@ -344,9 +328,7 @@ def build_semantic_region_elements(labels: np.ndarray, colors: np.ndarray) -> di
     colors = np.asarray(colors, dtype=np.uint8)
     h, w = labels.shape
     if min(h, w) < _MIN_SEMANTIC_SOURCE_SIDE:
-        raise SemanticRegionFitError(
-            f"source_resolution_below_semantic_floor:{min(h, w)}<{_MIN_SEMANTIC_SOURCE_SIDE}"
-        )
+        raise SemanticRegionFitError(f"source_resolution_below_semantic_floor:{min(h, w)}<{_MIN_SEMANTIC_SOURCE_SIDE}")
 
     node_map, nodes, root, depth, parent = _connected_region_graph(labels, len(colors))
     children: list[list[int]] = [[] for _ in nodes]
@@ -354,10 +336,7 @@ def build_semantic_region_elements(labels: np.ndarray, colors: np.ndarray) -> di
         if parent_id is not None:
             children[parent_id].append(node_id)
 
-    order = sorted(
-        range(len(nodes)),
-        key=lambda node_id: (depth[node_id], -nodes[node_id]["area"], node_id),
-    )
+    order = sorted(range(len(nodes)), key=lambda node_id: (depth[node_id], -nodes[node_id]["area"], node_id))
     elements: list[str] = []
     strategy_counts: dict[str, int] = defaultdict(int)
     assigned_strategy: dict[int, str] = {}
@@ -379,12 +358,7 @@ def build_semantic_region_elements(labels: np.ndarray, colors: np.ndarray) -> di
             cycles = _boundary_cycles(region_mask)
             if not cycles:
                 raise SemanticRegionFitError("region_without_boundary")
-            outer = max(
-                cycles,
-                key=lambda points: abs(
-                    float(cv2.contourArea(np.asarray(points, dtype=np.float32).reshape(-1, 1, 2)))
-                ),
-            )
+            outer = max(cycles, key=lambda points: abs(float(cv2.contourArea(np.asarray(points, dtype=np.float32).reshape(-1, 1, 2)))))
             fitted = _fit_single_outer(outer)
             if fitted is None:
                 fitted = _fit_ellipse_axis_arms(region_mask)
@@ -408,9 +382,16 @@ def build_semantic_region_elements(labels: np.ndarray, colors: np.ndarray) -> di
                     transform = _bbox_transform(region_mask, _NESTED_INSET)
                     if transform:
                         strategy = "nested_inset_whole_shape"
+            elif strategy == "ellipse_axis_arm_union" and children[node_id]:
+                transform = _bbox_transform(region_mask, -_COMPOUND_PARENT_EXPAND)
+                if transform:
+                    strategy = "compound_parent_expand_axis_arm_union"
             elif strategy == "pixel_center_ellipse":
                 parent_id = parent[node_id]
-                if parent_id is not None and assigned_strategy.get(parent_id) == "ellipse_axis_arm_union":
+                if parent_id is not None and assigned_strategy.get(parent_id) in {
+                    "ellipse_axis_arm_union",
+                    "compound_parent_expand_axis_arm_union",
+                }:
                     transform = _bbox_transform(region_mask, _COMPOUND_CHILD_INSET)
                     if transform:
                         strategy = "compound_child_tiebreak_ellipse"
@@ -418,10 +399,7 @@ def build_semantic_region_elements(labels: np.ndarray, colors: np.ndarray) -> di
         for d in paths:
             transform_attr = f' transform="{transform}"' if transform else ""
             elements.append(f'<path fill="{fill}" d="{d}"{transform_attr}/>')
-            command_count += max(
-                2,
-                sum(d.count(token) for token in ("M", "L", "H", "V", "A", "C", "Z")),
-            )
+            command_count += max(2, sum(d.count(token) for token in ("M", "L", "H", "V", "A", "C", "Z")))
         assigned_strategy[node_id] = strategy
         strategy_counts[strategy] += 1
         reports.append(
