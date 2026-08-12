@@ -161,6 +161,14 @@ def test_continuous_paint_detector_separates_smooth_ramp_from_palette_steps() ->
     assert analyzer.detect_gradient_like_surface(Image.fromarray(ramp, "RGBA")) is True
     assert analyzer.detect_gradient_like_surface(Image.fromarray(stepped, "RGBA")) is False
 
+    smooth_only = np.full((256, 256, 4), 255, dtype=np.uint8)
+    for x in range(24, 232):
+        t = (x - 24) / 207.0
+        smooth_only[48:208, x, :3] = np.rint(
+            np.asarray((225, 40, 35)) * (1.0 - t) + np.asarray((35, 92, 220)) * t
+        ).astype(np.uint8)
+    assert analyzer.detect_gradient_like_surface(Image.fromarray(smooth_only, "RGBA")) is False
+
     thin = np.full((256, 256, 4), 255, dtype=np.uint8)
     for x in range(32, 224):
         value = 40 + (x - 32) % 80

@@ -462,6 +462,7 @@ def detect_gradient_like_surface(image: Image.Image) -> bool:
 
     pair_count = 0
     continuous_count = 0
+    hard_boundary_count = 0
     for first, second, mask in (
         (arr[:, :-1], arr[:, 1:], interior[:, :-1] & interior[:, 1:]),
         (arr[:-1, :], arr[1:, :], interior[:-1, :] & interior[1:, :]),
@@ -469,11 +470,14 @@ def detect_gradient_like_surface(image: Image.Image) -> bool:
         distances = np.linalg.norm(first - second, axis=2)
         pair_count += int(np.count_nonzero(mask))
         continuous_count += int(np.count_nonzero(mask & (distances >= 1.0) & (distances <= 32.0)))
+        hard_boundary_count += int(np.count_nonzero(mask & (distances >= 80.0)))
     transition_ratio = float(continuous_count) / float(max(1, pair_count))
     foreground_bins = np.unique((arr[interior].astype(np.uint8) // 8), axis=0).shape[0]
+    hard_boundary_min = max(4, int(round(0.05 * float(np.sqrt(interior_count)))))
     return bool(
         foreground_bins >= 12
         and transition_ratio >= 0.08
+        and hard_boundary_count >= hard_boundary_min
         and smooth_area_ratio >= 0.90
     )
 

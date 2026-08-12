@@ -476,7 +476,7 @@ def test_alpha_plane_regression_is_rolled_back_even_when_rgb_is_identical(
     assert stage["alpha_comparison"]["alpha_iou"] < 0.995
 
 
-def test_alpha_required_measurement_runs_on_downstream_stage(
+def test_alpha_only_measurement_remains_scoped_to_source_dimension_restore(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import app.fidelity as fidelity
@@ -500,13 +500,12 @@ def test_alpha_required_measurement_runs_on_downstream_stage(
     journal = TransformJournal(parent, source, required_metrics={"alpha_fidelity"})
     accepted, stage = journal.consider_candidate("boundary_refit", parent, candidate)
 
-    assert accepted == candidate
-    assert stage["status"] == "accepted"
-    assert "required_metric_unmeasured" not in stage["reason_codes"]
-    assert "alpha_stage_metrics_incomplete" not in stage["reason_codes"]
-    assert stage["required_unmeasured"] == []
-    assert stage["alpha_comparison"] is not None
-    assert stage["alpha_comparison"]["alpha_iou"] == pytest.approx(1.0)
+    assert accepted == parent
+    assert stage["status"] == "rolled_back"
+    assert "required_metric_unmeasured" in stage["reason_codes"]
+    assert "alpha_stage_metrics_incomplete" in stage["reason_codes"]
+    assert stage["required_unmeasured"] == ["alpha_fidelity"]
+    assert stage["alpha_comparison"] is None
 
 
 def test_alpha_restore_reuses_single_rgba_render_per_artifact(
@@ -733,7 +732,7 @@ def test_required_gradient_metric_is_measured_on_downstream_stage(tmp_path: Path
     assert "gradient_stage_metrics_incomplete" not in stage["reason_codes"]
 
 
-def test_required_alpha_metric_is_measured_not_faked_on_downstream_stage(tmp_path: Path) -> None:
+def test_required_alpha_metric_is_not_faked_on_downstream_stage(tmp_path: Path) -> None:
     from app.transform_journal import TransformJournal
     parent = tmp_path / "alpha_parent.svg"
     candidate = tmp_path / "alpha_candidate.svg"
@@ -742,9 +741,10 @@ def test_required_alpha_metric_is_measured_not_faked_on_downstream_stage(tmp_pat
     candidate.write_bytes(alpha_svg.replace(b'</svg>', b'<metadata>same-alpha</metadata></svg>'))
     journal = TransformJournal(parent, _square_source(), required_metrics={"alpha_fidelity"})
     accepted, stage = journal.consider_candidate("boundary_refit", parent, candidate)
-    assert accepted == candidate
-    assert stage["alpha_comparison"] is not None
-    assert "alpha_stage_metrics_incomplete" not in stage["reason_codes"]
+    assert accepted == parent
+    assert stage["alpha_comparison"] is None
+    assert "required_metric_unmeasured" in stage["reason_codes"]
+    assert "alpha_stage_metrics_incomplete" in stage["reason_codes"]
 
 
 def test_winner_selection_filters_unsafe_when_safe_exists_and_preserves_no_safe_fallback() -> None:

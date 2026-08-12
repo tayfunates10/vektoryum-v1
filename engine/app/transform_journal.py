@@ -309,11 +309,9 @@ class TransformJournal:
 
     def _measure(self, data: bytes) -> dict[str, Any]:
         sha = _sha(data)
-        capture_render = (
-            self._measurement_stage_id == "restore_source_dimensions"
-            or "gradient_fidelity" in self.required_metrics
-        )
-        measure_alpha = "alpha_fidelity" in self.required_metrics
+        is_restore_stage = self._measurement_stage_id == "restore_source_dimensions"
+        capture_render = is_restore_stage or "gradient_fidelity" in self.required_metrics
+        measure_alpha = is_restore_stage and "alpha_fidelity" in self.required_metrics
         cache_key = f"{sha}:alpha={int(measure_alpha)}:render={int(capture_render)}"
         if cache_key not in self._cache:
             started = time.perf_counter()
