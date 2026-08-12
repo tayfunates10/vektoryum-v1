@@ -24,6 +24,7 @@ _SMALL_RECT_EPS = 0.01
 _ELLIPSE_INSET = 0.10
 _NESTED_INSET = 0.20
 _RING_EXPAND = 0.25
+_COMPOUND_CHILD_INSET = 0.01
 
 
 def _fmt(value: float) -> str:
@@ -68,12 +69,7 @@ def _boundary_cycles(mask: np.ndarray) -> list[list[tuple[int, int]]]:
             if not candidates:
                 raise SemanticRegionFitError("non_closed_region_boundary")
             incoming = direction_index[direction(previous, current)]
-            preferred = [
-                (incoming + 1) % 4,
-                incoming,
-                (incoming - 1) % 4,
-                (incoming + 2) % 4,
-            ]
+            preferred = [(incoming + 1) % 4, incoming, (incoming - 1) % 4, (incoming + 2) % 4]
             candidates.sort(
                 key=lambda idx: preferred.index(
                     direction_index[direction(edges[idx][0], edges[idx][1])]
@@ -205,12 +201,7 @@ def _filled_external_region(region_mask: np.ndarray) -> np.ndarray:
 
 
 def _fit_ellipse_axis_arms(region_mask: np.ndarray) -> tuple[list[str], str] | None:
-    """Propose an ellipse-like outer region intersected by narrow axis arms.
-
-    Nested child holes are filled only for proposal detection. The emitted child
-    is painted later by region depth, and final eligibility is still decided by
-    the caller's native + five-scale render transaction.
-    """
+    """Propose an ellipse-like outer region intersected by narrow axis arms."""
     external = _filled_external_region(region_mask)
     ys, xs = np.nonzero(external)
     if len(xs) < 16:
@@ -281,13 +272,7 @@ def _connected_region_graph(
             node_id = len(nodes)
             region = component_map == local_index
             node_map[region] = node_id
-            nodes.append(
-                {
-                    "id": node_id,
-                    "color_index": int(color_index),
-                    "area": int(region.sum()),
-                }
-            )
+            nodes.append({"id": node_id, "color_index": int(color_index), "area": int(region.sum())})
     if np.any(node_map < 0):
         raise SemanticRegionFitError("region_graph_unassigned_pixels")
 
@@ -326,7 +311,6 @@ def _connected_region_graph(
 
 
 def _bbox_transform(mask: np.ndarray, inset: float) -> str | None:
-    """Return a center-scale transform; positive inset shrinks, negative expands."""
     ys, xs = np.nonzero(mask)
     if not len(xs):
         return None
@@ -398,11 +382,7 @@ def build_semantic_region_elements(labels: np.ndarray, colors: np.ndarray) -> di
             outer = max(
                 cycles,
                 key=lambda points: abs(
-                    float(
-                        cv2.contourArea(
-                            np.asarray(points, dtype=np.float32).reshape(-1, 1, 2)
-                        )
-                    )
+                    float(cv2.contourArea(np.asarray(points, dtype=np.float32).reshape(-1, 1, 2)))
                 ),
             )
             fitted = _fit_single_outer(outer)
@@ -414,8 +394,7 @@ def build_semantic_region_elements(labels: np.ndarray, colors: np.ndarray) -> di
                 area = abs(float(cv2.contourArea(arr.astype(np.float32).reshape(-1, 1, 2))))
                 ratio = area / max(1.0, float(span[0] * span[1]))
                 raise SemanticRegionFitError(
-                    f"region_outer_not_semantic:n={len(outer)}:"
-                    f"span={_fmt(span[0])}x{_fmt(span[1])}:fill={ratio:.4f}"
+                    f"region_outer_not_semantic:n={len(outer)}:span={_fmt(span[0])}x{_fmt(span[1])}:fill={ratio:.4f}"
                 )
             paths, strategy = fitted
 
@@ -431,13 +410,10 @@ def build_semantic_region_elements(labels: np.ndarray, colors: np.ndarray) -> di
                         strategy = "nested_inset_whole_shape"
             elif strategy == "pixel_center_ellipse":
                 parent_id = parent[node_id]
-                if (
-                    parent_id is not None
-                    and assigned_strategy.get(parent_id) == "ellipse_axis_arm_union"
-                ):
-                    transform = _bbox_transform(region_mask, _NESTED_INSET)
+                if parent_id is not None and assigned_strategy.get(parent_id) == "ellipse_axis_arm_union":
+                    transform = _bbox_transform(region_mask, _COMPOUND_CHILD_INSET)
                     if transform:
-                        strategy = "compound_child_inset_ellipse"
+                        strategy = "compound_child_tiebreak_ellipse"
 
         for d in paths:
             transform_attr = f' transform="{transform}"' if transform else ""
