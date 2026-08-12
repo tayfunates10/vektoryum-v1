@@ -187,6 +187,12 @@ def _fit_scale_stable_cycle(points: list[tuple[int, int]]) -> tuple[str, str]:
     rectangle = _scale_stable_rect_d(points)
     if rectangle is not None:
         return rectangle, "axis_aligned_rectangle"
+    # Detect source-derived near-circular components before the generic contour
+    # fitter. Pixel-cell contours expand their extrema by one cell; the ellipse
+    # helper explicitly converts back to source pixel centers/radii.
+    ellipse = _small_ellipse_d(points)
+    if ellipse is not None:
+        return ellipse, "small_ellipse_fit"
     arr = np.asarray(points, dtype=np.float64)
     span = arr.max(axis=0) - arr.min(axis=0)
     if float(np.hypot(*span)) >= 10.0:
@@ -197,9 +203,6 @@ def _fit_scale_stable_cycle(points: list[tuple[int, int]]) -> tuple[str, str]:
             fitted = None
         if fitted:
             return fitted, "whole_shape_fit"
-    ellipse = _small_ellipse_d(points)
-    if ellipse is not None:
-        return ellipse, "small_ellipse_fit"
     raise SourcePaletteNotApplicable("nonrect_cycle_not_scale_stable")
 
 
