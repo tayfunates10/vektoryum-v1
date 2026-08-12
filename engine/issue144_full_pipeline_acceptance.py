@@ -122,10 +122,10 @@ def evaluate(output_root: Path) -> dict[str, Any]:
         ready = bool((case or {}).get("near_zero", {}).get("ready") is True)
         require(case_id, "regression_near_zero_pass", ready, ready, True)
 
-    # Production winner evidence is checked for every captured case. This uses
-    # the same score/complexity relation as the root-cause diagnostic and catches
-    # late editability/refit stages that could otherwise reintroduce a dominated
-    # final candidate.
+    # Production winner evidence is checked for every captured case. A transform
+    # candidate explicitly rolled back/failed by TransformJournal is not a final
+    # selection alternative and therefore cannot make the accepted winner
+    # Pareto-dominated. Missing journal eligibility is treated as eligible.
     for case_id, case in root_cases.items():
         for repeat_index, diagnostic in enumerate(case.get("pipeline_diagnostics") or [], start=1):
             best = diagnostic.get("best") or {}
@@ -143,6 +143,8 @@ def evaluate(output_root: Path) -> dict[str, Any]:
             dominated_by = None
             for candidate in diagnostic.get("candidates") or []:
                 if candidate.get("name") == best.get("name"):
+                    continue
+                if candidate.get("final_eligible") is False:
                     continue
                 if _candidate_dominates(candidate, best):
                     dominated_by = candidate.get("name")
