@@ -351,6 +351,35 @@ def _apply_boundary_refit(
     candidate, info = _base_apply_boundary_refit(
         best, mode, analysis, original_path, job_dir, scored
     )
+    if candidate is not best and _is_selection_safe(best):
+        from app.component_quality import (
+            gate_candidate_scores, score_svg_component_integrity,
+        )
+        strict_component = score_svg_component_integrity(
+            Path(candidate["svg_path"]), Path(original_path),
+            mode=mode, analysis=analysis, max_side=512,
+            min_component_pixels=2, min_component_fraction=0.0,
+        )
+        if strict_component.get("applicable"):
+            strict_gate = gate_candidate_scores(
+                float(candidate.get("total_score", 0.0)),
+                candidate.get("fidelity_score"), strict_component,
+            )
+            candidate["component_quality"] = strict_component
+            candidate.update({
+                key: strict_gate[key]
+                for key in (
+                    "selection_safe", "selection_disqualified",
+                    "component_quality_status",
+                )
+            })
+            if not _is_selection_safe(candidate):
+                scored[:] = [item for item in scored if item is not candidate]
+                return best, {
+                    **info, "applied": False,
+                    "reason": "post_refit_micro_component_regression",
+                    "post_refit_component_quality": strict_component,
+                }
     if _is_selection_safe(best) and not _is_selection_safe(candidate):
         return best, {
             **info,

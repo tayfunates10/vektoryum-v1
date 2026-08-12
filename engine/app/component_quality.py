@@ -307,6 +307,8 @@ def measure_component_integrity_arrays(
     rendered_rgb: np.ndarray,
     *,
     k: int = _KMEANS_K,
+    min_component_pixels: int | None = None,
+    min_component_fraction: float | None = None,
 ) -> dict[str, Any]:
     try:
         cls_o, cls_r, palette_residual = _source_palette_classes(original_rgb, rendered_rgb, k=k)
@@ -322,7 +324,9 @@ def measure_component_integrity_arrays(
         }
 
     h, w = cls_o.shape[:2]
-    min_area = max(_MIN_COMPONENT_PIXELS, int(_MIN_COMPONENT_FRACTION * h * w))
+    min_pixels = _MIN_COMPONENT_PIXELS if min_component_pixels is None else max(1, int(min_component_pixels))
+    min_fraction = _MIN_COMPONENT_FRACTION if min_component_fraction is None else max(0.0, float(min_component_fraction))
+    min_area = max(min_pixels, int(min_fraction * h * w))
     class_count = max(int(cls_o.max(initial=0)), int(cls_r.max(initial=0))) + 1
     source_total = render_total = matched_source = matched_render = 0
     source_match_ious: list[float] = []
@@ -387,6 +391,8 @@ def score_svg_component_integrity(
     mode: str,
     analysis: dict[str, Any] | None,
     max_side: int = 512,
+    min_component_pixels: int | None = None,
+    min_component_fraction: float | None = None,
 ) -> dict[str, Any]:
     applicability = component_gate_applicability(mode, analysis)
     if not applicability["applicable"]:
@@ -404,7 +410,11 @@ def score_svg_component_integrity(
                 "reason": "render_unavailable",
                 "open_required_cycle": has_open_required_cycle(Path(svg_path)),
             }
-        report = measure_component_integrity_arrays(reference, rendered)
+        report = measure_component_integrity_arrays(
+            reference, rendered,
+            min_component_pixels=min_component_pixels,
+            min_component_fraction=min_component_fraction,
+        )
     except Exception as exc:  # noqa: BLE001
         return {
             "applicable": True,
