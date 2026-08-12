@@ -288,15 +288,12 @@ def _produce_and_score_job(args: tuple) -> tuple[dict[str, Any], dict[str, Any] 
 def _apply_editability_preference(
     scored: list[dict[str, Any]], current_best: dict[str, Any]
 ) -> tuple[dict[str, Any], str]:
-    legacy_best, legacy_reason = _base_apply_editability_preference(scored, current_best)
-    if _is_selection_safe(legacy_best):
-        return legacy_best, legacy_reason
-    safe = [candidate for candidate in scored if _is_selection_safe(candidate)]
-    if not safe:
-        return legacy_best, legacy_reason
-    pool = _pareto_front(safe)
-    safe_seed = current_best if current_best in pool else max(pool, key=_core._fidelity_rank_key)
-    guarded_best, guarded_reason = _base_apply_editability_preference(pool, safe_seed)
+    pool = _selection_pool(scored)
+    if current_best not in pool:
+        current_best = max(pool, key=_core._fidelity_rank_key)
+    guarded_best, guarded_reason = _base_apply_editability_preference(pool, current_best)
+    if pool is scored:
+        return guarded_best, guarded_reason
     return guarded_best, f"component_integrity_pareto_guard+{guarded_reason}"
 
 
