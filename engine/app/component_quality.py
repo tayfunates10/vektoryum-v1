@@ -384,6 +384,134 @@ def measure_component_integrity_arrays(
     }
 
 
+def measure_discrete_rgb_palette_component_integrity_arrays(
+    original_rgb: np.ndarray,
+    rendered_rgb: np.ndarray,
+    *,
+    palette_size: int = 8,
+    min_component_pixels: int = 2,
+) -> dict[str, Any]:
+    """Second-pass topology guard using source-derived *RGB* palette classes.
+
+    The ordinary winner gate deliberately uses LAB k-means for broad robustness.
+    A geometry mutation can nevertheless invent a tiny island whose rendered
+    colour is absorbed by a neighbouring LAB class.  For inputs already proven
+    palette-like, nearest classification against snapped source RGB fills keeps
+    the semantic colour ownership observable without changing any acceptance
+    threshold.  Continuous-paint inputs remain outside this function through the
+    caller's existing component-gate applicability check.
+    """
+    source = np.asarray(original_rgb, dtype=np.uint8)
+    rendered = np.asarray(rendered_rgb, dtype=np.uint8)
+    if source.shape != rendered.shape:
+        h, w = source.shape[:2]
+        rendered = cv2.resize(rendered, (w, h), interpolation=cv2.INTER_AREA)
+
+    from app.graph_source import canonical_segmentation  # noqa: PLC0415
+    from app.palette_ops import classify_rgb  # noqa: PLC0415
+
+    distinct = int(np.unique(source.reshape(-1, 3), axis=0).shape[0])
+    k_eff = max(1, min(int(palette_size), distinct))
+    source_labels, palette = canonical_segmentation(source, k=k_eff)
+    render_labels = classify_rgb(rendered, palette.astype(np.float32)).astype(np.uint8)
+    min_area = max(1, int(min_component_pixels))
+    class_count = int(max(source_labels.max(initial=0), render_labels.max(initial=0))) + 1
+
+    source_total = render_total = matched_source = matched_render = 0
+    source_match_ious: list[float] = []
+    class_reports: list[dict[str, Any]] = []
+    for class_index in range(class_count):
+        sources = _components(source_labels, class_index, min_area)
+        renders = _components(render_labels, class_index, min_area)
+        if not sources and not renders:
+            continue
+        matches, matched_iou = _optimal_one_to_one_matches(sources, renders)
+        source_total += len(sources)
+        render_total += len(renders)
+        matched_source += len(matches)
+        matched_render += len(matches)
+        source_match_ious.extend(matched_iou)
+        class_reports.append({
+            "class_index": class_index,
+            "source_components": len(sources),
+            "render_components": len(renders),
+            "matched_components": len(matches),
+            "min_source_matched_iou": round(min(matched_iou), 4) if matched_iou else None,
+        })
+
+    if source_total == 0:
+        return {
+            "measured": False, "status": "needs_review",
+            "reason": "no_supported_source_components",
+            "min_component_area": min_area,
+            "palette_size": int(len(palette)),
+        }
+    source_recall = float(matched_source) / float(source_total)
+    render_precision = float(matched_render) / float(render_total) if render_total else 0.0
+    min_true_iou = min(source_match_ious) if source_match_ious else 0.0
+    passed = (
+        source_recall >= _REQUIRED_SOURCE_CC_RECALL
+        and render_precision >= _REQUIRED_RENDER_CC_PRECISION
+        and min_true_iou >= _REQUIRED_MIN_TRUE_CC_IOU
+    )
+    return {
+        "measured": True,
+        "status": "pass" if passed else "fail",
+        "reason": "rgb_palette_component_integrity_pass" if passed else "rgb_palette_component_integrity_fail",
+        "source_cc_recall": round(source_recall, 4),
+        "render_cc_precision": round(render_precision, 4),
+        "min_true_cc_iou": round(float(min_true_iou), 4),
+        "source_components": source_total,
+        "render_components": render_total,
+        "matched_components": matched_source,
+        "min_component_area": min_area,
+        "palette_size": int(len(palette)),
+        "class_reports": class_reports,
+        "measurement_space": "source_snapped_rgb_palette",
+    }
+
+
+def score_svg_discrete_rgb_palette_integrity(
+    svg_path: Path,
+    original_path: Path,
+    *,
+    mode: str,
+    analysis: dict[str, Any] | None,
+    max_side: int = 512,
+    min_component_pixels: int = 2,
+) -> dict[str, Any]:
+    applicability = component_gate_applicability(mode, analysis)
+    if not applicability["applicable"]:
+        return {
+            "applicable": False, "measured": False, "status": "not_applicable",
+            "reason": applicability["reason"],
+        }
+    try:
+        from app.fidelity import load_reference_rgb, render_svg_to_rgb  # noqa: PLC0415
+        reference, (w, h) = load_reference_rgb(Path(original_path), max_side=max_side)
+        rendered = render_svg_to_rgb(Path(svg_path), w, h)
+        if rendered is None:
+            return {
+                "applicable": True, "measured": False, "status": "needs_review",
+                "reason": "render_unavailable",
+                "open_required_cycle": has_open_required_cycle(Path(svg_path)),
+            }
+        report = measure_discrete_rgb_palette_component_integrity_arrays(
+            reference, rendered, min_component_pixels=min_component_pixels,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "applicable": True, "measured": False, "status": "needs_review",
+            "reason": f"measurement_error:{type(exc).__name__}",
+            "open_required_cycle": has_open_required_cycle(Path(svg_path)),
+        }
+    return {
+        "applicable": True,
+        **report,
+        "open_required_cycle": has_open_required_cycle(Path(svg_path)),
+    }
+
+
 def score_svg_component_integrity(
     svg_path: Path,
     original_path: Path,

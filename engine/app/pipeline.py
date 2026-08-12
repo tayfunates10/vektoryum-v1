@@ -353,33 +353,43 @@ def _apply_boundary_refit(
     )
     if candidate is not best and _is_selection_safe(best):
         from app.component_quality import (
-            gate_candidate_scores, score_svg_component_integrity,
+            gate_candidate_scores,
+            score_svg_component_integrity,
+            score_svg_discrete_rgb_palette_integrity,
         )
         strict_component = score_svg_component_integrity(
             Path(candidate["svg_path"]), Path(original_path),
             mode=mode, analysis=analysis, max_side=512,
             min_component_pixels=2, min_component_fraction=0.0,
         )
-        if strict_component.get("applicable"):
+        rgb_component = score_svg_discrete_rgb_palette_integrity(
+            Path(candidate["svg_path"]), Path(original_path),
+            mode=mode, analysis=analysis, max_side=512,
+            min_component_pixels=2,
+        )
+        post_refit_reports = [
+            report for report in (strict_component, rgb_component)
+            if report.get("applicable")
+        ]
+        for report in post_refit_reports:
             strict_gate = gate_candidate_scores(
                 float(candidate.get("total_score", 0.0)),
-                candidate.get("fidelity_score"), strict_component,
+                candidate.get("fidelity_score"), report,
             )
-            candidate["component_quality"] = strict_component
-            candidate.update({
-                key: strict_gate[key]
-                for key in (
-                    "selection_safe", "selection_disqualified",
-                    "component_quality_status",
-                )
-            })
-            if not _is_selection_safe(candidate):
+            if strict_gate.get("selection_safe") is not True:
+                candidate["selection_safe"] = False
+                candidate["selection_disqualified"] = True
+                candidate["component_quality_status"] = report.get("status")
                 scored[:] = [item for item in scored if item is not candidate]
                 return best, {
                     **info, "applied": False,
                     "reason": "post_refit_micro_component_regression",
                     "post_refit_component_quality": strict_component,
+                    "post_refit_rgb_palette_quality": rgb_component,
                 }
+        if strict_component.get("applicable"):
+            candidate["component_quality"] = strict_component
+        candidate["post_refit_rgb_palette_quality"] = rgb_component
     if _is_selection_safe(best) and not _is_selection_safe(candidate):
         return best, {
             **info,
