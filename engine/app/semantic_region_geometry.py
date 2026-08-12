@@ -26,6 +26,12 @@ _NESTED_INSET = 0.20
 _RING_EXPAND = 0.25
 _COMPOUND_PARENT_EXPAND = 0.25
 _COMPOUND_CHILD_INSET = 0.01
+# Curved separators that are one device pixel wide at the minimum accepted
+# render scale can collapse under crisp-edge snapping even though their source
+# regions are distinct. A non-scaling half-pixel stroke is a vector-only
+# topology tie-break: it is constant in device space, palette-preserving, and
+# affects only the curved separator path of a nested compound region.
+_TOPOLOGY_DEVICE_STROKE_PX = 0.50
 
 
 def _fmt(value: float) -> str:
@@ -398,7 +404,17 @@ def build_semantic_region_elements(labels: np.ndarray, colors: np.ndarray) -> di
 
         for d in paths:
             transform_attr = f' transform="{transform}"' if transform else ""
-            elements.append(f'<path fill="{fill}" d="{d}"{transform_attr}/>')
+            topology_attr = ""
+            if (
+                children[node_id]
+                and strategy in {"ellipse_axis_arm_union", "compound_parent_expand_axis_arm_union"}
+                and "A" in d
+            ):
+                topology_attr = (
+                    f' stroke="{fill}" stroke-width="{_fmt(_TOPOLOGY_DEVICE_STROKE_PX)}"'
+                    ' vector-effect="non-scaling-stroke" stroke-linejoin="round"'
+                )
+            elements.append(f'<path fill="{fill}" d="{d}"{transform_attr}{topology_attr}/>')
             command_count += max(2, sum(d.count(token) for token in ("M", "L", "H", "V", "A", "C", "Z")))
         assigned_strategy[node_id] = strategy
         strategy_counts[strategy] += 1
