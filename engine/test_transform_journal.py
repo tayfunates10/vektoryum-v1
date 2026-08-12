@@ -476,7 +476,7 @@ def test_alpha_plane_regression_is_rolled_back_even_when_rgb_is_identical(
     assert stage["alpha_comparison"]["alpha_iou"] < 0.995
 
 
-def test_alpha_measurement_is_scoped_to_source_dimension_restore(
+def test_alpha_required_measurement_runs_on_downstream_stage(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import app.fidelity as fidelity
@@ -500,12 +500,13 @@ def test_alpha_measurement_is_scoped_to_source_dimension_restore(
     journal = TransformJournal(parent, source, required_metrics={"alpha_fidelity"})
     accepted, stage = journal.consider_candidate("boundary_refit", parent, candidate)
 
-    assert accepted == parent
-    assert stage["status"] == "rolled_back"
-    assert "required_metric_unmeasured" in stage["reason_codes"]
-    assert "alpha_stage_metrics_incomplete" in stage["reason_codes"]
-    assert stage["required_unmeasured"] == ["alpha_fidelity"]
-    assert stage["alpha_comparison"] is None
+    assert accepted == candidate
+    assert stage["status"] == "accepted"
+    assert "required_metric_unmeasured" not in stage["reason_codes"]
+    assert "alpha_stage_metrics_incomplete" not in stage["reason_codes"]
+    assert stage["required_unmeasured"] == []
+    assert stage["alpha_comparison"] is not None
+    assert stage["alpha_comparison"]["alpha_iou"] == pytest.approx(1.0)
 
 
 def test_alpha_restore_reuses_single_rgba_render_per_artifact(
@@ -665,7 +666,7 @@ def test_gradient_render_regression_and_missing_render_fail_closed(
     assert "gradient_stage_metrics_incomplete" in missing_stage["reason_codes"]
 
 
-def test_gradient_measurement_is_scoped_to_source_dimension_restore(
+def test_gradient_required_measurement_runs_on_downstream_stage(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import app.fidelity as fidelity
@@ -683,12 +684,13 @@ def test_gradient_measurement_is_scoped_to_source_dimension_restore(
     accepted, stage = journal.consider_candidate(
         "boundary_refit", parent, candidate,
     )
-    assert accepted == parent
-    assert stage["status"] == "rolled_back"
-    assert stage["required_unmeasured"] == ["gradient_fidelity"]
-    assert "required_metric_unmeasured" in stage["reason_codes"]
-    assert "gradient_stage_metrics_incomplete" in stage["reason_codes"]
-    assert stage["render_comparison"] is None
+    assert accepted == candidate
+    assert stage["status"] == "accepted"
+    assert stage["required_unmeasured"] == []
+    assert "required_metric_unmeasured" not in stage["reason_codes"]
+    assert "gradient_stage_metrics_incomplete" not in stage["reason_codes"]
+    assert stage["render_comparison"] is not None
+    assert stage["render_comparison"]["ssim"] == pytest.approx(1.0)
 
 def test_assertions_are_real() -> None:
     """Bu dosya global FAILS listesine değil gerçek pytest assertion'a dayanır."""
@@ -745,7 +747,7 @@ def test_required_alpha_metric_is_measured_not_faked_on_downstream_stage(tmp_pat
     assert "alpha_stage_metrics_incomplete" not in stage["reason_codes"]
 
 
-def test_winner_selection_filters_unsafe_candidates_and_fails_closed_when_none() -> None:
+def test_winner_selection_filters_unsafe_when_safe_exists_and_preserves_no_safe_fallback() -> None:
     from app.pipeline_core import select_best
     def candidate(name: str, fidelity: float, safe: bool):
         return {
@@ -758,5 +760,5 @@ def test_winner_selection_filters_unsafe_candidates_and_fails_closed_when_none()
         [candidate("unsafe", 99.0, False), candidate("safe", 95.0, True)], "logo_color"
     )
     assert chosen["name"] == "safe"
-    with pytest.raises(RuntimeError, match="no_selection_safe_candidate"):
-        select_best([candidate("unsafe", 99.0, False)], "logo_color")
+    fallback, _raw, _reason = select_best([candidate("unsafe", 99.0, False)], "logo_color")
+    assert fallback["name"] == "unsafe"

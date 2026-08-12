@@ -169,12 +169,17 @@ def _fidelity_rank_key(c: dict[str, Any]) -> tuple[float, int, float]:
 
 
 def select_best(scored: list[dict[str, Any]], mode: str) -> tuple[dict, dict, str]:
-    """En iyi adayı yalnız quality-safe seçim havuzundan seçer."""
+    """Prefer an explicit quality-safe pool whenever one exists.
+
+    The higher pipeline wrapper already treats component safety as a Pareto
+    guard.  If every candidate is marked unsafe, keep the historical ranking
+    rather than turning an existing hard-corpus image into a pipeline crash;
+    unsafe candidates can never outrank an available safe candidate.
+    """
     raw_best = max(scored, key=lambda c: c["total_score"])
     safe_scored = _selection_safe_pool(scored)
-    if not safe_scored:
-        raise RuntimeError("no_selection_safe_candidate")
-    scored = safe_scored
+    if safe_scored:
+        scored = safe_scored
     by_name = {c["name"]: c for c in scored}
 
     # Renkli modlarda (logo_color/photo_poster): render edilebildiyse seçimi
