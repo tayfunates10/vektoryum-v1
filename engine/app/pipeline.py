@@ -150,6 +150,23 @@ def _selection_pool(scored: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def select_best(scored: list[dict[str, Any]], mode: str) -> tuple[dict, dict, str]:
     """Preserve a safe legacy winner; reroute only an actually unsafe winner."""
     legacy_chosen, legacy_raw, legacy_reason = _base_select_best(scored, mode)
+
+    # source_palette_exact is a measured lossless reconstruction path already
+    # bounded by the existing opaque/low-colour mode and palette cap.  When it
+    # independently passes safety and exact fidelity, a lower-fidelity heuristic
+    # winner must not hide it.  Alpha/technical benchmark paths do not generate
+    # this candidate, so their proven legacy ranking remains unchanged.
+    exact = [
+        candidate for candidate in scored
+        if candidate.get("name") == _SOURCE_PALETTE_CANDIDATE
+        and _is_selection_safe(candidate)
+        and candidate.get("final_eligible", True)
+        and (_finite(candidate.get("fidelity_score")) or 0.0) >= 99.999
+    ]
+    if exact:
+        chosen = max(exact, key=_core._fidelity_rank_key)
+        return chosen, legacy_raw, "source_palette_exact_dominance"
+
     if _is_selection_safe(legacy_chosen):
         return legacy_chosen, legacy_raw, legacy_reason
     safe = [candidate for candidate in scored if _is_selection_safe(candidate)]
