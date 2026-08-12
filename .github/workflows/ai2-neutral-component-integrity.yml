@@ -14,6 +14,7 @@ on:
       - "engine/app/pipeline.py"
       - "engine/test_ai2_*.py"
       - "engine/test_issue144_production_residual.py"
+      - "engine/test_issue152_scale_stable_geometry.py"
   workflow_dispatch:
 
 permissions:
@@ -46,6 +47,6 @@ jobs:
         run: >-
           python -m py_compile
           app/analyzer.py app/neutral_palette.py app/component_quality.py app/source_palette_vector.py app/svg_lifecycle.py app/scoring.py app/pipeline.py
-          test_ai2_neutral_palette.py test_ai2_component_quality.py test_ai2_lifecycle.py test_issue144_production_residual.py
+          test_ai2_neutral_palette.py test_ai2_component_quality.py test_ai2_lifecycle.py test_issue144_production_residual.py test_issue152_scale_stable_geometry.py
       - name: Run AI-2 focused tests
-        run: python -m pytest -q test_ai2_neutral_palette.py test_ai2_component_quality.py test_ai2_lifecycle.py test_issue144_production_residual.py
+        run: python -m pytest -q test_ai2_neutral_palette.py test_ai2_component_quality.py test_ai2_lifecycle.py test_issue144_production_residual.py test_issue152_scale_stable_geometry.py
