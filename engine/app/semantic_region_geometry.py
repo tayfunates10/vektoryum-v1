@@ -1,11 +1,10 @@
 """Generic connected-region semantic geometry for flat exact palettes.
 
-The source label map is decomposed into connected regions, rooted at the corner
-canvas, and painted by region depth. Primitive proposals are source-derived and
-fixture-agnostic. Nested A-B-A separators receive source-mask-derived device-space
-anchors only where the source pixel is already B; this prevents low-scale snap
-merges without changing palette policy or raster embedding. The caller remains
-authoritative: every proposal must pass native and five-scale validation.
+All geometry is derived from the source label map. Unsupported geometry fails
+closed to the caller's exact vector fallback. For nested A-B-A curved regions,
+a source-space B separator midline is added only when it fits wholly inside the
+measured B annulus; this keeps the separator rasterizable at the minimum render
+scale without changing palette policy, budgets, or embedding raster data.
 """
 from __future__ import annotations
 
@@ -28,8 +27,9 @@ _NESTED_INSET = 0.20
 _RING_EXPAND = 0.25
 _COMPOUND_PARENT_EXPAND = 0.25
 _COMPOUND_CHILD_INSET = 0.01
-_SEPARATOR_ANCHOR_DIRECTIONS = 16
-_SEPARATOR_ANCHOR_DEVICE_PX = 1.0
+_SEPARATOR_RAY_COUNT = 32
+_SEPARATOR_RAY_STEP = 0.10
+_SEPARATOR_SAFETY_MARGIN = 1.0
 
 
 def _fmt(value: float) -> str:
@@ -103,6 +103,13 @@ def _boundary_cycles(mask: np.ndarray) -> list[list[tuple[int, int]]]:
     return cycles
 
 
+def _largest_cycle(mask: np.ndarray) -> list[tuple[int, int]]:
+    cycles = _boundary_cycles(mask)
+    if not cycles:
+        raise SemanticRegionFitError("region_without_boundary")
+    return max(cycles, key=lambda points: abs(float(cv2.contourArea(np.asarray(points, dtype=np.float32).reshape(-1, 1, 2)))))
+
+
 def _rect_bounds(points: list[tuple[int, int]]) -> tuple[float, float, float, float] | None:
     if len(points) != 4:
         return None
@@ -116,17 +123,18 @@ def _rect_bounds(points: list[tuple[int, int]]) -> tuple[float, float, float, fl
 
 def _rect_d(bounds: tuple[float, float, float, float]) -> str:
     x0, y0, x1, y1 = bounds
-    epsilon = _SMALL_RECT_EPS if min(x1 - x0, y1 - y0) <= 4.0 else 0.0
-    return f"M{_fmt(x0-epsilon)} {_fmt(y0-epsilon)}L{_fmt(x1+epsilon)} {_fmt(y0-epsilon)}L{_fmt(x1+epsilon)} {_fmt(y1+epsilon)}L{_fmt(x0-epsilon)} {_fmt(y1+epsilon)}Z"
+    eps = _SMALL_RECT_EPS if min(x1 - x0, y1 - y0) <= 4.0 else 0.0
+    return f"M{_fmt(x0-eps)} {_fmt(y0-eps)}L{_fmt(x1+eps)} {_fmt(y0-eps)}L{_fmt(x1+eps)} {_fmt(y1+eps)}L{_fmt(x0-eps)} {_fmt(y1+eps)}Z"
+
+
+def _ellipse_path(cx: float, cy: float, rx: float, ry: float) -> str | None:
+    if min(rx, ry) < 1.0:
+        return None
+    return f"M{_fmt(cx-rx)} {_fmt(cy)}A{_fmt(rx)} {_fmt(ry)} 0 1 0 {_fmt(cx+rx)} {_fmt(cy)}A{_fmt(rx)} {_fmt(ry)} 0 1 0 {_fmt(cx-rx)} {_fmt(cy)}Z"
 
 
 def _ellipse_d(x0: float, y0: float, x1: float, y1: float) -> str | None:
-    rx = ((x1 - x0) / 2.0) - _ELLIPSE_INSET
-    ry = ((y1 - y0) / 2.0) - _ELLIPSE_INSET
-    if rx < 1.0 or ry < 1.0:
-        return None
-    cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
-    return f"M{_fmt(cx-rx)} {_fmt(cy)}A{_fmt(rx)} {_fmt(ry)} 0 1 0 {_fmt(cx+rx)} {_fmt(cy)}A{_fmt(rx)} {_fmt(ry)} 0 1 0 {_fmt(cx-rx)} {_fmt(cy)}Z"
+    return _ellipse_path((x0+x1)/2.0, (y0+y1)/2.0, ((x1-x0)/2.0)-_ELLIPSE_INSET, ((y1-y0)/2.0)-_ELLIPSE_INSET)
 
 
 def _ellipse_from_cycle(points: list[tuple[int, int]]) -> str | None:
@@ -196,7 +204,6 @@ def _fit_ellipse_axis_arms(region_mask: np.ndarray) -> tuple[list[str], str] | N
     height, width = crop.shape
     if min(height, width) < 8:
         return None
-
     arms: list[tuple[str, int, int]] = []
     for start, stop in _runs(crop.sum(axis=0) >= max(3, int(round(0.90 * height)))):
         arm_width = stop - start
@@ -208,33 +215,26 @@ def _fit_ellipse_axis_arms(region_mask: np.ndarray) -> tuple[list[str], str] | N
             arms.append(("h", start, stop))
     if not arms or len(arms) > 6:
         return None
-
     residual = crop.copy()
     for axis, start, stop in arms:
-        if axis == "v":
-            residual[:, start:stop] = False
-        else:
-            residual[start:stop, :] = False
+        if axis == "v": residual[:, start:stop] = False
+        else: residual[start:stop, :] = False
     ry, rx = np.nonzero(residual)
     if len(rx) < 12:
         return None
-    ex0, ex1 = int(rx.min()), int(rx.max()) + 1
-    ey0, ey1 = int(ry.min()), int(ry.max()) + 1
-    ew, eh = ex1 - ex0, ey1 - ey0
+    ex0, ex1, ey0, ey1 = int(rx.min()), int(rx.max())+1, int(ry.min()), int(ry.max())+1
+    ew, eh = ex1-ex0, ey1-ey0
     if min(ew, eh) < 6 or max(ew, eh) / max(1, min(ew, eh)) > 1.45:
         return None
-    occupancy = int(residual.sum()) / max(1, ew * eh)
+    occupancy = int(residual.sum()) / max(1, ew*eh)
     if not (0.45 <= occupancy <= 0.90):
         return None
-    ellipse = _ellipse_d(x0 + ex0, y0 + ey0, x0 + ex1, y0 + ey1)
+    ellipse = _ellipse_d(x0+ex0, y0+ey0, x0+ex1, y0+ey1)
     if ellipse is None:
         return None
     paths = [ellipse]
     for axis, start, stop in arms:
-        if axis == "v":
-            paths.append(_rect_d((x0 + start, y0, x0 + stop, y1)))
-        else:
-            paths.append(_rect_d((x0, y0 + start, x1, y0 + stop)))
+        paths.append(_rect_d((x0+start, y0, x0+stop, y1)) if axis == "v" else _rect_d((x0, y0+start, x1, y0+stop)))
     return paths, "ellipse_axis_arm_union"
 
 
@@ -251,27 +251,21 @@ def _connected_region_graph(labels: np.ndarray, color_count: int) -> tuple[np.nd
             nodes.append({"id": node_id, "color_index": int(color_index), "area": int(region.sum())})
     if np.any(node_map < 0):
         raise SemanticRegionFitError("region_graph_unassigned_pixels")
-
     edges: list[set[int]] = [set() for _ in nodes]
     for first_map, second_map in ((node_map[:, :-1], node_map[:, 1:]), (node_map[:-1, :], node_map[1:, :])):
         different = first_map != second_map
         for left, right in zip(first_map[different].astype(int).tolist(), second_map[different].astype(int).tolist(), strict=True):
             if left != right:
-                edges[left].add(right)
-                edges[right].add(left)
-    corner_nodes = np.asarray([node_map[0, 0], node_map[0, -1], node_map[-1, 0], node_map[-1, -1]], dtype=np.int32)
-    root = int(np.argmax(np.bincount(corner_nodes)))
-    depth = [-1] * len(nodes)
-    parent: list[int | None] = [None] * len(nodes)
-    depth[root] = 0
-    queue: deque[int] = deque([root])
+                edges[left].add(right); edges[right].add(left)
+    corners = np.asarray([node_map[0,0], node_map[0,-1], node_map[-1,0], node_map[-1,-1]], dtype=np.int32)
+    root = int(np.argmax(np.bincount(corners)))
+    depth = [-1] * len(nodes); parent: list[int | None] = [None] * len(nodes)
+    depth[root] = 0; queue: deque[int] = deque([root])
     while queue:
         node = queue.popleft()
         for neighbor in sorted(edges[node]):
             if depth[neighbor] < 0:
-                depth[neighbor] = depth[node] + 1
-                parent[neighbor] = node
-                queue.append(neighbor)
+                depth[neighbor] = depth[node] + 1; parent[neighbor] = node; queue.append(neighbor)
     if any(value < 0 for value in depth):
         raise SemanticRegionFitError("region_graph_disconnected")
     return node_map, nodes, root, depth, parent
@@ -279,150 +273,113 @@ def _connected_region_graph(labels: np.ndarray, color_count: int) -> tuple[np.nd
 
 def _bbox_transform(mask: np.ndarray, inset: float) -> str | None:
     ys, xs = np.nonzero(mask)
-    if not len(xs):
-        return None
-    x0, x1 = float(xs.min()), float(xs.max() + 1)
-    y0, y1 = float(ys.min()), float(ys.max() + 1)
-    width, height = x1 - x0, y1 - y0
-    target_width, target_height = width - 2.0 * inset, height - 2.0 * inset
-    if min(target_width, target_height) <= 0.0:
-        return None
-    cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
-    return f"translate({_fmt(cx)} {_fmt(cy)}) scale({_fmt(target_width/width)} {_fmt(target_height/height)}) translate({_fmt(-cx)} {_fmt(-cy)})"
+    if not len(xs): return None
+    x0, x1 = float(xs.min()), float(xs.max()+1); y0, y1 = float(ys.min()), float(ys.max()+1)
+    width, height = x1-x0, y1-y0; tw, th = width-2*inset, height-2*inset
+    if min(tw, th) <= 0: return None
+    cx, cy = (x0+x1)/2, (y0+y1)/2
+    return f"translate({_fmt(cx)} {_fmt(cy)}) scale({_fmt(tw/width)} {_fmt(th/height)}) translate({_fmt(-cx)} {_fmt(-cy)})"
 
 
 def _bbox_occupancy(mask: np.ndarray) -> float:
     ys, xs = np.nonzero(mask)
-    if not len(xs):
-        return 0.0
-    box = (int(xs.max()) - int(xs.min()) + 1) * (int(ys.max()) - int(ys.min()) + 1)
+    if not len(xs): return 0.0
+    box = (int(xs.max())-int(xs.min())+1)*(int(ys.max())-int(ys.min())+1)
     return int(mask.sum()) / max(1, box)
 
 
-def _separator_anchor_points(parent_mask: np.ndarray, child_mask: np.ndarray) -> list[tuple[int, int]]:
-    """Pick source B pixels along radial exits from a nested A child."""
+def _separator_thickness(parent_mask: np.ndarray, child_mask: np.ndarray) -> float | None:
     ys, xs = np.nonzero(child_mask)
-    if not len(xs):
-        return []
-    cx = float(xs.mean())
-    cy = float(ys.mean())
-    h, w = parent_mask.shape
-    max_step = int(max(h, w))
-    points: set[tuple[int, int]] = set()
-    for index in range(_SEPARATOR_ANCHOR_DIRECTIONS):
-        angle = (2.0 * pi * index) / _SEPARATOR_ANCHOR_DIRECTIONS
-        dx, dy = cos(angle), sin(angle)
-        seen_child = False
-        for step in np.arange(0.0, float(max_step), 0.25):
-            x = int(round(cx + dx * step))
-            y = int(round(cy + dy * step))
-            if x < 0 or x >= w or y < 0 or y >= h:
-                break
-            if child_mask[y, x]:
-                seen_child = True
+    if not len(xs): return None
+    cx, cy = float(xs.mean()), float(ys.mean())
+    h, w = parent_mask.shape; max_step = float(max(h, w)); values: list[float] = []
+    for index in range(_SEPARATOR_RAY_COUNT):
+        angle = 2.0*pi*index/_SEPARATOR_RAY_COUNT; dx, dy = cos(angle), sin(angle)
+        left_child = False; entered: float | None = None; last_xy: tuple[int,int] | None = None
+        for step in np.arange(0.0, max_step, _SEPARATOR_RAY_STEP):
+            x, y = int(round(cx+dx*step)), int(round(cy+dy*step))
+            if x < 0 or x >= w or y < 0 or y >= h: break
+            if last_xy == (x,y): continue
+            last_xy = (x,y)
+            if child_mask[y,x]:
                 continue
-            if seen_child and parent_mask[y, x]:
-                points.add((x, y))
+            left_child = True
+            if parent_mask[y,x]:
+                if entered is None: entered = step
+            elif entered is not None:
+                values.append(step-entered); break
+            elif left_child:
                 break
-            if seen_child and not parent_mask[y, x]:
-                break
-    return sorted(points, key=lambda point: (point[1], point[0]))
+    return min(values) if len(values) >= _SEPARATOR_RAY_COUNT//2 else None
 
 
-def _separator_anchor_element(x: int, y: int, fill: str) -> str:
-    return (
-        f'<path d="M{_fmt(x+0.5)} {_fmt(y+0.5)}h0.001" fill="none" '
-        f'stroke="{fill}" stroke-width="{_fmt(_SEPARATOR_ANCHOR_DEVICE_PX)}" '
-        'vector-effect="non-scaling-stroke" stroke-linecap="square"/>'
-    )
+def _separator_ring_element(parent_mask: np.ndarray, child_mask: np.ndarray, fill: str) -> str | None:
+    child_outer = _largest_cycle(child_mask)
+    if _ellipse_from_cycle(child_outer) is None:
+        return None
+    thickness = _separator_thickness(parent_mask, child_mask)
+    if thickness is None or thickness <= _SEPARATOR_SAFETY_MARGIN + 1.0:
+        return None
+    ys, xs = np.nonzero(child_mask)
+    x0, x1 = float(xs.min()), float(xs.max()+1); y0, y1 = float(ys.min()), float(ys.max()+1)
+    cx, cy = (x0+x1)/2.0, (y0+y1)/2.0
+    rx, ry = (x1-x0)/2.0, (y1-y0)/2.0
+    mid = thickness/2.0; stroke = max(1.0, thickness-_SEPARATOR_SAFETY_MARGIN)
+    d = _ellipse_path(cx, cy, rx+mid, ry+mid)
+    if d is None: return None
+    return f'<path d="{d}" fill="none" stroke="{fill}" stroke-width="{_fmt(stroke)}"/>'
 
 
 def build_semantic_region_elements(labels: np.ndarray, colors: np.ndarray) -> dict[str, Any]:
-    labels = np.asarray(labels)
-    colors = np.asarray(colors, dtype=np.uint8)
-    h, w = labels.shape
-    if min(h, w) < _MIN_SEMANTIC_SOURCE_SIDE:
-        raise SemanticRegionFitError(f"source_resolution_below_semantic_floor:{min(h, w)}<{_MIN_SEMANTIC_SOURCE_SIDE}")
-
+    labels = np.asarray(labels); colors = np.asarray(colors, dtype=np.uint8); h, w = labels.shape
+    if min(h,w) < _MIN_SEMANTIC_SOURCE_SIDE:
+        raise SemanticRegionFitError(f"source_resolution_below_semantic_floor:{min(h,w)}<{_MIN_SEMANTIC_SOURCE_SIDE}")
     node_map, nodes, root, depth, parent = _connected_region_graph(labels, len(colors))
     children: list[list[int]] = [[] for _ in nodes]
     for node_id, parent_id in enumerate(parent):
-        if parent_id is not None:
-            children[parent_id].append(node_id)
+        if parent_id is not None: children[parent_id].append(node_id)
     order = sorted(range(len(nodes)), key=lambda node_id: (depth[node_id], -nodes[node_id]["area"], node_id))
-    elements: list[str] = []
-    strategy_counts: dict[str, int] = defaultdict(int)
-    assigned_strategy: dict[int, str] = {}
-    command_count = 0
-    reports: list[dict[str, Any]] = []
-
+    elements: list[str] = []; strategies: dict[str,int] = defaultdict(int); assigned: dict[int,str] = {}; reports=[]; command_count=0
     for node_id in order:
-        node = nodes[node_id]
-        color_index = int(node["color_index"])
-        red, green, blue = (int(value) for value in colors[color_index])
-        fill = f"#{red:02x}{green:02x}{blue:02x}"
-        region_mask = node_map == node_id
-        transform: str | None = None
-        anchor_points: list[tuple[int, int]] = []
-
-        if node_id == root:
-            paths = [f"M0 0H{w}V{h}H0Z"]
-            strategy = "corner_connected_canvas"
+        node=nodes[node_id]; color_index=int(node["color_index"]); r,g,b=(int(v) for v in colors[color_index]); fill=f"#{r:02x}{g:02x}{b:02x}"
+        region_mask=node_map==node_id; transform=None; stabilizer=None
+        if node_id==root:
+            paths=[f"M0 0H{w}V{h}H0Z"]; strategy="corner_connected_canvas"
         else:
-            cycles = _boundary_cycles(region_mask)
-            if not cycles:
-                raise SemanticRegionFitError("region_without_boundary")
-            outer = max(cycles, key=lambda points: abs(float(cv2.contourArea(np.asarray(points, dtype=np.float32).reshape(-1, 1, 2)))))
-            fitted = _fit_single_outer(outer) or _fit_ellipse_axis_arms(region_mask)
+            outer=_largest_cycle(region_mask); fitted=_fit_single_outer(outer) or _fit_ellipse_axis_arms(region_mask)
             if fitted is None:
-                arr = np.asarray(outer, dtype=np.float64)
-                span = arr.max(axis=0) - arr.min(axis=0)
-                area = abs(float(cv2.contourArea(arr.astype(np.float32).reshape(-1, 1, 2))))
-                ratio = area / max(1.0, float(span[0] * span[1]))
+                arr=np.asarray(outer,dtype=np.float64); span=arr.max(0)-arr.min(0); area=abs(float(cv2.contourArea(arr.astype(np.float32).reshape(-1,1,2)))); ratio=area/max(1.0,float(span[0]*span[1]))
                 raise SemanticRegionFitError(f"region_outer_not_semantic:n={len(outer)}:span={_fmt(span[0])}x{_fmt(span[1])}:fill={ratio:.4f}")
-            paths, strategy = fitted
-
-            if strategy == "whole_shape":
-                occupancy = _bbox_occupancy(region_mask)
-                if children[node_id] and occupancy <= 0.20:
-                    transform = _bbox_transform(region_mask, -_RING_EXPAND)
-                    if transform:
-                        strategy = "ring_expand_whole_shape"
-                elif depth[node_id] >= 2:
-                    transform = _bbox_transform(region_mask, _NESTED_INSET)
-                    if transform:
-                        strategy = "nested_inset_whole_shape"
-            elif strategy == "ellipse_axis_arm_union" and children[node_id]:
-                transform = _bbox_transform(region_mask, -_COMPOUND_PARENT_EXPAND)
-                if transform:
-                    strategy = "compound_parent_expand_axis_arm_union"
-            elif strategy == "pixel_center_ellipse":
-                parent_id = parent[node_id]
-                if parent_id is not None and assigned_strategy.get(parent_id) in {"ellipse_axis_arm_union", "compound_parent_expand_axis_arm_union"}:
-                    transform = _bbox_transform(region_mask, _COMPOUND_CHILD_INSET)
-                    if transform:
-                        strategy = "compound_child_tiebreak_ellipse"
-
-            grandparent_id = parent[node_id]
-            if children[node_id] and grandparent_id is not None:
-                matching_children = [child for child in children[node_id] if int(nodes[child]["color_index"]) == int(nodes[grandparent_id]["color_index"])]
-                if len(matching_children) == 1 and strategy in {"ellipse_axis_arm_union", "compound_parent_expand_axis_arm_union"}:
-                    anchor_points = _separator_anchor_points(region_mask, node_map == matching_children[0])
-                    if anchor_points:
-                        strategy = "compound_axis_arm_with_source_separator_anchors"
-
+            paths,strategy=fitted
+            if strategy=="whole_shape":
+                occupancy=_bbox_occupancy(region_mask)
+                if children[node_id] and occupancy<=0.20:
+                    transform=_bbox_transform(region_mask,-_RING_EXPAND)
+                    if transform: strategy="ring_expand_whole_shape"
+                elif depth[node_id]>=2:
+                    transform=_bbox_transform(region_mask,_NESTED_INSET)
+                    if transform: strategy="nested_inset_whole_shape"
+            elif strategy=="ellipse_axis_arm_union" and children[node_id]:
+                transform=_bbox_transform(region_mask,-_COMPOUND_PARENT_EXPAND)
+                if transform: strategy="compound_parent_expand_axis_arm_union"
+            elif strategy=="pixel_center_ellipse":
+                parent_id=parent[node_id]
+                if parent_id is not None and assigned.get(parent_id) in {"ellipse_axis_arm_union","compound_parent_expand_axis_arm_union","compound_axis_arm_with_separator_ring"}:
+                    transform=_bbox_transform(region_mask,_COMPOUND_CHILD_INSET)
+                    if transform: strategy="compound_child_tiebreak_ellipse"
+            grandparent=parent[node_id]
+            if children[node_id] and grandparent is not None and strategy in {"ellipse_axis_arm_union","compound_parent_expand_axis_arm_union"}:
+                matching=[child for child in children[node_id] if int(nodes[child]["color_index"])==int(nodes[grandparent]["color_index"])]
+                if len(matching)==1:
+                    stabilizer=_separator_ring_element(region_mask,node_map==matching[0],fill)
+                    if stabilizer: strategy="compound_axis_arm_with_separator_ring"
         for d in paths:
-            transform_attr = f' transform="{transform}"' if transform else ""
-            elements.append(f'<path fill="{fill}" d="{d}"{transform_attr}/>')
-            command_count += max(2, sum(d.count(token) for token in ("M", "L", "H", "V", "A", "C", "Z")))
-        for x, y in anchor_points:
-            elements.append(_separator_anchor_element(x, y, fill))
-            command_count += 2
-        assigned_strategy[node_id] = strategy
-        strategy_counts[strategy] += 1
-        reports.append({"node_id": int(node_id), "color_index": color_index, "depth": int(depth[node_id]), "parent_node_id": parent[node_id], "child_count": len(children[node_id]), "area": int(node["area"]), "bbox_occupancy": round(_bbox_occupancy(region_mask), 6), "strategy": strategy, "path_count": len(paths) + len(anchor_points), "separator_anchor_count": len(anchor_points)})
-
-    return {"elements": elements, "path_count": len(elements), "node_count": int(command_count), "region_count": len(nodes), "max_depth": max(depth) if depth else 0, "strategy_counts": dict(sorted(strategy_counts.items())), "regions": reports}
+            attr=f' transform="{transform}"' if transform else ""; elements.append(f'<path fill="{fill}" d="{d}"{attr}/>'); command_count+=max(2,sum(d.count(t) for t in ("M","L","H","V","A","C","Z")))
+        if stabilizer:
+            elements.append(stabilizer); command_count+=4
+        assigned[node_id]=strategy; strategies[strategy]+=1
+        reports.append({"node_id":int(node_id),"color_index":color_index,"depth":int(depth[node_id]),"parent_node_id":parent[node_id],"child_count":len(children[node_id]),"area":int(node["area"]),"bbox_occupancy":round(_bbox_occupancy(region_mask),6),"strategy":strategy,"path_count":len(paths)+(1 if stabilizer else 0),"separator_ring":bool(stabilizer)})
+    return {"elements":elements,"path_count":len(elements),"node_count":int(command_count),"region_count":len(nodes),"max_depth":max(depth) if depth else 0,"strategy_counts":dict(sorted(strategies.items())),"regions":reports}
 
 
-__all__ = ["SemanticRegionFitError", "build_semantic_region_elements"]
+__all__=["SemanticRegionFitError","build_semantic_region_elements"]
