@@ -131,6 +131,12 @@ def vectorize_source_palette_paths(
         raise SourcePaletteNotApplicable(
             f"source_palette_exceeds_cap:{color_count}>{int(max_colors)}"
         )
+    palette = {tuple(int(channel) for channel in color) for color in colors.tolist()}
+    if palette.issubset({(0, 0, 0), (255, 255, 255)}):
+        # Canonical binary artwork already has a lossless legacy path. Producing
+        # a second exact path candidate only increases path/byte complexity and
+        # can never recover palette information that is not present in source.
+        raise SourcePaletteNotApplicable("canonical_binary_palette")
 
     labels = inverse.reshape(height, width)
     counts = np.bincount(inverse)
