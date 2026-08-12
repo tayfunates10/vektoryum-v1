@@ -1,0 +1,106 @@
+name: Issue153 journal remediation
+
+on:
+  push:
+    branches:
+      - codex/ai4-round3-gradient-topology
+    paths:
+      - .github/workflows/issue153-journal-remediation.yml
+
+permissions:
+  contents: write
+
+jobs:
+  remediate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PYTHONPATH: .:engine
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/ai4-round3-gradient-topology
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check -r engine/requirements.txt pytest
+      - name: Apply journal scope remediation
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          p = Path('engine/app/transform_journal.py')
+          s = p.read_text(encoding='utf-8')
+          old = '        measure_alpha = "alpha_fidelity" in self.required_metrics\n'
+          new = '        measure_alpha = capture_render and "alpha_fidelity" in self.required_metrics\n'
+          if s.count(old) != 1:
+              raise SystemExit(f'journal measure_alpha anchor count={s.count(old)}')
+          p.write_text(s.replace(old, new, 1), encoding='utf-8')
+
+          p = Path('engine/test_transform_journal.py')
+          s = p.read_text(encoding='utf-8')
+          if 'def test_alpha_required_measurement_runs_on_downstream_stage(' in s:
+              s = s.replace(
+                  'def test_alpha_required_measurement_runs_on_downstream_stage(',
+                  'def test_alpha_only_measurement_remains_scoped_to_source_dimension_restore(',
+                  1,
+              )
+          pattern = re.compile(
+              r'(def test_alpha_only_measurement_remains_scoped_to_source_dimension_restore\([\s\S]*?'
+              r'accepted, stage = journal\.consider_candidate\("boundary_refit", parent, candidate\)\n)'
+              r'[\s\S]*?(?=\n\ndef test_alpha_restore_reuses_single_rgba_render_per_artifact)'
+          )
+          replacement = r'''\1
+              assert accepted == parent
+              assert stage["status"] == "rolled_back"
+              assert "required_metric_unmeasured" in stage["reason_codes"]
+              assert "alpha_stage_metrics_incomplete" in stage["reason_codes"]
+              assert stage["required_unmeasured"] == ["alpha_fidelity"]
+              assert stage["alpha_comparison"] is None
+          '''
+          s, count = pattern.subn(replacement, s, count=1)
+          if count != 1:
+              raise SystemExit(f'alpha downstream test replacement count={count}')
+
+          pattern = re.compile(
+              r'def test_required_alpha_metric_is_measured_not_faked_on_downstream_stage\(tmp_path: Path\) -> None:'
+              r'[\s\S]*?(?=\n\ndef test_winner_selection_filters_unsafe_when_safe_exists_and_preserves_no_safe_fallback)'
+          )
+          replacement = '''def test_required_alpha_metric_is_not_faked_on_downstream_stage(tmp_path: Path) -> None:
+              from app.transform_journal import TransformJournal
+              parent = tmp_path / "alpha_parent.svg"
+              candidate = tmp_path / "alpha_candidate.svg"
+              alpha_svg = _svg('<rect x="24" y="24" width="80" height="80" fill="#e3000b" fill-opacity="0.5"/>')
+              parent.write_bytes(alpha_svg)
+              candidate.write_bytes(alpha_svg.replace(b'</svg>', b'<metadata>same-alpha</metadata></svg>'))
+              journal = TransformJournal(parent, _square_source(), required_metrics={"alpha_fidelity"})
+              accepted, stage = journal.consider_candidate("boundary_refit", parent, candidate)
+              assert accepted == parent
+              assert stage["alpha_comparison"] is None
+              assert "required_metric_unmeasured" in stage["reason_codes"]
+              assert "alpha_stage_metrics_incomplete" in stage["reason_codes"]
+          '''
+          s, count = pattern.subn(replacement, s, count=1)
+          if count != 1:
+              raise SystemExit(f'alpha evidence test replacement count={count}')
+          # Normalize accidental indentation introduced by the replacement literals.
+          s = re.sub(r'(?m)^ {4}(assert |from app\.transform_journal|parent =|candidate =|alpha_svg =|journal =|accepted, stage =)', r'    \1', s)
+          p.write_text(s, encoding='utf-8')
+          PY
+      - name: Compile and run focused contracts
+        run: |
+          python -m py_compile engine/app/transform_journal.py engine/test_transform_journal.py
+          python -m pytest -q engine/test_transform_journal.py engine/test_ai2_component_quality.py engine/test_analyzer_contracts.py
+      - name: Commit and remove temporary workflow
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git rm .github/workflows/issue153-journal-remediation.yml
+          git add engine/app/transform_journal.py engine/test_transform_journal.py
+          git commit -m 'fix(issue153): scope downstream alpha journal evidence'
+          git push origin HEAD:codex/ai4-round3-gradient-topology
