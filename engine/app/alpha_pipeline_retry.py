@@ -28,11 +28,20 @@ _ALPHA_REMEDIATION_ENABLED: ContextVar[bool] = ContextVar(
     "vektoryum_alpha_remediation_enabled",
     default=True,
 )
+_ALPHA_PIPELINE_ACTIVE: ContextVar[bool] = ContextVar(
+    "vektoryum_alpha_pipeline_active",
+    default=False,
+)
 
 
 def alpha_remediation_enabled() -> bool:
     """Return whether alpha-specific preprocessing/selection may run."""
     return bool(_ALPHA_REMEDIATION_ENABLED.get())
+
+
+def alpha_pipeline_active() -> bool:
+    """Return true only while the real production pipeline is finalizing alpha."""
+    return bool(_ALPHA_PIPELINE_ACTIVE.get())
 
 
 @contextmanager
@@ -43,6 +52,16 @@ def alpha_remediation_context(enabled: bool) -> Iterator[None]:
         yield
     finally:
         _ALPHA_REMEDIATION_ENABLED.reset(token)
+
+
+@contextmanager
+def _alpha_pipeline_context() -> Iterator[None]:
+    """Mark one real pipeline pass without affecting direct finalizer/helper calls."""
+    token = _ALPHA_PIPELINE_ACTIVE.set(True)
+    try:
+        yield
+    finally:
+        _ALPHA_PIPELINE_ACTIVE.reset(token)
 
 
 def _historical_callable(original: Callable[..., Any]) -> Callable[..., Any]:
@@ -156,7 +175,7 @@ def wrap_run_pipeline_with_alpha_retry(
     ) -> dict[str, Any]:
         source_path = Path(original_path)
         if _has_exact_dense_partial_alpha(source_path, trace_mode):
-            with alpha_remediation_context(True):
+            with _alpha_pipeline_context(), alpha_remediation_context(True):
                 result = original(
                     image,
                     original_path,
@@ -176,7 +195,7 @@ def wrap_run_pipeline_with_alpha_retry(
             return result
 
         first_error: RuntimeError | None = None
-        with alpha_remediation_context(False):
+        with _alpha_pipeline_context(), alpha_remediation_context(False):
             try:
                 return original(
                     image,
@@ -194,7 +213,7 @@ def wrap_run_pipeline_with_alpha_retry(
                 first_error = error
 
         try:
-            with alpha_remediation_context(True):
+            with _alpha_pipeline_context(), alpha_remediation_context(True):
                 result = original(
                     image,
                     original_path,
