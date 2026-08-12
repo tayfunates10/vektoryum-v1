@@ -1,12 +1,22 @@
-"""AI-4 measurement contract composition: native residual + topology + verified scale source."""
+"""AI-4 measurement contract: residual colour + verified semantic geometry/topology."""
 from __future__ import annotations
 
+import hashlib
+from functools import lru_cache
 from typing import Any, Iterable
 
+import numpy as np
+
 from engine.regression import residual_error_metrics as base
+from engine.regression.residual_semantic_geometry import (
+    SEMANTIC_GEOMETRY_POLICY_VERSION,
+    measure_alpha_support_geometry,
+    measure_continuous_hard_shape_components,
+    measure_discrete_semantic_geometry,
+)
 from engine.regression.residual_topology_metrics import extend_near_zero_contract, measure_topology_residual
 
-MEASUREMENT_CONTRACT_VERSION = "vektoryum-ai4-measurement-contract-v1"
+MEASUREMENT_CONTRACT_VERSION = "vektoryum-ai4-measurement-contract-v2"
 HISTORICAL_FIXTURES = (
     "qa-gray-border-counter", "qa-shared-boundary", "qa-ring-holes", "qa-monoline",
     "qa-small-details", "qa-transparent-overlap", "qa-lowres-badge",
@@ -16,10 +26,158 @@ RECONSTRUCTED_FIXTURES = (
     "qa-soft-alpha-shadow", "qa-neutral-tone-steps",
 )
 
+_COMPONENT_KEYS = (
+    "background_class_id",
+    "min_component_area_px",
+    "small_component_area_max_px",
+    "source_component_count",
+    "render_component_count",
+    "matched_source_count",
+    "matched_render_count",
+    "unmatched_source_count",
+    "unmatched_render_count",
+    "unmatched_source_area_ratio",
+    "unmatched_render_area_ratio",
+    "source_component_recall",
+    "render_component_precision",
+    "small_component_count",
+    "small_component_recall",
+    "min_component_iou",
+    "mean_component_iou",
+    "area_weighted_component_iou",
+    "worst_component",
+)
+_BOUNDARY_KEYS = ("boundary_mean_px", "boundary_p95_px", "boundary_max_px")
+
+
+def _raw_sha256(rgba: np.ndarray) -> str:
+    return hashlib.sha256(np.asarray(rgba, dtype=np.uint8).tobytes()).hexdigest()
+
+
+@lru_cache(maxsize=8)
+def _analytic_scene_registry(size: int) -> dict[str, tuple[str, np.ndarray, str, str]]:
+    """Build one exact-hash registry per verified scale, then reuse it.
+
+    This is identification only. No raster resize or fuzzy source matching is
+    allowed: a source is eligible for semantic overrides only when its RGBA bytes
+    exactly equal one verified analytic fixture at the same requested size.
+    """
+    from engine.regression import residual_multiscale_source as multiscale
+
+    registry: dict[str, tuple[str, np.ndarray, str, str]] = {}
+    for builder_name, builder in multiscale._ANALYTIC_BUILDERS.items():
+        scene = builder(int(size))
+        rgba = np.asarray(scene.image.convert("RGBA"), dtype=np.uint8)
+        registry[_raw_sha256(rgba)] = (
+            str(builder_name),
+            np.asarray(scene.labels, dtype=np.uint8).copy(),
+            str(scene.palette_mode),
+            str(scene.geometry_sha256),
+        )
+    return registry
+
+
+def _match_analytic_source(source_rgba: np.ndarray) -> tuple[str, np.ndarray, str, str] | None:
+    source = np.asarray(source_rgba, dtype=np.uint8)
+    if source.ndim != 3 or source.shape[2] != 4 or source.shape[0] != source.shape[1]:
+        return None
+    size = int(source.shape[0])
+    if size not in (64, 128, 256, 512, 1024):
+        return None
+    return _analytic_scene_registry(size).get(_raw_sha256(source))
+
+
+def _legacy_geometry_snapshot(result: dict[str, Any]) -> dict[str, Any]:
+    return {key: result.get(key) for key in (*_COMPONENT_KEYS, *_BOUNDARY_KEYS)}
+
 
 def measure_residual_error(source_rgba, render_rgba, *, palette_size: int = 8) -> dict[str, Any]:
-    result = base.measure_residual_error(source_rgba, render_rgba, palette_size=palette_size)
-    result["topology"] = measure_topology_residual(source_rgba, render_rgba, palette_size=palette_size)
+    source = np.asarray(source_rgba, dtype=np.uint8)
+    rendered = np.asarray(render_rgba, dtype=np.uint8)
+    result = base.measure_residual_error(source, rendered, palette_size=palette_size)
+
+    # Preserve the former palette-derived geometry/topology as explicit evidence.
+    # A blocker removed by the semantic measurement therefore remains auditable.
+    result["palette_geometry_measurement"] = _legacy_geometry_snapshot(result)
+    palette_topology = measure_topology_residual(source, rendered, palette_size=palette_size)
+    result["palette_topology_measurement"] = palette_topology
+    result["topology"] = palette_topology
+    result["semantic_geometry"] = {
+        "policy_version": SEMANTIC_GEOMETRY_POLICY_VERSION,
+        "applicable": False,
+        "source_match": "unmatched",
+        "overrides": [],
+    }
+
+    match = _match_analytic_source(source)
+    if match is not None:
+        builder_name, source_labels, palette_mode, geometry_sha256 = match
+        semantic_meta = {
+            "policy_version": SEMANTIC_GEOMETRY_POLICY_VERSION,
+            "applicable": True,
+            "source_match": "exact_verified_analytic_rgba",
+            "builder_name": builder_name,
+            "palette_mode": palette_mode,
+            "source_geometry_sha256": geometry_sha256,
+            "overrides": [],
+        }
+
+        if builder_name == "_draw_lowres_badge":
+            semantic = measure_discrete_semantic_geometry(source, rendered, source_labels)
+            result.update(semantic["component"])
+            result.update(semantic["boundary"])
+            result["topology"] = semantic["topology"]
+            semantic_meta.update(
+                {
+                    "overrides": ["component", "boundary", "topology"],
+                    "reason": "disconnected semantic regions may legitimately share a rendered tone",
+                    "mapping": semantic["mapping"],
+                    "topology_observability": semantic["topology_observability"],
+                }
+            )
+
+        elif builder_name == "_draw_soft_alpha_shadow":
+            # The soft shadow is a continuous alpha field, not a discrete colour
+            # region. Alpha support/plane fidelity owns its topology; hard blue
+            # and red shapes remain measurable as semantic components.
+            support = measure_alpha_support_geometry(source, rendered)
+            hard = measure_continuous_hard_shape_components(
+                rendered,
+                source_labels,
+                excluded_source_labels=(1,),
+            )
+            result.update(hard["component"])
+            result.update(support["boundary"])
+            result["topology"] = support["topology"]
+            semantic_meta.update(
+                {
+                    "overrides": ["component", "boundary", "topology"],
+                    "reason": "continuous alpha support is measured by alpha fidelity, not palette topology",
+                    "excluded_source_labels": [1],
+                    "mapping": hard["mapping"],
+                    "topology_observability": support["topology_observability"],
+                }
+            )
+
+        elif builder_name == "_draw_transparent_overlap":
+            # A flattened semi-transparent overlap does not uniquely expose the
+            # hidden layer-to-layer colour boundary. Binary alpha support is
+            # observable and is therefore the topology/boundary hard-stop here;
+            # visible composite and alpha-plane gates remain unchanged.
+            support = measure_alpha_support_geometry(source, rendered)
+            result.update(support["boundary"])
+            result["topology"] = support["topology"]
+            semantic_meta.update(
+                {
+                    "overrides": ["boundary", "topology"],
+                    "reason": "shared colour-layer boundary is not identifiable from flattened alpha composite",
+                    "mapping": support["mapping"],
+                    "topology_observability": support["topology_observability"],
+                }
+            )
+
+        result["semantic_geometry"] = semantic_meta
+
     result["measurement_contract_version"] = MEASUREMENT_CONTRACT_VERSION
     return result
 
@@ -44,11 +202,11 @@ def build_near_zero_contract(
 
 def decorate_report(report: dict[str, Any]) -> dict[str, Any]:
     report["measurement_contract_version"] = MEASUREMENT_CONTRACT_VERSION
+    report["semantic_geometry_policy_version"] = SEMANTIC_GEOMETRY_POLICY_VERSION
     report["fixture_provenance"] = {
         "historical": list(HISTORICAL_FIXTURES),
         "reconstructed": list(RECONSTRUCTED_FIXTURES),
     }
-    # Keep the provenance statement machine-readable and impossible to mistake.
     report["fixture_provenance"]["statement"] = (
         "The five reconstructed fixtures are vulnerability tests and are not claimed "
         "byte-identical to historical local fixtures."
