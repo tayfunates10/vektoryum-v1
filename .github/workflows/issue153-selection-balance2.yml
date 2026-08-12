@@ -24,7 +24,7 @@ jobs:
       - name: Install dependencies
         run: python -m pip install --disable-pip-version-check -r engine/requirements.txt pytest
       - name: Apply patch
-        run: python .github/issue153_selection_balance.py
+        run: python .github/issue153_selection_balance_v2.py
       - name: Verify focused contracts
         run: |
           python -m py_compile engine/app/analyzer.py engine/app/pipeline.py
