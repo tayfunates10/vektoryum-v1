@@ -376,6 +376,7 @@ def build_semantic_region_elements(labels: np.ndarray, colors: np.ndarray) -> di
     )
     elements: list[str] = []
     strategy_counts: dict[str, int] = defaultdict(int)
+    assigned_strategy: dict[int, str] = {}
     command_count = 0
     reports: list[dict[str, Any]] = []
 
@@ -428,6 +429,15 @@ def build_semantic_region_elements(labels: np.ndarray, colors: np.ndarray) -> di
                     transform = _bbox_transform(region_mask, _NESTED_INSET)
                     if transform:
                         strategy = "nested_inset_whole_shape"
+            elif strategy == "pixel_center_ellipse":
+                parent_id = parent[node_id]
+                if (
+                    parent_id is not None
+                    and assigned_strategy.get(parent_id) == "ellipse_axis_arm_union"
+                ):
+                    transform = _bbox_transform(region_mask, _NESTED_INSET)
+                    if transform:
+                        strategy = "compound_child_inset_ellipse"
 
         for d in paths:
             transform_attr = f' transform="{transform}"' if transform else ""
@@ -436,6 +446,7 @@ def build_semantic_region_elements(labels: np.ndarray, colors: np.ndarray) -> di
                 2,
                 sum(d.count(token) for token in ("M", "L", "H", "V", "A", "C", "Z")),
             )
+        assigned_strategy[node_id] = strategy
         strategy_counts[strategy] += 1
         reports.append(
             {
