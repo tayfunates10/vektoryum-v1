@@ -244,7 +244,7 @@ def _install_soft_ellipse_direct_factory() -> None:
     from app import alpha_candidate_direct  # noqa: PLC0415
     from app import alpha_visible_paint  # noqa: PLC0415
     from app.alpha_soft_ellipse import make_soft_ellipse_alpha_first  # noqa: PLC0415
-    from app.alpha_visible_paint import make_visible_alpha_paint_repair  # noqa: PLC0415
+    from app.alpha_visible_paint import repair_visible_alpha_paint  # noqa: PLC0415
     from app.alpha_visible_paint_regions import (  # noqa: PLC0415
         build_boundary_stable_source_paint_group,
     )
@@ -257,13 +257,48 @@ def _install_soft_ellipse_direct_factory() -> None:
     @wraps(current)
     def soft_ellipse_factory(guarded_builder):
         assembled = make_soft_ellipse_alpha_first(current(guarded_builder))
-        repaired = make_visible_alpha_paint_repair(assembled)
 
         @wraps(assembled)
-        def production_scoped(*args, **kwargs):
+        def production_scoped(svg_path: Path, source_path: Path, mode: str):
             if not alpha_pipeline_active():
-                return assembled(*args, **kwargs)
-            return repaired(*args, **kwargs)
+                return assembled(svg_path, source_path, mode)
+
+            target = Path(svg_path)
+            parent_bytes = target.read_bytes()
+            report = assembled(target, Path(source_path), mode)
+            if not isinstance(report, dict) or report.get("status") == "not_applicable":
+                return report
+
+            accepted_bytes = target.read_bytes()
+            try:
+                visible = repair_visible_alpha_paint(
+                    target,
+                    Path(source_path),
+                    mode,
+                    parent_bytes=parent_bytes,
+                )
+            except RuntimeError as error:
+                if not str(error).startswith("source_alpha_visible_paint_"):
+                    raise
+                # The visible repair is an optional candidate. Keep the already
+                # accepted source-alpha artifact byte-identical when that candidate
+                # cannot satisfy the existing budgets/quality gates. Downstream
+                # final-artifact evaluation remains the release hard-stop.
+                target.write_bytes(accepted_bytes)
+                result = dict(report)
+                result.update(
+                    {
+                        "visible_paint_repair_status": "rejected_preserved_alpha_artifact",
+                        "visible_paint_repair_applied": False,
+                        "visible_paint_repair_reason": str(error),
+                        "raster_embed_count": 0,
+                    }
+                )
+                return result
+
+            result = dict(report)
+            result.update(visible)
+            return result
 
         production_scoped.__vektoryum_visible_alpha_production_scoped__ = True
         return production_scoped
