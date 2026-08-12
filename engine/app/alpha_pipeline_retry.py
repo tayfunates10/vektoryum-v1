@@ -28,11 +28,20 @@ _ALPHA_REMEDIATION_ENABLED: ContextVar[bool] = ContextVar(
     "vektoryum_alpha_remediation_enabled",
     default=True,
 )
+_ALPHA_PIPELINE_ACTIVE: ContextVar[bool] = ContextVar(
+    "vektoryum_alpha_pipeline_active",
+    default=False,
+)
 
 
 def alpha_remediation_enabled() -> bool:
     """Return whether alpha-specific preprocessing/selection may run."""
     return bool(_ALPHA_REMEDIATION_ENABLED.get())
+
+
+def alpha_pipeline_active() -> bool:
+    """Return true only while the real production pipeline is finalizing alpha."""
+    return bool(_ALPHA_PIPELINE_ACTIVE.get())
 
 
 @contextmanager
@@ -43,6 +52,16 @@ def alpha_remediation_context(enabled: bool) -> Iterator[None]:
         yield
     finally:
         _ALPHA_REMEDIATION_ENABLED.reset(token)
+
+
+@contextmanager
+def _alpha_pipeline_context() -> Iterator[None]:
+    """Mark one real pipeline pass without affecting direct finalizer/helper calls."""
+    token = _ALPHA_PIPELINE_ACTIVE.set(True)
+    try:
+        yield
+    finally:
+        _ALPHA_PIPELINE_ACTIVE.reset(token)
 
 
 def _historical_callable(original: Callable[..., Any]) -> Callable[..., Any]:
@@ -156,7 +175,7 @@ def wrap_run_pipeline_with_alpha_retry(
     ) -> dict[str, Any]:
         source_path = Path(original_path)
         if _has_exact_dense_partial_alpha(source_path, trace_mode):
-            with alpha_remediation_context(True):
+            with _alpha_pipeline_context(), alpha_remediation_context(True):
                 result = original(
                     image,
                     original_path,
@@ -176,7 +195,7 @@ def wrap_run_pipeline_with_alpha_retry(
             return result
 
         first_error: RuntimeError | None = None
-        with alpha_remediation_context(False):
+        with _alpha_pipeline_context(), alpha_remediation_context(False):
             try:
                 return original(
                     image,
@@ -194,7 +213,7 @@ def wrap_run_pipeline_with_alpha_retry(
                 first_error = error
 
         try:
-            with alpha_remediation_context(True):
+            with _alpha_pipeline_context(), alpha_remediation_context(True):
                 result = original(
                     image,
                     original_path,
@@ -221,17 +240,68 @@ def wrap_run_pipeline_with_alpha_retry(
 
 
 def _install_soft_ellipse_direct_factory() -> None:
-    """Bind the ellipse attempt before ``app.__init__`` captures the factory."""
+    """Bind compact alpha specializations before ``app.__init__`` captures them."""
     from app import alpha_candidate_direct  # noqa: PLC0415
+    from app import alpha_visible_paint  # noqa: PLC0415
     from app.alpha_soft_ellipse import make_soft_ellipse_alpha_first  # noqa: PLC0415
+    from app.alpha_visible_paint import repair_visible_alpha_paint  # noqa: PLC0415
+    from app.alpha_visible_paint_regions import (  # noqa: PLC0415
+        build_boundary_stable_source_paint_group,
+    )
 
+    alpha_visible_paint._source_paint_group = build_boundary_stable_source_paint_group
     current = alpha_candidate_direct.make_direct_element_alpha_first
     if getattr(current, "__vektoryum_soft_ellipse_factory__", False):
         return
 
     @wraps(current)
     def soft_ellipse_factory(guarded_builder):
-        return make_soft_ellipse_alpha_first(current(guarded_builder))
+        assembled = make_soft_ellipse_alpha_first(current(guarded_builder))
+
+        @wraps(assembled)
+        def production_scoped(svg_path: Path, source_path: Path, mode: str):
+            if not alpha_pipeline_active():
+                return assembled(svg_path, source_path, mode)
+
+            target = Path(svg_path)
+            parent_bytes = target.read_bytes()
+            report = assembled(target, Path(source_path), mode)
+            if not isinstance(report, dict) or report.get("status") == "not_applicable":
+                return report
+
+            accepted_bytes = target.read_bytes()
+            try:
+                visible = repair_visible_alpha_paint(
+                    target,
+                    Path(source_path),
+                    mode,
+                    parent_bytes=parent_bytes,
+                )
+            except RuntimeError as error:
+                if not str(error).startswith("source_alpha_visible_paint_"):
+                    raise
+                # The visible repair is an optional candidate. Keep the already
+                # accepted source-alpha artifact byte-identical when that candidate
+                # cannot satisfy the existing budgets/quality gates. Downstream
+                # final-artifact evaluation remains the release hard-stop.
+                target.write_bytes(accepted_bytes)
+                result = dict(report)
+                result.update(
+                    {
+                        "visible_paint_repair_status": "rejected_preserved_alpha_artifact",
+                        "visible_paint_repair_applied": False,
+                        "visible_paint_repair_reason": str(error),
+                        "raster_embed_count": 0,
+                    }
+                )
+                return result
+
+            result = dict(report)
+            result.update(visible)
+            return result
+
+        production_scoped.__vektoryum_visible_alpha_production_scoped__ = True
+        return production_scoped
 
     soft_ellipse_factory.__vektoryum_soft_ellipse_factory__ = True
     alpha_candidate_direct.make_direct_element_alpha_first = soft_ellipse_factory
