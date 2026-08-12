@@ -94,7 +94,7 @@ def test_exact_palette_candidate_is_real_vector_and_native_pixel_exact(tmp_path:
     ).hexdigest()
 
 
-def test_exact_palette_candidate_rejects_alpha_and_over_cap(tmp_path: Path) -> None:
+def test_exact_palette_candidate_rejects_alpha_over_cap_and_redundant_binary(tmp_path: Path) -> None:
     alpha = np.zeros((8, 8, 4), dtype=np.uint8)
     alpha[:, :, :3] = (20, 20, 20)
     alpha[:, :, 3] = 255
@@ -111,6 +111,13 @@ def test_exact_palette_candidate_rejects_alpha_and_over_cap(tmp_path: Path) -> N
     Image.fromarray(palette, mode="RGB").save(palette_path)
     with pytest.raises(SourcePaletteNotApplicable, match="source_palette_exceeds_cap"):
         vectorize_source_palette_paths(palette_path, tmp_path / "palette.svg", max_colors=6)
+
+    binary = np.full((16, 16, 3), 255, dtype=np.uint8)
+    binary[4:12, 4:12] = 0
+    binary_path = tmp_path / "binary.png"
+    Image.fromarray(binary, mode="RGB").save(binary_path)
+    with pytest.raises(SourcePaletteNotApplicable, match="canonical_binary_palette"):
+        vectorize_source_palette_paths(binary_path, tmp_path / "binary.svg", max_colors=6)
 
 
 def test_source_palette_candidate_family_is_narrowly_scoped() -> None:
