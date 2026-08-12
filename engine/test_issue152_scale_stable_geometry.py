@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import pytest
 from PIL import Image, ImageDraw
 
 from app.source_palette_vector import vectorize_source_palette_paths
@@ -61,7 +62,8 @@ def test_palette_is_preserved_exactly_for_rectangular_classes(tmp_path: Path) ->
     assert report["source_color_count"] == len(expected)
 
 
-def test_issue152_target_sources_are_semantically_scale_stable(tmp_path: Path) -> None:
+@pytest.mark.parametrize("case_name", ["micro", "small", "thin"])
+def test_issue152_target_sources_are_semantically_scale_stable(case_name: str, tmp_path: Path) -> None:
     """Test-only fixture probe; production remains fixture-agnostic."""
     from engine.regression.output_quality_residual_suite import (  # noqa: PLC0415
         _draw_micro_component_ladder,
@@ -74,20 +76,21 @@ def test_issue152_target_sources_are_semantically_scale_stable(tmp_path: Path) -
         "small": _draw_small_details,
         "thin": _draw_thin_negative_space,
     }
-    for name, builder in builders.items():
-        source = tmp_path / f"{name}.png"
-        output = tmp_path / f"{name}.svg"
-        builder(256).convert("RGBA").save(source, "PNG", optimize=False)
-        report = vectorize_source_palette_paths(source, output, max_colors=6)
-        text = output.read_text(encoding="utf-8").lower()
-        assert "<image" not in text and "base64" not in text and "data:image" not in text
-        transaction = report.get("fit_transaction") or {}
-        diagnostic = (
-            f"{name}: reason={transaction.get('reason')} "
-            f"strategies={report.get('fit_strategy_counts')} "
-            f"native_counts={transaction.get('native_class_component_counts')} "
-            f"render_counts={transaction.get('render_class_component_counts')} "
-            f"native_visible={transaction.get('native_visible_residual')} "
-            f"native_component={transaction.get('native_component')}"
-        )
-        assert report.get("scale_stable_eligible") is True, diagnostic
+    builder = builders[case_name]
+    source = tmp_path / f"{case_name}.png"
+    output = tmp_path / f"{case_name}.svg"
+    builder(256).convert("RGBA").save(source, "PNG", optimize=False)
+    report = vectorize_source_palette_paths(source, output, max_colors=6)
+    text = output.read_text(encoding="utf-8").lower()
+    assert "<image" not in text and "base64" not in text and "data:image" not in text
+    transaction = report.get("fit_transaction") or {}
+    diagnostic = (
+        f"{case_name}: reason={transaction.get('reason')} "
+        f"strategies={report.get('fit_strategy_counts')} "
+        f"native_counts={transaction.get('native_class_component_counts')} "
+        f"render_counts={transaction.get('render_class_component_counts')} "
+        f"native_visible={transaction.get('native_visible_residual')} "
+        f"native_boundary={transaction.get('native_boundary_p95_px')} "
+        f"native_component={transaction.get('native_component')}"
+    )
+    assert report.get("scale_stable_eligible") is True, diagnostic
