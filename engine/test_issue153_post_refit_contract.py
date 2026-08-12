@@ -1,4 +1,4 @@
-"""Issue #153 post-refit topology safety regression contracts."""
+"""Issue #153 post-refit topology and bounded alpha-parent regression contracts."""
 
 from __future__ import annotations
 
@@ -51,8 +51,9 @@ def test_source_rgb_palette_guard_detects_semantic_colour_island() -> None:
 
 
 def test_alpha_parent_selection_has_no_source_level_count_ceiling() -> None:
-    source = __import__("inspect").getsource(
-        __import__("app.alpha_parent_selection", fromlist=["_select"])._select
-    )
+    """Continuous alpha may probe parents, while the candidate trial count stays bounded."""
+    module = __import__("app.alpha_parent_selection", fromlist=["_select"])
+    source = __import__("inspect").getsource(module._select)
     assert "len(levels) >" not in source
     assert "len(levels) <= 1" in source
+    assert module._MAX_TRIALS == 4
