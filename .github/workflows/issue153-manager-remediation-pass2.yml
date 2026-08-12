@@ -1,0 +1,45 @@
+name: Issue153 manager remediation pass 2
+
+on:
+  push:
+    branches:
+      - codex/ai4-round3-gradient-topology
+    paths:
+      - .github/workflows/issue153-manager-remediation-pass2.yml
+
+permissions:
+  contents: write
+
+jobs:
+  remediate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PYTHONPATH: .:engine
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/ai4-round3-gradient-topology
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check -r engine/requirements.txt pytest
+      - name: Apply remediation
+        run: python .github/issue153_manager_remediate.py
+      - name: Compile
+        run: python -m py_compile engine/app/analyzer.py engine/app/alpha_parent_selection.py engine/app/transform_journal.py engine/test_transform_journal.py
+      - name: Focused tests
+        run: python -m pytest -q engine/test_analyzer_contracts.py engine/test_transform_journal.py engine/test_ai2_component_quality.py
+      - name: Commit and clean temporary files
+        shell: bash
+        run: |
+          git config user.name 'chatgpt-remediation-bot'
+          git config user.email 'actions@users.noreply.github.com'
+          git rm -f .github/issue153_manager_remediate.py
+          git rm -f .github/workflows/issue153-manager-remediation-pass1.yml
+          git rm -f .github/workflows/issue153-manager-remediation-pass2.yml
+          git add engine/app/analyzer.py engine/app/alpha_parent_selection.py engine/app/transform_journal.py engine/test_transform_journal.py
+          git commit -m 'fix: remediate issue153 cross-corpus regressions'
+          git push origin HEAD:codex/ai4-round3-gradient-topology
