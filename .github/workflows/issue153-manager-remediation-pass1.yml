@@ -1,0 +1,190 @@
+name: Issue153 manager remediation pass 1
+
+on:
+  push:
+    branches: [codex/ai4-round3-gradient-topology]
+    paths: [.github/workflows/issue153-manager-remediation-pass1.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  remediate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PYTHONPATH: .:engine
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/ai4-round3-gradient-topology
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install test dependencies
+        run: python -m pip install --disable-pip-version-check -r engine/requirements.txt pytest
+      - name: Apply manager remediation
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          # 1) Exact Final: restore bounded alpha-parent applicability from required base.
+          p = Path('engine/app/alpha_parent_selection.py')
+          s = p.read_text()
+          old = '''_MODE_IMAGE_CLASS = {
+              "geometric_logo": "geometric",
+              "minimal_ai": "clean_logo",
+              "flat_logo": "clean_logo",
+              "logo_color": "clean_logo",
+              "photo_poster": "photo",
+          }
+          _MAX_TRIALS = 4
+          '''
+          new = '''_MODE_IMAGE_CLASS = {
+              "geometric_logo": "geometric",
+              "minimal_ai": "clean_logo",
+              "flat_logo": "clean_logo",
+              "logo_color": "clean_logo",
+              "photo_poster": "photo",
+          }
+          _MAX_ALPHA_LEVELS = 4
+          _MAX_TRIALS = 4
+          '''
+          if old not in s:
+              raise SystemExit('alpha constant anchor missing')
+          s = s.replace(old, new, 1)
+          old = '''    # Parent probing is bounded by _MAX_TRIALS, not by the number of source
+              # alpha levels. Continuous/anti-aliased alpha still uses the exact same
+              # source-alpha reconstruction gates; only opaque sources are inapplicable.
+              if len(levels) <= 1:
+          '''
+          new = '''    # Alternate-parent probing stays bounded to low-cardinality alpha.
+              # Continuous/anti-aliased alpha keeps the established parent; its alpha
+              # reconstruction is still validated by the existing final alpha gate.
+              if len(levels) <= 1 or len(levels) > _MAX_ALPHA_LEVELS:
+          '''
+          if old not in s:
+              raise SystemExit('alpha applicability anchor missing')
+          p.write_text(s.replace(old, new, 1))
+
+          # 2) Journal: keep new gradient evidence on downstream mutations, but do not
+          # silently broaden alpha-only mutations. Applicable alpha remains fail-closed
+          # until the source-dimension measurement boundary unless gradient render
+          # evidence already requires a render at that stage.
+          p = Path('engine/app/transform_journal.py')
+          s = p.read_text()
+          old = '''        measure_alpha = "alpha_fidelity" in self.required_metrics
+          '''
+          new = '''        measure_alpha = capture_render and "alpha_fidelity" in self.required_metrics
+          '''
+          if old not in s:
+              raise SystemExit('journal alpha anchor missing')
+          p.write_text(s.replace(old, new, 1))
+
+          # 3) Analyzer: the new foreground-local fallback is for opaque continuous
+          # paint. Transparent gradients retain the legacy whole-frame signal and do
+          # not automatically enter the expensive specialized gradient candidate path.
+          p = Path('engine/app/analyzer.py')
+          s = p.read_text()
+          anchor = '''    if unique_ratio > 0.095 and smooth_area_ratio > 0.68:
+              return True
+
+              h, w = arr.shape[:2]
+          '''
+          replacement = '''    if unique_ratio > 0.095 and smooth_area_ratio > 0.68:
+              return True
+
+              # Transparent sources already have a separate alpha reconstruction path.
+              # Do not let the Issue-153 local fallback alone expand their candidate
+              # graph; the legacy global gradient detector above remains authoritative.
+              if bool(np.any(alpha < 255)):
+                  return False
+
+              h, w = arr.shape[:2]
+          '''
+          if anchor not in s:
+              raise SystemExit('analyzer fallback anchor missing')
+          p.write_text(s.replace(anchor, replacement, 1))
+
+          # Align the regression contract: alpha-only downstream mutation remains
+          # fail-closed; gradient-required downstream measurement remains enabled.
+          p = Path('engine/test_transform_journal.py')
+          s = p.read_text()
+          old = '''def test_alpha_required_measurement_runs_on_downstream_stage(
+              tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+          ) -> None:
+          '''
+          new = '''def test_alpha_only_measurement_remains_scoped_to_source_dimension_restore(
+              tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+          ) -> None:
+          '''
+          if old not in s:
+              raise SystemExit('journal alpha test name anchor missing')
+          s = s.replace(old, new, 1)
+          old = '''    assert accepted == candidate
+              assert stage["status"] == "accepted"
+              assert "required_metric_unmeasured" not in stage["reason_codes"]
+              assert "alpha_stage_metrics_incomplete" not in stage["reason_codes"]
+              assert stage["required_unmeasured"] == []
+              assert stage["alpha_comparison"] is not None
+              assert stage["alpha_comparison"]["alpha_iou"] == pytest.approx(1.0)
+          '''
+          new = '''    assert accepted == parent
+              assert stage["status"] == "rolled_back"
+              assert "required_metric_unmeasured" in stage["reason_codes"]
+              assert "alpha_stage_metrics_incomplete" in stage["reason_codes"]
+              assert stage["required_unmeasured"] == ["alpha_fidelity"]
+              assert stage["alpha_comparison"] is None
+          '''
+          if old not in s:
+              raise SystemExit('journal alpha test assertions anchor missing')
+          s = s.replace(old, new, 1)
+
+          # The extra downstream-alpha test added by Round 3 must also assert fail-closed
+          # when alpha is the only required metric. Do not fake an alpha measurement.
+          old = '''def test_required_alpha_metric_is_measured_not_faked_on_downstream_stage(tmp_path: Path) -> None:
+              from app.transform_journal import TransformJournal
+              parent = tmp_path / "alpha_parent.svg"
+              candidate = tmp_path / "alpha_candidate.svg"
+              alpha_svg = _svg('<rect x="24" y="24" width="80" height="80" fill="#e3000b" fill-opacity="0.5"/>')
+              parent.write_bytes(alpha_svg)
+              candidate.write_bytes(alpha_svg.replace(b'</svg>', b'<metadata>same-alpha</metadata></svg>'))
+              journal = TransformJournal(parent, _square_source(), required_metrics={"alpha_fidelity"})
+              accepted, stage = journal.consider_candidate("boundary_refit", parent, candidate)
+              assert accepted == candidate
+              assert stage["alpha_comparison"] is not None
+              assert "alpha_stage_metrics_incomplete" not in stage["reason_codes"]
+          '''
+          new = '''def test_required_alpha_metric_is_not_faked_on_downstream_stage(tmp_path: Path) -> None:
+              from app.transform_journal import TransformJournal
+              parent = tmp_path / "alpha_parent.svg"
+              candidate = tmp_path / "alpha_candidate.svg"
+              alpha_svg = _svg('<rect x="24" y="24" width="80" height="80" fill="#e3000b" fill-opacity="0.5"/>')
+              parent.write_bytes(alpha_svg)
+              candidate.write_bytes(alpha_svg.replace(b'</svg>', b'<metadata>same-alpha</metadata></svg>'))
+              journal = TransformJournal(parent, _square_source(), required_metrics={"alpha_fidelity"})
+              accepted, stage = journal.consider_candidate("boundary_refit", parent, candidate)
+              assert accepted == parent
+              assert stage["alpha_comparison"] is None
+              assert "required_metric_unmeasured" in stage["reason_codes"]
+              assert "alpha_stage_metrics_incomplete" in stage["reason_codes"]
+          '''
+          if old not in s:
+              raise SystemExit('extra alpha regression anchor missing')
+          p.write_text(s.replace(old, new, 1))
+          PY
+      - name: Compile changed modules
+        run: python -m py_compile engine/app/analyzer.py engine/app/alpha_parent_selection.py engine/app/transform_journal.py
+      - name: Run focused contracts
+        run: python -m pytest -q engine/test_analyzer_contracts.py engine/test_transform_journal.py engine/test_ai2_component_quality.py
+      - name: Commit source patch and self-delete runner
+        shell: bash
+        run: |
+          git config user.name 'chatgpt-remediation-bot'
+          git config user.email 'actions@users.noreply.github.com'
+          git rm .github/workflows/issue153-manager-remediation-pass1.yml
+          git add engine/app/analyzer.py engine/app/alpha_parent_selection.py engine/app/transform_journal.py engine/test_transform_journal.py
+          git commit -m 'fix: remediate issue153 cross-corpus regressions'
+          git push origin HEAD:codex/ai4-round3-gradient-topology
