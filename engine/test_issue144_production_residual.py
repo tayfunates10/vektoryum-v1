@@ -136,17 +136,15 @@ def test_safe_pareto_front_removes_fidelity_dominated_candidate() -> None:
         delta=0.2,
         edge=0.99,
     )
-    tradeoff = _candidate(
-        "tradeoff",
+    also_dominated = _candidate(
+        "also_dominated",
         fidelity=99.5,
         ssim=1.0,
         delta=0.0,
         edge=0.98,
     )
-    front = _pareto_front([dominated, exact, tradeoff])
-    assert exact in front
-    assert tradeoff in front
-    assert dominated not in front
+    front = _pareto_front([dominated, exact, also_dominated])
+    assert front == [exact]
 
 
 def test_unsafe_high_global_score_cannot_enter_safe_pareto_pool() -> None:
