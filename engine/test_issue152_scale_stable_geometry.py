@@ -65,40 +65,6 @@ def test_palette_is_preserved_exactly_for_rectangular_classes(tmp_path: Path) ->
     assert report["source_color_count"] == len(expected)
 
 
-def _thin_parameter_sweep(source: Path, tmp_path: Path) -> list[dict[str, object]]:
-    """Test-only renderer probe; never imported by production code."""
-    import app.semantic_region_geometry as semantic  # noqa: PLC0415
-
-    parent_original = semantic._COMPOUND_PARENT_EXPAND
-    child_original = semantic._COMPOUND_CHILD_INSET
-    rows: list[dict[str, object]] = []
-    try:
-        for parent_expand in (0.0, 0.25, 0.5, 0.75, 1.0):
-            for child_inset in (0.0, 0.01, 0.05, 0.10, 0.15):
-                semantic._COMPOUND_PARENT_EXPAND = parent_expand
-                semantic._COMPOUND_CHILD_INSET = child_inset
-                output = tmp_path / f"sweep-{parent_expand}-{child_inset}.svg"
-                report = vectorize_source_palette_paths(source, output, max_colors=6)
-                transaction = report.get("fit_transaction") or {}
-                component = transaction.get("native_component") or {}
-                rows.append(
-                    {
-                        "parent": parent_expand,
-                        "child": child_inset,
-                        "eligible": report.get("scale_stable_eligible"),
-                        "reason": transaction.get("reason"),
-                        "native_iou": component.get("min_true_cc_iou"),
-                        "native_visible": transaction.get("native_visible_residual"),
-                        "native_boundary": transaction.get("native_boundary_p95_px"),
-                        "render_counts": transaction.get("render_class_component_counts"),
-                    }
-                )
-    finally:
-        semantic._COMPOUND_PARENT_EXPAND = parent_original
-        semantic._COMPOUND_CHILD_INSET = child_original
-    return rows
-
-
 @pytest.mark.parametrize("case_name", ["micro", "small", "thin"])
 def test_issue152_target_sources_are_semantically_scale_stable(case_name: str, tmp_path: Path) -> None:
     """Test-only fixture probe; production remains fixture-agnostic."""
@@ -128,10 +94,9 @@ def test_issue152_target_sources_are_semantically_scale_stable(case_name: str, t
         f"source_counts={transaction.get('source_class_component_counts')} "
         f"native_counts={transaction.get('native_class_component_counts')} "
         f"render_counts={transaction.get('render_class_component_counts')} "
+        f"levels={transaction.get('levels')} "
         f"native_visible={transaction.get('native_visible_residual')} "
         f"native_boundary={transaction.get('native_boundary_p95_px')} "
         f"native_component={transaction.get('native_component')}"
     )
-    if case_name == "thin" and report.get("scale_stable_eligible") is not True:
-        diagnostic += f" sweep={_thin_parameter_sweep(source, tmp_path)}"
     assert report.get("scale_stable_eligible") is True, diagnostic
