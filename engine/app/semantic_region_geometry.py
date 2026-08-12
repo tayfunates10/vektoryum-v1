@@ -1,9 +1,9 @@
 """Generic connected-region geometry reconstruction for flat exact palettes.
 
-The module derives a painter's order from source region adjacency.  It never
-knows QA fixture IDs or analytic fixture builders.  Nested raster regions are
-painted from the corner-connected canvas inward, which lets semantic primitives
-represent rings/holes without fragile even-odd native cell boundaries.
+Regions are derived from the source label map and painted from the corner-connected
+canvas inward.  Primitive fitting is source-derived and fixture-agnostic.  Any
+approximation is subsequently validated by ``source_palette_vector`` against the
+real native render and five generic render scales before it can be selected.
 """
 from __future__ import annotations
 
@@ -18,8 +18,10 @@ class SemanticRegionFitError(RuntimeError):
     pass
 
 
+_MIN_SEMANTIC_SOURCE_SIDE = 64
 _SMALL_EPS = 0.01
 _ELLIPSE_INSET = 0.10
+_NESTED_WHOLE_SHAPE_INSET = 0.20
 
 
 def _fmt(value: float) -> str:
@@ -64,7 +66,12 @@ def _boundary_cycles(mask: np.ndarray) -> list[list[tuple[int, int]]]:
             if not candidates:
                 raise SemanticRegionFitError("non_closed_region_boundary")
             incoming = direction_index[direction(previous, current)]
-            preferred = [(incoming + 1) % 4, incoming, (incoming - 1) % 4, (incoming + 2) % 4]
+            preferred = [
+                (incoming + 1) % 4,
+                incoming,
+                (incoming - 1) % 4,
+                (incoming + 2) % 4,
+            ]
             candidates.sort(
                 key=lambda idx: preferred.index(
                     direction_index[direction(edges[idx][0], edges[idx][1])]
@@ -112,12 +119,15 @@ def _rect_bounds(points: list[tuple[int, int]]) -> tuple[float, float, float, fl
 
 def _rect_d(bounds: tuple[float, float, float, float]) -> str:
     x0, y0, x1, y1 = bounds
-    eps = _SMALL_EPS if min(x1 - x0, y1 - y0) <= 4.0 else 0.0
-    x0 -= eps
-    y0 -= eps
-    x1 += eps
-    y1 += eps
-    return f"M{_fmt(x0)} {_fmt(y0)}L{_fmt(x1)} {_fmt(y0)}L{_fmt(x1)} {_fmt(y1)}L{_fmt(x0)} {_fmt(y1)}Z"
+    epsilon = _SMALL_EPS if min(x1 - x0, y1 - y0) <= 4.0 else 0.0
+    x0 -= epsilon
+    y0 -= epsilon
+    x1 += epsilon
+    y1 += epsilon
+    return (
+        f"M{_fmt(x0)} {_fmt(y0)}L{_fmt(x1)} {_fmt(y0)}"
+        f"L{_fmt(x1)} {_fmt(y1)}L{_fmt(x0)} {_fmt(y1)}Z"
+    )
 
 
 def _ellipse_d_from_cell_bounds(x0: float, y0: float, x1: float, y1: float) -> str | None:
@@ -138,16 +148,16 @@ def _ellipse_from_cycle(points: list[tuple[int, int]]) -> str | None:
     if len(points) < 8:
         return None
     arr = np.asarray(points, dtype=np.float64)
-    lo = arr.min(axis=0)
-    hi = arr.max(axis=0)
-    span = hi - lo
+    low = arr.min(axis=0)
+    high = arr.max(axis=0)
+    span = high - low
     if min(span) < 2.0 or max(span) / max(1e-9, min(span)) > 1.35:
         return None
     area = abs(float(cv2.contourArea(arr.astype(np.float32).reshape(-1, 1, 2))))
     fill_ratio = area / max(1.0, float(span[0] * span[1]))
     if not (0.48 <= fill_ratio <= 0.90):
         return None
-    return _ellipse_d_from_cell_bounds(lo[0], lo[1], hi[0], hi[1])
+    return _ellipse_d_from_cell_bounds(low[0], low[1], high[0], high[1])
 
 
 def _fit_single_outer(points: list[tuple[int, int]]) -> tuple[list[str], str] | None:
@@ -170,114 +180,90 @@ def _fit_single_outer(points: list[tuple[int, int]]) -> tuple[list[str], str] | 
     return None
 
 
-def _filled_outer_mask(points: list[tuple[int, int]], shape: tuple[int, int]) -> np.ndarray:
-    arr = np.asarray(points, dtype=np.int32)
-    mask = np.zeros(shape, dtype=np.uint8)
-    # Cell-boundary vertices lie on grid lines. Filling their polygon on the
-    # pixel grid is used only for generic primitive decomposition diagnostics.
-    shifted = np.column_stack((arr[:, 0], arr[:, 1])).astype(np.int32)
-    cv2.fillPoly(mask, [shifted.reshape(-1, 1, 2)], 1)
-    return mask.astype(bool)
-
-
-def _fit_ellipse_with_axis_arms(
-    points: list[tuple[int, int]],
-    image_shape: tuple[int, int],
-) -> tuple[list[str], str] | None:
-    """Decompose a generic ellipse-like union with long vertical/horizontal arms.
-
-    This is source-derived morphology, not a fixture pattern.  It is useful for
-    negative-space regions where a smooth central primitive intersects narrow
-    axis-aligned slots.  Overlap is safe because connected-region painter emits
-    each primitive as a same-color element at one depth.
-    """
-    arr = np.asarray(points, dtype=np.float64)
-    lo = arr.min(axis=0).astype(int)
-    hi = arr.max(axis=0).astype(int)
-    x0, y0 = max(0, lo[0]), max(0, lo[1])
-    x1, y1 = min(image_shape[1], hi[0]), min(image_shape[0], hi[1])
-    if x1 - x0 < 8 or y1 - y0 < 8:
-        return None
-
-    outer = _filled_outer_mask(points, image_shape)[y0:y1, x0:x1]
-    if not outer.any():
-        return None
-    height, width = outer.shape
-
-    candidates: list[tuple[str, int, int]] = []
-    col_counts = outer.sum(axis=0)
-    full_cols = col_counts >= max(3, int(round(0.90 * height)))
+def _runs(flags: np.ndarray) -> list[tuple[int, int]]:
+    values = np.asarray(flags, dtype=bool)
+    output: list[tuple[int, int]] = []
     start: int | None = None
-    for index, active in enumerate(np.r_[full_cols, False]):
+    for index, active in enumerate(np.r_[values, False]):
         if active and start is None:
             start = index
         elif not active and start is not None:
-            stop = index
-            arm_width = stop - start
-            if arm_width <= max(8, int(round(0.16 * width))) and height / max(1, arm_width) >= 4.0:
-                candidates.append(("v", start, stop))
+            output.append((start, index))
             start = None
+    return output
 
-    row_counts = outer.sum(axis=1)
-    full_rows = row_counts >= max(3, int(round(0.90 * width)))
-    start = None
-    for index, active in enumerate(np.r_[full_rows, False]):
-        if active and start is None:
-            start = index
-        elif not active and start is not None:
-            stop = index
-            arm_height = stop - start
-            if arm_height <= max(8, int(round(0.16 * height))) and width / max(1, arm_height) >= 4.0:
-                candidates.append(("h", start, stop))
-            start = None
 
-    if not candidates or len(candidates) > 6:
+def _fit_ellipse_with_axis_arms(region_mask: np.ndarray) -> tuple[list[str], str] | None:
+    """Fit an ellipse-like connected region intersected by narrow axis arms.
+
+    Detection uses the actual source connected-region mask, not a polygon fill or
+    fixture coordinates.  The final native transaction is the authority on fit
+    quality, so this helper only proposes geometry; it cannot force eligibility.
+    """
+    ys, xs = np.nonzero(region_mask)
+    if len(xs) < 16:
+        return None
+    x0 = int(xs.min())
+    x1 = int(xs.max()) + 1
+    y0 = int(ys.min())
+    y1 = int(ys.max()) + 1
+    crop = np.asarray(region_mask[y0:y1, x0:x1], dtype=bool)
+    height, width = crop.shape
+    if min(height, width) < 8:
         return None
 
-    residual = outer.copy()
-    for axis, start, stop in candidates:
+    arms: list[tuple[str, int, int]] = []
+    full_columns = crop.sum(axis=0) >= max(3, int(round(0.90 * height)))
+    for start, stop in _runs(full_columns):
+        arm_width = stop - start
+        if arm_width <= max(8, int(round(0.16 * width))) and height / max(1, arm_width) >= 4.0:
+            arms.append(("v", start, stop))
+    full_rows = crop.sum(axis=1) >= max(3, int(round(0.90 * width)))
+    for start, stop in _runs(full_rows):
+        arm_height = stop - start
+        if arm_height <= max(8, int(round(0.16 * height))) and width / max(1, arm_height) >= 4.0:
+            arms.append(("h", start, stop))
+    if not arms or len(arms) > 6:
+        return None
+
+    residual = crop.copy()
+    for axis, start, stop in arms:
         if axis == "v":
             residual[:, start:stop] = False
         else:
             residual[start:stop, :] = False
-    ys, xs = np.nonzero(residual)
-    if len(xs) < 12:
+    ry, rx = np.nonzero(residual)
+    if len(rx) < 12:
         return None
-    ex0, ex1 = int(xs.min()), int(xs.max()) + 1
-    ey0, ey1 = int(ys.min()), int(ys.max()) + 1
-    ew, eh = ex1 - ex0, ey1 - ey0
-    if min(ew, eh) < 6 or max(ew, eh) / max(1, min(ew, eh)) > 1.45:
+    ex0 = int(rx.min())
+    ex1 = int(rx.max()) + 1
+    ey0 = int(ry.min())
+    ey1 = int(ry.max()) + 1
+    ellipse_width = ex1 - ex0
+    ellipse_height = ey1 - ey0
+    if min(ellipse_width, ellipse_height) < 6:
+        return None
+    if max(ellipse_width, ellipse_height) / max(1, min(ellipse_width, ellipse_height)) > 1.45:
         return None
 
-    # Validate the decomposition against the filled OUTER footprint; nested
-    # child regions are intentionally painted later by the adjacency depth.
-    synthetic = np.zeros_like(outer, dtype=np.uint8)
-    cv2.ellipse(
-        synthetic,
-        ((ex0 + ex1 - 1) // 2, (ey0 + ey1 - 1) // 2),
-        (max(1, (ew - 1) // 2), max(1, (eh - 1) // 2)),
-        0,
-        0,
-        360,
-        1,
-        -1,
+    # The residual must still look ellipse-like by area/bbox occupancy after
+    # removing the axis arms.  This keeps the proposal family narrow.
+    residual_area = int(residual.sum())
+    ellipse_box_area = max(1, ellipse_width * ellipse_height)
+    occupancy = residual_area / ellipse_box_area
+    if not (0.45 <= occupancy <= 0.90):
+        return None
+
+    ellipse = _ellipse_d_from_cell_bounds(
+        x0 + ex0,
+        y0 + ey0,
+        x0 + ex1,
+        y0 + ey1,
     )
-    for axis, start, stop in candidates:
-        if axis == "v":
-            synthetic[:, start:stop] = 1
-        else:
-            synthetic[start:stop, :] = 1
-    inter = int(np.logical_and(outer, synthetic).sum())
-    union = int(np.logical_or(outer, synthetic).sum())
-    if union <= 0 or inter / union < 0.96:
-        return None
-
-    paths: list[str] = []
-    ellipse = _ellipse_d_from_cell_bounds(x0 + ex0, y0 + ey0, x0 + ex1, y0 + ey1)
     if ellipse is None:
         return None
-    paths.append(ellipse)
-    for axis, start, stop in candidates:
+    paths = [ellipse]
+    for axis, start, stop in arms:
         if axis == "v":
             paths.append(_rect_d((x0 + start, y0, x0 + stop, y1)))
         else:
@@ -285,12 +271,17 @@ def _fit_ellipse_with_axis_arms(
     return paths, "ellipse_axis_arm_union"
 
 
-def _connected_region_graph(labels: np.ndarray, color_count: int) -> tuple[np.ndarray, list[dict[str, Any]], int, list[int]]:
+def _connected_region_graph(
+    labels: np.ndarray,
+    color_count: int,
+) -> tuple[np.ndarray, list[dict[str, Any]], int, list[int], list[int | None]]:
     h, w = labels.shape
     node_map = np.full((h, w), -1, dtype=np.int32)
     nodes: list[dict[str, Any]] = []
     for color_index in range(color_count):
-        count, component_map = cv2.connectedComponents((labels == color_index).astype(np.uint8), connectivity=8)
+        count, component_map = cv2.connectedComponents(
+            (labels == color_index).astype(np.uint8), connectivity=8
+        )
         for local_index in range(1, int(count)):
             node_id = len(nodes)
             mask = component_map == local_index
@@ -306,14 +297,17 @@ def _connected_region_graph(labels: np.ndarray, color_count: int) -> tuple[np.nd
         raise SemanticRegionFitError("region_graph_unassigned_pixels")
 
     edges: list[set[int]] = [set() for _ in nodes]
-    for a, b in ((node_map[:, :-1], node_map[:, 1:]), (node_map[:-1, :], node_map[1:, :])):
+    for a, b in (
+        (node_map[:, :-1], node_map[:, 1:]),
+        (node_map[:-1, :], node_map[1:, :]),
+    ):
         diff = a != b
         left = a[diff].astype(int)
         right = b[diff].astype(int)
-        for u, v in zip(left.tolist(), right.tolist(), strict=True):
-            if u != v:
-                edges[u].add(v)
-                edges[v].add(u)
+        for first, second in zip(left.tolist(), right.tolist(), strict=True):
+            if first != second:
+                edges[first].add(second)
+                edges[second].add(first)
 
     corner_nodes = np.asarray(
         [node_map[0, 0], node_map[0, -1], node_map[-1, 0], node_map[-1, -1]],
@@ -321,6 +315,7 @@ def _connected_region_graph(labels: np.ndarray, color_count: int) -> tuple[np.nd
     )
     root = int(np.argmax(np.bincount(corner_nodes)))
     depth = [-1] * len(nodes)
+    parent: list[int | None] = [None] * len(nodes)
     depth[root] = 0
     queue: deque[int] = deque([root])
     while queue:
@@ -328,21 +323,46 @@ def _connected_region_graph(labels: np.ndarray, color_count: int) -> tuple[np.nd
         for neighbor in sorted(edges[node]):
             if depth[neighbor] < 0:
                 depth[neighbor] = depth[node] + 1
+                parent[neighbor] = node
                 queue.append(neighbor)
     if any(value < 0 for value in depth):
         raise SemanticRegionFitError("region_graph_disconnected")
-    return node_map, nodes, root, depth
+    return node_map, nodes, root, depth, parent
 
 
-def build_semantic_region_elements(
-    labels: np.ndarray,
-    colors: np.ndarray,
-) -> dict[str, Any]:
+def _nested_inset_transform(mask: np.ndarray) -> str | None:
+    ys, xs = np.nonzero(mask)
+    if not len(xs):
+        return None
+    x0 = float(xs.min())
+    x1 = float(xs.max() + 1)
+    y0 = float(ys.min())
+    y1 = float(ys.max() + 1)
+    width = x1 - x0
+    height = y1 - y0
+    if min(width, height) <= 2.0 * _NESTED_WHOLE_SHAPE_INSET:
+        return None
+    cx = (x0 + x1) / 2.0
+    cy = (y0 + y1) / 2.0
+    sx = (width - 2.0 * _NESTED_WHOLE_SHAPE_INSET) / width
+    sy = (height - 2.0 * _NESTED_WHOLE_SHAPE_INSET) / height
+    return (
+        f"translate({_fmt(cx)} {_fmt(cy)}) "
+        f"scale({_fmt(sx)} {_fmt(sy)}) "
+        f"translate({_fmt(-cx)} {_fmt(-cy)})"
+    )
+
+
+def build_semantic_region_elements(labels: np.ndarray, colors: np.ndarray) -> dict[str, Any]:
     labels = np.asarray(labels)
     colors = np.asarray(colors, dtype=np.uint8)
     h, w = labels.shape
-    node_map, nodes, root, depth = _connected_region_graph(labels, len(colors))
+    if min(h, w) < _MIN_SEMANTIC_SOURCE_SIDE:
+        raise SemanticRegionFitError(
+            f"source_resolution_below_semantic_floor:{min(h, w)}<{_MIN_SEMANTIC_SOURCE_SIDE}"
+        )
 
+    node_map, nodes, root, depth, parent = _connected_region_graph(labels, len(colors))
     order = sorted(
         range(len(nodes)),
         key=lambda node_id: (depth[node_id], -nodes[node_id]["area"], node_id),
@@ -350,49 +370,67 @@ def build_semantic_region_elements(
     elements: list[str] = []
     strategy_counts: dict[str, int] = defaultdict(int)
     command_count = 0
-    node_reports: list[dict[str, Any]] = []
+    reports: list[dict[str, Any]] = []
 
     for node_id in order:
         node = nodes[node_id]
         color_index = int(node["color_index"])
         red, green, blue = (int(value) for value in colors[color_index])
         fill = f"#{red:02x}{green:02x}{blue:02x}"
+        region_mask = node_map == node_id
+        transform: str | None = None
+
         if node_id == root:
             paths = [f"M0 0H{w}V{h}H0Z"]
             strategy = "corner_connected_canvas"
         else:
-            mask = node_map == node_id
-            cycles = _boundary_cycles(mask)
+            cycles = _boundary_cycles(region_mask)
             if not cycles:
                 raise SemanticRegionFitError("region_without_boundary")
             outer = max(
                 cycles,
                 key=lambda points: abs(
-                    float(cv2.contourArea(np.asarray(points, dtype=np.float32).reshape(-1, 1, 2)))
+                    float(
+                        cv2.contourArea(
+                            np.asarray(points, dtype=np.float32).reshape(-1, 1, 2)
+                        )
+                    )
                 ),
             )
             fitted = _fit_single_outer(outer)
             if fitted is None:
-                fitted = _fit_ellipse_with_axis_arms(outer, (h, w))
+                fitted = _fit_ellipse_with_axis_arms(region_mask)
             if fitted is None:
                 arr = np.asarray(outer, dtype=np.float64)
                 span = arr.max(axis=0) - arr.min(axis=0)
-                area = abs(float(cv2.contourArea(arr.astype(np.float32).reshape(-1, 1, 2))))
+                area = abs(
+                    float(cv2.contourArea(arr.astype(np.float32).reshape(-1, 1, 2)))
+                )
                 ratio = area / max(1.0, float(span[0] * span[1]))
                 raise SemanticRegionFitError(
-                    f"region_outer_not_semantic:n={len(outer)}:span={_fmt(span[0])}x{_fmt(span[1])}:fill={ratio:.4f}"
+                    f"region_outer_not_semantic:n={len(outer)}:"
+                    f"span={_fmt(span[0])}x{_fmt(span[1])}:fill={ratio:.4f}"
                 )
             paths, strategy = fitted
+            if strategy == "whole_shape" and depth[node_id] >= 2:
+                transform = _nested_inset_transform(region_mask)
+                if transform:
+                    strategy = "nested_inset_whole_shape"
 
         for d in paths:
-            elements.append(f'<path fill="{fill}" d="{d}"/>')
-            command_count += max(2, sum(d.count(token) for token in ("M", "L", "H", "V", "A", "C", "Z")))
+            transform_attr = f' transform="{transform}"' if transform else ""
+            elements.append(f'<path fill="{fill}" d="{d}"{transform_attr}/>')
+            command_count += max(
+                2,
+                sum(d.count(token) for token in ("M", "L", "H", "V", "A", "C", "Z")),
+            )
         strategy_counts[strategy] += 1
-        node_reports.append(
+        reports.append(
             {
                 "node_id": int(node_id),
                 "color_index": color_index,
                 "depth": int(depth[node_id]),
+                "parent_node_id": parent[node_id],
                 "area": int(node["area"]),
                 "strategy": strategy,
                 "path_count": len(paths),
@@ -406,7 +444,7 @@ def build_semantic_region_elements(
         "region_count": len(nodes),
         "max_depth": max(depth) if depth else 0,
         "strategy_counts": dict(sorted(strategy_counts.items())),
-        "regions": node_reports,
+        "regions": reports,
     }
 
 
