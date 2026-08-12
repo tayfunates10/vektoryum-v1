@@ -12,9 +12,6 @@ policies at public extension points:
 * Pareto-dominated candidates cannot win inside the component-safe pool;
 * neutral-palette repair is finalized after candidate generation and before its
   first score, so scoring itself is byte-pure;
-* a final safe Pareto validation prevents later editability/refit/lifecycle
-  stages from reinstating a candidate dominated on fidelity, total score and
-  path/node complexity;
 * render-equivalent explicit fill-cycle closure is a final journaled lifecycle
   transform, followed by a final score of those exact artifact bytes.
 """
@@ -148,78 +145,6 @@ def _selection_pool(scored: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if not safe:
         return scored
     return _pareto_front(safe)
-
-
-def _score_complexity_dominates(candidate: dict[str, Any], other: dict[str, Any]) -> bool:
-    """Production-final Pareto relation used by the output diagnostic contract.
-
-    A later-stage candidate may replace the winner only when it is selection-safe,
-    strictly better on both measured fidelity and total score, and no worse on
-    path/node complexity. This is intentionally stricter than a generic
-    editability preference and cannot turn a quality regression into a win.
-    """
-    if not _is_selection_safe(candidate):
-        return False
-    left_details = candidate.get("score_details") or {}
-    right_details = other.get("score_details") or {}
-    values = {
-        "left_fidelity": _finite(candidate.get("fidelity_score")),
-        "left_total": _finite(candidate.get("total_score")),
-        "left_paths": _finite(left_details.get("path_count")),
-        "left_nodes": _finite(left_details.get("node_count")),
-        "right_fidelity": _finite(other.get("fidelity_score")),
-        "right_total": _finite(other.get("total_score")),
-        "right_paths": _finite(right_details.get("path_count")),
-        "right_nodes": _finite(right_details.get("node_count")),
-    }
-    if any(value is None for value in values.values()):
-        return False
-    return bool(
-        values["left_fidelity"] > values["right_fidelity"]
-        and values["left_total"] > values["right_total"]
-        and values["left_paths"] <= values["right_paths"]
-        and values["left_nodes"] <= values["right_nodes"]
-    )
-
-
-def _final_winner_pareto_guard(result: dict[str, Any]) -> dict[str, Any]:
-    """Reject a final winner dominated by a safe produced/refit candidate."""
-    best = result.get("best")
-    scored = [item for item in (result.get("scored") or []) if isinstance(item, dict)]
-    if not isinstance(best, dict) or not scored:
-        return result
-
-    eligible = [item for item in scored if _is_selection_safe(item)]
-    if not eligible:
-        return result
-    dominators = [item for item in eligible if _score_complexity_dominates(item, best)]
-    if not dominators:
-        return result
-
-    # Pick a non-dominated replacement deterministically. Fidelity comes first;
-    # total score then lower path/node complexity break ties.
-    dominators.sort(
-        key=lambda item: (
-            -float(item.get("fidelity_score") or -1.0),
-            -float(item.get("total_score") or -1.0),
-            float((item.get("score_details") or {}).get("path_count") or math.inf),
-            float((item.get("score_details") or {}).get("node_count") or math.inf),
-            str(item.get("name") or ""),
-        )
-    )
-    chosen = dominators[0]
-    result["best"] = chosen
-    previous_reason = str(result.get("selection_reason") or "")
-    result["selection_reason"] = (
-        "final_safe_score_complexity_pareto_guard"
-        + (f"+{previous_reason}" if previous_reason else "")
-    )
-    result["final_pareto_guard"] = {
-        "applied": True,
-        "replaced": best.get("name"),
-        "winner": chosen.get("name"),
-    }
-    return result
 
 
 def select_best(scored: list[dict[str, Any]], mode: str) -> tuple[dict, dict, str]:
@@ -613,7 +538,6 @@ def run_pipeline(
         refine=refine,
         edge_cleanup=edge_cleanup,
     )
-    result = _final_winner_pareto_guard(result)
     return _finalize_fill_cycle_lifecycle(
         result,
         image=image,
