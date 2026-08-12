@@ -1,29 +1,27 @@
-"""Deferred minimum-scale topology overlay around the native-good semantic core."""
+"""Deferred scale-topology overlay around the native-good semantic core.
+
+The native semantic fitter is preserved byte-for-byte in
+``semantic_region_geometry_core``.  This wrapper adds only one generic repair:
+for an A-B-A nested curved separator whose B parent is a compound ellipse/arm
+region, measure the B annulus from the source label map and paint its midline
+*after* every child region.  The ring is genuine source-space SVG geometry,
+contains no fixture routing, and the caller still rejects it unless native and
+all five render scales pass the existing transaction.
+"""
 from __future__ import annotations
 
 from collections import defaultdict
-from math import ceil, floor
+from math import cos, pi, sin
 from typing import Any
 
-import cv2
 import numpy as np
 
 from app import semantic_region_geometry_core as _core
 
 SemanticRegionFitError = _core.SemanticRegionFitError
-_MIN_ACCEPTANCE_SCALE = 0.25
-
-
-def _runs(flags: np.ndarray) -> list[tuple[int, int]]:
-    output: list[tuple[int, int]] = []
-    start: int | None = None
-    for index, active in enumerate(np.r_[np.asarray(flags, dtype=bool), False]):
-        if active and start is None:
-            start = index
-        elif not active and start is not None:
-            output.append((start, index))
-            start = None
-    return output
+_RAY_COUNT = 32
+_RAY_STEP = 0.10
+_SAFETY_MARGIN = 1.0
 
 
 def _fmt(value: float) -> str:
@@ -31,91 +29,141 @@ def _fmt(value: float) -> str:
     return text if text not in {"", "-0"} else "0"
 
 
-def _rect_d(bounds: tuple[float, float, float, float]) -> str:
-    x0, y0, x1, y1 = bounds
-    return f"M{_fmt(x0)} {_fmt(y0)}L{_fmt(x1)} {_fmt(y0)}L{_fmt(x1)} {_fmt(y1)}L{_fmt(x0)} {_fmt(y1)}Z"
+def _largest_cycle(mask: np.ndarray) -> list[tuple[int, int]]:
+    cycles = _core._boundary_cycles(mask)
+    if not cycles:
+        raise SemanticRegionFitError("region_without_boundary")
+    import cv2  # local: wrapper stays thin
+    return max(
+        cycles,
+        key=lambda points: abs(
+            float(cv2.contourArea(np.asarray(points, dtype=np.float32).reshape(-1, 1, 2)))
+        ),
+    )
 
 
-def _minimum_scale_separator_paths(parent_mask: np.ndarray, child_mask: np.ndarray) -> list[str]:
-    """Return min-scale cells whose complete source footprint is separator B."""
+def _ellipse_like(mask: np.ndarray) -> bool:
+    cycle = _largest_cycle(mask)
+    return _core._ellipse_from_cycle(cycle) is not None
+
+
+def _separator_thickness(parent_mask: np.ndarray, child_mask: np.ndarray) -> float | None:
+    ys, xs = np.nonzero(child_mask)
+    if not len(xs):
+        return None
+    cx, cy = float(xs.mean()), float(ys.mean())
     h, w = parent_mask.shape
-    tw = max(16, int(round(w * _MIN_ACCEPTANCE_SCALE)))
-    th = max(16, int(round(h * _MIN_ACCEPTANCE_SCALE)))
-    pure = np.zeros((th, tw), dtype=bool)
-    child = np.zeros((th, tw), dtype=bool)
-    x_bounds = [(int(floor(x * w / tw)), int(ceil((x + 1) * w / tw))) for x in range(tw)]
-    y_bounds = [(int(floor(y * h / th)), int(ceil((y + 1) * h / th))) for y in range(th)]
-    for ty, (y0, y1) in enumerate(y_bounds):
-        for tx, (x0, x1) in enumerate(x_bounds):
-            separator_block = parent_mask[y0:y1, x0:x1]
-            child_block = child_mask[y0:y1, x0:x1]
-            pure[ty, tx] = bool(separator_block.size and np.all(separator_block))
-            child[ty, tx] = bool(np.any(child_block))
-    neighborhood = cv2.dilate(child.astype(np.uint8), np.ones((3, 3), dtype=np.uint8), iterations=1).astype(bool)
-    cells = pure & neighborhood
-    paths: list[str] = []
-    for ty in range(th):
-        y0, y1 = y_bounds[ty]
-        for start, stop in _runs(cells[ty]):
-            x0 = x_bounds[start][0]
-            x1 = x_bounds[stop - 1][1]
-            paths.append(_rect_d((float(x0), float(y0), float(x1), float(y1))))
-    return paths
+    max_step = float(max(h, w))
+    values: list[float] = []
+    for index in range(_RAY_COUNT):
+        angle = (2.0 * pi * index) / _RAY_COUNT
+        dx, dy = cos(angle), sin(angle)
+        entered: float | None = None
+        left_child = False
+        last_xy: tuple[int, int] | None = None
+        for step in np.arange(0.0, max_step, _RAY_STEP):
+            x = int(round(cx + dx * step))
+            y = int(round(cy + dy * step))
+            if x < 0 or x >= w or y < 0 or y >= h:
+                break
+            if last_xy == (x, y):
+                continue
+            last_xy = (x, y)
+            if child_mask[y, x]:
+                continue
+            left_child = True
+            if parent_mask[y, x]:
+                if entered is None:
+                    entered = step
+            elif entered is not None:
+                values.append(step - entered)
+                break
+            elif left_child:
+                break
+    return min(values) if len(values) >= _RAY_COUNT // 2 else None
+
+
+def _deferred_separator_ring(parent_mask: np.ndarray, child_mask: np.ndarray, fill: str) -> str | None:
+    if not _ellipse_like(child_mask):
+        return None
+    thickness = _separator_thickness(parent_mask, child_mask)
+    if thickness is None or thickness <= _SAFETY_MARGIN + 1.0:
+        return None
+    ys, xs = np.nonzero(child_mask)
+    x0, x1 = float(xs.min()), float(xs.max() + 1)
+    y0, y1 = float(ys.min()), float(ys.max() + 1)
+    cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+    rx, ry = (x1 - x0) / 2.0, (y1 - y0) / 2.0
+    mid = thickness / 2.0
+    stroke = max(1.0, thickness - _SAFETY_MARGIN)
+    d = _core._ellipse_d(cx - rx - mid, cy - ry - mid, cx + rx + mid, cy + ry + mid)
+    if d is None:
+        return None
+    return f'<path d="{d}" fill="none" stroke="{fill}" stroke-width="{_fmt(stroke)}"/>'
 
 
 def build_semantic_region_elements(labels: np.ndarray, colors: np.ndarray) -> dict[str, Any]:
-    """Use native-good geometry and paint source-safe min-scale separators last."""
     report = _core.build_semantic_region_elements(labels, colors)
     elements = list(report.get("elements") or [])
     regions = list(report.get("regions") or [])
-    node_map, nodes, _root, _depth, parent = _core._connected_region_graph(np.asarray(labels), len(colors))
+    node_map, nodes, _root, _depth, parent = _core._connected_region_graph(
+        np.asarray(labels), len(colors)
+    )
     children: list[list[int]] = [[] for _ in nodes]
     for node_id, parent_id in enumerate(parent):
         if parent_id is not None:
             children[parent_id].append(node_id)
 
     overlays: list[str] = []
-    overlay_commands = 0
     strategy_counts = defaultdict(int, report.get("strategy_counts") or {})
     for region in regions:
         node_id = int(region.get("node_id", -1))
         strategy = str(region.get("strategy") or "")
-        if node_id < 0 or strategy not in {"ellipse_axis_arm_union", "compound_parent_expand_axis_arm_union"}:
+        if node_id < 0 or strategy not in {
+            "ellipse_axis_arm_union",
+            "compound_parent_expand_axis_arm_union",
+        }:
             continue
         grandparent_id = parent[node_id]
-        if grandparent_id is None or not children[node_id]:
+        if grandparent_id is None:
             continue
         matching = [
             child_id
             for child_id in children[node_id]
-            if int(nodes[child_id]["color_index"]) == int(nodes[grandparent_id]["color_index"])
+            if int(nodes[child_id]["color_index"])
+            == int(nodes[grandparent_id]["color_index"])
         ]
         if len(matching) != 1:
             continue
-        separator_paths = _minimum_scale_separator_paths(node_map == node_id, node_map == matching[0])
-        if not separator_paths:
-            continue
         color_index = int(nodes[node_id]["color_index"])
-        red, green, blue = (int(value) for value in np.asarray(colors, dtype=np.uint8)[color_index])
+        red, green, blue = (
+            int(value) for value in np.asarray(colors, dtype=np.uint8)[color_index]
+        )
         fill = f"#{red:02x}{green:02x}{blue:02x}"
-        overlays.extend(f'<path fill="{fill}" d="{d}"/>' for d in separator_paths)
-        overlay_commands += sum(max(2, sum(d.count(token) for token in ("M", "L", "H", "V", "A", "C", "Z"))) for d in separator_paths)
+        overlay = _deferred_separator_ring(
+            node_map == node_id,
+            node_map == matching[0],
+            fill,
+        )
+        if overlay is None:
+            continue
+        overlays.append(overlay)
         strategy_counts[strategy] -= 1
         if strategy_counts[strategy] <= 0:
             strategy_counts.pop(strategy, None)
-        upgraded = f"{strategy}_deferred_min_scale_separator"
+        upgraded = f"{strategy}_deferred_source_annulus"
         strategy_counts[upgraded] += 1
         region["strategy"] = upgraded
-        region["minimum_scale_separator_paths"] = len(separator_paths)
-        region["path_count"] = int(region.get("path_count") or 0) + len(separator_paths)
+        region["deferred_separator_ring"] = True
+        region["path_count"] = int(region.get("path_count") or 0) + 1
 
     elements.extend(overlays)
     report["elements"] = elements
     report["path_count"] = int(report.get("path_count") or 0) + len(overlays)
-    report["node_count"] = int(report.get("node_count") or 0) + overlay_commands
+    report["node_count"] = int(report.get("node_count") or 0) + 4 * len(overlays)
     report["strategy_counts"] = dict(sorted(strategy_counts.items()))
     report["regions"] = regions
-    report["deferred_min_scale_separator_paths"] = len(overlays)
+    report["deferred_separator_rings"] = len(overlays)
     return report
 
 
