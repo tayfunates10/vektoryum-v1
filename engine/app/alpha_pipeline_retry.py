@@ -221,9 +221,10 @@ def wrap_run_pipeline_with_alpha_retry(
 
 
 def _install_soft_ellipse_direct_factory() -> None:
-    """Bind the ellipse attempt before ``app.__init__`` captures the factory."""
+    """Bind compact alpha specializations before ``app.__init__`` captures them."""
     from app import alpha_candidate_direct  # noqa: PLC0415
     from app.alpha_soft_ellipse import make_soft_ellipse_alpha_first  # noqa: PLC0415
+    from app.alpha_visible_paint import make_visible_alpha_paint_repair  # noqa: PLC0415
 
     current = alpha_candidate_direct.make_direct_element_alpha_first
     if getattr(current, "__vektoryum_soft_ellipse_factory__", False):
@@ -231,7 +232,8 @@ def _install_soft_ellipse_direct_factory() -> None:
 
     @wraps(current)
     def soft_ellipse_factory(guarded_builder):
-        return make_soft_ellipse_alpha_first(current(guarded_builder))
+        assembled = make_soft_ellipse_alpha_first(current(guarded_builder))
+        return make_visible_alpha_paint_repair(assembled)
 
     soft_ellipse_factory.__vektoryum_soft_ellipse_factory__ = True
     alpha_candidate_direct.make_direct_element_alpha_first = soft_ellipse_factory
