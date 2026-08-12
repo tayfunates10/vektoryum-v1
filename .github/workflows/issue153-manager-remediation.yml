@@ -1,0 +1,159 @@
+name: Issue 153 manager remediation
+
+on:
+  push:
+    branches:
+      - codex/ai4-round3-gradient-topology
+    paths:
+      - .github/workflows/issue153-manager-remediation.yml
+
+permissions:
+  contents: write
+
+jobs:
+  remediate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/ai4-round3-gradient-topology
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install focused test dependencies
+        run: python -m pip install --disable-pip-version-check -r engine/requirements.txt pytest
+      - name: Apply manager remediation
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              p = Path(path)
+              text = p.read_text(encoding='utf-8')
+              if text.count(old) != 1:
+                  raise SystemExit(f'{path}: expected exactly one replacement, got {text.count(old)}')
+              p.write_text(text.replace(old, new), encoding='utf-8')
+
+          replace_once(
+              'engine/app/analyzer.py',
+              '''    if unique_ratio > 0.095 and smooth_area_ratio > 0.68:\n        return True\n\n    h, w = arr.shape[:2]\n''',
+              '''    if unique_ratio > 0.095 and smooth_area_ratio > 0.68:\n        return True\n\n    # The foreground-local promotion was added for opaque artwork whose large\n    # uniform background diluted the legacy whole-frame gradient signal.  A\n    # source alpha plane is a separate paint model: promoting transparent art\n    # here changes alpha preprocessing/candidate routing and can replace an\n    # already-valid legacy winner.  Preserve the historical alpha route; strong\n    # transparent gradients that satisfy the legacy whole-frame test above are\n    # still detected exactly as before.\n    if bool(np.any(alpha < 255)):\n        return False\n\n    h, w = arr.shape[:2]\n''',
+          )
+
+          replace_once(
+              'engine/app/alpha_parent_selection.py',
+              '''_MAX_TRIALS = 4\n''',
+              '''_MAX_ALPHA_LEVELS = 4\n_MAX_TRIALS = 4\n''',
+          )
+          replace_once(
+              'engine/app/alpha_parent_selection.py',
+              '''    # Parent probing is bounded by _MAX_TRIALS, not by the number of source\n    # alpha levels. Continuous/anti-aliased alpha still uses the exact same\n    # source-alpha reconstruction gates; only opaque sources are inapplicable.\n    if len(levels) <= 1:\n        return result\n''',
+              '''    # Preserve the proven bounded alpha-parent contract.  Dense/continuous\n    # alpha is handled by the dedicated alpha pipeline; broadening parent\n    # reselection to arbitrary level counts changed previously accepted alpha\n    # topology (class_reklam) without a cross-corpus proof.\n    if len(levels) <= 1 or len(levels) > _MAX_ALPHA_LEVELS:\n        return result\n''',
+          )
+
+          replace_once(
+              'engine/app/pipeline.py',
+              '''def select_best(scored: list[dict[str, Any]], mode: str) -> tuple[dict, dict, str]:\n    \"\"\"Run the established selector inside the independent safe Pareto pool.\"\"\"\n    legacy_chosen, legacy_raw, legacy_reason = _base_select_best(scored, mode)\n    pool = _selection_pool(scored)\n    if len(pool) == len(scored) and all(a is b for a, b in zip(pool, scored)):\n        return legacy_chosen, legacy_raw, legacy_reason\n    chosen, _safe_raw, reason = _base_select_best(pool, mode)\n    guard = \"component_integrity_pareto_guard\" if any(\n        _is_selection_safe(candidate) for candidate in scored\n    ) else \"component_integrity_guard\"\n    return chosen, legacy_raw, f\"{guard}+{reason}\"\n''',
+              '''def select_best(scored: list[dict[str, Any]], mode: str) -> tuple[dict, dict, str]:\n    \"\"\"Preserve a safe legacy winner; reroute only an actually unsafe winner.\"\"\"\n    legacy_chosen, legacy_raw, legacy_reason = _base_select_best(scored, mode)\n    if _is_selection_safe(legacy_chosen):\n        return legacy_chosen, legacy_raw, legacy_reason\n\n    safe = [candidate for candidate in scored if _is_selection_safe(candidate)]\n    if not safe:\n        # No proven-safe alternative exists.  Keep the historical ranking rather\n        # than silently replacing it with an unrelated candidate; downstream\n        # final-artifact hard gates remain authoritative.\n        return legacy_chosen, legacy_raw, legacy_reason\n\n    pool = _pareto_front(safe)\n    chosen, _safe_raw, reason = _base_select_best(pool, mode)\n    return chosen, legacy_raw, f\"component_integrity_pareto_guard+{reason}\"\n''',
+          )
+
+          replace_once(
+              'engine/app/pipeline.py',
+              '''def _apply_editability_preference(\n    scored: list[dict[str, Any]], current_best: dict[str, Any]\n) -> tuple[dict[str, Any], str]:\n    pool = _selection_pool(scored)\n    if current_best not in pool:\n        current_best = max(pool, key=_core._fidelity_rank_key)\n    return _base_apply_editability_preference(pool, current_best)\n''',
+              '''def _apply_editability_preference(\n    scored: list[dict[str, Any]], current_best: dict[str, Any]\n) -> tuple[dict[str, Any], str]:\n    legacy_best, legacy_reason = _base_apply_editability_preference(scored, current_best)\n    if _is_selection_safe(legacy_best):\n        return legacy_best, legacy_reason\n\n    safe = [candidate for candidate in scored if _is_selection_safe(candidate)]\n    if not safe:\n        return legacy_best, legacy_reason\n    pool = _pareto_front(safe)\n    safe_seed = current_best if current_best in pool else max(pool, key=_core._fidelity_rank_key)\n    guarded_best, guarded_reason = _base_apply_editability_preference(pool, safe_seed)\n    return guarded_best, f\"component_integrity_pareto_guard+{guarded_reason}\"\n''',
+          )
+
+          Path('engine/test_issue153_manager_remediation.py').write_text(r'''from __future__ import annotations
+
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
+
+import numpy as np
+from PIL import Image, ImageDraw
+
+from app import alpha_parent_selection, analyzer, pipeline
+
+
+def _gradient_fixture(*, transparent_background: bool) -> Image.Image:
+    size = 256
+    bg = (255, 255, 255, 0 if transparent_background else 255)
+    image = Image.new('RGBA', (size, size), bg)
+    arr = np.asarray(image, dtype=np.uint8).copy()
+    x0, x1, y0, y1 = 24, 232, 48, 208
+    for x in range(x0, x1):
+        t = (x - x0) / max(1, x1 - x0 - 1)
+        color = np.rint(np.array([225, 40, 35]) * (1 - t) + np.array([245, 188, 35]) * t).astype(np.uint8)
+        arr[y0:y1, x, :3] = color
+        arr[y0:y1, x, 3] = 255
+    return Image.fromarray(arr, mode='RGBA')
+
+
+def test_local_gradient_promotion_is_opaque_only():
+    assert analyzer.detect_gradient_like_surface(_gradient_fixture(transparent_background=False)) is True
+    assert analyzer.detect_gradient_like_surface(_gradient_fixture(transparent_background=True)) is False
+
+
+def test_select_best_does_not_perturb_safe_legacy_winner():
+    legacy = {'name': 'legacy', 'selection_safe': True}
+    other = {'name': 'other', 'selection_safe': True}
+    with patch.object(pipeline, '_base_select_best', return_value=(legacy, legacy, 'legacy')):
+        chosen, raw, reason = pipeline.select_best([legacy, other], 'geometric_logo')
+    assert chosen is legacy
+    assert raw is legacy
+    assert reason == 'legacy'
+
+
+def test_select_best_reroutes_unsafe_legacy_when_safe_alternative_exists():
+    unsafe = {'name': 'unsafe', 'selection_safe': False, 'selection_disqualified': True}
+    safe = {'name': 'safe', 'selection_safe': True}
+
+    def selector(pool, mode):
+        if unsafe in pool:
+            return unsafe, unsafe, 'legacy'
+        return safe, safe, 'safe'
+
+    with patch.object(pipeline, '_base_select_best', side_effect=selector):
+        chosen, raw, reason = pipeline.select_best([unsafe, safe], 'logo_color')
+    assert chosen is safe
+    assert raw is unsafe
+    assert reason.startswith('component_integrity_pareto_guard+')
+
+
+def test_continuous_alpha_skips_parent_reselection():
+    with TemporaryDirectory() as td:
+        root = Path(td)
+        source = root / 'source.png'
+        alpha = np.tile(np.arange(256, dtype=np.uint8), (256, 1))
+        rgba = np.zeros((256, 256, 4), dtype=np.uint8)
+        rgba[:, :, :3] = 32
+        rgba[:, :, 3] = alpha
+        Image.fromarray(rgba, mode='RGBA').save(source)
+        dummy_svg = root / 'best.svg'
+        dummy_svg.write_text('<svg xmlns="http://www.w3.org/2000/svg"/>', encoding='utf-8')
+        best = {'name': 'best', 'svg_path': str(dummy_svg)}
+        result = {'best': best, 'mode_used': 'geometric_logo', 'scored': [best]}
+        with patch.object(alpha_parent_selection, '_shortlist', side_effect=AssertionError('must not probe')):
+            returned = alpha_parent_selection._select(result, source, root)
+        assert returned is result
+        assert returned['best'] is best
+''', encoding='utf-8')
+          PY
+      - name: Compile and run focused contracts
+        env:
+          PYTHONPATH: .:engine
+        run: |
+          python -m py_compile engine/app/analyzer.py engine/app/pipeline.py engine/app/alpha_parent_selection.py engine/test_issue153_manager_remediation.py
+          python -m pytest -q engine/test_issue153_manager_remediation.py engine/test_analyzer_contracts.py engine/test_ai2_component_quality.py engine/test_transform_journal.py
+      - name: Commit remediation and remove temporary workflow
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git rm .github/workflows/issue153-manager-remediation.yml
+          git add engine/app/analyzer.py engine/app/pipeline.py engine/app/alpha_parent_selection.py engine/test_issue153_manager_remediation.py
+          git commit -m 'fix(issue153): apply manager cross-corpus remediation'
+          git push origin HEAD:codex/ai4-round3-gradient-topology
