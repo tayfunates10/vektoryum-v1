@@ -147,7 +147,7 @@ def test_support_scores_and_snapshot_validation_are_bounded(monkeypatch) -> None
 
 
 def test_continuous_paint_detector_separates_smooth_ramp_from_palette_steps() -> None:
-    # Issue #153: prove the general continuous-paint signal without fixture identity.
+    # Issue #153: general continuous-paint evidence; no fixture-name/coordinate override.
     ramp = np.full((256, 256, 4), 255, dtype=np.uint8)
     ramp[48:208, 128:232, :3] = (35, 92, 220)
     for x in range(24, 128):
