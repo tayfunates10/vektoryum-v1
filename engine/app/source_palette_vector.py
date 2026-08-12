@@ -29,7 +29,7 @@ _NATIVE_VISIBLE_RESIDUAL_MAX = 0.01
 _NATIVE_MIN_COMPONENT_IOU = 0.95
 _NATIVE_BOUNDARY_P95_MAX = 0.75
 _SMALL_FEATURE_EPSILON = 0.01
-_ELLIPSE_EPSILON = 0.01
+_ELLIPSE_CELL_INSET = 0.10
 
 
 def _boundary_cycles(mask: np.ndarray) -> list[list[tuple[int, int]]]:
@@ -154,28 +154,27 @@ def _scale_stable_rect_d(points: list[tuple[int, int]]) -> str | None:
 
 
 def _small_ellipse_d(points: list[tuple[int, int]]) -> str | None:
+    """Fit a near-ellipse using source pixel-cell center semantics."""
     if len(points) < 8:
         return None
     arr = np.asarray(points, dtype=np.float64)
     lo = arr.min(axis=0)
     hi_cell = arr.max(axis=0)
-    hi = hi_cell - 1.0
-    rx = (hi[0] - lo[0]) / 2.0
-    ry = (hi[1] - lo[1]) / 2.0
+    cell_span = hi_cell - lo
+    rx = (cell_span[0] / 2.0) - _ELLIPSE_CELL_INSET
+    ry = (cell_span[1] / 2.0) - _ELLIPSE_CELL_INSET
     if rx < 1.0 or ry < 1.0:
         return None
     aspect = max(rx, ry) / max(1e-9, min(rx, ry))
     if aspect > 1.35:
         return None
     area = abs(float(cv2.contourArea(arr.astype(np.float32).reshape(-1, 1, 2))))
-    box_area = max(1.0, float((hi_cell[0] - lo[0]) * (hi_cell[1] - lo[1])))
+    box_area = max(1.0, float(cell_span[0] * cell_span[1]))
     fill_ratio = area / box_area
     if not (0.48 <= fill_ratio <= 0.90):
         return None
-    cx = (lo[0] + hi[0]) / 2.0
-    cy = (lo[1] + hi[1]) / 2.0
-    rx += _ELLIPSE_EPSILON
-    ry += _ELLIPSE_EPSILON
+    cx = (lo[0] + hi_cell[0]) / 2.0
+    cy = (lo[1] + hi_cell[1]) / 2.0
     return (
         f"M{_fmt(cx-rx)} {_fmt(cy)}"
         f"A{_fmt(rx)} {_fmt(ry)} 0 1 0 {_fmt(cx+rx)} {_fmt(cy)}"
@@ -187,12 +186,9 @@ def _fit_scale_stable_cycle(points: list[tuple[int, int]]) -> tuple[str, str]:
     rectangle = _scale_stable_rect_d(points)
     if rectangle is not None:
         return rectangle, "axis_aligned_rectangle"
-    # Detect source-derived near-circular components before the generic contour
-    # fitter. Pixel-cell contours expand their extrema by one cell; the ellipse
-    # helper explicitly converts back to source pixel centers/radii.
     ellipse = _small_ellipse_d(points)
     if ellipse is not None:
-        return ellipse, "small_ellipse_fit"
+        return ellipse, "pixel_center_ellipse_fit"
     arr = np.asarray(points, dtype=np.float64)
     span = arr.max(axis=0) - arr.min(axis=0)
     if float(np.hypot(*span)) >= 10.0:
@@ -203,7 +199,13 @@ def _fit_scale_stable_cycle(points: list[tuple[int, int]]) -> tuple[str, str]:
             fitted = None
         if fitted:
             return fitted, "whole_shape_fit"
-    raise SourcePaletteNotApplicable("nonrect_cycle_not_scale_stable")
+    area = abs(float(cv2.contourArea(arr.astype(np.float32).reshape(-1, 1, 2))))
+    box_area = max(1.0, float(span[0] * span[1]))
+    fill_ratio = area / box_area
+    raise SourcePaletteNotApplicable(
+        f"nonrect_cycle_not_scale_stable:n={len(points)}:"
+        f"span={_fmt(span[0])}x{_fmt(span[1])}:fill={fill_ratio:.4f}"
+    )
 
 
 def _svg_document(width: int, height: int, elements: list[str]) -> str:
