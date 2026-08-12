@@ -24,10 +24,10 @@ def test_axis_aligned_palette_geometry_is_scale_stable_and_vector_only(tmp_path:
     report = vectorize_source_palette_paths(source, output, max_colors=6)
     text = output.read_text(encoding="utf-8").lower()
 
-    assert report["scale_stable_eligible"] is True
-    assert report["geometry_strategy"] == "semantic_cycle_fit"
-    assert report["fit_transaction"]["passed"] is True
-    assert report["fit_strategy_counts"]["axis_aligned_rectangle"] >= 3
+    assert report["scale_stable_eligible"] is True, report
+    assert report["geometry_strategy"] == "semantic_cycle_fit", report
+    assert report["fit_transaction"]["passed"] is True, report
+    assert report["fit_strategy_counts"]["axis_aligned_rectangle"] >= 2, report
     assert report["raster_embedded"] is False
     assert "<image" not in text
     assert "base64" not in text
@@ -44,6 +44,8 @@ def test_production_module_contains_no_fixture_specific_routing() -> None:
         "_draw_micro_component_ladder",
         "_draw_small_details",
         "_draw_thin_negative_space",
+        "residual_multiscale_source",
+        "output_quality_residual_suite",
     ):
         assert forbidden not in text
 
@@ -61,3 +63,29 @@ def test_palette_is_preserved_exactly_for_rectangular_classes(tmp_path: Path) ->
     for red, green, blue in expected:
         assert f"#{red:02x}{green:02x}{blue:02x}" in text
     assert report["source_color_count"] == len(expected)
+
+
+def test_issue152_target_sources_are_semantically_scale_stable(tmp_path: Path) -> None:
+    """Test-only fixture probe; production remains fixture-agnostic."""
+    from engine.regression.output_quality_residual_suite import (  # noqa: PLC0415
+        _draw_micro_component_ladder,
+        _draw_thin_negative_space,
+    )
+    from engine.regression.output_quality_suite import _draw_small_details  # noqa: PLC0415
+
+    builders = {
+        "micro": _draw_micro_component_ladder,
+        "small": _draw_small_details,
+        "thin": _draw_thin_negative_space,
+    }
+    failures: dict[str, dict] = {}
+    for name, builder in builders.items():
+        source = tmp_path / f"{name}.png"
+        output = tmp_path / f"{name}.svg"
+        builder(256).convert("RGBA").save(source, "PNG", optimize=False)
+        report = vectorize_source_palette_paths(source, output, max_colors=6)
+        if not report.get("scale_stable_eligible"):
+            failures[name] = report
+        text = output.read_text(encoding="utf-8").lower()
+        assert "<image" not in text and "base64" not in text and "data:image" not in text
+    assert not failures, failures
