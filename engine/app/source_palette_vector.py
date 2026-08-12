@@ -1,13 +1,10 @@
 """Scale-stable source-palette vector candidate for opaque low-color artwork.
 
-The exact source palette is preserved. Native pixel-cell tracing remains a safe
-vector fallback, but it is not called scale-stable. Semantic geometry is allowed
-only when source-derived primitive fitting passes native fidelity/component/
-boundary checks plus deterministic multi-render component-lineage checks.
-
-Production code deliberately contains no fixture identifiers, analytic fixture
-builders, hard-coded fixture coordinates, bitmap embedding, palette-cap increase,
-or shared path/node/byte budget increase.
+Exact pixel-cell tracing remains a safe vector fallback. Scale-stable eligibility
+is granted only to generic source-derived semantic region geometry after native
+fidelity/component/boundary validation and multi-render component-lineage checks.
+No fixture identifiers/builders, raster embedding, palette-cap increase, or shared
+path/node/byte budget increase are used here.
 """
 from __future__ import annotations
 
@@ -28,12 +25,10 @@ _SCALE_FACTORS = (0.25, 0.5, 1.0, 2.0, 4.0)
 _NATIVE_VISIBLE_RESIDUAL_MAX = 0.01
 _NATIVE_MIN_COMPONENT_IOU = 0.95
 _NATIVE_BOUNDARY_P95_MAX = 0.75
-_SMALL_FEATURE_EPSILON = 0.01
-_ELLIPSE_CELL_INSET = 0.10
 
 
 def _boundary_cycles(mask: np.ndarray) -> list[list[tuple[int, int]]]:
-    """Trace deterministic pixel-cell union boundary cycles for one class."""
+    """Trace deterministic pixel-cell union boundary cycles for exact fallback."""
     h, w = mask.shape
     edges: list[tuple[tuple[int, int], tuple[int, int]]] = []
     ys, xs = np.nonzero(mask)
@@ -50,7 +45,6 @@ def _boundary_cycles(mask: np.ndarray) -> list[list[tuple[int, int]]]:
     outgoing: dict[tuple[int, int], list[int]] = defaultdict(list)
     for index, (start, _end) in enumerate(edges):
         outgoing[start].append(index)
-
     directions = [(1, 0), (0, 1), (-1, 0), (0, -1)]
     direction_index = {direction: index for index, direction in enumerate(directions)}
 
@@ -67,19 +61,14 @@ def _boundary_cycles(mask: np.ndarray) -> list[list[tuple[int, int]]]:
         points = [origin, current]
         used.add(seed)
         while current != origin:
-            candidates = [index for index in outgoing.get(current, []) if index not in used]
+            candidates = [idx for idx in outgoing.get(current, []) if idx not in used]
             if not candidates:
                 raise SourcePaletteNotApplicable("non_closed_pixel_boundary")
             incoming = direction_index[direction(previous, current)]
-            preferred = [
-                (incoming + 1) % 4,
-                incoming,
-                (incoming - 1) % 4,
-                (incoming + 2) % 4,
-            ]
+            preferred = [(incoming + 1) % 4, incoming, (incoming - 1) % 4, (incoming + 2) % 4]
             candidates.sort(
-                key=lambda index: preferred.index(
-                    direction_index[direction(edges[index][0], edges[index][1])]
+                key=lambda idx: preferred.index(
+                    direction_index[direction(edges[idx][0], edges[idx][1])]
                 )
             )
             edge_index = candidates[0]
@@ -111,11 +100,6 @@ def _boundary_cycles(mask: np.ndarray) -> list[list[tuple[int, int]]]:
     return cycles
 
 
-def _fmt(value: float) -> str:
-    text = f"{float(value):.4f}".rstrip("0").rstrip(".")
-    return text if text not in {"", "-0"} else "0"
-
-
 def _cycle_to_pixel_d(points: list[tuple[int, int]]) -> tuple[str, int]:
     x0, y0 = points[0]
     commands = [f"M{x0} {y0}"]
@@ -124,95 +108,12 @@ def _cycle_to_pixel_d(points: list[tuple[int, int]]) -> tuple[str, int]:
     return "".join(commands), len(commands)
 
 
-def _rect_bounds(points: list[tuple[int, int]]) -> tuple[int, int, int, int] | None:
-    if len(points) != 4:
-        return None
-    xs = sorted({int(point[0]) for point in points})
-    ys = sorted({int(point[1]) for point in points})
-    if len(xs) != 2 or len(ys) != 2:
-        return None
-    expected = {
-        (xs[0], ys[0]), (xs[1], ys[0]), (xs[1], ys[1]), (xs[0], ys[1])
-    }
-    return (xs[0], ys[0], xs[1], ys[1]) if set(points) == expected else None
-
-
-def _scale_stable_rect_d(points: list[tuple[int, int]]) -> str | None:
-    bounds = _rect_bounds(points)
-    if bounds is None:
-        return None
-    x0, y0, x1, y1 = bounds
-    width = x1 - x0
-    height = y1 - y0
-    epsilon = _SMALL_FEATURE_EPSILON if min(width, height) <= 4 else 0.0
-    xa, ya = float(x0) - epsilon, float(y0) - epsilon
-    xb, yb = float(x1) + epsilon, float(y1) + epsilon
-    return (
-        f"M{_fmt(xa)} {_fmt(ya)}L{_fmt(xb)} {_fmt(ya)}"
-        f"L{_fmt(xb)} {_fmt(yb)}L{_fmt(xa)} {_fmt(yb)}Z"
-    )
-
-
-def _small_ellipse_d(points: list[tuple[int, int]]) -> str | None:
-    """Fit a near-ellipse using source pixel-cell center semantics."""
-    if len(points) < 8:
-        return None
-    arr = np.asarray(points, dtype=np.float64)
-    lo = arr.min(axis=0)
-    hi_cell = arr.max(axis=0)
-    cell_span = hi_cell - lo
-    rx = (cell_span[0] / 2.0) - _ELLIPSE_CELL_INSET
-    ry = (cell_span[1] / 2.0) - _ELLIPSE_CELL_INSET
-    if rx < 1.0 or ry < 1.0:
-        return None
-    aspect = max(rx, ry) / max(1e-9, min(rx, ry))
-    if aspect > 1.35:
-        return None
-    area = abs(float(cv2.contourArea(arr.astype(np.float32).reshape(-1, 1, 2))))
-    box_area = max(1.0, float(cell_span[0] * cell_span[1]))
-    fill_ratio = area / box_area
-    if not (0.48 <= fill_ratio <= 0.90):
-        return None
-    cx = (lo[0] + hi_cell[0]) / 2.0
-    cy = (lo[1] + hi_cell[1]) / 2.0
-    return (
-        f"M{_fmt(cx-rx)} {_fmt(cy)}"
-        f"A{_fmt(rx)} {_fmt(ry)} 0 1 0 {_fmt(cx+rx)} {_fmt(cy)}"
-        f"A{_fmt(rx)} {_fmt(ry)} 0 1 0 {_fmt(cx-rx)} {_fmt(cy)}Z"
-    )
-
-
-def _fit_scale_stable_cycle(points: list[tuple[int, int]]) -> tuple[str, str]:
-    rectangle = _scale_stable_rect_d(points)
-    if rectangle is not None:
-        return rectangle, "axis_aligned_rectangle"
-    ellipse = _small_ellipse_d(points)
-    if ellipse is not None:
-        return ellipse, "pixel_center_ellipse_fit"
-    arr = np.asarray(points, dtype=np.float64)
-    span = arr.max(axis=0) - arr.min(axis=0)
-    if float(np.hypot(*span)) >= 10.0:
-        try:
-            from app.shape_fitting import try_fit_whole_shape  # noqa: PLC0415
-            fitted = try_fit_whole_shape(arr, True)
-        except Exception:  # noqa: BLE001
-            fitted = None
-        if fitted:
-            return fitted, "whole_shape_fit"
-    area = abs(float(cv2.contourArea(arr.astype(np.float32).reshape(-1, 1, 2))))
-    box_area = max(1.0, float(span[0] * span[1]))
-    fill_ratio = area / box_area
-    raise SourcePaletteNotApplicable(
-        f"nonrect_cycle_not_scale_stable:n={len(points)}:"
-        f"span={_fmt(span[0])}x{_fmt(span[1])}:fill={fill_ratio:.4f}"
-    )
-
-
 def _svg_document(width: int, height: int, elements: list[str]) -> str:
     return (
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" '
         f'width="{width}" height="{height}" shape-rendering="crispEdges">'
-        + "".join(elements) + "</svg>"
+        + "".join(elements)
+        + "</svg>"
     )
 
 
@@ -259,14 +160,23 @@ def _corner_background_index(labels: np.ndarray) -> int:
     h, w = labels.shape
     sy = max(1, min(h, round(h * 0.04)))
     sx = max(1, min(w, round(w * 0.04)))
-    corners = np.concatenate((
-        labels[:sy, :sx].reshape(-1), labels[:sy, -sx:].reshape(-1),
-        labels[-sy:, :sx].reshape(-1), labels[-sy:, -sx:].reshape(-1),
-    )).astype(np.int64)
+    corners = np.concatenate(
+        (
+            labels[:sy, :sx].reshape(-1),
+            labels[:sy, -sx:].reshape(-1),
+            labels[-sy:, :sx].reshape(-1),
+            labels[-sy:, -sx:].reshape(-1),
+        )
+    ).astype(np.int64)
     return int(np.argmax(np.bincount(corners)))
 
 
-def _validate_fitted_candidate(svg_path: Path, source_rgb: np.ndarray, colors: np.ndarray) -> dict[str, Any]:
+def _validate_fitted_candidate(
+    svg_path: Path,
+    source_rgb: np.ndarray,
+    colors: np.ndarray,
+) -> dict[str, Any]:
+    """Fail closed on native fidelity plus generic five-render lineage."""
     try:
         from app.component_quality import measure_component_integrity_arrays  # noqa: PLC0415
         from app.fidelity import render_svg_to_rgb  # noqa: PLC0415
@@ -277,12 +187,14 @@ def _validate_fitted_candidate(svg_path: Path, source_rgb: np.ndarray, colors: n
     native = render_svg_to_rgb(Path(svg_path), int(w), int(h))
     if native is None:
         return {"passed": False, "reason": "native_render_unavailable"}
+
     delta = np.max(np.abs(source_rgb.astype(np.int16) - native.astype(np.int16)), axis=2)
     visible = float(np.mean(delta > 2))
     component = measure_component_integrity_arrays(source_rgb, native)
     source_labels = _nearest_palette_labels(source_rgb, colors)
     native_labels = _nearest_palette_labels(native, colors)
-    native_counts = _class_component_counts(source_labels, len(colors))
+    source_counts = _class_component_counts(source_labels, len(colors))
+    native_counts = _class_component_counts(native_labels, len(colors))
     native_boundary = _boundary_p95(source_labels, native_labels)
     native_ok = bool(
         visible <= _NATIVE_VISIBLE_RESIDUAL_MAX
@@ -290,17 +202,19 @@ def _validate_fitted_candidate(svg_path: Path, source_rgb: np.ndarray, colors: n
         and float(component.get("source_cc_recall") or 0.0) == 1.0
         and float(component.get("render_cc_precision") or 0.0) == 1.0
         and float(component.get("min_true_cc_iou") or 0.0) >= _NATIVE_MIN_COMPONENT_IOU
+        and source_counts == native_counts
         and native_boundary is not None
         and native_boundary <= _NATIVE_BOUNDARY_P95_MAX
     )
+    common = {
+        "native_visible_residual": round(visible, 8),
+        "native_boundary_p95_px": native_boundary,
+        "native_component": component,
+        "source_class_component_counts": source_counts,
+        "native_class_component_counts": native_counts,
+    }
     if not native_ok:
-        return {
-            "passed": False, "reason": "native_transaction_failed",
-            "native_visible_residual": round(visible, 8),
-            "native_boundary_p95_px": native_boundary,
-            "native_component": component,
-            "native_class_component_counts": native_counts,
-        }
+        return {"passed": False, "reason": "native_transaction_failed", **common}
 
     levels: list[dict[str, Any]] = []
     for factor in _SCALE_FACTORS:
@@ -308,33 +222,47 @@ def _validate_fitted_candidate(svg_path: Path, source_rgb: np.ndarray, colors: n
         th = max(16, int(round(h * factor)))
         rendered = render_svg_to_rgb(Path(svg_path), tw, th)
         if rendered is None:
-            return {"passed": False, "reason": f"multirender_unavailable:{factor:g}x"}
+            return {"passed": False, "reason": f"multirender_unavailable:{factor:g}x", **common}
         labels = _nearest_palette_labels(rendered, colors)
         counts = _class_component_counts(labels, len(colors))
         present = [bool(np.any(labels == index)) for index in range(len(colors))]
         if not all(present):
-            return {"passed": False, "reason": f"palette_class_missing:{factor:g}x", "present": present}
-        if counts != native_counts:
             return {
-                "passed": False, "reason": f"component_lineage_changed:{factor:g}x",
-                "native_class_component_counts": native_counts,
-                "render_class_component_counts": counts,
-                "native_visible_residual": round(visible, 8),
-                "native_boundary_p95_px": native_boundary,
+                "passed": False,
+                "reason": f"palette_class_missing:{factor:g}x",
+                "present": present,
+                **common,
             }
-        levels.append({"scale": f"{factor:g}x", "size": [tw, th], "class_component_counts": counts})
+        if counts != source_counts:
+            return {
+                "passed": False,
+                "reason": f"component_lineage_changed:{factor:g}x",
+                "render_class_component_counts": counts,
+                **common,
+            }
+        levels.append(
+            {
+                "scale": f"{factor:g}x",
+                "size": [tw, th],
+                "class_component_counts": counts,
+            }
+        )
     return {
         "passed": True,
         "reason": "native_boundary_and_multirender_component_transaction_pass",
-        "native_visible_residual": round(visible, 8),
-        "native_boundary_p95_px": native_boundary,
-        "native_component": component,
-        "native_class_component_counts": native_counts,
         "levels": levels,
+        **common,
     }
 
 
-def vectorize_source_palette_paths(source_path: Path, output_path: Path, *, max_colors: int, max_commands: int = 5000) -> dict[str, Any]:
+def vectorize_source_palette_paths(
+    source_path: Path,
+    output_path: Path,
+    *,
+    max_colors: int,
+    max_commands: int = 5000,
+) -> dict[str, Any]:
+    """Build an exact-palette SVG with fail-closed semantic eligibility."""
     source_path = Path(source_path)
     output_path = Path(output_path)
     rgba = np.asarray(Image.open(source_path).convert("RGBA"), dtype=np.uint8)
@@ -342,6 +270,7 @@ def vectorize_source_palette_paths(source_path: Path, output_path: Path, *, max_
         raise SourcePaletteNotApplicable("invalid_source_shape")
     if not np.all(rgba[:, :, 3] == 255):
         raise SourcePaletteNotApplicable("source_has_alpha")
+
     rgb = rgba[:, :, :3]
     height, width = rgb.shape[:2]
     colors, inverse = np.unique(rgb.reshape(-1, 3), axis=0, return_inverse=True)
@@ -349,95 +278,116 @@ def vectorize_source_palette_paths(source_path: Path, output_path: Path, *, max_
     if color_count < 2:
         raise SourcePaletteNotApplicable("single_flat_color")
     if color_count > int(max_colors):
-        raise SourcePaletteNotApplicable(f"source_palette_exceeds_cap:{color_count}>{int(max_colors)}")
+        raise SourcePaletteNotApplicable(
+            f"source_palette_exceeds_cap:{color_count}>{int(max_colors)}"
+        )
     palette = {tuple(int(channel) for channel in color) for color in colors.tolist()}
     if palette.issubset({(0, 0, 0), (255, 255, 255)}):
         raise SourcePaletteNotApplicable("canonical_binary_palette")
 
     labels = inverse.reshape(height, width)
-    counts = np.bincount(inverse)
+    pixel_counts = np.bincount(inverse)
     background_index = _corner_background_index(labels)
     order = [background_index] + [
-        index for index in sorted(
+        index
+        for index in sorted(
             range(color_count),
-            key=lambda item: (-int(counts[item]), int(colors[item][0]), int(colors[item][1]), int(colors[item][2])),
-        ) if index != background_index
+            key=lambda item: (
+                -int(pixel_counts[item]),
+                int(colors[item][0]),
+                int(colors[item][1]),
+                int(colors[item][2]),
+            ),
+        )
+        if index != background_index
     ]
 
+    # Exact raster-cell fallback is kept deterministic and within the existing
+    # command ceiling. It is genuine SVG geometry, never an embedded bitmap.
     exact_elements: list[str] = []
-    fitted_elements: list[str] = []
-    exact_command_count = fitted_command_count = cycle_count = 0
-    strategy_counts: dict[str, int] = defaultdict(int)
-    fit_error: str | None = None
-
+    exact_command_count = 0
+    cycle_count = 0
     for color_index in order:
-        red, green, blue = (int(value) for value in colors[color_index])
-        fill = "#{:02x}{:02x}{:02x}".format(red, green, blue)
         cycles = _boundary_cycles(labels == color_index)
         if not cycles:
             continue
-        exact_commands: list[str] = []
+        commands: list[str] = []
         for points in cycles:
-            exact_d, exact_nodes = _cycle_to_pixel_d(points)
-            exact_commands.append(exact_d)
-            exact_command_count += exact_nodes
+            d, nodes = _cycle_to_pixel_d(points)
+            commands.append(d)
+            exact_command_count += nodes
             cycle_count += 1
             if exact_command_count > int(max_commands):
-                raise SourcePaletteNotApplicable(f"candidate_command_ceiling:{exact_command_count}>{int(max_commands)}")
-        exact_elements.append(f'<path fill="{fill}" fill-rule="evenodd" d="{"".join(exact_commands)}"/>')
-
-        if fit_error is not None:
-            continue
-        if color_index == background_index:
-            fitted_elements.append(f'<path fill="{fill}" d="M0 0H{width}V{height}H0Z"/>')
-            fitted_command_count += 5
-            strategy_counts["corner_background_canvas"] += 1
-            continue
-        fitted_commands: list[str] = []
-        try:
-            for points in cycles:
-                fitted_d, strategy = _fit_scale_stable_cycle(points)
-                fitted_commands.append(fitted_d)
-                strategy_counts[strategy] += 1
-                fitted_command_count += max(2, sum(fitted_d.count(token) for token in ("M", "L", "H", "V", "A", "C", "Z")))
-        except SourcePaletteNotApplicable as exc:
-            fit_error = str(exc)
-            continue
-        fitted_elements.append(f'<path fill="{fill}" fill-rule="evenodd" d="{"".join(fitted_commands)}"/>')
+                raise SourcePaletteNotApplicable(
+                    f"candidate_command_ceiling:{exact_command_count}>{int(max_commands)}"
+                )
+        red, green, blue = (int(value) for value in colors[color_index])
+        fill = f"#{red:02x}{green:02x}{blue:02x}"
+        exact_elements.append(
+            f'<path fill="{fill}" fill-rule="evenodd" d="{"".join(commands)}"/>'
+        )
 
     if not exact_elements:
         raise SourcePaletteNotApplicable("no_vector_paths")
     exact_svg = _svg_document(width, height, exact_elements)
     selected_svg = exact_svg
-    selected_commands = exact_command_count
+    selected_path_count = len(exact_elements)
+    selected_node_count = int(exact_command_count)
     geometry_strategy = "raster_cell_fallback"
     scale_stable = False
-    fit_report: dict[str, Any] = {"passed": False, "reason": fit_error or "not_measured"}
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    if fit_error is None and fitted_elements:
-        fitted_svg = _svg_document(width, height, fitted_elements)
+    semantic_report: dict[str, Any] = {}
+    fit_report: dict[str, Any] = {"passed": False, "reason": "semantic_not_attempted"}
+
+    try:
+        from app.semantic_region_geometry import (  # noqa: PLC0415
+            SemanticRegionFitError,
+            build_semantic_region_elements,
+        )
+
+        semantic_report = build_semantic_region_elements(labels, colors)
+        semantic_nodes = int(semantic_report.get("node_count") or 0)
+        semantic_elements = list(semantic_report.get("elements") or [])
+        if not semantic_elements:
+            raise SemanticRegionFitError("no_semantic_region_paths")
+        if semantic_nodes > int(max_commands):
+            raise SemanticRegionFitError(
+                f"semantic_command_ceiling:{semantic_nodes}>{int(max_commands)}"
+            )
+        fitted_svg = _svg_document(width, height, semantic_elements)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(fitted_svg, encoding="utf-8")
         fit_report = _validate_fitted_candidate(output_path, rgb, colors)
         if fit_report.get("passed"):
             selected_svg = fitted_svg
-            selected_commands = fitted_command_count
-            geometry_strategy = "semantic_cycle_fit"
+            selected_path_count = len(semantic_elements)
+            selected_node_count = semantic_nodes
+            geometry_strategy = "semantic_region_fit"
             scale_stable = True
+    except Exception as exc:  # fail closed to exact vector fallback
+        fit_report = {
+            "passed": False,
+            "reason": f"semantic_region_fit_error:{type(exc).__name__}:{exc}",
+        }
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(selected_svg, encoding="utf-8")
     return {
         "status": "applied",
         "reason": "opaque_exact_palette_within_existing_cap",
         "source_color_count": color_count,
         "palette_cap": int(max_colors),
-        "path_count": len(fitted_elements) if scale_stable else len(exact_elements),
+        "path_count": int(selected_path_count),
         "cycle_count": int(cycle_count),
-        "node_count": int(selected_commands),
+        "node_count": int(selected_node_count),
         "byte_count": len(selected_svg.encode("utf-8")),
         "raster_embedded": False,
         "geometry_strategy": geometry_strategy,
         "scale_stable_eligible": bool(scale_stable),
         "background_palette_index": int(background_index),
-        "fit_strategy_counts": dict(sorted(strategy_counts.items())),
+        "semantic_region_count": semantic_report.get("region_count"),
+        "semantic_max_depth": semantic_report.get("max_depth"),
+        "fit_strategy_counts": semantic_report.get("strategy_counts") or {},
+        "semantic_regions": semantic_report.get("regions") or [],
         "fit_transaction": fit_report,
     }
 
