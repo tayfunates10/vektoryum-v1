@@ -1,16 +1,19 @@
-"""Deferred scale-topology overlay around the native-good semantic core.
+"""Render-feedback scale-topology repair around the native-good semantic core.
 
 The native semantic fitter is preserved byte-for-byte in
-``semantic_region_geometry_core``.  This wrapper adds one fixture-agnostic
-repair for A-B-A nested curved separators: materialize the parent-label cells of
-the minimum acceptance label map *after* child paint.  Each coarse cell is
-chosen from the source label at that cell's center; candidate-native and all
-five scale gates remain authoritative and reject any unsafe repaint.
+``semantic_region_geometry_core``.  This wrapper is fixture-agnostic: it renders
+the source-derived semantic SVG at the five acceptance scales, detects only
+same-palette component merges, and repaints the minimum articulation pixel with
+the source palette class at that location using a one-device-pixel vector
+anchor.  Every repair is re-rendered immediately; the caller still runs the
+unchanged native fidelity/component/boundary transaction and all five lineage
+checks, so unsuccessful or unsafe repairs fail closed to the exact vector
+fallback.  No raster data is embedded and no shared budget/threshold is raised.
 """
 from __future__ import annotations
 
-from collections import defaultdict
-from math import ceil, floor
+import os
+import tempfile
 from typing import Any
 
 import cv2
@@ -19,7 +22,8 @@ import numpy as np
 from app import semantic_region_geometry_core as _core
 
 SemanticRegionFitError = _core.SemanticRegionFitError
-_MIN_ACCEPTANCE_SCALE = 0.25
+_REPAIR_FACTORS = (0.25, 0.5, 1.0, 2.0, 4.0)
+_MAX_REPAIR_ANCHORS_PER_SCALE = 8
 
 
 def _fmt(value: float) -> str:
@@ -27,126 +31,211 @@ def _fmt(value: float) -> str:
     return text if text not in {"", "-0"} else "0"
 
 
-def _runs(flags: np.ndarray) -> list[tuple[int, int]]:
-    output: list[tuple[int, int]] = []
-    start: int | None = None
-    for index, active in enumerate(np.r_[np.asarray(flags, dtype=bool), False]):
-        if active and start is None:
-            start = index
-        elif not active and start is not None:
-            output.append((start, index))
-            start = None
-    return output
-
-
-def _rect_d(x0: float, y0: float, x1: float, y1: float) -> str:
+def _svg_document(width: int, height: int, elements: list[str]) -> str:
     return (
-        f"M{_fmt(x0)} {_fmt(y0)}L{_fmt(x1)} {_fmt(y0)}"
-        f"L{_fmt(x1)} {_fmt(y1)}L{_fmt(x0)} {_fmt(y1)}Z"
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" '
+        f'width="{width}" height="{height}" shape-rendering="crispEdges">'
+        + "".join(elements)
+        + "</svg>"
     )
 
 
-def _minimum_scale_parent_cells(
-    parent_mask: np.ndarray,
-    child_mask: np.ndarray,
-) -> list[str]:
-    """Materialize parent-labelled cells adjacent to child at min scale.
+def _nearest_palette_labels(rgb: np.ndarray, colors: np.ndarray) -> np.ndarray:
+    arr = np.asarray(rgb, dtype=np.int32)
+    palette = np.asarray(colors, dtype=np.int32)
+    diff = arr[:, :, None, :] - palette[None, None, :, :]
+    distance = np.sum(diff * diff, axis=3, dtype=np.int64)
+    return np.argmin(distance, axis=2).astype(np.int16)
 
-    The coarse label is sampled at the source-space cell center.  This is a
-    scale-normalized vector topology representation, not raster embedding.
-    """
-    h, w = parent_mask.shape
-    tw = max(16, int(round(w * _MIN_ACCEPTANCE_SCALE)))
-    th = max(16, int(round(h * _MIN_ACCEPTANCE_SCALE)))
-    parent_cells = np.zeros((th, tw), dtype=bool)
-    child_cells = np.zeros((th, tw), dtype=bool)
-    for ty in range(th):
-        sy = min(h - 1, max(0, int(floor((ty + 0.5) * h / th))))
-        for tx in range(tw):
-            sx = min(w - 1, max(0, int(floor((tx + 0.5) * w / tw))))
-            parent_cells[ty, tx] = bool(parent_mask[sy, sx])
-            child_cells[ty, tx] = bool(child_mask[sy, sx])
-    neighborhood = cv2.dilate(
-        child_cells.astype(np.uint8), np.ones((3, 3), dtype=np.uint8), iterations=1
-    ).astype(bool)
-    selected = parent_cells & neighborhood
-    paths: list[str] = []
-    for ty in range(th):
-        y0 = ty * h / th
-        y1 = (ty + 1) * h / th
-        for start, stop in _runs(selected[ty]):
-            x0 = start * w / tw
-            x1 = stop * w / tw
-            paths.append(_rect_d(x0, y0, x1, y1))
-    return paths
+
+def _component_count(mask: np.ndarray) -> int:
+    count, _ = cv2.connectedComponents(np.asarray(mask, dtype=np.uint8), connectivity=8)
+    return max(0, int(count) - 1)
+
+
+def _component_counts(labels: np.ndarray, color_count: int) -> list[int]:
+    return [_component_count(labels == index) for index in range(color_count)]
+
+
+def _render_labels(
+    width: int,
+    height: int,
+    elements: list[str],
+    colors: np.ndarray,
+    target_width: int,
+    target_height: int,
+) -> np.ndarray | None:
+    try:
+        from app.fidelity import render_svg_to_rgb  # noqa: PLC0415
+    except Exception:
+        return None
+    handle = tempfile.NamedTemporaryFile(suffix=".svg", delete=False)
+    path = handle.name
+    try:
+        handle.write(_svg_document(width, height, elements).encode("utf-8"))
+        handle.close()
+        rendered = render_svg_to_rgb(path, int(target_width), int(target_height))
+        if rendered is None:
+            return None
+        return _nearest_palette_labels(rendered, colors)
+    finally:
+        try:
+            handle.close()
+        except Exception:
+            pass
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def _source_target_labels(labels: np.ndarray, width: int, height: int) -> np.ndarray:
+    return cv2.resize(
+        np.asarray(labels, dtype=np.int16),
+        (int(width), int(height)),
+        interpolation=cv2.INTER_NEAREST,
+    ).astype(np.int16)
+
+
+def _articulation_repair(
+    render_labels: np.ndarray,
+    reference_labels: np.ndarray,
+    class_index: int,
+) -> tuple[int, int, int] | None:
+    """Find a false-positive class pixel whose removal restores a component."""
+    mask = render_labels == int(class_index)
+    before = _component_count(mask)
+    candidates = np.argwhere(mask & (reference_labels != int(class_index)))
+    for y, x in candidates.tolist():
+        trial = mask.copy()
+        trial[int(y), int(x)] = False
+        if _component_count(trial) > before:
+            replacement = int(reference_labels[int(y), int(x)])
+            return int(x), int(y), replacement
+    return None
+
+
+def _device_anchor(
+    x: int,
+    y: int,
+    target_width: int,
+    target_height: int,
+    source_width: int,
+    source_height: int,
+    fill: str,
+) -> str:
+    cx = (float(x) + 0.5) * float(source_width) / float(target_width)
+    cy = (float(y) + 0.5) * float(source_height) / float(target_height)
+    return (
+        f'<path d="M{_fmt(cx)} {_fmt(cy)}h0.001" fill="none" stroke="{fill}" '
+        'stroke-width="1" vector-effect="non-scaling-stroke" stroke-linecap="square"/>'
+    )
+
+
+def _repair_component_merges(
+    labels: np.ndarray,
+    colors: np.ndarray,
+    elements: list[str],
+) -> tuple[list[str], list[dict[str, Any]]]:
+    source_height, source_width = labels.shape
+    source_counts = _component_counts(labels, len(colors))
+    repaired = list(elements)
+    reports: list[dict[str, Any]] = []
+
+    for factor in _REPAIR_FACTORS:
+        target_width = max(16, int(round(source_width * factor)))
+        target_height = max(16, int(round(source_height * factor)))
+        reference = _source_target_labels(labels, target_width, target_height)
+        anchors: list[dict[str, Any]] = []
+        for _attempt in range(_MAX_REPAIR_ANCHORS_PER_SCALE):
+            rendered = _render_labels(
+                source_width,
+                source_height,
+                repaired,
+                colors,
+                target_width,
+                target_height,
+            )
+            if rendered is None:
+                break
+            counts = _component_counts(rendered, len(colors))
+            merged_classes = [
+                index
+                for index, (expected, actual) in enumerate(zip(source_counts, counts, strict=True))
+                if actual < expected
+            ]
+            if not merged_classes:
+                break
+            applied = False
+            for class_index in merged_classes:
+                repair = _articulation_repair(rendered, reference, class_index)
+                if repair is None:
+                    continue
+                x, y, replacement = repair
+                red, green, blue = (
+                    int(value) for value in np.asarray(colors, dtype=np.uint8)[replacement]
+                )
+                fill = f"#{red:02x}{green:02x}{blue:02x}"
+                repaired.append(
+                    _device_anchor(
+                        x,
+                        y,
+                        target_width,
+                        target_height,
+                        source_width,
+                        source_height,
+                        fill,
+                    )
+                )
+                anchors.append(
+                    {
+                        "class_index": int(class_index),
+                        "replacement_class_index": int(replacement),
+                        "target_pixel": [int(x), int(y)],
+                    }
+                )
+                applied = True
+                break
+            if not applied:
+                break
+        final_labels = _render_labels(
+            source_width,
+            source_height,
+            repaired,
+            colors,
+            target_width,
+            target_height,
+        )
+        final_counts = (
+            _component_counts(final_labels, len(colors)) if final_labels is not None else None
+        )
+        reports.append(
+            {
+                "scale": f"{factor:g}x",
+                "size": [target_width, target_height],
+                "anchors": anchors,
+                "final_component_counts": final_counts,
+            }
+        )
+    return repaired, reports
 
 
 def build_semantic_region_elements(labels: np.ndarray, colors: np.ndarray) -> dict[str, Any]:
     report = _core.build_semantic_region_elements(labels, colors)
-    elements = list(report.get("elements") or [])
-    regions = list(report.get("regions") or [])
-    node_map, nodes, _root, _depth, parent = _core._connected_region_graph(
-        np.asarray(labels), len(colors)
+    base_elements = list(report.get("elements") or [])
+    repaired, repair_report = _repair_component_merges(
+        np.asarray(labels), np.asarray(colors, dtype=np.uint8), base_elements
     )
-    children: list[list[int]] = [[] for _ in nodes]
-    for node_id, parent_id in enumerate(parent):
-        if parent_id is not None:
-            children[parent_id].append(node_id)
-
-    overlays: list[str] = []
-    overlay_commands = 0
-    strategy_counts = defaultdict(int, report.get("strategy_counts") or {})
-    for region in regions:
-        node_id = int(region.get("node_id", -1))
-        strategy = str(region.get("strategy") or "")
-        if node_id < 0 or strategy not in {
-            "ellipse_axis_arm_union",
-            "compound_parent_expand_axis_arm_union",
-        }:
-            continue
-        grandparent_id = parent[node_id]
-        if grandparent_id is None:
-            continue
-        matching = [
-            child_id
-            for child_id in children[node_id]
-            if int(nodes[child_id]["color_index"])
-            == int(nodes[grandparent_id]["color_index"])
-        ]
-        if len(matching) != 1:
-            continue
-        separator_paths = _minimum_scale_parent_cells(
-            node_map == node_id,
-            node_map == matching[0],
-        )
-        if not separator_paths:
-            continue
-        color_index = int(nodes[node_id]["color_index"])
-        red, green, blue = (
-            int(value) for value in np.asarray(colors, dtype=np.uint8)[color_index]
-        )
-        fill = f"#{red:02x}{green:02x}{blue:02x}"
-        overlays.extend(f'<path fill="{fill}" d="{d}"/>' for d in separator_paths)
-        overlay_commands += sum(
-            max(2, sum(d.count(token) for token in ("M", "L", "H", "V", "A", "C", "Z")))
-            for d in separator_paths
-        )
-        strategy_counts[strategy] -= 1
-        if strategy_counts[strategy] <= 0:
-            strategy_counts.pop(strategy, None)
-        upgraded = f"{strategy}_deferred_min_scale_label_cells"
-        strategy_counts[upgraded] += 1
-        region["strategy"] = upgraded
-        region["minimum_scale_separator_paths"] = len(separator_paths)
-        region["path_count"] = int(region.get("path_count") or 0) + len(separator_paths)
-
-    elements.extend(overlays)
-    report["elements"] = elements
-    report["path_count"] = int(report.get("path_count") or 0) + len(overlays)
-    report["node_count"] = int(report.get("node_count") or 0) + overlay_commands
-    report["strategy_counts"] = dict(sorted(strategy_counts.items()))
-    report["regions"] = regions
-    report["deferred_min_scale_label_paths"] = len(overlays)
+    added = len(repaired) - len(base_elements)
+    if added:
+        strategies = dict(report.get("strategy_counts") or {})
+        strategies["render_feedback_component_anchor"] = added
+        report["strategy_counts"] = dict(sorted(strategies.items()))
+        report["path_count"] = int(report.get("path_count") or 0) + added
+        report["node_count"] = int(report.get("node_count") or 0) + 2 * added
+    report["elements"] = repaired
+    report["scale_topology_repair"] = repair_report
+    report["scale_topology_anchor_count"] = added
     return report
 
 
