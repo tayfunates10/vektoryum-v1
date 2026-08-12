@@ -14,9 +14,7 @@ ENGINE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(ENGINE_DIR))
 
 from app.pipeline import (  # noqa: E402
-    _final_winner_pareto_guard,
     _pareto_front,
-    _score_complexity_dominates,
     _selection_pool,
     build_vector_candidates,
 )
@@ -38,12 +36,9 @@ def _candidate(
     name: str,
     *,
     fidelity: float,
-    total: float | None = None,
-    ssim: float = 1.0,
-    delta: float = 0.0,
-    edge: float = 1.0,
-    paths: int = 2,
-    nodes: int = 10,
+    ssim: float,
+    delta: float,
+    edge: float,
     recall: float = 1.0,
     precision: float = 1.0,
     min_iou: float = 1.0,
@@ -53,15 +48,12 @@ def _candidate(
         "name": name,
         "rendered_ok": True,
         "fidelity_score": fidelity,
-        "total_score": fidelity if total is None else total,
         "selection_safe": safe,
         "selection_disqualified": not safe,
         "score_details": {
             "ssim": ssim,
             "mean_delta_e": delta,
             "edge_f1": edge,
-            "path_count": paths,
-            "node_count": nodes,
         },
         "component_quality": {
             "applicable": True,
@@ -196,60 +188,3 @@ def test_all_unsafe_candidates_preserve_legacy_pool_order() -> None:
         safe=False,
     )
     assert _selection_pool([first, second]) == [first, second]
-
-
-def test_final_score_complexity_guard_replaces_strictly_dominated_winner() -> None:
-    selected = _candidate(
-        "selected",
-        fidelity=93.87,
-        total=66.98,
-        paths=2,
-        nodes=10,
-    )
-    better = _candidate(
-        "boundary_refit",
-        fidelity=97.28,
-        total=68.01,
-        paths=2,
-        nodes=10,
-    )
-    assert _score_complexity_dominates(better, selected) is True
-    result = {
-        "best": selected,
-        "scored": [selected, better],
-        "selection_reason": "editability_preference",
-    }
-    guarded = _final_winner_pareto_guard(result)
-    assert guarded["best"] is better
-    assert guarded["final_pareto_guard"] == {
-        "applied": True,
-        "replaced": "selected",
-        "winner": "boundary_refit",
-    }
-    assert guarded["selection_reason"].startswith("final_safe_score_complexity_pareto_guard+")
-
-
-def test_final_score_complexity_guard_preserves_real_tradeoff() -> None:
-    fidelity_winner = _candidate(
-        "fidelity_winner",
-        fidelity=97.29,
-        total=79.86,
-        paths=1,
-        nodes=814,
-    )
-    editable = _candidate(
-        "editable",
-        fidelity=97.28,
-        total=90.57,
-        paths=1,
-        nodes=11,
-    )
-    assert _score_complexity_dominates(editable, fidelity_winner) is False
-    result = {
-        "best": fidelity_winner,
-        "scored": [fidelity_winner, editable],
-        "selection_reason": "highest_fidelity",
-    }
-    guarded = _final_winner_pareto_guard(result)
-    assert guarded["best"] is fidelity_winner
-    assert "final_pareto_guard" not in guarded
