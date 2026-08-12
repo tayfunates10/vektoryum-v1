@@ -24,16 +24,19 @@ def test_axis_aligned_palette_geometry_is_scale_stable_and_vector_only(tmp_path:
     report = vectorize_source_palette_paths(source, output, max_colors=6)
     text = output.read_text(encoding="utf-8").lower()
     assert report["scale_stable_eligible"] is True, report
-    assert report["geometry_strategy"] == "semantic_cycle_fit", report
+    assert report["geometry_strategy"] == "semantic_region_fit", report
     assert report["fit_transaction"]["passed"] is True, report
     assert report["fit_strategy_counts"]["axis_aligned_rectangle"] >= 2, report
     assert report["raster_embedded"] is False
     assert "<image" not in text and "base64" not in text and "data:image" not in text
 
 
-def test_production_module_contains_no_fixture_specific_routing() -> None:
-    source = Path(__file__).with_name("app") / "source_palette_vector.py"
-    text = source.read_text(encoding="utf-8").lower()
+def test_production_modules_contain_no_fixture_specific_routing() -> None:
+    app_dir = Path(__file__).with_name("app")
+    text = "\n".join(
+        (app_dir / name).read_text(encoding="utf-8").lower()
+        for name in ("source_palette_vector.py", "semantic_region_geometry.py")
+    )
     for forbidden in (
         "qa-micro-component-ladder",
         "qa-small-details",
@@ -87,6 +90,8 @@ def test_issue152_target_sources_are_semantically_scale_stable(case_name: str, t
     diagnostic = (
         f"{case_name}: reason={transaction.get('reason')} "
         f"strategies={report.get('fit_strategy_counts')} "
+        f"regions={report.get('semantic_regions')} "
+        f"source_counts={transaction.get('source_class_component_counts')} "
         f"native_counts={transaction.get('native_class_component_counts')} "
         f"render_counts={transaction.get('render_class_component_counts')} "
         f"native_visible={transaction.get('native_visible_residual')} "
