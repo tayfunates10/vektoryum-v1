@@ -161,6 +161,8 @@ def infer_root_causes(case_result: dict[str, Any]) -> list[dict[str, str]]:
         for candidate in primary.get("candidates") or []:
             if candidate.get("name") == best.get("name"):
                 continue
+            if candidate.get("final_eligible") is False:
+                continue
             details = candidate.get("score_details") or {}
             values = (
                 candidate.get("fidelity_score"),
@@ -184,7 +186,7 @@ def infer_root_causes(case_result: dict[str, Any]) -> list[dict[str, str]]:
                     causes,
                     "pareto_dominated_winner",
                     "high",
-                    "Another candidate improves fidelity and total score without increasing path or node complexity.",
+                    "Another final-eligible candidate improves fidelity and total score without increasing path or node complexity.",
                 )
                 break
 
