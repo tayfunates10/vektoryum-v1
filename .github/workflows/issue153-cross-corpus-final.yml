@@ -1,9 +1,11 @@
-name: Issue153 cross-corpus final
+name: Issue153 cross corpus final
 
 on:
   push:
-    branches: [codex/ai4-round3-gradient-topology]
-    paths: [.github/workflows/issue153-cross-corpus-final.yml]
+    branches:
+      - codex/ai4-round3-gradient-topology
+    paths:
+      - .github/workflows/issue153-cross-corpus-final.yml
 
 permissions:
   contents: write
@@ -15,133 +17,30 @@ jobs:
     env:
       PYTHONPATH: .:engine
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout branch
+        uses: actions/checkout@v4
         with:
           ref: codex/ai4-round3-gradient-topology
           fetch-depth: 0
-      - uses: actions/setup-python@v5
-        with: {python-version: '3.12'}
-      - run: python -m pip install --disable-pip-version-check -r engine/requirements.txt pytest
-      - name: Apply narrow production fixes
-        shell: bash
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-
-          def rep(path: str, old: str, new: str) -> None:
-              p=Path(path); s=p.read_text(encoding='utf-8')
-              if s.count(old)!=1:
-                  raise SystemExit(f'{path}: anchor count={s.count(old)}')
-              p.write_text(s.replace(old,new,1),encoding='utf-8')
-
-          rep(
-              'engine/app/transform_journal.py',
-              '        measure_alpha = is_restore_stage and "alpha_fidelity" in self.required_metrics\n',
-              '        measure_alpha = capture_render and "alpha_fidelity" in self.required_metrics\n',
-          )
-          rep(
-              'engine/app/pipeline.py',
-              '''    legacy_chosen, legacy_raw, legacy_reason = _base_select_best(scored, mode)\n    if _is_selection_safe(legacy_chosen):\n        return legacy_chosen, legacy_raw, legacy_reason\n''',
-              '''    legacy_chosen, legacy_raw, legacy_reason = _base_select_best(scored, mode)\n\n    # A measured source_palette_exact artifact is not merely another editable\n    # candidate: it is the lossless reconstruction path already constrained by\n    # the existing opaque/low-colour mode and palette cap.  When it independently\n    # passes component safety and measures exact fidelity, do not let a lower-\n    # fidelity heuristic winner hide it.  Benchmark alpha/technical paths do not\n    # generate this candidate, so their proven legacy ranking remains unchanged.\n    exact = [\n        candidate for candidate in scored\n        if candidate.get("name") == _SOURCE_PALETTE_CANDIDATE\n        and _is_selection_safe(candidate)\n        and candidate.get("final_eligible", True)\n        and (_finite(candidate.get("fidelity_score")) or 0.0) >= 99.999\n    ]\n    if exact:\n        chosen = max(exact, key=_core._fidelity_rank_key)\n        return chosen, legacy_raw, "source_palette_exact_dominance"\n\n    if _is_selection_safe(legacy_chosen):\n        return legacy_chosen, legacy_raw, legacy_reason\n''',
-          )
-
-          Path('engine/test_issue153_manager_cross_corpus.py').write_text(r'''from __future__ import annotations
-
-from pathlib import Path
-from tempfile import TemporaryDirectory
-from unittest.mock import patch
-
-import numpy as np
-
-from app import pipeline
-from app.transform_journal import TransformJournal
-
-
-def _candidate(name: str, fidelity: float, *, safe: bool = True, eligible: bool = True):
-    return {
-        "name": name,
-        "fidelity_score": fidelity,
-        "total_score": fidelity,
-        "selection_safe": safe,
-        "selection_disqualified": not safe,
-        "final_eligible": eligible,
-        "score_details": {},
-    }
-
-
-def test_source_palette_exact_dominates_lower_fidelity_safe_legacy():
-    legacy = _candidate("geo_standard", 98.49)
-    exact = _candidate("source_palette_exact", 100.0)
-    with patch.object(pipeline, "_base_select_best", return_value=(legacy, legacy, "highest_total_score")):
-        chosen, raw, reason = pipeline.select_best([legacy, exact], "geometric_logo")
-    assert chosen is exact
-    assert raw is legacy
-    assert reason == "source_palette_exact_dominance"
-
-
-def test_nonexact_or_absent_source_palette_keeps_safe_legacy_ranking():
-    legacy = _candidate("geo_standard", 98.49)
-    approximate = _candidate("source_palette_exact", 99.5)
-    with patch.object(pipeline, "_base_select_best", return_value=(legacy, legacy, "highest_total_score")):
-        chosen, raw, reason = pipeline.select_best([legacy, approximate], "geometric_logo")
-    assert chosen is legacy
-    assert raw is legacy
-    assert reason == "highest_total_score"
-
-
-def test_gradient_plus_alpha_downstream_reuses_required_render_for_alpha_proof(monkeypatch):
-    import app.fidelity as fidelity
-    import app.source_truth as source_truth
-
-    source = np.full((128, 128, 3), 255, dtype=np.uint8)
-    source[24:104, 24:104] = (227, 0, 11)
-
-    def rgba_render(_path: Path, width: int, height: int) -> np.ndarray:
-        rgba = np.zeros((height, width, 4), dtype=np.uint8)
-        rgba[:, :, :3] = source[:height, :width]
-        rgba[:, :, 3] = 255
-        return rgba
-
-    monkeypatch.setattr(source_truth, "render_svg_to_rgba", rgba_render)
-    monkeypatch.setattr(fidelity, "render_svg_to_rgb", lambda *_args, **_kwargs: source.copy())
-    svg = b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128"><rect x="24" y="24" width="80" height="80" fill="#e3000b"/></svg>'
-    with TemporaryDirectory() as td:
-        root=Path(td); parent=root/'p.svg'; candidate=root/'c.svg'
-        parent.write_bytes(svg)
-        candidate.write_bytes(svg.replace(b'</svg>', b'<metadata>same</metadata></svg>'))
-        journal=TransformJournal(parent,source,required_metrics={"gradient_fidelity","alpha_fidelity"})
-        accepted,stage=journal.consider_candidate("boundary_refit",parent,candidate)
-    assert accepted == candidate
-    assert stage["required_unmeasured"] == []
-    assert stage["render_comparison"] is not None
-    assert stage["alpha_comparison"] is not None
-
-
-def test_alpha_only_downstream_remains_fail_closed():
-    source = np.full((128, 128, 3), 255, dtype=np.uint8)
-    svg = b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128"><rect x="24" y="24" width="80" height="80" fill="#e3000b" fill-opacity="0.5"/></svg>'
-    with TemporaryDirectory() as td:
-        root=Path(td); parent=root/'p.svg'; candidate=root/'c.svg'
-        parent.write_bytes(svg)
-        candidate.write_bytes(svg.replace(b'</svg>', b'<metadata>same</metadata></svg>'))
-        journal=TransformJournal(parent,source,required_metrics={"alpha_fidelity"})
-        accepted,stage=journal.consider_candidate("boundary_refit",parent,candidate)
-    assert accepted == parent
-    assert "required_metric_unmeasured" in stage["reason_codes"]
-    assert stage["alpha_comparison"] is None
-''', encoding='utf-8')
-          PY
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check -r engine/requirements.txt pytest
+      - name: Apply patch script
+        run: python .github/issue153_cross_corpus_patch.py
       - name: Focused contracts
         run: |
           python -m py_compile engine/app/pipeline.py engine/app/transform_journal.py engine/test_issue153_manager_cross_corpus.py
           python -m pytest -q engine/test_issue153_manager_cross_corpus.py engine/test_transform_journal.py engine/test_ai2_component_quality.py engine/test_analyzer_contracts.py engine/test_issue153_post_refit_contract.py
-      - name: Commit source only with rebase
+      - name: Commit source only
         shell: bash
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add engine/app/pipeline.py engine/app/transform_journal.py engine/test_issue153_manager_cross_corpus.py
-          git commit -m 'fix(issue153): preserve target and exact-palette dominance'
+          git commit -m "fix(issue153): preserve target and exact-palette dominance"
           git fetch origin codex/ai4-round3-gradient-topology
           git rebase origin/codex/ai4-round3-gradient-topology
           git push origin HEAD:codex/ai4-round3-gradient-topology
