@@ -7,6 +7,7 @@ commands or relaxing any budget.
 """
 from __future__ import annotations
 
+import re
 import xml.etree.ElementTree as ET
 from collections import Counter
 from typing import Any
@@ -19,6 +20,7 @@ from app.palette_ops import classify_rgb
 
 _SVG_NS = "http://www.w3.org/2000/svg"
 _MAX_COLOR_CANDIDATES = 64
+_NUMBER = re.compile(r"-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?")
 
 
 def _source_white(rgba: np.ndarray) -> np.ndarray:
@@ -32,6 +34,12 @@ def _source_white(rgba: np.ndarray) -> np.ndarray:
         0.0,
         255.0,
     ).astype(np.uint8)
+
+
+def _fmt_coordinate(value: float) -> str:
+    if float(value).is_integer():
+        return str(int(value))
+    return f"{float(value):.12g}"
 
 
 def _loop_path_data(loops: list[list[tuple[int, int]]]) -> str:
@@ -53,6 +61,50 @@ def _loop_path_data(loops: list[list[tuple[int, int]]]) -> str:
         commands.append("Z")
         parts.append("".join(commands))
     return "".join(parts)
+
+
+def _polygon_path_data(points: str) -> str | None:
+    values = [float(value) for value in _NUMBER.findall(str(points or ""))]
+    if len(values) < 6 or len(values) % 2:
+        return None
+    coordinates = list(zip(values[0::2], values[1::2]))
+    x0, y0 = coordinates[0]
+    output = [f"M{_fmt_coordinate(x0)} {_fmt_coordinate(y0)}"]
+    previous_x, previous_y = x0, y0
+    for x, y in coordinates[1:]:
+        if y == previous_y:
+            output.append(f"H{_fmt_coordinate(x)}")
+        elif x == previous_x:
+            output.append(f"V{_fmt_coordinate(y)}")
+        else:
+            output.append(f"L{_fmt_coordinate(x)} {_fmt_coordinate(y)}")
+        previous_x, previous_y = x, y
+    output.append("Z")
+    return "".join(output)
+
+
+def _compact_mask_polygons(root: ET.Element) -> None:
+    """Replace polygon point lists with byte-smaller, geometry-identical paths."""
+    for parent in root.iter():
+        children = list(parent)
+        for index, child in enumerate(children):
+            if str(child.tag).rsplit("}", 1)[-1].lower() != "polygon":
+                continue
+            path_data = _polygon_path_data(child.get("points") or "")
+            if not path_data:
+                continue
+            namespace = ""
+            if str(child.tag).startswith("{"):
+                namespace = str(child.tag).split("}", 1)[0] + "}"
+            attributes = {
+                key: value for key, value in child.attrib.items() if key != "points"
+            }
+            attributes["d"] = path_data
+            replacement = ET.Element(f"{namespace}path", attributes)
+            replacement.text = child.text
+            replacement.tail = child.tail
+            parent.remove(child)
+            parent.insert(index, replacement)
 
 
 def _candidate_colors(source_rgb: np.ndarray, alpha: np.ndarray) -> list[np.ndarray]:
@@ -127,7 +179,8 @@ def _classification_stable_color(
 
 
 def serialize_compact_visible_alpha_svg(root: ET.Element) -> bytes:
-    """Serialize a repaired SVG without optional XML declaration bytes."""
+    """Serialize repaired SVG with exact geometry but fewer structural bytes."""
+    _compact_mask_polygons(root)
     ET.register_namespace("", _SVG_NS)
     return ET.tostring(
         root,
