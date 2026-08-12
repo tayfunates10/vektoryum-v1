@@ -252,7 +252,16 @@ def _install_soft_ellipse_direct_factory() -> None:
     @wraps(current)
     def soft_ellipse_factory(guarded_builder):
         assembled = make_soft_ellipse_alpha_first(current(guarded_builder))
-        return make_visible_alpha_paint_repair(assembled)
+        repaired = make_visible_alpha_paint_repair(assembled)
+
+        @wraps(assembled)
+        def production_scoped(*args, **kwargs):
+            if not alpha_pipeline_active():
+                return assembled(*args, **kwargs)
+            return repaired(*args, **kwargs)
+
+        production_scoped.__vektoryum_visible_alpha_production_scoped__ = True
+        return production_scoped
 
     soft_ellipse_factory.__vektoryum_soft_ellipse_factory__ = True
     alpha_candidate_direct.make_direct_element_alpha_first = soft_ellipse_factory
