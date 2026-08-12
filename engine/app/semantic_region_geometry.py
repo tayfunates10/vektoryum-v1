@@ -95,11 +95,13 @@ def _deferred_separator_ring(parent_mask: np.ndarray, child_mask: np.ndarray, fi
     cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
     rx, ry = (x1 - x0) / 2.0, (y1 - y0) / 2.0
     mid = thickness / 2.0
-    stroke = max(1.0, thickness - _SAFETY_MARGIN)
     d = _core._ellipse_d(cx - rx - mid, cy - ry - mid, cx + rx + mid, cy + ry + mid)
     if d is None:
         return None
-    return f'<path d="{d}" fill="none" stroke="{fill}" stroke-width="{_fmt(stroke)}"/>'
+    return (
+        f'<path d="{d}" fill="none" stroke="{fill}" stroke-width="1" '
+        'vector-effect="non-scaling-stroke" stroke-linejoin="round"/>'
+    )
 
 
 def build_semantic_region_elements(labels: np.ndarray, colors: np.ndarray) -> dict[str, Any]:
@@ -151,7 +153,7 @@ def build_semantic_region_elements(labels: np.ndarray, colors: np.ndarray) -> di
         strategy_counts[strategy] -= 1
         if strategy_counts[strategy] <= 0:
             strategy_counts.pop(strategy, None)
-        upgraded = f"{strategy}_deferred_source_annulus"
+        upgraded = f"{strategy}_deferred_device_annulus"
         strategy_counts[upgraded] += 1
         region["strategy"] = upgraded
         region["deferred_separator_ring"] = True
