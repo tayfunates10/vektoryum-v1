@@ -1,10 +1,10 @@
-"""Semantic geometry helpers for AI-4 Round 2 residual diagnostics.
+"""Observable semantic geometry helpers for AI-4 Round 2 diagnostics.
 
-Palette segmentation is useful for colour residuals, but it is not a reliable
-source of topology when two semantic regions intentionally share or collapse to
-the same rendered tone, or when alpha compositing creates colours that are not
-semantic regions. This module keeps colour residuals untouched and provides a
-separate geometry-only view from the verified analytic fixture labels.
+Topology must only be hard-gated when the final raster actually exposes it.
+Palette clusters are not semantic regions for continuous alpha artwork, and a
+flattened semi-transparent overlap cannot reveal hidden layer-to-layer colour
+boundaries. This module therefore measures only geometry that is observable
+without reconstructing missing regions from source truth.
 """
 from __future__ import annotations
 
@@ -14,12 +14,11 @@ import cv2
 import numpy as np
 
 from app.graph_source import canonical_segmentation
-from app.palette_ops import classify_rgb
 from app.source_truth import composite_rgba
 from engine.regression import residual_error_metrics as base
 from engine.regression.residual_topology_metrics import measure_label_topology
 
-SEMANTIC_GEOMETRY_POLICY_VERSION = "vektoryum-semantic-geometry-v1"
+SEMANTIC_GEOMETRY_POLICY_VERSION = "vektoryum-observable-semantic-geometry-v2"
 
 
 def _background_label(labels: np.ndarray) -> int:
@@ -40,7 +39,7 @@ def _background_label(labels: np.ndarray) -> int:
 
 def _effective_labels(
     source_labels: np.ndarray,
-    excluded_source_labels: Iterable[int] = (),
+    excluded_source_labels: Iterable[int],
 ) -> tuple[np.ndarray, int, list[int]]:
     source = np.asarray(source_labels, dtype=np.uint8).copy()
     background = _background_label(source)
@@ -50,92 +49,18 @@ def _effective_labels(
     return source, background, excluded
 
 
-def _semantic_palette(source_rgba: np.ndarray, source_labels: np.ndarray) -> tuple[np.ndarray, list[int]]:
-    rgb = composite_rgba(np.asarray(source_rgba, dtype=np.uint8), 255)
-    labels = sorted(int(value) for value in np.unique(source_labels))
-    centers: list[np.ndarray] = []
-    for label in labels:
-        pixels = rgb[source_labels == label]
-        if pixels.size == 0:
-            centers.append(np.zeros(3, dtype=np.float32))
-        else:
-            centers.append(np.median(pixels.astype(np.float32), axis=0).astype(np.float32))
-    return np.stack(centers, axis=0), labels
-
-
-def _spatially_disambiguate_components(
-    predicted_labels: np.ndarray,
-    source_labels: np.ndarray,
-    *,
-    confidence: float = 0.95,
-) -> tuple[np.ndarray, int]:
-    """Resolve only high-confidence disconnected colour-collapses spatially.
-
-    A light interior can legitimately render with exactly the same RGB as the
-    exterior background. It is still a separate connected component, so >=95%
-    overlap with one analytic semantic region recovers its geometry without
-    inventing missing adjacent regions.
-    """
-    predicted = np.asarray(predicted_labels, dtype=np.uint8)
-    source = np.asarray(source_labels, dtype=np.uint8)
-    result = predicted.copy()
-    reassigned = 0
-    for predicted_label in sorted(int(value) for value in np.unique(predicted)):
-        count, component_map = cv2.connectedComponents(
-            (predicted == predicted_label).astype(np.uint8),
-            connectivity=8,
-        )
-        for component_id in range(1, count):
-            mask = component_map == component_id
-            source_values, source_counts = np.unique(source[mask], return_counts=True)
-            if source_counts.size == 0:
-                continue
-            winner_index = int(np.argmax(source_counts))
-            winner = int(source_values[winner_index])
-            ratio = float(source_counts[winner_index] / source_counts.sum())
-            if winner != predicted_label and ratio >= float(confidence):
-                result[mask] = np.uint8(winner)
-                reassigned += 1
-    return result, reassigned
-
-
-def map_discrete_render_to_semantics(
-    source_rgba: np.ndarray,
+def map_continuous_hard_shapes(
     render_rgba: np.ndarray,
     source_labels: np.ndarray,
     *,
-    excluded_source_labels: Iterable[int] = (),
+    excluded_source_labels: Iterable[int],
 ) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
-    source, background, excluded = _effective_labels(source_labels, excluded_source_labels)
-    centers, semantic_ids = _semantic_palette(source_rgba, source)
-    render_rgb = composite_rgba(np.asarray(render_rgba, dtype=np.uint8), 255)
-    nearest = classify_rgb(render_rgb, centers).astype(np.int64)
-    ids = np.asarray(semantic_ids, dtype=np.uint8)
-    predicted = ids[nearest]
-    mapped, reassigned = _spatially_disambiguate_components(predicted, source)
-    return source, mapped, {
-        "policy_version": SEMANTIC_GEOMETRY_POLICY_VERSION,
-        "mapping": "analytic_semantic_palette_plus_spatial_components",
-        "background_label": int(background),
-        "semantic_label_ids": semantic_ids,
-        "excluded_source_labels": excluded,
-        "reassigned_connected_components": int(reassigned),
-    }
+    """Map observable render clusters onto hard analytic semantic shapes.
 
-
-def map_continuous_render_to_semantics(
-    render_rgba: np.ndarray,
-    source_labels: np.ndarray,
-    *,
-    excluded_source_labels: Iterable[int] = (),
-) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
-    """Map continuous-tone render clusters onto analytic semantic regions.
-
-    Internal gradient/alpha colour bands are not topology. Render clusters are
-    split into connected components, then each component is assigned by maximum
-    spatial overlap with one analytic semantic region. A border-touching render
-    background component stays background so a missing region cannot be restored
-    from source truth.
+    The mapping never reassigns the border-connected render background to a
+    missing source region. Thus an absent hard shape stays absent. Continuous
+    alpha-only labels may be excluded because their fidelity is owned by the
+    alpha plane/support contract rather than colour clustering.
     """
     source, background, excluded = _effective_labels(source_labels, excluded_source_labels)
     render_rgb = composite_rgba(np.asarray(render_rgba, dtype=np.uint8), 255)
@@ -182,7 +107,7 @@ def map_continuous_render_to_semantics(
         raise ValueError("semantic render mapping exceeded uint8 label capacity")
     return source, mapped.astype(np.uint8), {
         "policy_version": SEMANTIC_GEOMETRY_POLICY_VERSION,
-        "mapping": "continuous_render_clusters_to_analytic_semantics",
+        "mapping": "continuous_render_clusters_to_observable_hard_shapes",
         "background_label": int(background),
         "semantic_label_ids": [int(value) for value in np.unique(source)],
         "excluded_source_labels": excluded,
@@ -192,40 +117,13 @@ def map_continuous_render_to_semantics(
     }
 
 
-def _geometry_metrics(source_labels: np.ndarray, render_labels: np.ndarray) -> dict[str, Any]:
-    component = base.connected_component_fidelity(source_labels, render_labels)
-    boundary = base._boundary_distance(
-        base._label_boundaries(source_labels),
-        base._label_boundaries(render_labels),
-    )
-    topology = measure_label_topology(source_labels, render_labels)
-    topology["semantic_geometry_policy_version"] = SEMANTIC_GEOMETRY_POLICY_VERSION
-    return {"component": component, "boundary": boundary, "topology": topology}
-
-
-def measure_discrete_semantic_geometry(
-    source_rgba: np.ndarray,
-    render_rgba: np.ndarray,
-    source_labels: np.ndarray,
-) -> dict[str, Any]:
-    source, rendered, mapping = map_discrete_render_to_semantics(
-        source_rgba,
-        render_rgba,
-        source_labels,
-    )
-    result = _geometry_metrics(source, rendered)
-    result["mapping"] = mapping
-    result["topology_observability"] = "semantic_regions_observable"
-    return result
-
-
 def measure_continuous_hard_shape_components(
     render_rgba: np.ndarray,
     source_labels: np.ndarray,
     *,
     excluded_source_labels: Iterable[int],
 ) -> dict[str, Any]:
-    source, rendered, mapping = map_continuous_render_to_semantics(
+    source, rendered, mapping = map_continuous_hard_shapes(
         render_rgba,
         source_labels,
         excluded_source_labels=excluded_source_labels,
@@ -240,6 +138,12 @@ def measure_alpha_support_geometry(
     source_rgba: np.ndarray,
     render_rgba: np.ndarray,
 ) -> dict[str, Any]:
+    """Measure topology observable from the final alpha support only.
+
+    Shared colour-layer boundaries are intentionally not manufactured from the
+    source because they are not uniquely identifiable in a flattened alpha
+    composite. Alpha-plane and visible-composite gates remain independent.
+    """
     source = (np.asarray(source_rgba, dtype=np.uint8)[:, :, 3] > 0).astype(np.uint8)
     rendered = (np.asarray(render_rgba, dtype=np.uint8)[:, :, 3] > 0).astype(np.uint8)
     boundary = base._boundary_distance(base._label_boundaries(source), base._label_boundaries(rendered))
