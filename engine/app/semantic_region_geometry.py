@@ -2,13 +2,14 @@
 
 The native semantic fitter is preserved byte-for-byte in
 ``semantic_region_geometry_core``. This fixture-agnostic wrapper renders the
-source-derived SVG at the five acceptance scales. When source components of one
-palette class collapse into one rendered component, it finds an actual bridge
-path between the projected source components and repaints only a bridge pixel
-that belongs to another source palette class. Each repair is re-rendered; the
-unchanged native and five-scale transactions remain authoritative. No raster
-embedding, fixture routing, threshold relaxation, or shared budget increase is
-used.
+source-derived SVG at the five acceptance scales. Native connected regions are
+projected independently so downsampling can never erase their identity. If two
+source regions of the same palette class collapse into one rendered component,
+the wrapper finds the actual rendered bridge between them and repaints the
+bridge point nearest their intervening source region using that region's palette
+class. Every repair is re-rendered immediately; the unchanged native and
+five-scale transactions remain authoritative. No raster embedding, fixture
+routing, threshold relaxation, or shared budget increase is used.
 """
 from __future__ import annotations
 
@@ -76,56 +77,115 @@ def _render_labels(width: int, height: int, elements: list[str], colors: np.ndar
         except OSError: pass
 
 
-def _source_target_labels(labels: np.ndarray, width: int, height: int) -> np.ndarray:
-    return cv2.resize(np.asarray(labels, dtype=np.int16), (int(width), int(height)), interpolation=cv2.INTER_NEAREST).astype(np.int16)
+def _project_node_mask(node_map: np.ndarray, node_id: int, width: int, height: int) -> np.ndarray:
+    native = (node_map == int(node_id)).astype(np.uint8)
+    projected = cv2.resize(native, (int(width), int(height)), interpolation=cv2.INTER_NEAREST).astype(bool)
+    if projected.any():
+        return projected
+    ys, xs = np.nonzero(native)
+    if len(xs):
+        px = min(width - 1, max(0, int(round((float(xs.mean()) + 0.5) * width / node_map.shape[1] - 0.5))))
+        py = min(height - 1, max(0, int(round((float(ys.mean()) + 0.5) * height / node_map.shape[0] - 0.5))))
+        projected[py, px] = True
+    return projected
 
 
-def _bridge_path_repair(render_labels: np.ndarray, reference_labels: np.ndarray, class_index: int) -> tuple[int,int,int] | None:
-    """Return a source-mismatching pixel on a real path merging reference CCs."""
+def _tree_path(first: int, second: int, parent: list[int | None]) -> list[int]:
+    first_chain: list[int] = []
+    cursor: int | None = int(first)
+    while cursor is not None:
+        first_chain.append(cursor); cursor = parent[cursor]
+    first_pos = {node_id: index for index, node_id in enumerate(first_chain)}
+    second_chain: list[int] = []
+    cursor = int(second)
+    lca: int | None = None
+    while cursor is not None:
+        if cursor in first_pos:
+            lca = cursor; break
+        second_chain.append(cursor); cursor = parent[cursor]
+    if lca is None:
+        return []
+    return first_chain[: first_pos[lca] + 1] + list(reversed(second_chain))
+
+
+def _shortest_render_path(component: np.ndarray, start: np.ndarray, goal: np.ndarray) -> list[tuple[int,int]]:
+    h, w = component.shape
+    starts = np.argwhere(component & start)
+    if not len(starts) or not (component & goal).any():
+        return []
+    queue: deque[tuple[int,int]] = deque()
+    previous: dict[tuple[int,int], tuple[int,int] | None] = {}
+    for y, x in starts.tolist():
+        key = (int(y), int(x)); queue.append(key); previous[key] = None
+    endpoint: tuple[int,int] | None = None
+    while queue and endpoint is None:
+        y, x = queue.popleft()
+        if goal[y, x]: endpoint = (y, x); break
+        for dx, dy in _NEIGHBORS:
+            nx, ny = x + dx, y + dy; key = (ny, nx)
+            if nx < 0 or nx >= w or ny < 0 or ny >= h or key in previous or not component[ny, nx]:
+                continue
+            previous[key] = (y, x); queue.append(key)
+    if endpoint is None:
+        return []
+    path: list[tuple[int,int]] = []
+    cursor: tuple[int,int] | None = endpoint
+    while cursor is not None:
+        path.append(cursor); cursor = previous[cursor]
+    path.reverse()
+    return path
+
+
+def _bridge_path_repair(
+    render_labels: np.ndarray,
+    class_index: int,
+    node_map: np.ndarray,
+    nodes: list[dict[str, Any]],
+    parent: list[int | None],
+) -> tuple[int,int,int,dict[str,Any]] | None:
+    """Find a rendered bridge between independently projected native regions."""
     class_index = int(class_index)
     render_mask = render_labels == class_index
-    ref_mask = reference_labels == class_index
-    ref_count, ref_cc = cv2.connectedComponents(ref_mask.astype(np.uint8), connectivity=8)
     ren_count, ren_cc = cv2.connectedComponents(render_mask.astype(np.uint8), connectivity=8)
-    if ref_count <= ren_count:
-        return None
-    h, w = render_mask.shape
+    target_h, target_w = render_mask.shape
+    class_nodes = [index for index, node in enumerate(nodes) if int(node["color_index"]) == class_index]
+    projected = {node_id: _project_node_mask(node_map, node_id, target_w, target_h) for node_id in class_nodes}
+
     for render_id in range(1, ren_count):
         component = ren_cc == render_id
-        overlapping = sorted(int(v) for v in np.unique(ref_cc[component & (ref_cc > 0)]))
+        overlapping = [node_id for node_id in class_nodes if (component & projected[node_id]).any()]
         if len(overlapping) < 2:
             continue
-        start_id, goal_id = overlapping[0], overlapping[1]
-        start_points = np.argwhere(component & (ref_cc == start_id))
-        goal = component & (ref_cc == goal_id)
-        if not len(start_points) or not goal.any():
-            continue
-        queue: deque[tuple[int,int]] = deque()
-        previous: dict[tuple[int,int], tuple[int,int] | None] = {}
-        for y, x in start_points.tolist():
-            key = (int(y), int(x)); queue.append(key); previous[key] = None
-        endpoint: tuple[int,int] | None = None
-        while queue and endpoint is None:
-            y, x = queue.popleft()
-            if goal[y, x]:
-                endpoint = (y, x); break
-            for dx, dy in _NEIGHBORS:
-                nx, ny = x + dx, y + dy
-                key = (ny, nx)
-                if nx < 0 or nx >= w or ny < 0 or ny >= h or key in previous or not component[ny, nx]:
+        for pair_index, first in enumerate(overlapping[:-1]):
+            for second in overlapping[pair_index + 1:]:
+                source_path = _tree_path(first, second, parent)
+                separators = [node_id for node_id in source_path[1:-1] if int(nodes[node_id]["color_index"]) != class_index]
+                if not separators:
                     continue
-                previous[key] = (y, x); queue.append(key)
-        if endpoint is None:
-            continue
-        path: list[tuple[int,int]] = []
-        cursor: tuple[int,int] | None = endpoint
-        while cursor is not None:
-            path.append(cursor); cursor = previous[cursor]
-        bridge = [(y,x) for y,x in reversed(path) if int(reference_labels[y,x]) != class_index]
-        if not bridge:
-            continue
-        y, x = bridge[len(bridge)//2]
-        return int(x), int(y), int(reference_labels[y,x])
+                path = _shortest_render_path(component, projected[first], projected[second])
+                if not path:
+                    continue
+                # Prefer the path pixel closest to the actual intervening native
+                # separator region, projected independently at this scale.
+                best: tuple[float,int,int,int] | None = None
+                for separator_node in separators:
+                    separator_mask = _project_node_mask(node_map, separator_node, target_w, target_h)
+                    distance = cv2.distanceTransform((~separator_mask).astype(np.uint8), cv2.DIST_L2, 3)
+                    replacement = int(nodes[separator_node]["color_index"])
+                    for y, x in path:
+                        score = float(distance[y, x])
+                        candidate = (score, int(y), int(x), replacement)
+                        if best is None or candidate < best:
+                            best = candidate
+                if best is None:
+                    continue
+                _score, y, x, replacement = best
+                return int(x), int(y), int(replacement), {
+                    "source_node_pair": [int(first), int(second)],
+                    "source_tree_path": [int(v) for v in source_path],
+                    "bridge_path_length": len(path),
+                    "distance_to_separator": round(float(_score), 4),
+                }
     return None
 
 
@@ -140,11 +200,12 @@ def _device_anchor(x: int, y: int, target_width: int, target_height: int, source
 
 def _repair_component_merges(labels: np.ndarray, colors: np.ndarray, elements: list[str]) -> tuple[list[str], list[dict[str, Any]]]:
     source_height, source_width = labels.shape
-    source_counts = _component_counts(labels, len(colors))
+    node_map, nodes, _root, _depth, parent = _core._connected_region_graph(labels, len(colors))
+    source_counts = [sum(1 for node in nodes if int(node["color_index"]) == index) for index in range(len(colors))]
     repaired = list(elements); reports: list[dict[str, Any]] = []
     for factor in _REPAIR_FACTORS:
         target_width = max(16, int(round(source_width * factor))); target_height = max(16, int(round(source_height * factor)))
-        reference = _source_target_labels(labels, target_width, target_height); anchors: list[dict[str, Any]] = []
+        anchors: list[dict[str, Any]] = []
         for _attempt in range(_MAX_REPAIR_ANCHORS_PER_SCALE):
             rendered = _render_labels(source_width, source_height, repaired, colors, target_width, target_height)
             if rendered is None: break
@@ -153,12 +214,12 @@ def _repair_component_merges(labels: np.ndarray, colors: np.ndarray, elements: l
             if not merged_classes: break
             applied = False
             for class_index in merged_classes:
-                repair = _bridge_path_repair(rendered, reference, class_index)
+                repair = _bridge_path_repair(rendered, class_index, node_map, nodes, parent)
                 if repair is None: continue
-                x,y,replacement = repair
+                x,y,replacement,detail = repair
                 red,green,blue = (int(value) for value in np.asarray(colors,dtype=np.uint8)[replacement]); fill=f"#{red:02x}{green:02x}{blue:02x}"
                 repaired.append(_device_anchor(x,y,target_width,target_height,source_width,source_height,fill))
-                anchors.append({"class_index":int(class_index),"replacement_class_index":int(replacement),"target_pixel":[int(x),int(y)]})
+                anchors.append({"class_index":int(class_index),"replacement_class_index":int(replacement),"target_pixel":[int(x),int(y)],**detail})
                 applied=True; break
             if not applied: break
         final_labels = _render_labels(source_width,source_height,repaired,colors,target_width,target_height)
