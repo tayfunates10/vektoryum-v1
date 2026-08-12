@@ -148,16 +148,16 @@ def _selection_pool(scored: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def select_best(scored: list[dict[str, Any]], mode: str) -> tuple[dict, dict, str]:
-    """Run the established selector inside the independent safe Pareto pool."""
+    """Preserve a safe legacy winner; reroute only an actually unsafe winner."""
     legacy_chosen, legacy_raw, legacy_reason = _base_select_best(scored, mode)
-    pool = _selection_pool(scored)
-    if len(pool) == len(scored) and all(a is b for a, b in zip(pool, scored)):
+    if _is_selection_safe(legacy_chosen):
         return legacy_chosen, legacy_raw, legacy_reason
+    safe = [candidate for candidate in scored if _is_selection_safe(candidate)]
+    if not safe:
+        return legacy_chosen, legacy_raw, legacy_reason
+    pool = _pareto_front(safe)
     chosen, _safe_raw, reason = _base_select_best(pool, mode)
-    guard = "component_integrity_pareto_guard" if any(
-        _is_selection_safe(candidate) for candidate in scored
-    ) else "component_integrity_guard"
-    return chosen, legacy_raw, f"{guard}+{reason}"
+    return chosen, legacy_raw, f"component_integrity_pareto_guard+{reason}"
 
 
 def build_vector_candidates(mode: str) -> dict[str, dict[str, Any]]:
@@ -288,10 +288,16 @@ def _produce_and_score_job(args: tuple) -> tuple[dict[str, Any], dict[str, Any] 
 def _apply_editability_preference(
     scored: list[dict[str, Any]], current_best: dict[str, Any]
 ) -> tuple[dict[str, Any], str]:
-    pool = _selection_pool(scored)
-    if current_best not in pool:
-        current_best = max(pool, key=_core._fidelity_rank_key)
-    return _base_apply_editability_preference(pool, current_best)
+    legacy_best, legacy_reason = _base_apply_editability_preference(scored, current_best)
+    if _is_selection_safe(legacy_best):
+        return legacy_best, legacy_reason
+    safe = [candidate for candidate in scored if _is_selection_safe(candidate)]
+    if not safe:
+        return legacy_best, legacy_reason
+    pool = _pareto_front(safe)
+    safe_seed = current_best if current_best in pool else max(pool, key=_core._fidelity_rank_key)
+    guarded_best, guarded_reason = _base_apply_editability_preference(pool, safe_seed)
+    return guarded_best, f"component_integrity_pareto_guard+{guarded_reason}"
 
 
 def refine_best(

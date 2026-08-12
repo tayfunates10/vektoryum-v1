@@ -432,6 +432,13 @@ def detect_gradient_like_surface(image: Image.Image) -> bool:
     if unique_ratio > 0.095 and smooth_area_ratio > 0.68:
         return True
 
+    # Foreground-local promotion repairs opaque artwork whose uniform background
+    # diluted the legacy whole-frame signal. Alpha-bearing art is a separate
+    # paint model; preserve its historical routing unless the legacy test above
+    # already proved a gradient.
+    if bool(np.any(alpha < 255)):
+        return False
+
     h, w = arr.shape[:2]
     ph, pw = max(2, round(h * 0.04)), max(2, round(w * 0.04))
     corners = np.concatenate((

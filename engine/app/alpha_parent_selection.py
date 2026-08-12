@@ -25,6 +25,7 @@ _MODE_IMAGE_CLASS = {
     "logo_color": "clean_logo",
     "photo_poster": "photo",
 }
+_MAX_ALPHA_LEVELS = 4
 _MAX_TRIALS = 4
 _FIDELITY_MARGIN = 0.15
 _EDGE_MARGIN = 0.005
@@ -235,10 +236,10 @@ def _select(result: dict[str, Any], source_path: Path, job_dir: Path) -> dict[st
             levels = np.unique(np.asarray(source.convert("RGBA"))[:, :, 3])
     except (OSError, ValueError):
         return result
-    # Parent probing is bounded by _MAX_TRIALS, not by the number of source
-    # alpha levels. Continuous/anti-aliased alpha still uses the exact same
-    # source-alpha reconstruction gates; only opaque sources are inapplicable.
-    if len(levels) <= 1:
+    # Preserve the proven bounded parent-selection contract. Dense/continuous
+    # alpha stays on the dedicated alpha pipeline; broad parent probing changed
+    # previously accepted knockout topology without cross-corpus proof.
+    if len(levels) <= 1 or len(levels) > _MAX_ALPHA_LEVELS:
         return result
 
     shortlist = _shortlist(result)
