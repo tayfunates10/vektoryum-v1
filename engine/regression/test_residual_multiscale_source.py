@@ -95,4 +95,22 @@ class AnalyticMultiScaleContractTests(unittest.TestCase):
         measured=measure_alpha_support_geometry(source_rgba,render_rgba)
         self.assertGreater(measured["topology"]["hole_loss_count"],0)
 
+
+    def test_continuous_analytic_palette_uses_semantic_shared_boundary(self):
+        builder=suite._BUILDER_BY_CASE["qa-hard-stop-gradient"]
+        scene=source.build_analytic_scene(builder,256)
+        rgba=np.asarray(scene.image.convert("RGBA"),dtype=np.uint8)
+        result=measurement.measure_residual_error(rgba,rgba.copy())
+        self.assertEqual(result["semantic_geometry"]["palette_mode"],"continuous_analytic")
+        self.assertEqual(result["source_component_recall"],1.0)
+        self.assertEqual(result["render_component_precision"],1.0)
+        self.assertEqual(result["min_component_iou"],1.0)
+        self.assertEqual(result["boundary_p95_px"],0.0)
+        self.assertEqual(result["topology"]["adjacency_loss_count"],0)
+        shared=result["topology"]["shared_boundary"]
+        self.assertTrue(shared["applicable"])
+        self.assertEqual(shared["max_gap_ratio"],0.0)
+        self.assertEqual(shared["max_overlap_ratio"],0.0)
+        self.assertEqual(shared["min_matched_transition_ratio"],1.0)
+
 if __name__=="__main__": unittest.main()

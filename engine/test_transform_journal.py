@@ -711,3 +711,52 @@ def test_merge_detects_broken_sha_chain() -> None:
     assert report is not None
     assert not report["chain_valid"]
     assert "stage_parent_hash_mismatch" in report["chain_failure_codes"]
+
+
+def test_required_gradient_metric_is_measured_on_downstream_stage(tmp_path: Path) -> None:
+    from app.transform_journal import TransformJournal
+    parent = tmp_path / "gradient_parent.svg"
+    candidate = tmp_path / "gradient_candidate.svg"
+    gradient = _svg(
+        '<defs><linearGradient id="g"><stop offset="0" stop-color="#e3000b"/>'
+        '<stop offset="1" stop-color="#554bad"/></linearGradient></defs>'
+        '<rect x="24" y="24" width="80" height="80" fill="url(#g)"/>'
+    )
+    parent.write_bytes(gradient)
+    candidate.write_bytes(gradient.replace(b'</svg>', b'<metadata>same-render</metadata></svg>'))
+    journal = TransformJournal(parent, _square_source(), required_metrics={"gradient_fidelity"})
+    accepted, stage = journal.consider_candidate("boundary_refit", parent, candidate)
+    assert accepted == candidate
+    assert "required_metric_unmeasured" not in stage["reason_codes"]
+    assert "gradient_stage_metrics_incomplete" not in stage["reason_codes"]
+
+
+def test_required_alpha_metric_is_measured_not_faked_on_downstream_stage(tmp_path: Path) -> None:
+    from app.transform_journal import TransformJournal
+    parent = tmp_path / "alpha_parent.svg"
+    candidate = tmp_path / "alpha_candidate.svg"
+    alpha_svg = _svg('<rect x="24" y="24" width="80" height="80" fill="#e3000b" fill-opacity="0.5"/>')
+    parent.write_bytes(alpha_svg)
+    candidate.write_bytes(alpha_svg.replace(b'</svg>', b'<metadata>same-alpha</metadata></svg>'))
+    journal = TransformJournal(parent, _square_source(), required_metrics={"alpha_fidelity"})
+    accepted, stage = journal.consider_candidate("boundary_refit", parent, candidate)
+    assert accepted == candidate
+    assert stage["alpha_comparison"] is not None
+    assert "alpha_stage_metrics_incomplete" not in stage["reason_codes"]
+
+
+def test_winner_selection_filters_unsafe_candidates_and_fails_closed_when_none() -> None:
+    from app.pipeline_core import select_best
+    def candidate(name: str, fidelity: float, safe: bool):
+        return {
+            "name": name, "total_score": fidelity, "fidelity_score": fidelity,
+            "rendered_ok": True, "selection_safe": safe,
+            "selection_disqualified": not safe,
+            "score_details": {"path_count": 2, "edge_f1": 1.0, "has_bitmap": False},
+        }
+    chosen, _raw, _reason = select_best(
+        [candidate("unsafe", 99.0, False), candidate("safe", 95.0, True)], "logo_color"
+    )
+    assert chosen["name"] == "safe"
+    with pytest.raises(RuntimeError, match="no_selection_safe_candidate"):
+        select_best([candidate("unsafe", 99.0, False)], "logo_color")

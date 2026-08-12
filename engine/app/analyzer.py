@@ -410,19 +410,55 @@ def detect_alpha_foreground(image: Image.Image) -> bool:
 
 
 def detect_gradient_like_surface(image: Image.Image) -> bool:
-    small = resize_for_analysis(_rgba_to_rgb_on_white(image), 350)
-    arr = np.array(small).astype(np.float32)
+    # Keep the legacy whole-frame signal, then add a foreground-local continuous
+    # paint test. Large uniform backgrounds dilute a real gradient's global
+    # unique-ratio, while a smooth ramp creates many small non-zero neighbour
+    # transitions *inside* the foreground. Discrete palette steps do not.
+    rgba = resize_for_analysis(image.convert("RGBA"), 400)
+    raw = np.asarray(rgba, dtype=np.uint8)
+    alpha = raw[..., 3]
+    rgb = raw[..., :3].astype(np.float32)
+    a = (alpha.astype(np.float32) / 255.0)[..., None]
+    arr = rgb * a + 255.0 * (1.0 - a)
 
     flattened = arr.reshape(-1, 3)
     rounded = (flattened // 8) * 8
     unique_count = len(np.unique(rounded, axis=0))
-    unique_ratio = unique_count / flattened.shape[0]
+    unique_ratio = unique_count / max(1, flattened.shape[0])
 
-    gray = cv2.cvtColor(arr.astype(np.uint8), cv2.COLOR_RGB2GRAY)
+    gray = cv2.cvtColor(np.clip(arr, 0, 255).astype(np.uint8), cv2.COLOR_RGB2GRAY)
     edge_mask = cv2.Canny(gray, 70, 160) > 0
     smooth_area_ratio = float(np.mean(~edge_mask))
+    if unique_ratio > 0.095 and smooth_area_ratio > 0.68:
+        return True
 
-    return bool(unique_ratio > 0.095 and smooth_area_ratio > 0.68)
+    h, w = arr.shape[:2]
+    ph, pw = max(2, round(h * 0.04)), max(2, round(w * 0.04))
+    corners = np.concatenate((
+        arr[:ph, :pw].reshape(-1, 3), arr[:ph, -pw:].reshape(-1, 3),
+        arr[-ph:, :pw].reshape(-1, 3), arr[-ph:, -pw:].reshape(-1, 3),
+    ))
+    background = np.median(corners, axis=0)
+    foreground = (np.linalg.norm(arr - background[None, None, :], axis=2) > 40.0) & (alpha > 40)
+    if int(np.count_nonzero(foreground)) < 20:
+        return False
+
+    pair_count = 0
+    continuous_count = 0
+    for first, second, mask in (
+        (arr[:, :-1], arr[:, 1:], foreground[:, :-1] & foreground[:, 1:]),
+        (arr[:-1, :], arr[1:, :], foreground[:-1, :] & foreground[1:, :]),
+    ):
+        distances = np.linalg.norm(first - second, axis=2)
+        pair_count += int(np.count_nonzero(mask))
+        continuous_count += int(np.count_nonzero(mask & (distances >= 1.0) & (distances <= 32.0)))
+    transition_ratio = float(continuous_count) / float(max(1, pair_count))
+    foreground_bins = np.unique((arr[foreground].astype(np.uint8) // 8), axis=0).shape[0]
+    return bool(
+        foreground_bins >= 12
+        and transition_ratio >= 0.08
+        and smooth_area_ratio >= 0.90
+    )
 
 
 def score_image_quality(

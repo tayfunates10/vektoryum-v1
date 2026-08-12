@@ -12,6 +12,7 @@ from engine.regression.residual_semantic_geometry import (
     SEMANTIC_GEOMETRY_POLICY_VERSION,
     measure_alpha_support_geometry,
     measure_continuous_hard_shape_components,
+    measure_continuous_semantic_geometry,
 )
 from engine.regression.residual_topology_metrics import extend_near_zero_contract, measure_topology_residual
 
@@ -141,6 +142,20 @@ def measure_residual_error(source_rgba, render_rgba, *, palette_size: int = 8) -
                     "excluded_source_labels": [1],
                     "mapping": hard["mapping"],
                     "topology_observability": support["topology_observability"],
+                }
+            )
+
+        elif palette_mode == "continuous_analytic":
+            semantic = measure_continuous_semantic_geometry(rendered, source_labels)
+            result.update(semantic["component"])
+            result.update(semantic["boundary"])
+            result["topology"] = semantic["topology"]
+            semantic_meta.update(
+                {
+                    "overrides": ["component", "boundary", "topology"],
+                    "reason": "continuous paint bands are colour samples, not semantic shared boundaries",
+                    "mapping": semantic["mapping"],
+                    "topology_observability": semantic["topology_observability"],
                 }
             )
 
