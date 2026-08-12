@@ -1,4 +1,4 @@
-"""AI-4 measurement contract: residual colour + verified semantic geometry/topology."""
+"""AI-4 measurement contract: residual colour + observable semantic geometry/topology."""
 from __future__ import annotations
 
 import hashlib
@@ -12,7 +12,6 @@ from engine.regression.residual_semantic_geometry import (
     SEMANTIC_GEOMETRY_POLICY_VERSION,
     measure_alpha_support_geometry,
     measure_continuous_hard_shape_components,
-    measure_discrete_semantic_geometry,
 )
 from engine.regression.residual_topology_metrics import extend_near_zero_contract, measure_topology_residual
 
@@ -97,7 +96,7 @@ def measure_residual_error(source_rgba, render_rgba, *, palette_size: int = 8) -
     result = base.measure_residual_error(source, rendered, palette_size=palette_size)
 
     # Preserve the former palette-derived geometry/topology as explicit evidence.
-    # A blocker removed by the semantic measurement therefore remains auditable.
+    # A blocker removed by an observability correction therefore stays auditable.
     result["palette_geometry_measurement"] = _legacy_geometry_snapshot(result)
     palette_topology = measure_topology_residual(source, rendered, palette_size=palette_size)
     result["palette_topology_measurement"] = palette_topology
@@ -122,24 +121,10 @@ def measure_residual_error(source_rgba, render_rgba, *, palette_size: int = 8) -
             "overrides": [],
         }
 
-        if builder_name == "_draw_lowres_badge":
-            semantic = measure_discrete_semantic_geometry(source, rendered, source_labels)
-            result.update(semantic["component"])
-            result.update(semantic["boundary"])
-            result["topology"] = semantic["topology"]
-            semantic_meta.update(
-                {
-                    "overrides": ["component", "boundary", "topology"],
-                    "reason": "disconnected semantic regions may legitimately share a rendered tone",
-                    "mapping": semantic["mapping"],
-                    "topology_observability": semantic["topology_observability"],
-                }
-            )
-
-        elif builder_name == "_draw_soft_alpha_shadow":
+        if builder_name == "_draw_soft_alpha_shadow":
             # The soft shadow is a continuous alpha field, not a discrete colour
             # region. Alpha support/plane fidelity owns its topology; hard blue
-            # and red shapes remain measurable as semantic components.
+            # and red shapes remain measurable as observable semantic components.
             support = measure_alpha_support_geometry(source, rendered)
             hard = measure_continuous_hard_shape_components(
                 rendered,
