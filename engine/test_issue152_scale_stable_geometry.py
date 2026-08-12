@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import cv2
 import numpy as np
 import pytest
 from PIL import Image, ImageDraw
@@ -15,6 +16,45 @@ def _write_rect_source(path: Path) -> None:
     draw.rectangle((12, 12, 83, 83), fill=(40, 40, 40))
     draw.rectangle((28, 28, 67, 67), fill=(150, 150, 150))
     image.save(path)
+
+
+def _component_stats(labels: np.ndarray, color_count: int) -> list[list[dict[str, object]]]:
+    result: list[list[dict[str, object]]] = []
+    for color_index in range(color_count):
+        count, _lab, stats, _centroids = cv2.connectedComponentsWithStats(
+            (labels == color_index).astype(np.uint8), 8
+        )
+        items = []
+        for index in range(1, count):
+            x, y, w, h, area = (int(v) for v in stats[index])
+            items.append({"bbox": [x, y, w, h], "area": area})
+        result.append(sorted(items, key=lambda item: (item["bbox"][1], item["bbox"][0])))
+    return result
+
+
+def _thin_core_64_diagnostic(builder, tmp_path: Path) -> dict[str, object]:
+    from app import semantic_region_geometry_core as core  # noqa: PLC0415
+    from app.fidelity import render_svg_to_rgb  # noqa: PLC0415
+    from app.source_palette_vector import _nearest_palette_labels, _svg_document  # noqa: PLC0415
+
+    source256 = np.asarray(builder(256).convert("RGB"), dtype=np.uint8)
+    colors, inverse = np.unique(source256.reshape(-1, 3), axis=0, return_inverse=True)
+    labels = inverse.reshape(256, 256)
+    semantic = core.build_semantic_region_elements(labels, colors)
+    svg_path = tmp_path / "thin-native-good-core.svg"
+    svg_path.write_text(_svg_document(256, 256, list(semantic["elements"])), encoding="utf-8")
+    rendered64 = render_svg_to_rgb(svg_path, 64, 64)
+    source64 = np.asarray(builder(64).convert("RGB"), dtype=np.uint8)
+    if rendered64 is None:
+        return {"render": "unavailable"}
+    source_labels = _nearest_palette_labels(source64, colors)
+    render_labels = _nearest_palette_labels(rendered64, colors)
+    return {
+        "colors": colors.tolist(),
+        "source64": _component_stats(source_labels, len(colors)),
+        "core_render64": _component_stats(render_labels, len(colors)),
+        "core_strategies": semantic.get("strategy_counts"),
+    }
 
 
 def test_axis_aligned_palette_geometry_is_scale_stable_and_vector_only(tmp_path: Path) -> None:
@@ -87,6 +127,7 @@ def test_issue152_target_sources_are_semantically_scale_stable(case_name: str, t
     text = output.read_text(encoding="utf-8").lower()
     assert "<image" not in text and "base64" not in text and "data:image" not in text
     transaction = report.get("fit_transaction") or {}
+    core64 = _thin_core_64_diagnostic(builder, tmp_path) if case_name == "thin" else None
     diagnostic = (
         f"{case_name}: reason={transaction.get('reason')} "
         f"strategies={report.get('fit_strategy_counts')} "
@@ -97,6 +138,7 @@ def test_issue152_target_sources_are_semantically_scale_stable(case_name: str, t
         f"levels={transaction.get('levels')} "
         f"native_visible={transaction.get('native_visible_residual')} "
         f"native_boundary={transaction.get('native_boundary_p95_px')} "
-        f"native_component={transaction.get('native_component')}"
+        f"native_component={transaction.get('native_component')} "
+        f"core64={core64}"
     )
     assert report.get("scale_stable_eligible") is True, diagnostic
