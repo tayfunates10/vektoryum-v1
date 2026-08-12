@@ -159,3 +159,9 @@ def test_continuous_paint_detector_separates_smooth_ramp_from_palette_steps() ->
         stepped[48:208, x0:min(128, x0 + 26), :3] = (225 + index * 5, 40 + index * 32, 35)
     assert analyzer.detect_gradient_like_surface(Image.fromarray(ramp, "RGBA")) is True
     assert analyzer.detect_gradient_like_surface(Image.fromarray(stepped, "RGBA")) is False
+
+    thin = np.full((256, 256, 4), 255, dtype=np.uint8)
+    for x in range(32, 224):
+        value = 40 + (x - 32) % 80
+        thin[126:130, x, :3] = (value, value, value)
+    assert analyzer.detect_gradient_like_surface(Image.fromarray(thin, "RGBA")) is False

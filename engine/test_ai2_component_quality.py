@@ -130,7 +130,7 @@ def test_safe_candidate_pool_blocks_pareto_dominated_unsafe_winner() -> None:
     assert chosen["name"] == "safe_lower"
 
 
-def test_all_failed_candidates_keep_legacy_score_ordering() -> None:
+def test_all_failed_candidates_fail_closed_in_winner_selection() -> None:
     failed = {
         "applicable": True,
         "measured": True,
@@ -153,9 +153,15 @@ def test_all_failed_candidates_keep_legacy_score_ordering() -> None:
         **{k: lo_gate[k] for k in ("selection_safe", "selection_disqualified")},
         "score_details": {"path_count": 10, "edge_f1": 0.8, "has_bitmap": False},
     }
-    chosen, _raw, _reason = select_best([lo, hi], "single_color")
-    assert chosen["name"] == "legacy_hi"
+    # Scores remain unchanged for diagnostics, but Issue #153 forbids selecting
+    # any candidate whose component gate explicitly marked it unsafe.
     assert round(hi["total_score"] - lo["total_score"], 2) == 8.89
+    try:
+        select_best([lo, hi], "single_color")
+    except RuntimeError as exc:
+        assert str(exc) == "no_selection_safe_candidate"
+    else:
+        raise AssertionError("all-unsafe candidate pool must fail closed")
 
 
 def test_missing_applicable_measurement_is_fail_closed_without_score_corruption() -> None:

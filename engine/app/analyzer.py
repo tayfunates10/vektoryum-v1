@@ -443,17 +443,27 @@ def detect_gradient_like_surface(image: Image.Image) -> bool:
     if int(np.count_nonzero(foreground)) < 20:
         return False
 
+    # Anti-aliased thin strokes contain small neighbour colour deltas only near
+    # their contour. Real filled continuous paint retains transitions inside a
+    # substantial foreground interior, so measure only there.
+    foreground_distance = cv2.distanceTransform(foreground.astype(np.uint8), cv2.DIST_L2, 5)
+    interior = foreground & (foreground_distance >= 3.5)
+    foreground_count = int(np.count_nonzero(foreground))
+    interior_count = int(np.count_nonzero(interior))
+    if interior_count < 20 or interior_count < 0.10 * foreground_count:
+        return False
+
     pair_count = 0
     continuous_count = 0
     for first, second, mask in (
-        (arr[:, :-1], arr[:, 1:], foreground[:, :-1] & foreground[:, 1:]),
-        (arr[:-1, :], arr[1:, :], foreground[:-1, :] & foreground[1:, :]),
+        (arr[:, :-1], arr[:, 1:], interior[:, :-1] & interior[:, 1:]),
+        (arr[:-1, :], arr[1:, :], interior[:-1, :] & interior[1:, :]),
     ):
         distances = np.linalg.norm(first - second, axis=2)
         pair_count += int(np.count_nonzero(mask))
         continuous_count += int(np.count_nonzero(mask & (distances >= 1.0) & (distances <= 32.0)))
     transition_ratio = float(continuous_count) / float(max(1, pair_count))
-    foreground_bins = np.unique((arr[foreground].astype(np.uint8) // 8), axis=0).shape[0]
+    foreground_bins = np.unique((arr[interior].astype(np.uint8) // 8), axis=0).shape[0]
     return bool(
         foreground_bins >= 12
         and transition_ratio >= 0.08
