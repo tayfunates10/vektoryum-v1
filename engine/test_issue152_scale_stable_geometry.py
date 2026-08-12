@@ -20,18 +20,14 @@ def test_axis_aligned_palette_geometry_is_scale_stable_and_vector_only(tmp_path:
     source = tmp_path / "source.png"
     output = tmp_path / "out.svg"
     _write_rect_source(source)
-
     report = vectorize_source_palette_paths(source, output, max_colors=6)
     text = output.read_text(encoding="utf-8").lower()
-
     assert report["scale_stable_eligible"] is True, report
     assert report["geometry_strategy"] == "semantic_cycle_fit", report
     assert report["fit_transaction"]["passed"] is True, report
     assert report["fit_strategy_counts"]["axis_aligned_rectangle"] >= 2, report
     assert report["raster_embedded"] is False
-    assert "<image" not in text
-    assert "base64" not in text
-    assert "data:image" not in text
+    assert "<image" not in text and "base64" not in text and "data:image" not in text
 
 
 def test_production_module_contains_no_fixture_specific_routing() -> None:
@@ -78,14 +74,20 @@ def test_issue152_target_sources_are_semantically_scale_stable(tmp_path: Path) -
         "small": _draw_small_details,
         "thin": _draw_thin_negative_space,
     }
-    failures: dict[str, dict] = {}
     for name, builder in builders.items():
         source = tmp_path / f"{name}.png"
         output = tmp_path / f"{name}.svg"
         builder(256).convert("RGBA").save(source, "PNG", optimize=False)
         report = vectorize_source_palette_paths(source, output, max_colors=6)
-        if not report.get("scale_stable_eligible"):
-            failures[name] = report
         text = output.read_text(encoding="utf-8").lower()
         assert "<image" not in text and "base64" not in text and "data:image" not in text
-    assert not failures, failures
+        transaction = report.get("fit_transaction") or {}
+        diagnostic = (
+            f"{name}: reason={transaction.get('reason')} "
+            f"strategies={report.get('fit_strategy_counts')} "
+            f"native_counts={transaction.get('native_class_component_counts')} "
+            f"render_counts={transaction.get('render_class_component_counts')} "
+            f"native_visible={transaction.get('native_visible_residual')} "
+            f"native_component={transaction.get('native_component')}"
+        )
+        assert report.get("scale_stable_eligible") is True, diagnostic
