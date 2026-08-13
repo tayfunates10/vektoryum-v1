@@ -8,7 +8,7 @@ from typing import Any
 import numpy as np
 
 from app import semantic_region_geometry_impl as _impl
-from app import scale_stable_leaf_regularizer as _leaf
+from app.scale_stable_primitive_geometry import calibrate_primitives
 
 SemanticRegionFitError = _impl.SemanticRegionFitError
 _ELLIPSE_INSET_OFFSETS = (0.0, -0.10, -0.20, -0.30, 0.10, 0.20)
@@ -193,7 +193,7 @@ def build_semantic_region_elements(labels: np.ndarray, colors: np.ndarray) -> di
     base = list(report.get("elements") or [])
     regions = list(report.get("regions") or [])
     calibrated, ellipse_report = _calibrate_ellipses(labels, colors, base, regions)
-    regularized, primitive_report, models = _leaf.regularize(
+    regularized, primitive_report, models = calibrate_primitives(
         labels, colors, calibrated, regions
     )
     repaired, repair_report = _impl._repair(
@@ -206,7 +206,7 @@ def build_semantic_region_elements(labels: np.ndarray, colors: np.ndarray) -> di
     if total_delta:
         strategies = dict(report.get("strategy_counts") or {})
         if primitive_delta:
-            strategies["scale_stable_primitive_reconstruction"] = primitive_delta
+            strategies["five_scale_source_primitive_calibration"] = primitive_delta
         if anchor_delta:
             strategies["render_feedback_topology_anchor"] = anchor_delta
         report["strategy_counts"] = dict(sorted(strategies.items()))
@@ -218,8 +218,8 @@ def build_semantic_region_elements(labels: np.ndarray, colors: np.ndarray) -> di
     report["ellipse_renderer_calibration_changed"] = sum(
         1 for item in ellipse_report if bool(item.get("changed"))
     )
-    report["scale_stable_primitive_reconstruction"] = primitive_report
-    report["scale_stable_primitive_changed"] = sum(
+    report["five_scale_source_primitive_calibration"] = primitive_report
+    report["five_scale_source_primitive_changed"] = sum(
         1 for item in primitive_report if bool(item.get("changed"))
     )
     report["scale_topology_repair"] = repair_report
