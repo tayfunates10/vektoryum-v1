@@ -106,6 +106,20 @@ def _edge_f1(c: dict[str, Any]) -> float:
     return float((c.get("score_details") or {}).get("edge_f1") or 0.0)
 
 
+def _selection_safe_pool(scored: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    annotated = any(
+        "selection_safe" in candidate or "selection_disqualified" in candidate
+        for candidate in scored
+    )
+    if not annotated:
+        return list(scored)
+    return [
+        candidate for candidate in scored
+        if candidate.get("selection_safe") is True
+        and candidate.get("selection_disqualified") is not True
+    ]
+
+
 def _apply_editability_preference(
     scored: list[dict[str, Any]], current_best: dict[str, Any]
 ) -> tuple[dict[str, Any], str]:
@@ -117,7 +131,10 @@ def _apply_editability_preference(
     katından azsa. Kenar koruması: az-path uğruna ince çizgileri parçalayan
     (edge_f1 düşük) adaya geçilmez. Aksi halde en yüksek sadakatli aday kalır.
     """
-    rendered = [c for c in scored if c.get("rendered_ok") and c.get("fidelity_score") is not None]
+    safe_scored = _selection_safe_pool(scored)
+    if not safe_scored:
+        return current_best, "no_selection_safe_editability_candidate"
+    rendered = [c for c in safe_scored if c.get("rendered_ok") and c.get("fidelity_score") is not None]
     if not rendered:
         return current_best, "highest_total_score"
 
@@ -152,8 +169,17 @@ def _fidelity_rank_key(c: dict[str, Any]) -> tuple[float, int, float]:
 
 
 def select_best(scored: list[dict[str, Any]], mode: str) -> tuple[dict, dict, str]:
-    """En iyi adayı profil kurallarına göre seçer. (best, raw_best, reason)."""
+    """Prefer an explicit quality-safe pool whenever one exists.
+
+    The higher pipeline wrapper already treats component safety as a Pareto
+    guard.  If every candidate is marked unsafe, keep the historical ranking
+    rather than turning an existing hard-corpus image into a pipeline crash;
+    unsafe candidates can never outrank an available safe candidate.
+    """
     raw_best = max(scored, key=lambda c: c["total_score"])
+    safe_scored = _selection_safe_pool(scored)
+    if safe_scored:
+        scored = safe_scored
     by_name = {c["name"]: c for c in scored}
 
     # Renkli modlarda (logo_color/photo_poster): render edilebildiyse seçimi
@@ -1218,10 +1244,9 @@ def run_pipeline(
         # ham-byte transaction journal'ı üzerinden kabul/rollback edilir.
         from app.transform_journal import TransformJournal  # noqa: PLC0415
 
-        if image.mode in ("RGBA", "LA", "PA") or (
-            image.mode == "P" and "transparency" in image.info
-        ):
-            rgba = np.asarray(image.convert("RGBA"))
+        rgba = np.asarray(image.convert("RGBA"), dtype=np.uint8)
+        source_has_alpha = bool(np.any(rgba[:, :, 3] < 255))
+        if source_has_alpha:
             alpha = rgba[:, :, 3].astype(np.float32)[:, :, None] / 255.0
             journal_source_rgb = np.clip(
                 rgba[:, :, :3].astype(np.float32) * alpha + 255.0 * (1.0 - alpha),
@@ -1229,7 +1254,7 @@ def run_pipeline(
             ).astype(np.uint8)
             journal_required = {"alpha_fidelity"}
         else:
-            journal_source_rgb = np.asarray(image.convert("RGB"))
+            journal_source_rgb = rgba[:, :, :3].copy()
             journal_required = set()
         if analysis.get("has_gradient"):
             journal_required.add("gradient_fidelity")

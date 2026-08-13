@@ -134,6 +134,28 @@ def measure_continuous_hard_shape_components(
     }
 
 
+def measure_continuous_semantic_geometry(
+    render_rgba: np.ndarray,
+    source_labels: np.ndarray,
+) -> dict[str, Any]:
+    source, rendered, mapping = map_continuous_hard_shapes(
+        render_rgba, source_labels, excluded_source_labels=(),
+    )
+    boundary = base._boundary_distance(
+        base._label_boundaries(source), base._label_boundaries(rendered)
+    )
+    topology = measure_label_topology(source, rendered)
+    topology["semantic_geometry_policy_version"] = SEMANTIC_GEOMETRY_POLICY_VERSION
+    topology["topology_observability"] = "continuous_semantic_regions"
+    return {
+        "component": base.connected_component_fidelity(source, rendered),
+        "boundary": boundary,
+        "topology": topology,
+        "mapping": mapping,
+        "topology_observability": "continuous_semantic_regions",
+    }
+
+
 def measure_alpha_support_geometry(
     source_rgba: np.ndarray,
     render_rgba: np.ndarray,

@@ -130,7 +130,7 @@ def test_safe_candidate_pool_blocks_pareto_dominated_unsafe_winner() -> None:
     assert chosen["name"] == "safe_lower"
 
 
-def test_all_failed_candidates_keep_legacy_score_ordering() -> None:
+def test_all_failed_candidates_preserve_legacy_order_without_safe_alternative() -> None:
     failed = {
         "applicable": True,
         "measured": True,
@@ -153,6 +153,9 @@ def test_all_failed_candidates_keep_legacy_score_ordering() -> None:
         **{k: lo_gate[k] for k in ("selection_safe", "selection_disqualified")},
         "score_details": {"path_count": 10, "edge_f1": 0.8, "has_bitmap": False},
     }
+    # Scores remain unchanged for diagnostics. With no safe alternative the
+    # established wrapper keeps legacy availability; a safe alternative, when
+    # present, is tested above and always excludes this unsafe high scorer.
     chosen, _raw, _reason = select_best([lo, hi], "single_color")
     assert chosen["name"] == "legacy_hi"
     assert round(hi["total_score"] - lo["total_score"], 2) == 8.89
@@ -265,3 +268,20 @@ def test_score_vector_candidate_does_not_mutate_svg_bytes(tmp_path: Path) -> Non
     )
     after = hashlib.sha256(svg_path.read_bytes()).hexdigest()
     assert after == before
+
+
+def test_strict_post_refit_measurement_detects_two_pixel_invented_island() -> None:
+    original = np.full((128, 128, 3), 255, dtype=np.uint8)
+    original[24:104, 24:64] = (220, 35, 45)
+    original[24:104, 64:104] = (30, 90, 220)
+    rendered = original.copy()
+    rendered[70:72, 90] = (220, 35, 45)
+
+    legacy = measure_component_integrity_arrays(original, rendered)
+    strict = measure_component_integrity_arrays(
+        original, rendered, min_component_pixels=2, min_component_fraction=0.0,
+    )
+    assert legacy["status"] == "pass"
+    assert strict["status"] == "fail"
+    assert strict["render_cc_precision"] < 1.0
+    assert strict["min_component_area"] == 2

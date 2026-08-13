@@ -148,16 +148,33 @@ def _selection_pool(scored: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def select_best(scored: list[dict[str, Any]], mode: str) -> tuple[dict, dict, str]:
-    """Run the established selector inside the independent safe Pareto pool."""
+    """Preserve a safe legacy winner; reroute only an actually unsafe winner."""
     legacy_chosen, legacy_raw, legacy_reason = _base_select_best(scored, mode)
-    pool = _selection_pool(scored)
-    if len(pool) == len(scored) and all(a is b for a, b in zip(pool, scored)):
+
+    # source_palette_exact is a measured lossless reconstruction path already
+    # bounded by the existing opaque/low-colour mode and palette cap.  When it
+    # independently passes safety and exact fidelity, a lower-fidelity heuristic
+    # winner must not hide it.  Alpha/technical benchmark paths do not generate
+    # this candidate, so their proven legacy ranking remains unchanged.
+    exact = [
+        candidate for candidate in scored
+        if candidate.get("name") == _SOURCE_PALETTE_CANDIDATE
+        and _is_selection_safe(candidate)
+        and candidate.get("final_eligible", True)
+        and (_finite(candidate.get("fidelity_score")) or 0.0) >= 99.999
+    ]
+    if exact:
+        chosen = max(exact, key=_core._fidelity_rank_key)
+        return chosen, legacy_raw, "source_palette_exact_dominance"
+
+    if _is_selection_safe(legacy_chosen):
         return legacy_chosen, legacy_raw, legacy_reason
+    safe = [candidate for candidate in scored if _is_selection_safe(candidate)]
+    if not safe:
+        return legacy_chosen, legacy_raw, legacy_reason
+    pool = _pareto_front(safe)
     chosen, _safe_raw, reason = _base_select_best(pool, mode)
-    guard = "component_integrity_pareto_guard" if any(
-        _is_selection_safe(candidate) for candidate in scored
-    ) else "component_integrity_guard"
-    return chosen, legacy_raw, f"{guard}+{reason}"
+    return chosen, legacy_raw, f"component_integrity_pareto_guard+{reason}"
 
 
 def build_vector_candidates(mode: str) -> dict[str, dict[str, Any]]:
@@ -291,7 +308,10 @@ def _apply_editability_preference(
     pool = _selection_pool(scored)
     if current_best not in pool:
         current_best = max(pool, key=_core._fidelity_rank_key)
-    return _base_apply_editability_preference(pool, current_best)
+    guarded_best, guarded_reason = _base_apply_editability_preference(pool, current_best)
+    if pool is scored:
+        return guarded_best, guarded_reason
+    return guarded_best, f"component_integrity_pareto_guard+{guarded_reason}"
 
 
 def refine_best(
@@ -351,6 +371,45 @@ def _apply_boundary_refit(
     candidate, info = _base_apply_boundary_refit(
         best, mode, analysis, original_path, job_dir, scored
     )
+    if candidate is not best and _is_selection_safe(best):
+        from app.component_quality import (
+            gate_candidate_scores,
+            score_svg_component_integrity,
+            score_svg_discrete_rgb_palette_integrity,
+        )
+        strict_component = score_svg_component_integrity(
+            Path(candidate["svg_path"]), Path(original_path),
+            mode=mode, analysis=analysis, max_side=512,
+            min_component_pixels=2, min_component_fraction=0.0,
+        )
+        rgb_component = score_svg_discrete_rgb_palette_integrity(
+            Path(candidate["svg_path"]), Path(original_path),
+            mode=mode, analysis=analysis, max_side=512,
+            min_component_pixels=2,
+        )
+        post_refit_reports = [
+            report for report in (strict_component, rgb_component)
+            if report.get("applicable")
+        ]
+        for report in post_refit_reports:
+            strict_gate = gate_candidate_scores(
+                float(candidate.get("total_score", 0.0)),
+                candidate.get("fidelity_score"), report,
+            )
+            if strict_gate.get("selection_safe") is not True:
+                candidate["selection_safe"] = False
+                candidate["selection_disqualified"] = True
+                candidate["component_quality_status"] = report.get("status")
+                scored[:] = [item for item in scored if item is not candidate]
+                return best, {
+                    **info, "applied": False,
+                    "reason": "post_refit_micro_component_regression",
+                    "post_refit_component_quality": strict_component,
+                    "post_refit_rgb_palette_quality": rgb_component,
+                }
+        if strict_component.get("applicable"):
+            candidate["component_quality"] = strict_component
+        candidate["post_refit_rgb_palette_quality"] = rgb_component
     if _is_selection_safe(best) and not _is_selection_safe(candidate):
         return best, {
             **info,
