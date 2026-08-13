@@ -9,6 +9,7 @@ import numpy as np
 
 from app import semantic_region_geometry_impl as _impl
 from app.scale_stable_primitive_geometry import calibrate_primitives
+from app.scale_stable_seam_geometry import stabilize_nested_seams
 
 SemanticRegionFitError = _impl.SemanticRegionFitError
 _ELLIPSE_INSET_OFFSETS = (0.0, -0.10, -0.20, -0.30, 0.10, 0.20)
@@ -196,17 +197,21 @@ def build_semantic_region_elements(labels: np.ndarray, colors: np.ndarray) -> di
     regularized, primitive_report, models = calibrate_primitives(
         labels, colors, calibrated, regions
     )
+    seamed, seam_report = stabilize_nested_seams(labels, colors, regularized)
     repaired, repair_report = _impl._repair(
-        labels, colors, regularized, regions, models
+        labels, colors, seamed, regions, models
     )
 
     primitive_delta = len(regularized) - len(base)
-    anchor_delta = len(repaired) - len(regularized)
+    seam_delta = len(seamed) - len(regularized)
+    anchor_delta = len(repaired) - len(seamed)
     total_delta = len(repaired) - len(base)
     if total_delta:
         strategies = dict(report.get("strategy_counts") or {})
         if primitive_delta:
             strategies["five_scale_source_primitive_calibration"] = primitive_delta
+        if seam_delta:
+            strategies["five_scale_nested_seam_stabilization"] = seam_delta
         if anchor_delta:
             strategies["render_feedback_topology_anchor"] = anchor_delta
         report["strategy_counts"] = dict(sorted(strategies.items()))
@@ -222,6 +227,8 @@ def build_semantic_region_elements(labels: np.ndarray, colors: np.ndarray) -> di
     report["five_scale_source_primitive_changed"] = sum(
         1 for item in primitive_report if bool(item.get("changed"))
     )
+    report["five_scale_nested_seam_stabilization"] = seam_report
+    report["five_scale_nested_seam_count"] = seam_delta
     report["scale_topology_repair"] = repair_report
     report["scale_topology_anchor_count"] = anchor_delta
 
