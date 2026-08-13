@@ -8,6 +8,7 @@ from typing import Any
 import numpy as np
 
 from app import semantic_region_geometry_impl as _impl
+from app.scale_stable_parent_geometry import calibrate_parent_regions
 from app.scale_stable_primitive_geometry import calibrate_primitives
 from app.scale_stable_seam_geometry import stabilize_nested_seams
 
@@ -194,8 +195,11 @@ def build_semantic_region_elements(labels: np.ndarray, colors: np.ndarray) -> di
     base = list(report.get("elements") or [])
     regions = list(report.get("regions") or [])
     calibrated, ellipse_report = _calibrate_ellipses(labels, colors, base, regions)
-    regularized, primitive_report, models = calibrate_primitives(
+    parented, parent_report = calibrate_parent_regions(
         labels, colors, calibrated, regions
+    )
+    regularized, primitive_report, models = calibrate_primitives(
+        labels, colors, parented, regions
     )
     seamed, seam_report = stabilize_nested_seams(labels, colors, regularized)
     repaired, repair_report = _impl._repair(
@@ -222,6 +226,10 @@ def build_semantic_region_elements(labels: np.ndarray, colors: np.ndarray) -> di
     report["ellipse_renderer_calibration"] = ellipse_report
     report["ellipse_renderer_calibration_changed"] = sum(
         1 for item in ellipse_report if bool(item.get("changed"))
+    )
+    report["five_scale_parent_calibration"] = parent_report
+    report["five_scale_parent_calibration_changed"] = sum(
+        1 for item in parent_report if bool(item.get("changed"))
     )
     report["five_scale_source_primitive_calibration"] = primitive_report
     report["five_scale_source_primitive_changed"] = sum(
