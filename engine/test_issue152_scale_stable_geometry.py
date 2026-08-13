@@ -1,0 +1,201 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import cv2
+import numpy as np
+import pytest
+from PIL import Image, ImageDraw
+
+from app.source_palette_vector import vectorize_source_palette_paths
+
+
+def _write_rect_source(path: Path) -> None:
+    image = Image.new("RGB", (96, 96), (245, 245, 245))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((12, 12, 83, 83), fill=(40, 40, 40))
+    draw.rectangle((28, 28, 67, 67), fill=(150, 150, 150))
+    image.save(path)
+
+
+def _component_stats(labels: np.ndarray, color_count: int) -> list[list[dict[str, object]]]:
+    result: list[list[dict[str, object]]] = []
+    for color_index in range(color_count):
+        count, _lab, stats, _centroids = cv2.connectedComponentsWithStats(
+            (labels == color_index).astype(np.uint8), 8
+        )
+        items = []
+        for index in range(1, count):
+            x, y, w, h, area = (int(v) for v in stats[index])
+            items.append({"bbox": [x, y, w, h], "area": area})
+        result.append(sorted(items, key=lambda item: (item["bbox"][1], item["bbox"][0])))
+    return result
+
+
+def _thin_core_64_diagnostic(builder, tmp_path: Path) -> dict[str, object]:
+    from app import semantic_region_geometry_core as core  # noqa: PLC0415
+    from app.fidelity import render_svg_to_rgb  # noqa: PLC0415
+    from app.source_palette_vector import _nearest_palette_labels, _svg_document  # noqa: PLC0415
+
+    source256 = np.asarray(builder(256).convert("RGB"), dtype=np.uint8)
+    colors, inverse = np.unique(source256.reshape(-1, 3), axis=0, return_inverse=True)
+    labels = inverse.reshape(256, 256)
+    semantic = core.build_semantic_region_elements(labels, colors)
+    svg_path = tmp_path / "thin-native-good-core.svg"
+    svg_path.write_text(_svg_document(256, 256, list(semantic["elements"])), encoding="utf-8")
+    rendered64 = render_svg_to_rgb(svg_path, 64, 64)
+    source64 = np.asarray(builder(64).convert("RGB"), dtype=np.uint8)
+    if rendered64 is None:
+        return {"render": "unavailable"}
+    source_labels = _nearest_palette_labels(source64, colors)
+    render_labels = _nearest_palette_labels(rendered64, colors)
+    return {
+        "colors": colors.tolist(),
+        "source64": _component_stats(source_labels, len(colors)),
+        "core_render64": _component_stats(render_labels, len(colors)),
+        "core_strategies": semantic.get("strategy_counts"),
+    }
+
+
+def test_axis_aligned_palette_geometry_is_scale_stable_and_vector_only(tmp_path: Path) -> None:
+    source = tmp_path / "source.png"
+    output = tmp_path / "out.svg"
+    _write_rect_source(source)
+    report = vectorize_source_palette_paths(source, output, max_colors=6)
+    text = output.read_text(encoding="utf-8").lower()
+    assert report["scale_stable_eligible"] is True, report
+    assert report["geometry_strategy"] == "semantic_region_fit", report
+    assert report["fit_transaction"]["passed"] is True, report
+    assert report["fit_strategy_counts"]["axis_aligned_rectangle"] >= 2, report
+    assert report["raster_embedded"] is False
+    assert "<image" not in text and "base64" not in text and "data:image" not in text
+
+
+def test_production_modules_contain_no_fixture_specific_routing() -> None:
+    app_dir = Path(__file__).with_name("app")
+    text = "\n".join(
+        (app_dir / name).read_text(encoding="utf-8").lower()
+        for name in ("source_palette_vector.py", "semantic_region_geometry.py")
+    )
+    for forbidden in (
+        "qa-micro-component-ladder",
+        "qa-small-details",
+        "qa-thin-negative-space",
+        "_draw_micro_component_ladder",
+        "_draw_small_details",
+        "_draw_thin_negative_space",
+        "residual_multiscale_source",
+        "output_quality_residual_suite",
+    ):
+        assert forbidden not in text
+
+
+def test_palette_is_preserved_exactly_for_rectangular_classes(tmp_path: Path) -> None:
+    source = tmp_path / "source.png"
+    output = tmp_path / "out.svg"
+    _write_rect_source(source)
+    expected = {
+        tuple(int(v) for v in row)
+        for row in np.unique(np.asarray(Image.open(source)).reshape(-1, 3), axis=0)
+    }
+    report = vectorize_source_palette_paths(source, output, max_colors=6)
+    text = output.read_text(encoding="utf-8").lower()
+    for red, green, blue in expected:
+        assert f"#{red:02x}{green:02x}{blue:02x}" in text
+    assert report["source_color_count"] == len(expected)
+
+
+@pytest.mark.parametrize("case_name", ["micro", "small", "thin"])
+def test_issue152_target_sources_are_semantically_scale_stable(case_name: str, tmp_path: Path) -> None:
+    """Test-only fixture probe; production remains fixture-agnostic."""
+    from engine.regression.output_quality_residual_suite import (  # noqa: PLC0415
+        _draw_micro_component_ladder,
+        _draw_thin_negative_space,
+    )
+    from engine.regression.output_quality_suite import _draw_small_details  # noqa: PLC0415
+
+    builders = {
+        "micro": _draw_micro_component_ladder,
+        "small": _draw_small_details,
+        "thin": _draw_thin_negative_space,
+    }
+    builder = builders[case_name]
+    source = tmp_path / f"{case_name}.png"
+    output = tmp_path / f"{case_name}.svg"
+    builder(256).convert("RGBA").save(source, "PNG", optimize=False)
+    report = vectorize_source_palette_paths(source, output, max_colors=6)
+    text = output.read_text(encoding="utf-8").lower()
+    assert "<image" not in text and "base64" not in text and "data:image" not in text
+    transaction = report.get("fit_transaction") or {}
+    core64 = _thin_core_64_diagnostic(builder, tmp_path) if case_name == "thin" else None
+    diagnostic = (
+        f"{case_name}: reason={transaction.get('reason')} "
+        f"strategies={report.get('fit_strategy_counts')} "
+        f"regions={report.get('semantic_regions')} "
+        f"source_counts={transaction.get('source_class_component_counts')} "
+        f"native_counts={transaction.get('native_class_component_counts')} "
+        f"render_counts={transaction.get('render_class_component_counts')} "
+        f"levels={transaction.get('levels')} "
+        f"native_visible={transaction.get('native_visible_residual')} "
+        f"native_boundary={transaction.get('native_boundary_p95_px')} "
+        f"native_component={transaction.get('native_component')} "
+        f"core64={core64}"
+    )
+    assert report.get("scale_stable_eligible") is True, diagnostic
+
+
+def test_issue152_small_ellipse_resvg_parameter_sweep(tmp_path: Path) -> None:
+    """Test-only renderer probe; no fixture-derived parameter enters production."""
+    from app import semantic_region_geometry_core as core  # noqa: PLC0415
+    from engine.regression.output_quality_suite import _draw_small_details  # noqa: PLC0415
+
+    source = tmp_path / "small-sweep.png"
+    _draw_small_details(256).convert("RGBA").save(source, "PNG", optimize=False)
+    original = core._ellipse_from_cycle
+    results: list[dict[str, float | bool]] = []
+    try:
+        for center_shift in (-0.5, -0.25, 0.0, 0.25, 0.5):
+            for radius_inset in (-0.5, -0.25, 0.0, 0.1, 0.25, 0.5, 0.75, 1.0):
+                def candidate(points, cs=center_shift, ri=radius_inset):
+                    if len(points) < 8:
+                        return None
+                    arr = np.asarray(points, dtype=np.float64)
+                    low = arr.min(axis=0); high = arr.max(axis=0); span = high - low
+                    if min(span) < 2.0 or max(span) / max(1e-9, min(span)) > 1.35:
+                        return None
+                    area = abs(float(cv2.contourArea(arr.astype(np.float32).reshape(-1, 1, 2))))
+                    occupancy = area / max(1.0, float(span[0] * span[1]))
+                    if not (0.48 <= occupancy <= 0.90):
+                        return None
+                    rx = float(span[0]) / 2.0 - float(ri)
+                    ry = float(span[1]) / 2.0 - float(ri)
+                    if min(rx, ry) < 1.0:
+                        return None
+                    cx = float(low[0] + high[0]) / 2.0 + float(cs)
+                    cy = float(low[1] + high[1]) / 2.0 + float(cs)
+                    return (
+                        f"M{core._fmt(cx-rx)} {core._fmt(cy)}"
+                        f"A{core._fmt(rx)} {core._fmt(ry)} 0 1 0 {core._fmt(cx+rx)} {core._fmt(cy)}"
+                        f"A{core._fmt(rx)} {core._fmt(ry)} 0 1 0 {core._fmt(cx-rx)} {core._fmt(cy)}Z"
+                    )
+                core._ellipse_from_cycle = candidate
+                report = vectorize_source_palette_paths(
+                    source,
+                    tmp_path / f"small-{center_shift}-{radius_inset}.svg",
+                    max_colors=6,
+                )
+                tx = report.get("fit_transaction") or {}
+                comp = tx.get("native_component") or {}
+                results.append({
+                    "center_shift": float(center_shift),
+                    "radius_inset": float(radius_inset),
+                    "min_iou": float(comp.get("min_true_cc_iou") or 0.0),
+                    "visible": float(tx.get("native_visible_residual") or 1.0),
+                    "boundary": float(tx.get("native_boundary_p95_px") or 99.0),
+                    "eligible": bool(report.get("scale_stable_eligible")),
+                })
+    finally:
+        core._ellipse_from_cycle = original
+    results.sort(key=lambda item: (float(item["min_iou"]), -float(item["visible"])), reverse=True)
+    best = results[:8]
+    assert best[0]["min_iou"] >= 0.95, f"ELLIPSE_SWEEP_TOP={best}"

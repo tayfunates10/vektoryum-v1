@@ -7,6 +7,7 @@ on:
       - "engine/app/**"
       - "engine/benchmark/**"
       - "engine/issue144_full_pipeline_acceptance.py"
+      - "engine/issue152_scale_stable_acceptance.py"
       - "engine/regression/output_quality_suite.py"
       - "engine/regression/output_quality_root_cause.py"
       - "engine/regression/output_quality_residual_suite.py"
@@ -58,6 +59,7 @@ jobs:
         run: >-
           python -m py_compile
           engine/issue144_full_pipeline_acceptance.py
+          engine/issue152_scale_stable_acceptance.py
           engine/regression/output_quality_suite.py
           engine/regression/output_quality_root_cause.py
           engine/regression/output_quality_residual_suite.py
@@ -112,9 +114,9 @@ jobs:
         run: |
           set -o pipefail
           OUTPUT="${RUNNER_TEMP}/output-quality"
-          # The diagnostic remains evidence-generating. Issue #144 acceptance is
-          # evaluated by the separate fail-closed production gate below; a
-          # FAIL_ON=none exit code is never treated as quality PASS.
+          # The diagnostic remains evidence-generating. Issue-specific acceptance
+          # is evaluated by separate fail-closed production gates below;
+          # FAIL_ON=none is never treated as quality PASS.
           FAIL_ON=none
           python -m engine.regression.output_quality_residual_root_cause_v2 \
             --output "${OUTPUT}" \
@@ -127,6 +129,11 @@ jobs:
         shell: bash
         run: |
           python -m engine.issue144_full_pipeline_acceptance \
+            --output "${RUNNER_TEMP}/output-quality"
+      - name: Enforce Issue 152 AI-2 five-scale acceptance
+        shell: bash
+        run: |
+          python -m engine.issue152_scale_stable_acceptance \
             --output "${RUNNER_TEMP}/output-quality"
       - name: Publish Markdown summaries
         if: always()
