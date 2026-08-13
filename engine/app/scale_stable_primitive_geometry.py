@@ -1,9 +1,12 @@
 """Source-derived primitive calibration against the real production renderer.
 
-Only geometry inferred from connected source masks is considered.  Candidate
+Only geometry inferred from connected source masks is considered. Candidate
 SVGs are rendered in isolation at 0.25x/0.5x/1x/2x/4x and compared with the
-same Pillow primitive semantics used by normalized source geometry.  Nested
-ring/hole regions are deliberately not rewritten as top-level shapes.
+same normalized Pillow primitive semantics used by source geometry. Inclusive
+ellipse/rounded-box endpoints are represented by scalable geometry plus a
+bounded device-pixel edge correction; line endpoints receive a square-cap
+one-device-pixel overlay. Every proposal is selected only by production-render
+fidelity and the existing native threshold.
 """
 from __future__ import annotations
 
@@ -87,8 +90,6 @@ def _infer_rounded(mask: np.ndarray) -> dict[str, Any] | None:
     if min(width, height) < 8:
         return None
     outer = np.asarray(_impl._core._filled_external_region(source), dtype=bool)
-    # Exact native reconstruction keeps this inference source-derived and avoids
-    # arbitrary corner-radius guesses.
     for radius in range(1, max(1, min(width, height)//2)+1):
         candidate = _pil_mask(
             source.shape[1], source.shape[0],
@@ -103,6 +104,30 @@ def _infer_rounded(mask: np.ndarray) -> dict[str, Any] | None:
     return None
 
 
+def _infer_inclusive_ellipse(mask: np.ndarray) -> dict[str, Any] | None:
+    source = np.asarray(mask, dtype=bool)
+    box = _bbox(source)
+    if box is None:
+        return None
+    x0, y0, x1, y1 = box
+    if min(x1-x0+1, y1-y0+1) < 3:
+        return None
+    candidate = _pil_mask(
+        source.shape[1], source.shape[0],
+        lambda d: d.ellipse((x0, y0, x1, y1), fill=255),
+    )
+    if not np.array_equal(candidate, source):
+        return None
+    return {
+        "kind": "ellipse",
+        "cx": (x0+x1)/2.0,
+        "cy": (y0+y1)/2.0,
+        "rx": (x1-x0)/2.0,
+        "ry": (y1-y0)/2.0,
+        "inclusive_source": True,
+    }
+
+
 def _point(cx: float, cy: float, fill: str, *, cap: str = "square", width: float = 1.0) -> str:
     return (
         f'<path d="M{_fmt(cx)} {_fmt(cy)}h0.001" fill="none" stroke="{fill}" '
@@ -114,6 +139,14 @@ def _candidate_elements(model: dict[str, Any], fill: str) -> list[list[str]]:
     kind = str(model["kind"])
     if kind == "ellipse":
         cx, cy, rx, ry = (float(model[k]) for k in ("cx", "cy", "rx", "ry"))
+        if bool(model.get("inclusive_source")):
+            return [
+                [f'<ellipse cx="{_fmt(cx)}" cy="{_fmt(cy)}" rx="{_fmt(rx)}" ry="{_fmt(ry)}" fill="{fill}" stroke="{fill}" stroke-width="1" vector-effect="non-scaling-stroke"/>'],
+                [f'<ellipse cx="{_fmt(cx)}" cy="{_fmt(cy)}" rx="{_fmt(rx)}" ry="{_fmt(ry)}" fill="{fill}" stroke="{fill}" stroke-width="0.75" vector-effect="non-scaling-stroke"/>'],
+                [f'<ellipse cx="{_fmt(cx)}" cy="{_fmt(cy)}" rx="{_fmt(rx)}" ry="{_fmt(ry)}" fill="{fill}" stroke="{fill}" stroke-width="1.25" vector-effect="non-scaling-stroke"/>'],
+                [f'<ellipse cx="{_fmt(cx)}" cy="{_fmt(cy)}" rx="{_fmt(rx+.125)}" ry="{_fmt(ry+.125)}" fill="{fill}" stroke="{fill}" stroke-width="1" vector-effect="non-scaling-stroke"/>'],
+                [f'<ellipse cx="{_fmt(cx)}" cy="{_fmt(cy)}" rx="{_fmt(max(.5,rx-.125))}" ry="{_fmt(max(.5,ry-.125))}" fill="{fill}" stroke="{fill}" stroke-width="1" vector-effect="non-scaling-stroke"/>'],
+            ]
         return [
             [f'<ellipse cx="{_fmt(cx)}" cy="{_fmt(cy)}" rx="{_fmt(rx)}" ry="{_fmt(ry)}" fill="{fill}" stroke="{fill}" stroke-width="1" vector-effect="non-scaling-stroke"/>'],
             [f'<ellipse cx="{_fmt(cx)}" cy="{_fmt(cy)}" rx="{_fmt(rx)}" ry="{_fmt(ry)}" fill="{fill}" stroke="{fill}" stroke-width="1.25" vector-effect="non-scaling-stroke"/>'],
@@ -135,6 +168,7 @@ def _candidate_elements(model: dict[str, Any], fill: str) -> list[list[str]]:
             base = f'<path d="{path}" fill="none" stroke="{fill}" stroke-width="{_fmt(width)}" stroke-linecap="butt"/>'
             output.append([base])
             output.append([base, f'<path d="{path}" fill="none" stroke="{fill}" stroke-width="1" vector-effect="non-scaling-stroke" stroke-linecap="butt"/>'])
+            output.append([base, f'<path d="{path}" fill="none" stroke="{fill}" stroke-width="1" vector-effect="non-scaling-stroke" stroke-linecap="square"/>'])
         return output
     if kind == "rect":
         x, y, width, height = (float(model[k]) for k in ("x", "y", "width", "height"))
@@ -163,7 +197,20 @@ def _candidate_elements(model: dict[str, Any], fill: str) -> list[list[str]]:
             (x0, y0-.01, width, height+.02, max(.5, radius-.5)),
             (x0+.01, y0-.01, width, height+.02, radius),
         )
-        return [[f'<rect x="{_fmt(px)}" y="{_fmt(py)}" width="{_fmt(pw)}" height="{_fmt(ph)}" rx="{_fmt(pr)}" ry="{_fmt(pr)}" fill="{fill}"/>'] for px,py,pw,ph,pr in specs]
+        output = [[f'<rect x="{_fmt(px)}" y="{_fmt(py)}" width="{_fmt(pw)}" height="{_fmt(ph)}" rx="{_fmt(pr)}" ry="{_fmt(pr)}" fill="{fill}"/>'] for px,py,pw,ph,pr in specs]
+        # Pillow's inclusive endpoint box is scale*delta + one device pixel.
+        # These candidates encode that one-pixel term without changing the
+        # scalable source geometry or any acceptance threshold.
+        base_width = max(.001, x1-x0)
+        base_height = max(.001, y1-y0)
+        for dr in (0.0, -.5, .5):
+            pr = max(.5, radius+dr)
+            output.append([
+                f'<rect x="{_fmt(x0)}" y="{_fmt(y0)}" width="{_fmt(base_width)}" '
+                f'height="{_fmt(base_height)}" rx="{_fmt(pr)}" ry="{_fmt(pr)}" '
+                f'fill="{fill}" stroke="{fill}" stroke-width="1" vector-effect="non-scaling-stroke"/>'
+            ])
+        return output
     return []
 
 
@@ -248,11 +295,14 @@ def calibrate_primitives(
         source_mask = node_map == node_id
         model = _impl._infer(source_mask, strategy)
         rounded = _infer_rounded(source_mask)
+        inclusive_ellipse = _infer_inclusive_ellipse(source_mask)
         is_top_level = parent[node_id] == root if 0 <= node_id < len(parent) else False
         is_leaf = child_count[node_id] == 0 if 0 <= node_id < len(child_count) else False
 
         if rounded is not None and is_top_level:
             model = rounded
+        elif inclusive_ellipse is not None and is_leaf:
+            model = inclusive_ellipse
         elif model is None or not is_leaf or str(model.get("kind")) not in {"ellipse", "line", "rect"}:
             continue
 
