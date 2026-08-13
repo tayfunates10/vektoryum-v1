@@ -1,12 +1,13 @@
 """Source-derived calibration for nested parent paint regions only.
 
-This layer intentionally leaves leaf primitives and ordinary top-level shapes
-to the established calibrator.  It fills a narrow gap: a connected region that
-contains child paint may have an external ellipse/rounded-rectangle boundary
-that the whole-shape core represents with raster-oriented transforms.  We infer
-the filled external boundary from the source mask, require a near-exact native
-Pillow primitive fit, and choose among bounded SVG proposals with the real
-production renderer at all five scales.
+Leaf primitives and ordinary top-level shapes remain with the established
+calibrator. A connected region that contains child paint may have an external
+ellipse/rounded-rectangle boundary represented by raster-oriented transforms in
+the core. We infer the filled external boundary from the source mask, require a
+near-exact native Pillow primitive fit, and choose bounded SVG proposals with the
+real production renderer across all five scales. Inclusive endpoint proposals
+encode Pillow's fixed one-device-pixel term without changing any acceptance
+threshold or budget.
 """
 from __future__ import annotations
 
@@ -129,16 +130,28 @@ def _candidates(model: dict[str, Any], fill: str) -> list[list[str]]:
             (x0, y0, width, height, radius + .5),
             (x0 - .125, y0 - .125, width + .25, height + .25, radius),
         )
-        return [[
+        output = [[
             f'<rect x="{_fmt(px)}" y="{_fmt(py)}" width="{_fmt(pw)}" '
             f'height="{_fmt(ph)}" rx="{_fmt(pr)}" ry="{_fmt(pr)}" fill="{fill}"/>'
         ] for px, py, pw, ph, pr in specs]
+        base_width = max(.001, x1 - x0)
+        base_height = max(.001, y1 - y0)
+        for dr in (0.0, -.5, .5):
+            pr = max(.5, radius + dr)
+            output.append([
+                f'<rect x="{_fmt(x0)}" y="{_fmt(y0)}" width="{_fmt(base_width)}" '
+                f'height="{_fmt(base_height)}" rx="{_fmt(pr)}" ry="{_fmt(pr)}" '
+                f'fill="{fill}" stroke="{fill}" stroke-width="1" vector-effect="non-scaling-stroke"/>'
+            ])
+        return output
 
     cx, cy, rx, ry = (
         float(model[key]) for key in ("cx", "cy", "rx", "ry")
     )
     return [
-        [f'<ellipse cx="{_fmt(cx)}" cy="{_fmt(cy)}" rx="{_fmt(rx)}" ry="{_fmt(ry)}" fill="{fill}"/>'],
+        [f'<ellipse cx="{_fmt(cx)}" cy="{_fmt(cy)}" rx="{_fmt(rx)}" ry="{_fmt(ry)}" fill="{fill}" stroke="{fill}" stroke-width="1" vector-effect="non-scaling-stroke"/>'],
+        [f'<ellipse cx="{_fmt(cx)}" cy="{_fmt(cy)}" rx="{_fmt(rx)}" ry="{_fmt(ry)}" fill="{fill}" stroke="{fill}" stroke-width="0.75" vector-effect="non-scaling-stroke"/>'],
+        [f'<ellipse cx="{_fmt(cx)}" cy="{_fmt(cy)}" rx="{_fmt(rx)}" ry="{_fmt(ry)}" fill="{fill}" stroke="{fill}" stroke-width="1.25" vector-effect="non-scaling-stroke"/>'],
         [f'<ellipse cx="{_fmt(cx)}" cy="{_fmt(cy)}" rx="{_fmt(rx+.25)}" ry="{_fmt(ry+.25)}" fill="{fill}"/>'],
         [f'<ellipse cx="{_fmt(cx)}" cy="{_fmt(cy)}" rx="{_fmt(max(.5,rx-.25))}" ry="{_fmt(max(.5,ry-.25))}" fill="{fill}"/>'],
     ]
