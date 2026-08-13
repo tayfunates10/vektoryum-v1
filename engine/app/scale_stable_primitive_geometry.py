@@ -2,11 +2,10 @@
 
 Only geometry inferred from connected source masks is considered. Candidate SVG
 primitives are rendered at 0.25x/0.5x/1x/2x/4x and compared with normalized
-Pillow geometry inferred from the source itself. Parent regions may be replaced
-only when their filled external mask is an exact ellipse or rounded rectangle;
-children are still painted afterwards, preserving holes/rings without fixture
-routing. No raster embedding, policy relaxation, or shared budget increase is
-used here.
+Pillow geometry inferred from the source itself. Leaf regions preserve their
+source semantic class; parent paint regions may be rebuilt from a verified
+filled external ellipse or rounded rectangle and children repaint the holes.
+No fixture routing, raster embedding, policy relaxation, or budget increase.
 """
 from __future__ import annotations
 
@@ -18,6 +17,7 @@ from PIL import Image, ImageDraw
 from app import semantic_region_geometry_impl as _impl
 
 FACTORS = (0.25, 0.5, 1.0, 2.0, 4.0)
+_PARENT_NATIVE_IOU = 0.999
 
 
 def _fmt(value: float) -> str:
@@ -83,7 +83,14 @@ def _external(mask: np.ndarray) -> np.ndarray:
     return np.asarray(_impl._core._filled_external_region(np.asarray(mask, dtype=bool)), dtype=bool)
 
 
-def _infer_rounded(mask: np.ndarray) -> dict[str, Any] | None:
+def _iou(left: np.ndarray, right: np.ndarray) -> float:
+    a = np.asarray(left, dtype=bool)
+    b = np.asarray(right, dtype=bool)
+    union = int(np.count_nonzero(a | b))
+    return 1.0 if union == 0 else float(np.count_nonzero(a & b) / union)
+
+
+def _infer_rounded_parent(mask: np.ndarray) -> dict[str, Any] | None:
     source = np.asarray(mask, dtype=bool)
     outer = _external(source)
     box = _bbox(outer)
@@ -94,39 +101,45 @@ def _infer_rounded(mask: np.ndarray) -> dict[str, Any] | None:
     height = y1-y0+1
     if min(width, height) < 8:
         return None
+    best: tuple[float, int] | None = None
     for radius in range(1, max(1, min(width, height)//2)+1):
         candidate = _pil_mask(
             source.shape[1], source.shape[0],
             lambda d, r=radius: d.rounded_rectangle((x0, y0, x1, y1), radius=r, fill=255),
         )
-        if np.array_equal(candidate, outer):
-            return {
-                "kind": "rounded_rect", "x0": x0, "y0": y0,
-                "x1": x1, "y1": y1, "radius": radius,
-            }
-    return None
+        score = _iou(candidate, outer)
+        if best is None or score > best[0]:
+            best = (score, radius)
+        if score == 1.0:
+            break
+    if best is None or best[0] < _PARENT_NATIVE_IOU:
+        return None
+    return {
+        "kind": "rounded_rect", "x0": x0, "y0": y0,
+        "x1": x1, "y1": y1, "radius": int(best[1]),
+        "source_parent_iou": float(best[0]),
+    }
 
 
-def _infer_external_ellipse(mask: np.ndarray) -> dict[str, Any] | None:
+def _infer_external_ellipse_parent(mask: np.ndarray) -> dict[str, Any] | None:
     source = np.asarray(mask, dtype=bool)
     outer = _external(source)
     box = _bbox(outer)
     if box is None:
         return None
     x0, y0, x1, y1 = box
-    width = x1-x0+1
-    height = y1-y0+1
-    if min(width, height) < 3:
+    if min(x1-x0+1, y1-y0+1) < 5:
         return None
     model = {
-        "kind": "ellipse",
-        "cx": (x0+x1)/2.0,
-        "cy": (y0+y1)/2.0,
-        "rx": (x1-x0)/2.0,
-        "ry": (y1-y0)/2.0,
+        "kind": "ellipse", "cx": (x0+x1)/2.0, "cy": (y0+y1)/2.0,
+        "rx": (x1-x0)/2.0, "ry": (y1-y0)/2.0,
     }
     candidate = model_mask(model, source.shape[1], source.shape[0], source.shape[1], source.shape[0])
-    return model if np.array_equal(candidate, outer) else None
+    score = _iou(candidate, outer)
+    if score < _PARENT_NATIVE_IOU:
+        return None
+    model["source_parent_iou"] = float(score)
+    return model
 
 
 def _point(cx: float, cy: float, fill: str, width: float = 1.0) -> str:
@@ -151,13 +164,13 @@ def _candidate_elements(model: dict[str, Any], fill: str) -> list[list[str]]:
         x0, y0, x1, y1, width = (float(model[k]) for k in ("x0", "y0", "x1", "y1", "width"))
         axis = str(model["axis"])
         output: list[list[str]] = []
-        offsets = ((width-1.0)/2.0, width/2.0)
-        for offset in offsets:
+        for offset in ((width-1.0)/2.0, width/2.0):
             for extension in (0.0, 0.5, 1.0):
-                if axis == "h":
-                    path = f'M{_fmt(x0)} {_fmt(y0+offset)}H{_fmt(x1+extension)}'
-                else:
-                    path = f'M{_fmt(x0+offset)} {_fmt(y0)}V{_fmt(y1+extension)}'
+                path = (
+                    f'M{_fmt(x0)} {_fmt(y0+offset)}H{_fmt(x1+extension)}'
+                    if axis == "h" else
+                    f'M{_fmt(x0+offset)} {_fmt(y0)}V{_fmt(y1+extension)}'
+                )
                 base = f'<path d="{path}" fill="none" stroke="{fill}" stroke-width="{_fmt(width)}" stroke-linecap="butt"/>'
                 output.append([base])
                 if width <= 2.0:
@@ -271,13 +284,12 @@ def calibrate_primitives(
         source_mask = node_map == node_id
         is_leaf = child_count[node_id] == 0 if 0 <= node_id < len(child_count) else False
 
-        # Parent paint regions are safe to replace only when their filled external
-        # source mask is exactly an analytic primitive. Children repaint holes.
-        model = _infer_rounded(source_mask)
-        if model is None:
-            model = _infer_external_ellipse(source_mask)
-        if model is None and is_leaf:
+        if is_leaf:
             model = _impl._infer(source_mask, strategy)
+        else:
+            model = _infer_rounded_parent(source_mask)
+            if model is None:
+                model = _infer_external_ellipse_parent(source_mask)
         if model is None or str(model.get("kind")) not in {"ellipse", "line", "rect", "rounded_rect"}:
             continue
 
