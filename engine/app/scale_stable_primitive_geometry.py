@@ -1,11 +1,9 @@
 """Source-derived primitive calibration against the real production renderer.
 
-Only geometry inferred from connected source masks is considered. Candidate SVG
-primitives are rendered at 0.25x/0.5x/1x/2x/4x and compared with normalized
-Pillow geometry inferred from the source itself. Leaf regions preserve their
-source semantic class; parent paint regions may be rebuilt from a verified
-filled external ellipse or rounded rectangle and children repaint the holes.
-No fixture routing, raster embedding, policy relaxation, or budget increase.
+Only geometry inferred from connected source masks is considered.  Candidate
+SVGs are rendered in isolation at 0.25x/0.5x/1x/2x/4x and compared with the
+same Pillow primitive semantics used by normalized source geometry.  Nested
+ring/hole regions are deliberately not rewritten as top-level shapes.
 """
 from __future__ import annotations
 
@@ -17,7 +15,6 @@ from PIL import Image, ImageDraw
 from app import semantic_region_geometry_impl as _impl
 
 FACTORS = (0.25, 0.5, 1.0, 2.0, 4.0)
-_PARENT_NATIVE_IOU = 0.999
 
 
 def _fmt(value: float) -> str:
@@ -79,21 +76,9 @@ def model_mask(model: dict[str, Any], sw: int, sh: int, tw: int, th: int) -> np.
     raise ValueError(f"unsupported primitive {kind}")
 
 
-def _external(mask: np.ndarray) -> np.ndarray:
-    return np.asarray(_impl._core._filled_external_region(np.asarray(mask, dtype=bool)), dtype=bool)
-
-
-def _iou(left: np.ndarray, right: np.ndarray) -> float:
-    a = np.asarray(left, dtype=bool)
-    b = np.asarray(right, dtype=bool)
-    union = int(np.count_nonzero(a | b))
-    return 1.0 if union == 0 else float(np.count_nonzero(a & b) / union)
-
-
-def _infer_rounded_parent(mask: np.ndarray) -> dict[str, Any] | None:
+def _infer_rounded(mask: np.ndarray) -> dict[str, Any] | None:
     source = np.asarray(mask, dtype=bool)
-    outer = _external(source)
-    box = _bbox(outer)
+    box = _bbox(source)
     if box is None:
         return None
     x0, y0, x1, y1 = box
@@ -101,51 +86,27 @@ def _infer_rounded_parent(mask: np.ndarray) -> dict[str, Any] | None:
     height = y1-y0+1
     if min(width, height) < 8:
         return None
-    best: tuple[float, int] | None = None
+    outer = np.asarray(_impl._core._filled_external_region(source), dtype=bool)
+    # Exact native reconstruction keeps this inference source-derived and avoids
+    # arbitrary corner-radius guesses.
     for radius in range(1, max(1, min(width, height)//2)+1):
         candidate = _pil_mask(
             source.shape[1], source.shape[0],
             lambda d, r=radius: d.rounded_rectangle((x0, y0, x1, y1), radius=r, fill=255),
         )
-        score = _iou(candidate, outer)
-        if best is None or score > best[0]:
-            best = (score, radius)
-        if score == 1.0:
-            break
-    if best is None or best[0] < _PARENT_NATIVE_IOU:
-        return None
-    return {
-        "kind": "rounded_rect", "x0": x0, "y0": y0,
-        "x1": x1, "y1": y1, "radius": int(best[1]),
-        "source_parent_iou": float(best[0]),
-    }
+        if np.array_equal(candidate, outer):
+            return {
+                "kind": "rounded_rect",
+                "x0": x0, "y0": y0, "x1": x1, "y1": y1,
+                "radius": radius,
+            }
+    return None
 
 
-def _infer_external_ellipse_parent(mask: np.ndarray) -> dict[str, Any] | None:
-    source = np.asarray(mask, dtype=bool)
-    outer = _external(source)
-    box = _bbox(outer)
-    if box is None:
-        return None
-    x0, y0, x1, y1 = box
-    if min(x1-x0+1, y1-y0+1) < 5:
-        return None
-    model = {
-        "kind": "ellipse", "cx": (x0+x1)/2.0, "cy": (y0+y1)/2.0,
-        "rx": (x1-x0)/2.0, "ry": (y1-y0)/2.0,
-    }
-    candidate = model_mask(model, source.shape[1], source.shape[0], source.shape[1], source.shape[0])
-    score = _iou(candidate, outer)
-    if score < _PARENT_NATIVE_IOU:
-        return None
-    model["source_parent_iou"] = float(score)
-    return model
-
-
-def _point(cx: float, cy: float, fill: str, width: float = 1.0) -> str:
+def _point(cx: float, cy: float, fill: str, *, cap: str = "square", width: float = 1.0) -> str:
     return (
         f'<path d="M{_fmt(cx)} {_fmt(cy)}h0.001" fill="none" stroke="{fill}" '
-        f'stroke-width="{_fmt(width)}" vector-effect="non-scaling-stroke" stroke-linecap="square"/>'
+        f'stroke-width="{_fmt(width)}" vector-effect="non-scaling-stroke" stroke-linecap="{cap}"/>'
     )
 
 
@@ -153,42 +114,42 @@ def _candidate_elements(model: dict[str, Any], fill: str) -> list[list[str]]:
     kind = str(model["kind"])
     if kind == "ellipse":
         cx, cy, rx, ry = (float(model[k]) for k in ("cx", "cy", "rx", "ry"))
-        output: list[list[str]] = []
-        for dr in (0.0, 0.125, 0.25, -0.125):
-            erx, ery = max(.5, rx+dr), max(.5, ry+dr)
-            output.append([f'<ellipse cx="{_fmt(cx)}" cy="{_fmt(cy)}" rx="{_fmt(erx)}" ry="{_fmt(ery)}" fill="{fill}"/>'])
-        for stroke in (0.75, 1.0, 1.25):
-            output.append([f'<ellipse cx="{_fmt(cx)}" cy="{_fmt(cy)}" rx="{_fmt(rx)}" ry="{_fmt(ry)}" fill="{fill}" stroke="{fill}" stroke-width="{_fmt(stroke)}" vector-effect="non-scaling-stroke"/>'])
-        return output
+        return [
+            [f'<ellipse cx="{_fmt(cx)}" cy="{_fmt(cy)}" rx="{_fmt(rx)}" ry="{_fmt(ry)}" fill="{fill}" stroke="{fill}" stroke-width="1" vector-effect="non-scaling-stroke"/>'],
+            [f'<ellipse cx="{_fmt(cx)}" cy="{_fmt(cy)}" rx="{_fmt(rx)}" ry="{_fmt(ry)}" fill="{fill}" stroke="{fill}" stroke-width="1.25" vector-effect="non-scaling-stroke"/>'],
+            [f'<ellipse cx="{_fmt(cx)}" cy="{_fmt(cy)}" rx="{_fmt(rx)}" ry="{_fmt(ry)}" fill="{fill}" stroke="{fill}" stroke-width="1.5" vector-effect="non-scaling-stroke"/>'],
+            [f'<ellipse cx="{_fmt(cx)}" cy="{_fmt(cy)}" rx="{_fmt(rx+0.25)}" ry="{_fmt(ry+0.25)}" fill="{fill}"/>'],
+            [f'<ellipse cx="{_fmt(cx)}" cy="{_fmt(cy)}" rx="{_fmt(max(.5,rx-.125))}" ry="{_fmt(max(.5,ry-.125))}" fill="{fill}" stroke="{fill}" stroke-width="1" vector-effect="non-scaling-stroke"/>'],
+        ]
     if kind == "line":
         x0, y0, x1, y1, width = (float(model[k]) for k in ("x0", "y0", "x1", "y1", "width"))
         axis = str(model["axis"])
+        centers = (width/2.0, max(0.0, (width-1.0)/2.0))
         output: list[list[str]] = []
-        for offset in ((width-1.0)/2.0, width/2.0):
-            for extension in (0.0, 0.5, 1.0):
-                path = (
-                    f'M{_fmt(x0)} {_fmt(y0+offset)}H{_fmt(x1+extension)}'
-                    if axis == "h" else
-                    f'M{_fmt(x0+offset)} {_fmt(y0)}V{_fmt(y1+extension)}'
-                )
-                base = f'<path d="{path}" fill="none" stroke="{fill}" stroke-width="{_fmt(width)}" stroke-linecap="butt"/>'
-                output.append([base])
-                if width <= 2.0:
-                    output.append([base, f'<path d="{path}" fill="none" stroke="{fill}" stroke-width="1" vector-effect="non-scaling-stroke" stroke-linecap="butt"/>'])
+        for offset in centers:
+            path = (
+                f'M{_fmt(x0)} {_fmt(y0+offset)}H{_fmt(x1)}'
+                if axis == "h" else
+                f'M{_fmt(x0+offset)} {_fmt(y0)}V{_fmt(y1)}'
+            )
+            base = f'<path d="{path}" fill="none" stroke="{fill}" stroke-width="{_fmt(width)}" stroke-linecap="butt"/>'
+            output.append([base])
+            output.append([base, f'<path d="{path}" fill="none" stroke="{fill}" stroke-width="1" vector-effect="non-scaling-stroke" stroke-linecap="butt"/>'])
         return output
     if kind == "rect":
         x, y, width, height = (float(model[k]) for k in ("x", "y", "width", "height"))
+        cx = x+(width-1.0)/2.0
+        cy = y+(height-1.0)/2.0
+        point = _point(cx, cy, fill)
         specs = (
-            (x, y, width, height),
             (x-.01, y-.01, width+.02, height+.02),
-            (x-.125, y-.125, width+.25, height+.25),
-            (x+.01, y+.01, width, height),
+            (x-.01, y-.01, width, height),
+            (x+.01, y-.01, width, height),
+            (x-.01, y+.01, width, height),
+            (x, y, width, height),
         )
         output = [[f'<rect x="{_fmt(px)}" y="{_fmt(py)}" width="{_fmt(pw)}" height="{_fmt(ph)}" fill="{fill}"/>'] for px,py,pw,ph in specs]
-        if min(width, height) <= 2.0:
-            cx = x+(width-1.0)/2.0
-            cy = y+(height-1.0)/2.0
-            output.append([f'<rect x="{_fmt(x)}" y="{_fmt(y)}" width="{_fmt(width)}" height="{_fmt(height)}" fill="{fill}"/>', _point(cx, cy, fill)])
+        output.append([f'<rect x="{_fmt(x-.01)}" y="{_fmt(y-.01)}" width="{_fmt(width+.02)}" height="{_fmt(height+.02)}" fill="{fill}"/>', point])
         return output
     if kind == "rounded_rect":
         x0, y0, x1, y1, radius = (float(model[k]) for k in ("x0", "y0", "x1", "y1", "radius"))
@@ -197,9 +158,10 @@ def _candidate_elements(model: dict[str, Any], fill: str) -> list[list[str]]:
         specs = (
             (x0, y0, width, height, radius),
             (x0-.01, y0-.01, width+.02, height+.02, radius),
-            (x0, y0, width, height, max(.5, radius-.5)),
-            (x0, y0, width, height, radius+.5),
-            (x0-.125, y0-.125, width+.25, height+.25, radius),
+            (x0-.01, y0-.01, width+.02, height+.02, max(.5, radius-.5)),
+            (x0-.01, y0-.01, width+.02, height+.02, radius+.5),
+            (x0, y0-.01, width, height+.02, max(.5, radius-.5)),
+            (x0+.01, y0-.01, width, height+.02, radius),
         )
         return [[f'<rect x="{_fmt(px)}" y="{_fmt(py)}" width="{_fmt(pw)}" height="{_fmt(ph)}" rx="{_fmt(pr)}" ry="{_fmt(pr)}" fill="{fill}"/>'] for px,py,pw,ph,pr in specs]
     return []
@@ -227,8 +189,10 @@ def _metrics(model: dict[str, Any], elements: list[str], fill: str, sw: int, sh:
         union = int(np.count_nonzero(actual | expected))
         iou = 1.0 if union == 0 else intersection/float(union)
         levels.append({
-            "scale": f"{factor:g}x", "size": [tw, th],
-            "component_count": int(component_count), "iou": float(iou),
+            "scale": f"{factor:g}x",
+            "size": [tw, th],
+            "component_count": int(component_count),
+            "iou": float(iou),
             "mismatch": float(np.mean(actual != expected)),
         })
     return {
@@ -245,8 +209,8 @@ def _score(metrics: dict[str, Any], element_count: int) -> tuple[float,float,flo
     return (
         float(metrics["component_error"]),
         -float(metrics["min_iou"]),
-        -float(metrics["mean_iou"]),
         float(metrics["max_mismatch"]),
+        -float(metrics["mean_iou"]),
         int(element_count),
     )
 
@@ -257,7 +221,7 @@ def calibrate_primitives(
     elements: list[str],
     regions: list[dict[str, Any]],
 ) -> tuple[list[str], list[dict[str, Any]], dict[int,dict[str,Any]]]:
-    node_map, nodes, _root, _depth, parent = _impl._core._connected_region_graph(labels, len(colors))
+    node_map, nodes, root, _depth, parent = _impl._core._connected_region_graph(labels, len(colors))
     child_count = [0 for _ in nodes]
     for node_id, parent_id in enumerate(parent):
         if parent_id is not None and 0 <= int(parent_id) < len(child_count):
@@ -282,15 +246,14 @@ def calibrate_primitives(
         color_index = int(region["color_index"])
         strategy = str(region.get("strategy") or "")
         source_mask = node_map == node_id
+        model = _impl._infer(source_mask, strategy)
+        rounded = _infer_rounded(source_mask)
+        is_top_level = parent[node_id] == root if 0 <= node_id < len(parent) else False
         is_leaf = child_count[node_id] == 0 if 0 <= node_id < len(child_count) else False
 
-        if is_leaf:
-            model = _impl._infer(source_mask, strategy)
-        else:
-            model = _infer_rounded_parent(source_mask)
-            if model is None:
-                model = _infer_external_ellipse_parent(source_mask)
-        if model is None or str(model.get("kind")) not in {"ellipse", "line", "rect", "rounded_rect"}:
+        if rounded is not None and is_top_level:
+            model = rounded
+        elif model is None or not is_leaf or str(model.get("kind")) not in {"ellipse", "line", "rect"}:
             continue
 
         red, green, blue = (int(value) for value in colors[color_index])
@@ -320,12 +283,20 @@ def calibrate_primitives(
         changed = best_part != base_part
         if changed:
             parts[index] = best_part
-        if is_leaf and str(model["kind"]) in {"rect", "ellipse", "line"}:
+        if str(model["kind"]) == "rect":
+            repair_models[node_id] = dict(model)
+        elif str(model["kind"]) in {"ellipse", "line"}:
             repair_models[node_id] = dict(model)
         reports.append({
-            "node_id": node_id, "color_index": color_index, "strategy": strategy,
-            "model": model, "leaf": bool(is_leaf), "changed": changed,
-            "before": base_metrics, "after": best_metrics,
+            "node_id": node_id,
+            "color_index": color_index,
+            "strategy": strategy,
+            "model": model,
+            "top_level": bool(is_top_level),
+            "leaf": bool(is_leaf),
+            "changed": changed,
+            "before": base_metrics,
+            "after": best_metrics,
             "element_delta": len(best_part)-len(base_part),
         })
     return [element for part in parts for element in part], reports, repair_models
