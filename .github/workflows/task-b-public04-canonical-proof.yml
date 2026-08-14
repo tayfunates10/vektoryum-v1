@@ -1,5 +1,6 @@
 name: Task B canonical public-04 production proof
 
+# Runs only the immutable qualification-public-04 case with the existing RFV-3 policy.
 on:
   push:
     branches:
