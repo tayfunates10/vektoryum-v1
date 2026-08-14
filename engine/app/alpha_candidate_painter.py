@@ -1309,6 +1309,19 @@ def apply_candidate_painter_reconstruction(
             entry["encoded_alpha_level_count"] = int(
                 probe_geometry.get("encoded_alpha_level_count", levels)
             )
+            # Deficit kapsama sayaçları üretici tarafından zaten hesaplanıyor ama
+            # ledger'a taşınmadığı için CI çıktısından okunamıyordu. Alfa IoU
+            # kapısı düştüğünde "kaynak alfanın ne kadarı boyanabildi" sorusunun
+            # cevabı yalnızca bu sayaçlarda; teşhis için taşınmaları şart.
+            # Davranış değişikliği yok: yalnız tanılama alanları.
+            for stat_key in (
+                "paint_deficit_pixel_count",
+                "source_component_count",
+                "anchored_source_component_count",
+                "detached_source_component_count",
+            ):
+                if stat_key in probe_geometry:
+                    entry[stat_key] = int(probe_geometry[stat_key])
             if probe_size > byte_limit:
                 entry["preflight_status"] = "over_budget"
                 entry["status"] = "byte_rejected"
