@@ -1,0 +1,162 @@
+name: Task C public-15 canonical proof
+
+on:
+  push:
+    branches:
+      - codex/task-c-public15-canonical-proof
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  public15-proof:
+    runs-on: macos-latest
+    timeout-minutes: 90
+    env:
+      PYTHONHASHSEED: "0"
+      PYTHONPATH: engine
+      VEKTORYUM_WORKERS: "1"
+      TASK_HEAD_SHA: "c3f8eeb7ab7b50517435d8ef8d4a053f1bed3ae3"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: engine/requirements.txt
+      - name: Install production Python dependencies
+        working-directory: engine
+        run: python -m pip install -r requirements.txt pytest httpx
+      - name: Download exact PR 158 RFV-3B corpus
+        uses: actions/download-artifact@v4
+        with:
+          name: rfv3b-corpus-98361c24ac3846532c689e411b40c2c9a8db0a72
+          path: ${{ runner.temp }}/rfv3b-input
+          github-token: ${{ github.token }}
+          repository: tayfunates10/vektoryum-v1
+          run-id: 31849174384
+      - name: Verify and prepare immutable corpus
+        run: |
+          python -m engine.regression.rfv3_live_prepare \
+            --bundle "${RUNNER_TEMP}/rfv3b-input/rfv2-public-corpus.tar.gz" \
+            --checksums "${RUNNER_TEMP}/rfv3b-input/bundle-checksums.json" \
+            --destination "${RUNNER_TEMP}/rfv3b-corpus" \
+            --evidence-out "${RUNNER_TEMP}/public15-prepare.json"
+      - name: Run public-15 once through production pipeline
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p "${RUNNER_TEMP}/public15-work"
+          RFV_CORPUS="${RUNNER_TEMP}/rfv3b-corpus" \
+          RFV_WORK="${RUNNER_TEMP}/public15-work" \
+          python - <<'PY' 2>&1 | tee "${RUNNER_TEMP}/public15.log"
+          import json
+          import os
+          from pathlib import Path
+          from PIL import Image
+          from app.pipeline_entry import run_pipeline
+          from engine.regression.rfv3_measurement_runner import load_qualification_cases
+
+          corpus = Path(os.environ["RFV_CORPUS"])
+          work = Path(os.environ["RFV_WORK"])
+          case = next(c for c in load_qualification_cases(corpus) if c.case_id == "qualification-public-15")
+          source = corpus / case.source_path
+          print("TASK_C_SOURCE=" + json.dumps({
+              "case_id": case.case_id,
+              "source_path": case.source_path,
+              "source_sha256": case.source_sha256,
+          }, sort_keys=True))
+          try:
+              with Image.open(source) as opened:
+                  image = opened.convert("RGBA")
+              result = run_pipeline(image, source, "auto", work, refine=True, edge_cleanup=True)
+              compact = {
+                  key: str(value)
+                  for key, value in result.items()
+                  if key in {"svg", "svg_path", "status", "mode", "trace_mode"}
+              }
+              print("TASK_C_PIPELINE_RESULT=" + json.dumps(compact, sort_keys=True))
+          except BaseException as exc:
+              print("TASK_C_PIPELINE_EXCEPTION=" + json.dumps({
+                  "type": type(exc).__name__,
+                  "message": str(exc),
+              }, sort_keys=True))
+          PY
+      - name: Extract and assert Task C painter ledger
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          log = (Path(os.environ["RUNNER_TEMP"]) / "public15.log").read_text(encoding="utf-8", errors="replace")
+          prefix = "source_alpha_candidate_painter_attempts="
+          ledgers = []
+          for line in log.splitlines():
+              if prefix in line:
+                  ledgers.append(json.loads(line.split(prefix, 1)[1]))
+          if not ledgers:
+              raise SystemExit("no painter ledger emitted")
+          chosen = None
+          for entries in ledgers:
+              pd = [e for e in entries if isinstance(e, dict) and str(e.get("encoding_label", "")).startswith("paint-deficit")]
+              if pd and any(int(e.get("byte_limit") or -1) == 304990 for e in pd):
+                  chosen = entries
+                  break
+          if chosen is None:
+              raise SystemExit("public-15 paint-deficit ledger with byte_limit=304990 not found")
+
+          selected = [e for e in chosen if str(e.get("encoding_label", "")).startswith("paint-deficit")]
+          for entry in selected:
+              print("TASK_C_ATTEMPT=" + json.dumps(entry, sort_keys=True))
+
+          expected_legacy = [
+              "paint-deficit-q24",
+              "paint-deficit-cumulative",
+              "paint-deficit-cumulative-q20",
+              "paint-deficit-cumulative-q16",
+              "paint-deficit-cumulative-q12",
+              "paint-deficit-cumulative-q8",
+          ]
+          legacy = [e for e in selected if e.get("exact_or_quantized") == "paint_deficit"]
+          labels = [str(e.get("encoding_label")) for e in legacy]
+          if labels != expected_legacy:
+              raise SystemExit(f"legacy ladder drifted: {labels!r}")
+          if not all(e.get("status") == "byte_rejected" for e in legacy):
+              raise SystemExit("legacy ladder is not byte-only exhausted")
+          expected_bytes = [1194110, 870542, 831463, 793597, 755710, 717866]
+          actual_bytes = [int(e.get("actual_serialized_bytes")) for e in legacy]
+          if actual_bytes != expected_bytes:
+              raise SystemExit(f"legacy bytes drifted: {actual_bytes!r}")
+          if not all(int(e.get("paint_deficit_pixel_count")) == 1099083 for e in legacy):
+              raise SystemExit("legacy deficit count drifted")
+
+          fallback = [e for e in selected if e.get("exact_or_quantized") == "paint_deficit_palette"]
+          if not fallback:
+              raise SystemExit("Task C palette fallback did not run")
+          for e in fallback:
+              if int(e.get("paint_deficit_pixel_count")) != 1099083:
+                  raise SystemExit("Task C fallback changed deficit coverage")
+          summary = {
+              "legacy": legacy,
+              "fallback": fallback,
+              "unchanged_budget": 304990,
+          }
+          out = Path(os.environ["RUNNER_TEMP"]) / "task-c-public15-summary.json"
+          out.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          print("TASK_C_SUMMARY=" + json.dumps(summary, sort_keys=True))
+          PY
+      - name: Upload public-15 proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: task-c-public15-canonical-${{ env.TASK_HEAD_SHA }}
+          path: |
+            ${{ runner.temp }}/public15.log
+            ${{ runner.temp }}/public15-prepare.json
+            ${{ runner.temp }}/task-c-public15-summary.json
+          if-no-files-found: warn
+          retention-days: 14
+          compression-level: 0
