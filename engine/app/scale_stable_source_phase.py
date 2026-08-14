@@ -1,15 +1,12 @@
 """Source-derived five-scale phase refinement for exact Pillow primitives.
 
-The production source can contain tiny integer-grid shapes whose normalized
-geometry is redrawn at each output size. A raster-cell SVG may match 1x while
-its half-pixel centre or inclusive endpoint term scales incorrectly at 0.25x
-or 4x. This module recognizes only generic geometry from connected source
-masks and evaluates bounded vector candidates with the production renderer.
-
-No fixture identifiers, regression builders, acceptance thresholds, shared
-budgets, or raster payloads are used here. Line models are intentionally out
-of scope. A proposal is accepted only when native fidelity remains healthy and
-five-scale component lineage does not regress.
+Tiny integer-grid primitives can match at 1x yet drift when raster-cell centres
+or Pillow-inclusive endpoints are scaled.  This pass recognizes only generic
+geometry from connected source masks, evaluates a small deterministic vector
+candidate set with the production renderer at 0.25x/0.5x/1x/2x/4x, and keeps
+an edit only when native fidelity remains healthy and component lineage does
+not regress.  It contains no fixture IDs, regression builders, policy changes,
+threshold changes, budget changes, or raster payloads.  Lines are out of scope.
 """
 from __future__ import annotations
 
@@ -47,6 +44,13 @@ def _scaled_width(value: float, target: int, source: int) -> int:
     return max(1, _scaled(value, target, source))
 
 
+def _external(mask: np.ndarray) -> np.ndarray:
+    return np.asarray(
+        _impl._core._filled_external_region(np.asarray(mask, dtype=bool)),
+        dtype=bool,
+    )
+
+
 def _exact_leaf_ellipse(mask: np.ndarray) -> dict[str, Any] | None:
     source = np.asarray(mask, dtype=bool)
     box = _bbox(source)
@@ -80,22 +84,15 @@ def _exact_compact_rect(mask: np.ndarray) -> dict[str, Any] | None:
     height = y1 - y0 + 1
     if max(width, height) > 8:
         return None
-    if not bool(np.all(source[y0:y1 + 1, x0:x1 + 1])):
-        return None
     if int(np.count_nonzero(source)) != width * height:
+        return None
+    if not bool(np.all(source[y0:y1 + 1, x0:x1 + 1])):
         return None
     return {
         "kind": "origin_size_rect",
         "x": float(x0), "y": float(y0),
         "width": float(width), "height": float(height),
     }
-
-
-def _external(mask: np.ndarray) -> np.ndarray:
-    return np.asarray(
-        _impl._core._filled_external_region(np.asarray(mask, dtype=bool)),
-        dtype=bool,
-    )
 
 
 def _endpoint_parent_ellipse(mask: np.ndarray) -> dict[str, Any] | None:
@@ -178,17 +175,14 @@ def _model_mask(
         x1 = _scaled(model["x1"], tw, sw)
         y1 = _scaled(model["y1"], th, sh)
         return _pil_mask(
-            tw, th,
-            lambda draw: draw.ellipse((x0, y0, x1, y1), fill=255),
+            tw, th, lambda draw: draw.ellipse((x0, y0, x1, y1), fill=255)
         )
     if kind == "endpoint_rounded_rect":
         x0 = _scaled(model["x0"], tw, sw)
         y0 = _scaled(model["y0"], th, sh)
         x1 = _scaled(model["x1"], tw, sw)
         y1 = _scaled(model["y1"], th, sh)
-        radius = _scaled_width(
-            model["radius"], min(tw, th), min(sw, sh)
-        )
+        radius = _scaled_width(model["radius"], min(tw, th), min(sw, sh))
         return _pil_mask(
             tw, th,
             lambda draw: draw.rounded_rectangle(
@@ -199,8 +193,7 @@ def _model_mask(
 
 
 def _ellipse_candidates(model: dict[str, Any], fill: str) -> list[list[str]]:
-    kind = str(model["kind"])
-    if kind == "center_radius_ellipse":
+    if str(model["kind"]) == "center_radius_ellipse":
         cx = float(model["cx"]); cy = float(model["cy"])
         rx = float(model["rx"]); ry = float(model["ry"])
     else:
@@ -210,49 +203,41 @@ def _ellipse_candidates(model: dict[str, Any], fill: str) -> list[list[str]]:
         rx = (x1 - x0) / 2.0; ry = (y1 - y0) / 2.0
 
     output: list[list[str]] = []
-    for center_delta in (-0.01, -0.001, 0.0, 0.001, 0.01):
-        for radius_delta in (-0.0625, -0.01, -0.001, 0.0, 0.001, 0.01, 0.0625):
-            nrx = max(0.125, rx + radius_delta)
-            nry = max(0.125, ry + radius_delta)
-            output.append([
-                f'<ellipse cx="{_fmt(cx + center_delta)}" '
-                f'cy="{_fmt(cy + center_delta)}" '
-                f'rx="{_fmt(nrx)}" ry="{_fmt(nry)}" fill="{fill}"/>'
-            ])
-
-    # Inclusive Pillow endpoints add one device pixel to the scalable diameter.
-    # A non-scaling stroke is a generic vector expression of that term.
-    for center_delta in (-0.01, 0.0, 0.01):
-        for radius_delta in (-0.5, -0.25, 0.0, 0.25):
-            nrx = max(0.125, rx + radius_delta)
-            nry = max(0.125, ry + radius_delta)
-            for stroke_width in (0.5, 0.75, 1.0, 1.25):
-                output.append([
-                    f'<ellipse cx="{_fmt(cx + center_delta)}" '
-                    f'cy="{_fmt(cy + center_delta)}" '
-                    f'rx="{_fmt(nrx)}" ry="{_fmt(nry)}" fill="{fill}" '
-                    f'stroke="{fill}" stroke-width="{_fmt(stroke_width)}" '
-                    'vector-effect="non-scaling-stroke"/>'
-                ])
+    for delta in (-0.0625, -0.01, 0.0, 0.01, 0.0625):
+        output.append([
+            f'<ellipse cx="{_fmt(cx)}" cy="{_fmt(cy)}" '
+            f'rx="{_fmt(max(.125, rx + delta))}" '
+            f'ry="{_fmt(max(.125, ry + delta))}" fill="{fill}"/>'
+        ])
+    for radius_delta, stroke_width in ((0.0, 1.0), (-0.5, 1.0), (-0.25, 0.5)):
+        output.append([
+            f'<ellipse cx="{_fmt(cx)}" cy="{_fmt(cy)}" '
+            f'rx="{_fmt(max(.125, rx + radius_delta))}" '
+            f'ry="{_fmt(max(.125, ry + radius_delta))}" fill="{fill}" '
+            f'stroke="{fill}" stroke-width="{_fmt(stroke_width)}" '
+            'vector-effect="non-scaling-stroke"/>'
+        ])
     return output
 
 
 def _rect_candidates(model: dict[str, Any], fill: str) -> list[list[str]]:
     x = float(model["x"]); y = float(model["y"])
     width = float(model["width"]); height = float(model["height"])
-    output: list[list[str]] = []
-    shifts = (-0.25, -0.125, -0.0625, -0.01, 0.0, 0.01, 0.0625, 0.125, 0.25)
-    deltas = (-0.25, -0.125, -0.0625, -0.01, 0.0, 0.01, 0.0625, 0.125, 0.25)
-    for shift in shifts:
-        for delta in deltas:
-            output.append([
-                f'<rect x="{_fmt(x + shift)}" y="{_fmt(y + shift)}" '
-                f'width="{_fmt(max(.001, width + delta))}" '
-                f'height="{_fmt(max(.001, height + delta))}" fill="{fill}"/>'
-            ])
-
-    # Endpoint form: scalable distance plus one non-scaling device pixel.
-    for shift in (0.0, 0.25, 0.5):
+    specs = (
+        (0.0, 0.0),
+        (-0.01, 0.02),
+        (0.01, 0.0),
+        (-0.0625, 0.125),
+        (0.0625, -0.125),
+        (-0.125, 0.25),
+        (0.125, -0.25),
+    )
+    output = [[
+        f'<rect x="{_fmt(x + shift)}" y="{_fmt(y + shift)}" '
+        f'width="{_fmt(max(.001, width + delta))}" '
+        f'height="{_fmt(max(.001, height + delta))}" fill="{fill}"/>'
+    ] for shift, delta in specs]
+    for shift in (0.0, 0.5):
         output.append([
             f'<rect x="{_fmt(x + shift)}" y="{_fmt(y + shift)}" '
             f'width="{_fmt(max(.001, width - 1.0))}" '
@@ -268,24 +253,22 @@ def _rounded_candidates(model: dict[str, Any], fill: str) -> list[list[str]]:
     x1 = float(model["x1"]); y1 = float(model["y1"])
     radius = float(model["radius"])
     output: list[list[str]] = []
-    # Endpoint distance is scalable; the inclusive +1 term is a device pixel.
-    for shift in (-0.01, 0.0, 0.01):
-        for radius_delta in (-0.5, -0.25, 0.0, 0.25, 0.5):
-            rr = max(0.5, radius + radius_delta)
-            output.append([
-                f'<rect x="{_fmt(x0 + shift)}" y="{_fmt(y0 + shift)}" '
-                f'width="{_fmt(max(.001, x1 - x0))}" '
-                f'height="{_fmt(max(.001, y1 - y0))}" '
-                f'rx="{_fmt(rr)}" ry="{_fmt(rr)}" fill="{fill}" '
-                f'stroke="{fill}" stroke-width="1" '
-                'vector-effect="non-scaling-stroke"/>'
-            ])
-            output.append([
-                f'<rect x="{_fmt(x0 + shift)}" y="{_fmt(y0 + shift)}" '
-                f'width="{_fmt(x1 - x0 + 1.0)}" '
-                f'height="{_fmt(y1 - y0 + 1.0)}" '
-                f'rx="{_fmt(rr)}" ry="{_fmt(rr)}" fill="{fill}"/>'
-            ])
+    for radius_delta in (-0.5, 0.0, 0.5):
+        rr = max(0.5, radius + radius_delta)
+        output.append([
+            f'<rect x="{_fmt(x0)}" y="{_fmt(y0)}" '
+            f'width="{_fmt(max(.001, x1 - x0))}" '
+            f'height="{_fmt(max(.001, y1 - y0))}" '
+            f'rx="{_fmt(rr)}" ry="{_fmt(rr)}" fill="{fill}" '
+            f'stroke="{fill}" stroke-width="1" '
+            'vector-effect="non-scaling-stroke"/>'
+        ])
+        output.append([
+            f'<rect x="{_fmt(x0)}" y="{_fmt(y0)}" '
+            f'width="{_fmt(x1 - x0 + 1.0)}" '
+            f'height="{_fmt(y1 - y0 + 1.0)}" '
+            f'rx="{_fmt(rr)}" ry="{_fmt(rr)}" fill="{fill}"/>'
+        ])
     return output
 
 
@@ -297,8 +280,9 @@ def _isolated_metrics(
     model: dict[str, Any], elements: list[str], fill: str, sw: int, sh: int
 ) -> dict[str, Any] | None:
     colors = np.asarray([[0, 0, 0], [255, 255, 255]], dtype=np.uint8)
-    background = f'<path fill="#ffffff" d="M0 0H{sw}V{sh}H0Z"/>'
-    trial = [background] + _blacken(elements, fill)
+    trial = [f'<path fill="#ffffff" d="M0 0H{sw}V{sh}H0Z"/>'] + _blacken(
+        elements, fill
+    )
     levels: list[dict[str, Any]] = []
     for factor in FACTORS:
         tw = max(16, int(round(sw * factor)))
@@ -399,7 +383,7 @@ def refine_source_phase_geometry(
 ) -> tuple[list[str], list[dict[str, Any]]]:
     labels = np.asarray(labels)
     colors = np.asarray(colors, dtype=np.uint8)
-    node_map, nodes, root, _depth, parent = _impl._core._connected_region_graph(
+    node_map, nodes, _root, _depth, parent = _impl._core._connected_region_graph(
         labels, len(colors)
     )
     child_count = [0 for _ in nodes]
@@ -424,7 +408,7 @@ def refine_source_phase_geometry(
     parts: list[list[str]] = []
     cursor = 0
     for region in regions:
-        node_id = int(region.get("node_id") or -1)
+        node_id = int(region.get("node_id", -1))
         count = int(region.get("path_count") or 0) + delta_by_node.get(node_id, 0)
         parts.append(list(elements[cursor:cursor + count]))
         cursor += count
@@ -434,16 +418,13 @@ def refine_source_phase_geometry(
     sh, sw = labels.shape
     reports: list[dict[str, Any]] = []
     for index, region in enumerate(regions):
-        node_id = int(region.get("node_id") or -1)
+        node_id = int(region.get("node_id", -1))
         if node_id < 0 or node_id >= len(nodes) or not parts[index]:
             continue
         source_mask = node_map == node_id
-        is_leaf = child_count[node_id] == 0
-        is_parent = child_count[node_id] > 0
         model: dict[str, Any] | None = None
         family: str | None = None
-
-        if is_leaf:
+        if child_count[node_id] == 0:
             model = _exact_leaf_ellipse(source_mask)
             if model is not None:
                 family = "leaf_center_radius_ellipse"
@@ -451,7 +432,7 @@ def refine_source_phase_geometry(
                 model = _exact_compact_rect(source_mask)
                 if model is not None:
                     family = "leaf_origin_size_rect"
-        elif is_parent and len(parts[index]) == 1:
+        elif len(parts[index]) == 1:
             model = _endpoint_parent_rounded(source_mask)
             if model is not None:
                 family = "parent_endpoint_rounded_rect"
@@ -459,7 +440,6 @@ def refine_source_phase_geometry(
                 model = _endpoint_parent_ellipse(source_mask)
                 if model is not None:
                     family = "parent_endpoint_ellipse"
-
         if model is None or family is None:
             continue
 
@@ -480,41 +460,42 @@ def refine_source_phase_geometry(
         ):
             continue
 
-        if str(model["kind"]) in {"center_radius_ellipse", "endpoint_ellipse"}:
+        kind = str(model["kind"])
+        if kind in {"center_radius_ellipse", "endpoint_ellipse"}:
             candidates = _ellipse_candidates(model, fill)
-        elif str(model["kind"]) == "origin_size_rect":
+        elif kind == "origin_size_rect":
             candidates = _rect_candidates(model, fill)
         else:
             candidates = _rounded_candidates(model, fill)
 
-        best_part = base_part
-        best_isolated = isolated_before
-        best_scene = scene_before
-        best_key = _isolated_score(isolated_before, len(base_part)) + (
-            float(scene_before["native_mismatch"]),
-        )
+        base_key = _isolated_score(isolated_before, len(base_part))
+        ranked: list[tuple[tuple[float, float, float, float, int], list[str], dict[str, Any]]] = []
         for candidate in candidates:
             isolated = _isolated_metrics(model, candidate, fill, sw, sh)
             if isolated is None:
                 continue
             if float(isolated["native_iou"]) + 1e-12 < float(_impl._NATIVE_MIN_IOU):
                 continue
+            key = _isolated_score(isolated, len(candidate))
+            if key < base_key:
+                ranked.append((key, list(candidate), isolated))
+        ranked.sort(key=lambda item: item[0])
+
+        best_part = base_part
+        best_isolated = isolated_before
+        best_scene = scene_before
+        for _key, candidate, isolated in ranked:
             trial_parts = list(parts)
-            trial_parts[index] = list(candidate)
+            trial_parts[index] = candidate
             scene = _scene_metrics(
                 labels, colors, _flatten(trial_parts), node_map, node_id,
                 color_index, source_counts,
             )
-            if scene is None or not _scene_safe(scene_before, scene):
-                continue
-            key = _isolated_score(isolated, len(candidate)) + (
-                float(scene["native_mismatch"]),
-            )
-            if key < best_key:
-                best_key = key
-                best_part = list(candidate)
+            if scene is not None and _scene_safe(scene_before, scene):
+                best_part = candidate
                 best_isolated = isolated
                 best_scene = scene
+                break
 
         changed = best_part != base_part
         if changed:
