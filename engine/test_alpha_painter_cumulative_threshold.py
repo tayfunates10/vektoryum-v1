@@ -21,7 +21,9 @@ import numpy as np
 
 from app.alpha_candidate_knockout import _write_tree_to_temp
 from app.alpha_candidate_painter import (
+    _alpha_only_evaluator_retry_labels,
     _cumulative_threshold_children,
+    _evaluator_aligned_source_rgba,
     _painter_loops,
     _painter_polygon_children,
 )
@@ -146,6 +148,104 @@ class CumulativeThresholdEncodingTests(unittest.TestCase):
         quantized = np.zeros((16, 16), dtype=np.int32)
         opacity: dict[int, float] = {0: 0.0}
         self.assertIsNone(_cumulative_threshold_children(quantized, opacity, _qname))
+
+
+class EvaluatorAlignedRetryTests(unittest.TestCase):
+    def test_source_alpha_is_sampled_on_evaluator_grid_with_inter_area(self) -> None:
+        height, width = 1200, 2400
+        source = np.zeros((height, width, 4), dtype=np.uint8)
+        yy, xx = np.mgrid[0:height, 0:width]
+        source[:, :, 0] = (xx % 251).astype(np.uint8)
+        source[:, :, 1] = (yy % 239).astype(np.uint8)
+        source[:, :, 2] = ((xx + yy) % 233).astype(np.uint8)
+        source[:, :, 3] = ((3 * xx + 5 * yy) % 256).astype(np.uint8)
+
+        aligned = _evaluator_aligned_source_rgba(source)
+
+        self.assertEqual(aligned.shape, (512, 1024, 4))
+        expected_alpha = cv2.resize(
+            source[:, :, 3],
+            (1024, 512),
+            interpolation=cv2.INTER_AREA,
+        )
+        np.testing.assert_array_equal(aligned[:, :, 3], expected_alpha)
+
+    def test_evaluator_grid_does_not_upscale_or_alias_input(self) -> None:
+        source = np.zeros((200, 320, 4), dtype=np.uint8)
+        source[:, :, 3] = np.arange(320, dtype=np.uint8)[None, :]
+
+        aligned = _evaluator_aligned_source_rgba(source)
+
+        self.assertEqual(aligned.shape, source.shape)
+        np.testing.assert_array_equal(aligned, source)
+        aligned[0, 0, 3] ^= 0xFF
+        self.assertNotEqual(int(aligned[0, 0, 3]), int(source[0, 0, 3]))
+
+    def test_only_alpha_plane_evaluator_rejections_are_retry_eligible(self) -> None:
+        attempts = [
+            {
+                "encoding_label": "paint-deficit-cumulative",
+                "status": "evaluator_rejected",
+                "validation_stage": "evaluator",
+                "exact_error_code": (
+                    "source_alpha_candidate_painter_evaluator_rejected:"
+                    "alpha_iou_below_min,alpha_mae_above_max"
+                ),
+            },
+            {
+                "encoding_label": "paint-deficit-q24",
+                "status": "evaluator_rejected",
+                "validation_stage": "evaluator",
+                "exact_error_code": (
+                    "source_alpha_candidate_painter_evaluator_rejected:"
+                    "alpha_iou_below_min,unexpected_code"
+                ),
+            },
+            {
+                "encoding_label": "contour-q32",
+                "status": "bounded_alpha_rejected",
+                "validation_stage": "bounded_alpha",
+                "exact_error_code": "source_alpha_candidate_painter_iou_gate_failed:0.99<0.995",
+            },
+            {
+                "encoding_label": "paint-deficit-q24",
+                "status": "evaluator_rejected",
+                "validation_stage": "evaluator",
+                "exact_error_code": (
+                    "source_alpha_candidate_painter_evaluator_rejected:"
+                    "alpha_plane_unmeasured"
+                ),
+            },
+        ]
+
+        self.assertEqual(
+            _alpha_only_evaluator_retry_labels(attempts),
+            {"paint-deficit-cumulative"},
+        )
+
+    def test_byte_budget_failures_do_not_trigger_evaluator_aligned_retry(self) -> None:
+        attempts = [
+            {
+                "encoding_label": "paint-deficit-q24",
+                "status": "byte_rejected",
+                "validation_stage": None,
+                "exact_error_code": (
+                    "source_alpha_candidate_painter_byte_budget_rejected:"
+                    "paint-deficit-q24:1194110>304990"
+                ),
+            },
+            {
+                "encoding_label": "paint-deficit-cumulative",
+                "status": "byte_rejected",
+                "validation_stage": None,
+                "exact_error_code": (
+                    "source_alpha_candidate_painter_byte_budget_rejected:"
+                    "paint-deficit-cumulative:870542>304990"
+                ),
+            },
+        ]
+
+        self.assertEqual(_alpha_only_evaluator_retry_labels(attempts), set())
 
 
 if __name__ == "__main__":
