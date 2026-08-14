@@ -57,6 +57,33 @@ def _thin_core_64_diagnostic(builder, tmp_path: Path) -> dict[str, object]:
     }
 
 
+def _issue152_multiscale_failures(svg_path: Path, builder) -> tuple[list[str], dict[str, object]]:
+    """Test-only mirror of the fail-closed Issue #152 analytic scale axes."""
+    from engine.regression import residual_measurement_contract as contract  # noqa: PLC0415
+    from engine.regression import residual_multiscale_source as multiscale  # noqa: PLC0415
+
+    multiscale.measure_residual_error = contract.measure_residual_error
+    evidence = multiscale.measure_multiscale_svg_from_base(svg_path, builder, base_size=256)
+    failures: list[str] = []
+    if not bool(evidence.get("all_scales_measured")):
+        failures.append("all_scales_measured")
+    if not bool(evidence.get("source_contract_verified")):
+        failures.append("source_contract_verified")
+    for level in evidence.get("levels") or []:
+        scale = str(level.get("scale"))
+        checks = (
+            ("source_cc_recall", float(level.get("source_component_recall") or 0.0) == 1.0),
+            ("render_cc_precision", float(level.get("render_component_precision") or 0.0) == 1.0),
+            ("small_component_recall", float(level.get("small_component_recall") or 0.0) == 1.0),
+            ("min_true_component_iou", float(level.get("min_component_iou") or 0.0) >= 0.95),
+            ("normalized_boundary_excess", float(level.get("normalized_boundary_excess_px") or 0.0) <= 0.25),
+            ("visible_residual", float(level.get("visible_error_ratio") or 0.0) <= 0.01),
+            ("de00_p95", float(level.get("de00_p95") or 0.0) <= 2.3),
+        )
+        failures.extend(f"{scale}_{name}" for name, passed in checks if not passed)
+    return failures, evidence
+
+
 def test_axis_aligned_palette_geometry_is_scale_stable_and_vector_only(tmp_path: Path) -> None:
     source = tmp_path / "source.png"
     output = tmp_path / "out.svg"
@@ -142,6 +169,8 @@ def test_issue152_target_sources_are_semantically_scale_stable(case_name: str, t
         f"core64={core64}"
     )
     assert report.get("scale_stable_eligible") is True, diagnostic
+    failures, evidence = _issue152_multiscale_failures(output, builder)
+    assert not failures, f"{diagnostic} issue152_failures={failures} evidence={evidence}"
 
 
 def test_issue152_small_ellipse_resvg_parameter_sweep(tmp_path: Path) -> None:
