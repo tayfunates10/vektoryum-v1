@@ -129,9 +129,74 @@ def _anchored_source_component_mask(
     }
 
 
+
+def _coarsen_deficit_palette(
+    labels: np.ndarray,
+    palette: np.ndarray,
+    target_limit: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Reduce label fragmentation without changing deficit coverage.
+
+    The original source-derived palette remains authoritative.  This helper is
+    used only by the byte-pressure fallback: it chooses at most ``target_limit``
+    existing palette entries as pixel-count-weighted medoids and remaps every
+    positive deficit label to its nearest retained colour.  No deficit pixel is
+    added or removed.  With at most eight colours exhaustive medoid selection is
+    deterministic and tiny (max C(8, 4) == 70).
+    """
+    from itertools import combinations
+
+    label_array = np.asarray(labels, dtype=np.int32)
+    palette_array = np.asarray(palette, dtype=np.uint8)
+    limit = max(1, int(target_limit))
+    positive = label_array > 0
+    if not bool(positive.any()) or len(palette_array) <= limit:
+        return label_array.copy(), palette_array.copy()
+
+    referenced = label_array[positive].astype(np.int64) - 1
+    if bool(np.any(referenced < 0)) or bool(np.any(referenced >= len(palette_array))):
+        raise ValueError("paint deficit labels reference palette out of range")
+
+    weights = np.bincount(referenced, minlength=len(palette_array)).astype(np.int64)
+    active = np.flatnonzero(weights > 0)
+    if len(active) <= limit:
+        return label_array.copy(), palette_array.copy()
+
+    active_colors = palette_array[active].astype(np.int64)
+    active_weights = weights[active].astype(np.float64)
+    best_subset: tuple[int, ...] | None = None
+    best_cost: float | None = None
+    for subset in combinations(range(len(active)), limit):
+        centers = active_colors[list(subset)]
+        delta = active_colors[:, None, :] - centers[None, :, :]
+        distance_sq = np.sum(delta * delta, axis=2)
+        cost = float(np.sum(np.min(distance_sq, axis=1) * active_weights))
+        if best_cost is None or cost < best_cost:
+            best_cost = cost
+            best_subset = tuple(int(index) for index in subset)
+
+    if best_subset is None:
+        return label_array.copy(), palette_array.copy()
+
+    selected_active = active[list(best_subset)]
+    selected_colors = palette_array[selected_active].astype(np.int64)
+    old_colors = palette_array.astype(np.int64)
+    delta = old_colors[:, None, :] - selected_colors[None, :, :]
+    nearest_selected = np.argmin(np.sum(delta * delta, axis=2), axis=1)
+
+    remap = np.zeros(len(palette_array) + 1, dtype=np.int32)
+    for old_index in active:
+        remap[int(old_index) + 1] = int(nearest_selected[int(old_index)]) + 1
+    result_labels = remap[label_array]
+    if not np.array_equal(result_labels > 0, positive):
+        raise AssertionError("paint deficit palette fallback changed coverage")
+    return result_labels, palette_array[selected_active].copy()
+
 def _paint_deficit_labels(
     source_rgba: np.ndarray,
     artwork_rgba: np.ndarray,
+    *,
+    palette_limit: int = _PALETTE_LIMIT,
 ) -> tuple[np.ndarray, np.ndarray, dict[str, int]]:
     source = np.asarray(source_rgba, dtype=np.uint8)
     artwork = np.asarray(artwork_rgba, dtype=np.uint8)
@@ -167,6 +232,12 @@ def _paint_deficit_labels(
     nearest = np.argmin(distances.sum(axis=3), axis=2).astype(np.int32)
     labels = np.zeros(deficit.shape, dtype=np.int32)
     labels[deficit] = nearest[deficit] + 1
+    if int(palette_limit) < len(palette):
+        labels, palette = _coarsen_deficit_palette(
+            labels,
+            palette,
+            int(palette_limit),
+        )
     alpha_residual = (source[:, :, 3] > 0) & (artwork[:, :, 3] < 255)
     return labels, palette, {
         "paint_deficit_pixel_count": int(np.count_nonzero(deficit)),
@@ -187,6 +258,7 @@ def build_paint_deficit_reconstruction_tree(
     transaction_id: str,
     mask_encoding: str = "polygon",
     levels: int = _ALPHA_LEVELS,
+    palette_limit: int = _PALETTE_LIMIT,
 ) -> tuple[ET.Element, dict[str, Any]]:
     """Build one q24 source-alpha mask plus a compact deficit overlay.
 
@@ -243,6 +315,7 @@ def build_paint_deficit_reconstruction_tree(
     labels, palette, deficit_stats = _paint_deficit_labels(
         source,
         artwork_rgba,
+        palette_limit=palette_limit,
     )
     if int(deficit_stats["paint_deficit_pixel_count"]) <= 0:
         raise RuntimeError(
@@ -451,6 +524,7 @@ def build_paint_deficit_reconstruction_tree(
             support_rect_count += 1
         used_palette_count += 1
 
+    support_serialized_bytes = len(ET.tostring(support, encoding="utf-8"))
     layer.set("mask", f"url(#{mask_id})")
     return root, {
         "reconstruction_mask_encoding": (
@@ -471,6 +545,7 @@ def build_paint_deficit_reconstruction_tree(
         ),
         "paint_deficit_palette_count": int(used_palette_count),
         "paint_deficit_support_rect_count": int(support_rect_count),
+        "paint_deficit_support_serialized_bytes": int(support_serialized_bytes),
         "comparison_canvas_knocked_out": bool(target_canvas is not None),
         "comparison_canvas_retained_under_mask": False,
         "candidate_support_expanded_geometry_count": 0,
