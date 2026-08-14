@@ -98,7 +98,7 @@ jobs:
         run: |
           set -euo pipefail
           ROOT="${RUNNER_TEMP}/task-b-public04"
-          ROOT="${ROOT}" python - <<'PY' 2>&1 | tee "${ROOT}/public04.log"
+          cat > "${ROOT}/run_public04.py" <<'PY'
           import json
           import os
           from pathlib import Path
@@ -111,32 +111,41 @@ jobs:
               validate_policy,
           )
 
-          root = Path(os.environ["ROOT"])
-          corpus = root / "corpus"
-          policy = validate_policy(load_json(POLICY_PATH))
-          cases = load_qualification_cases(corpus)
-          selected = [case for case in cases if case.case_id == "qualification-public-04"]
-          assert len(selected) == 1
-          result, audit = run_repeated_case(
-              selected[0],
-              corpus_root=corpus,
-              work_root=root / "work" / selected[0].case_id,
-              engine_version=os.environ["HEAD_SHA"],
-              repeat_count=policy["repeat_count"],
-              timeout_seconds=policy["repeat_timeout_seconds"],
-              max_transient_retries=policy["max_transient_retries_per_repeat"],
-          )
-          payload = {
-              "schema": "vektoryum-task-b-public04-proof-v1",
-              "result": result.to_dict(),
-              "audit": audit,
-          }
-          (root / "public04-result.json").write_text(
-              json.dumps(payload, indent=2, sort_keys=True) + "\n",
-              encoding="utf-8",
-          )
-          print(json.dumps(payload, sort_keys=True))
+          def main() -> None:
+              root = Path(os.environ["ROOT"])
+              corpus = root / "corpus"
+              policy = validate_policy(load_json(POLICY_PATH))
+              cases = load_qualification_cases(corpus)
+              selected = [
+                  case
+                  for case in cases
+                  if case.case_id == "qualification-public-04"
+              ]
+              assert len(selected) == 1
+              result, audit = run_repeated_case(
+                  selected[0],
+                  corpus_root=corpus,
+                  work_root=root / "work" / selected[0].case_id,
+                  engine_version=os.environ["HEAD_SHA"],
+                  repeat_count=policy["repeat_count"],
+                  timeout_seconds=policy["repeat_timeout_seconds"],
+                  max_transient_retries=policy["max_transient_retries_per_repeat"],
+              )
+              payload = {
+                  "schema": "vektoryum-task-b-public04-proof-v1",
+                  "result": result.to_dict(),
+                  "audit": audit,
+              }
+              (root / "public04-result.json").write_text(
+                  json.dumps(payload, indent=2, sort_keys=True) + "\n",
+                  encoding="utf-8",
+              )
+              print(json.dumps(payload, sort_keys=True))
+
+          if __name__ == "__main__":
+              main()
           PY
+          ROOT="${ROOT}" python "${ROOT}/run_public04.py" 2>&1 | tee "${ROOT}/public04.log"
 
       - name: Upload public-04 proof
         if: always()
