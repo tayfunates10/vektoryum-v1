@@ -1585,6 +1585,29 @@ def apply_candidate_painter_reconstruction(
             # Kesin eklemeli son çare: mevcut tüm aday yolları önce aynen
             # tüketilir; bugün winner üreten hiçbir vaka bu fazı görmez.
             winner = _evaluate_node_free_quantized()
+        if winner is None:
+            from app.alpha_candidate_evaluator_retry import (  # noqa: PLC0415
+                evaluate_evaluator_aligned_paint_deficit,
+            )
+
+            winner = evaluate_evaluator_aligned_paint_deficit(
+                attempts=attempts,
+                original_root=original_root,
+                canvas=canvas,
+                source_rgba_full=source_rgba_full,
+                parent_sha256=parent_sha256,
+                mode=mode,
+                parent_counts=parent_counts,
+                limits=limits,
+                target=target,
+                excluded_from_parent=excluded_from_parent,
+                parent_journal_path=parent_journal_path,
+                journal_source_rgb=journal_source_rgb,
+                journal_image_class=journal_image_class,
+                write_tree_to_temp=_write_tree_to_temp,
+                assess_candidate=_assess_painter_candidate,
+                run_geometry_journal=_run_painter_geometry_journal,
+            )
     finally:
         parent_journal_path.unlink(missing_ok=True)
 
@@ -1619,8 +1642,12 @@ def apply_candidate_painter_reconstruction(
             "candidate_path_data_preserved": True,
             "trace_rgb_bytes_preserved": True,
             "candidate_identity_preserved": True,
-            "painter_grid_width": int(grid_width),
-            "painter_grid_height": int(grid_height),
+            "painter_grid_width": int(
+                w_geometry.get("evaluator_aligned_grid_width", grid_width)
+            ),
+            "painter_grid_height": int(
+                w_geometry.get("evaluator_aligned_grid_height", grid_height)
+            ),
             "preflight_parent_path_count": int(parent_counts[0]),
             "preflight_parent_node_count": int(parent_counts[1]),
             "preflight_path_limit": int(limits["path_limit"]),
