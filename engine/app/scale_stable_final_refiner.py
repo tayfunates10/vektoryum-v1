@@ -1,11 +1,10 @@
 """Final bounded five-scale refinement for source-derived semantic geometry.
 
-This pass reuses only generic primitive models and candidates already inferred
-from connected source masks by the production geometry pipeline. It exists to
-resolve renderer phase cases where an earlier conservative pass rejected a
-five-scale-better candidate solely because native rasterization moved by a few
-pixels. External acceptance thresholds, policies, corpus, palette caps, shared
-budgets and vector-only requirements are unchanged.
+This pass evaluates only candidate families not already exhausted by the prior
+source-phase pass: non-scaling cardinal anchors for leaf ellipses and compact
+nested ellipse phase corrections.  It remains source-derived and fail-closed;
+external acceptance thresholds, policies, corpus, palette caps, shared budgets
+and vector-only requirements are unchanged.
 """
 from __future__ import annotations
 
@@ -18,6 +17,7 @@ from app import scale_stable_discrete_optimizer as _disc
 from app import scale_stable_parent_geometry as _parent
 
 _NATIVE_MISMATCH_SLACK = 0.00025
+_SCENE_CANDIDATE_LIMIT = 3
 
 
 def _flatten(parts: list[list[str]]) -> list[str]:
@@ -37,29 +37,13 @@ def _scene_safe(before: dict[str, Any], after: dict[str, Any]) -> bool:
     )
 
 
-def _eligible_leaf_model(model: dict[str, Any]) -> bool:
-    kind = str(model.get("kind") or "")
-    if kind == "ellipse":
-        return True
-    if kind != "rect":
-        return False
-    width = float(model.get("width") or 0.0)
-    height = float(model.get("height") or 0.0)
-    if min(width, height) <= 0.0 or max(width, height) > 8.0:
-        return False
-    return max(width, height) / max(1e-9, min(width, height)) <= 1.25
-
-
 def _candidate_parts(model: dict[str, Any], family: str, fill: str) -> list[list[str]]:
     kind = str(model.get("kind") or "")
-    if family == "nested_parent" and kind == "rounded_rect":
-        return _disc._rounded_parent_candidates(model, fill)
-    if family == "nested_parent" and kind == "ellipse":
+    if family == "leaf_ellipse" and kind == "ellipse":
+        # Single-element ellipse phase candidates are already covered upstream.
+        return [part for part in _disc._ellipse_candidates(model, fill) if len(part) > 1]
+    if family == "nested_ellipse" and kind == "ellipse":
         return _disc._parent_ellipse_candidates(model, fill)
-    if kind == "ellipse":
-        return _disc._ellipse_candidates(model, fill)
-    if kind == "rect":
-        return _disc._compact_rect_candidates(model, fill)
     return []
 
 
@@ -122,18 +106,16 @@ def refine_final_geometry(
         prior = primitive_by_node.get(node_id)
         if prior is not None and child_count[node_id] == 0:
             proposed = dict(prior.get("model") or {})
-            if _eligible_leaf_model(proposed):
+            if str(proposed.get("kind") or "") == "ellipse":
                 model = proposed
-                family = "leaf_compact"
+                family = "leaf_ellipse"
 
         if model is None and child_count[node_id] > 0 and len(parts[index]) == 1:
             source_mask = node_map == node_id
-            proposed = _parent._rounded_model(source_mask)
-            if proposed is None:
-                proposed = _parent._ellipse_model(source_mask)
+            proposed = _parent._ellipse_model(source_mask)
             if proposed is not None:
                 model = dict(proposed)
-                family = "nested_parent"
+                family = "nested_ellipse"
 
         if model is None or family is None:
             continue
@@ -155,34 +137,34 @@ def refine_final_geometry(
         ):
             continue
 
-        best_part = base_part
-        best_isolated = isolated_before
-        best_scene = scene_before
-        best_key = _disc._isolated_score(isolated_before, len(base_part)) + (
-            float(scene_before["native_mismatch"]),
-        )
+        base_key = _disc._isolated_score(isolated_before, len(base_part))
+        ranked: list[tuple[tuple[float, float, float, float, int], list[str], dict[str, Any]]] = []
         for candidate in _candidate_parts(model, family, fill):
             isolated = _disc._isolated_metrics(model, candidate, fill, sw, sh)
             if isolated is None:
                 continue
             if float(isolated["native_iou"]) + 1e-12 < float(_impl._NATIVE_MIN_IOU):
                 continue
+            key = _disc._isolated_score(isolated, len(candidate))
+            if key < base_key:
+                ranked.append((key, list(candidate), isolated))
+        ranked.sort(key=lambda item: item[0])
+
+        best_part = base_part
+        best_isolated = isolated_before
+        best_scene = scene_before
+        for _key, candidate, isolated in ranked[:_SCENE_CANDIDATE_LIMIT]:
             trial_parts = list(parts)
-            trial_parts[index] = list(candidate)
+            trial_parts[index] = candidate
             scene = _disc._scene_metrics(
                 labels, colors, _flatten(trial_parts), node_map, node_id,
                 color_index, source_counts,
             )
-            if scene is None or not _scene_safe(scene_before, scene):
-                continue
-            key = _disc._isolated_score(isolated, len(candidate)) + (
-                float(scene["native_mismatch"]),
-            )
-            if key < best_key:
-                best_key = key
-                best_part = list(candidate)
+            if scene is not None and _scene_safe(scene_before, scene):
+                best_part = candidate
                 best_isolated = isolated
                 best_scene = scene
+                break
 
         changed = best_part != base_part
         if changed:
