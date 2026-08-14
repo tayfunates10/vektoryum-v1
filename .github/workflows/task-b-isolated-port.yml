@@ -1,5 +1,6 @@
 name: Task B isolated canonical port
 
+# PYTHONPATH is part of the frozen engine test harness contract.
 on:
   push:
     branches:
