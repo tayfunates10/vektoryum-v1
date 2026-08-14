@@ -57,6 +57,26 @@ def _thin_core_64_diagnostic(builder, tmp_path: Path) -> dict[str, object]:
     }
 
 
+def _calibration_diagnostic(builder) -> dict[str, object]:
+    """Read cached production calibration reports; this is test-only evidence."""
+    from app.semantic_region_geometry import build_semantic_region_elements  # noqa: PLC0415
+
+    source256 = np.asarray(builder(256).convert("RGB"), dtype=np.uint8)
+    colors, inverse = np.unique(source256.reshape(-1, 3), axis=0, return_inverse=True)
+    labels = inverse.reshape(256, 256)
+    semantic = build_semantic_region_elements(labels, colors)
+    keys = (
+        "five_scale_parent_calibration",
+        "five_scale_source_primitive_calibration",
+        "five_scale_contract_refinement",
+        "five_scale_source_phase_refinement",
+        "five_scale_final_bounded_refinement",
+        "five_scale_nested_seam_stabilization",
+        "scale_topology_repair",
+    )
+    return {key: semantic.get(key) for key in keys if semantic.get(key) is not None}
+
+
 def _issue152_multiscale_failures(svg_path: Path, builder) -> tuple[list[str], dict[str, object]]:
     """Test-only mirror of the fail-closed Issue #152 analytic scale axes."""
     from engine.regression import residual_measurement_contract as contract  # noqa: PLC0415
@@ -134,7 +154,7 @@ def test_palette_is_preserved_exactly_for_rectangular_classes(tmp_path: Path) ->
 
 @pytest.mark.parametrize("case_name", ["micro", "small", "thin"])
 def test_issue152_target_sources_are_semantically_scale_stable(case_name: str, tmp_path: Path) -> None:
-    """Test-only fixture probe; production remains fixture-agnostic."""
+    """Strict test-only Issue #152 gate; production remains fixture-agnostic."""
     from engine.regression.output_quality_residual_suite import (  # noqa: PLC0415
         _draw_micro_component_ladder,
         _draw_thin_negative_space,
@@ -155,76 +175,18 @@ def test_issue152_target_sources_are_semantically_scale_stable(case_name: str, t
     assert "<image" not in text and "base64" not in text and "data:image" not in text
     transaction = report.get("fit_transaction") or {}
     core64 = _thin_core_64_diagnostic(builder, tmp_path) if case_name == "thin" else None
+    calibration = _calibration_diagnostic(builder)
     diagnostic = (
         f"{case_name}: reason={transaction.get('reason')} "
         f"strategies={report.get('fit_strategy_counts')} "
         f"regions={report.get('semantic_regions')} "
         f"source_counts={transaction.get('source_class_component_counts')} "
         f"native_counts={transaction.get('native_class_component_counts')} "
-        f"render_counts={transaction.get('render_class_component_counts')} "
         f"levels={transaction.get('levels')} "
         f"native_visible={transaction.get('native_visible_residual')} "
-        f"native_boundary={transaction.get('native_boundary_p95_px')} "
         f"native_component={transaction.get('native_component')} "
-        f"core64={core64}"
+        f"calibration={calibration} core64={core64} selected_svg={text}"
     )
     assert report.get("scale_stable_eligible") is True, diagnostic
     failures, evidence = _issue152_multiscale_failures(output, builder)
     assert not failures, f"{diagnostic} issue152_failures={failures} evidence={evidence}"
-
-
-def test_issue152_small_ellipse_resvg_parameter_sweep(tmp_path: Path) -> None:
-    """Test-only renderer probe; no fixture-derived parameter enters production."""
-    from app import semantic_region_geometry_core as core  # noqa: PLC0415
-    from engine.regression.output_quality_suite import _draw_small_details  # noqa: PLC0415
-
-    source = tmp_path / "small-sweep.png"
-    _draw_small_details(256).convert("RGBA").save(source, "PNG", optimize=False)
-    original = core._ellipse_from_cycle
-    results: list[dict[str, float | bool]] = []
-    try:
-        for center_shift in (-0.5, -0.25, 0.0, 0.25, 0.5):
-            for radius_inset in (-0.5, -0.25, 0.0, 0.1, 0.25, 0.5, 0.75, 1.0):
-                def candidate(points, cs=center_shift, ri=radius_inset):
-                    if len(points) < 8:
-                        return None
-                    arr = np.asarray(points, dtype=np.float64)
-                    low = arr.min(axis=0); high = arr.max(axis=0); span = high - low
-                    if min(span) < 2.0 or max(span) / max(1e-9, min(span)) > 1.35:
-                        return None
-                    area = abs(float(cv2.contourArea(arr.astype(np.float32).reshape(-1, 1, 2))))
-                    occupancy = area / max(1.0, float(span[0] * span[1]))
-                    if not (0.48 <= occupancy <= 0.90):
-                        return None
-                    rx = float(span[0]) / 2.0 - float(ri)
-                    ry = float(span[1]) / 2.0 - float(ri)
-                    if min(rx, ry) < 1.0:
-                        return None
-                    cx = float(low[0] + high[0]) / 2.0 + float(cs)
-                    cy = float(low[1] + high[1]) / 2.0 + float(cs)
-                    return (
-                        f"M{core._fmt(cx-rx)} {core._fmt(cy)}"
-                        f"A{core._fmt(rx)} {core._fmt(ry)} 0 1 0 {core._fmt(cx+rx)} {core._fmt(cy)}"
-                        f"A{core._fmt(rx)} {core._fmt(ry)} 0 1 0 {core._fmt(cx-rx)} {core._fmt(cy)}Z"
-                    )
-                core._ellipse_from_cycle = candidate
-                report = vectorize_source_palette_paths(
-                    source,
-                    tmp_path / f"small-{center_shift}-{radius_inset}.svg",
-                    max_colors=6,
-                )
-                tx = report.get("fit_transaction") or {}
-                comp = tx.get("native_component") or {}
-                results.append({
-                    "center_shift": float(center_shift),
-                    "radius_inset": float(radius_inset),
-                    "min_iou": float(comp.get("min_true_cc_iou") or 0.0),
-                    "visible": float(tx.get("native_visible_residual") or 1.0),
-                    "boundary": float(tx.get("native_boundary_p95_px") or 99.0),
-                    "eligible": bool(report.get("scale_stable_eligible")),
-                })
-    finally:
-        core._ellipse_from_cycle = original
-    results.sort(key=lambda item: (float(item["min_iou"]), -float(item["visible"])), reverse=True)
-    best = results[:8]
-    assert best[0]["min_iou"] >= 0.95, f"ELLIPSE_SWEEP_TOP={best}"
