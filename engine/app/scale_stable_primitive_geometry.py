@@ -4,9 +4,10 @@ Only geometry inferred from connected source masks is considered. Candidate
 SVGs are rendered in isolation at 0.25x/0.5x/1x/2x/4x and compared with the
 same normalized Pillow primitive semantics used by source geometry. Inclusive
 ellipse/rounded-box endpoints are represented by scalable geometry plus a
-bounded device-pixel edge correction; line endpoints receive a square-cap
-one-device-pixel overlay. Every proposal is selected only by production-render
-fidelity and the existing native threshold.
+bounded device-pixel edge correction. Thin elongated filled rectangles are
+recognized generically as the native raster footprint of a Pillow line and are
+scored as line semantics rather than as scalable rectangles. Every proposal is
+selected only by production-render fidelity and the existing native threshold.
 """
 from __future__ import annotations
 
@@ -128,11 +129,54 @@ def _infer_inclusive_ellipse(mask: np.ndarray) -> dict[str, Any] | None:
     }
 
 
+def _infer_thin_rect_line(mask: np.ndarray) -> dict[str, Any] | None:
+    """Recognize a generic thin filled rectangle as a line raster footprint."""
+    source = np.asarray(mask, dtype=bool)
+    box = _bbox(source)
+    if box is None:
+        return None
+    x0, y0, x1, y1 = box
+    width = x1 - x0 + 1
+    height = y1 - y0 + 1
+    short = min(width, height)
+    long = max(width, height)
+    if short < 1 or short > 4 or long < 4 * short:
+        return None
+    if int(np.count_nonzero(source)) != width * height:
+        return None
+    if not bool(np.all(source[y0:y1+1, x0:x1+1])):
+        return None
+    if width >= height:
+        return {
+            "kind": "line",
+            "axis": "h",
+            "x0": float(x0), "y0": float(y0),
+            "x1": float(x1), "y1": float(y0),
+            "width": float(height),
+            "thin_rect_source": True,
+        }
+    return {
+        "kind": "line",
+        "axis": "v",
+        "x0": float(x0), "y0": float(y0),
+        "x1": float(x0), "y1": float(y1),
+        "width": float(width),
+        "thin_rect_source": True,
+    }
+
+
 def _point(cx: float, cy: float, fill: str, *, cap: str = "square", width: float = 1.0) -> str:
     return (
         f'<path d="M{_fmt(cx)} {_fmt(cy)}h0.001" fill="none" stroke="{fill}" '
         f'stroke-width="{_fmt(width)}" vector-effect="non-scaling-stroke" stroke-linecap="{cap}"/>'
     )
+
+
+def _line_path(model: dict[str, Any], offset: float) -> str:
+    x0, y0, x1, y1 = (float(model[k]) for k in ("x0", "y0", "x1", "y1"))
+    if str(model["axis"]) == "h":
+        return f'M{_fmt(x0)} {_fmt(y0+offset)}H{_fmt(x1)}'
+    return f'M{_fmt(x0+offset)} {_fmt(y0)}V{_fmt(y1)}'
 
 
 def _candidate_elements(model: dict[str, Any], fill: str) -> list[list[str]]:
@@ -155,20 +199,32 @@ def _candidate_elements(model: dict[str, Any], fill: str) -> list[list[str]]:
             [f'<ellipse cx="{_fmt(cx)}" cy="{_fmt(cy)}" rx="{_fmt(max(.5,rx-.125))}" ry="{_fmt(max(.5,ry-.125))}" fill="{fill}" stroke="{fill}" stroke-width="1" vector-effect="non-scaling-stroke"/>'],
         ]
     if kind == "line":
-        x0, y0, x1, y1, width = (float(model[k]) for k in ("x0", "y0", "x1", "y1", "width"))
-        axis = str(model["axis"])
-        centers = (width/2.0, max(0.0, (width-1.0)/2.0))
+        width = float(model["width"])
+        offsets = sorted({
+            0.0,
+            0.25,
+            0.5,
+            max(0.0, (width-1.0)/2.0),
+            width/2.0,
+        })
         output: list[list[str]] = []
-        for offset in centers:
-            path = (
-                f'M{_fmt(x0)} {_fmt(y0+offset)}H{_fmt(x1)}'
-                if axis == "h" else
-                f'M{_fmt(x0+offset)} {_fmt(y0)}V{_fmt(y1)}'
-            )
+        for offset in offsets:
+            path = _line_path(model, offset)
             base = f'<path d="{path}" fill="none" stroke="{fill}" stroke-width="{_fmt(width)}" stroke-linecap="butt"/>'
             output.append([base])
-            output.append([base, f'<path d="{path}" fill="none" stroke="{fill}" stroke-width="1" vector-effect="non-scaling-stroke" stroke-linecap="butt"/>'])
             output.append([base, f'<path d="{path}" fill="none" stroke="{fill}" stroke-width="1" vector-effect="non-scaling-stroke" stroke-linecap="square"/>'])
+        if bool(model.get("thin_rect_source")):
+            x0, y0, x1, y1 = (float(model[k]) for k in ("x0", "y0", "x1", "y1"))
+            axis = str(model["axis"])
+            # Endpoint delta + one device pixel encodes Pillow's inclusive end.
+            if axis == "h":
+                output.append([
+                    f'<rect x="{_fmt(x0)}" y="{_fmt(y0)}" width="{_fmt(max(.001,x1-x0))}" height="{_fmt(width)}" fill="{fill}" stroke="{fill}" stroke-width="1" vector-effect="non-scaling-stroke"/>'
+                ])
+            else:
+                output.append([
+                    f'<rect x="{_fmt(x0)}" y="{_fmt(y0)}" width="{_fmt(width)}" height="{_fmt(max(.001,y1-y0))}" fill="{fill}" stroke="{fill}" stroke-width="1" vector-effect="non-scaling-stroke"/>'
+                ])
         return output
     if kind == "rect":
         x, y, width, height = (float(model[k]) for k in ("x", "y", "width", "height"))
@@ -198,9 +254,6 @@ def _candidate_elements(model: dict[str, Any], fill: str) -> list[list[str]]:
             (x0+.01, y0-.01, width, height+.02, radius),
         )
         output = [[f'<rect x="{_fmt(px)}" y="{_fmt(py)}" width="{_fmt(pw)}" height="{_fmt(ph)}" rx="{_fmt(pr)}" ry="{_fmt(pr)}" fill="{fill}"/>'] for px,py,pw,ph,pr in specs]
-        # Pillow's inclusive endpoint box is scale*delta + one device pixel.
-        # These candidates encode that one-pixel term without changing the
-        # scalable source geometry or any acceptance threshold.
         base_width = max(.001, x1-x0)
         base_height = max(.001, y1-y0)
         for dr in (0.0, -.5, .5):
@@ -296,6 +349,7 @@ def calibrate_primitives(
         model = _impl._infer(source_mask, strategy)
         rounded = _infer_rounded(source_mask)
         inclusive_ellipse = _infer_inclusive_ellipse(source_mask)
+        thin_line = _infer_thin_rect_line(source_mask)
         is_top_level = parent[node_id] == root if 0 <= node_id < len(parent) else False
         is_leaf = child_count[node_id] == 0 if 0 <= node_id < len(child_count) else False
 
@@ -303,6 +357,8 @@ def calibrate_primitives(
             model = rounded
         elif inclusive_ellipse is not None and is_leaf:
             model = inclusive_ellipse
+        elif thin_line is not None and is_leaf:
+            model = thin_line
         elif model is None or not is_leaf or str(model.get("kind")) not in {"ellipse", "line", "rect"}:
             continue
 
@@ -333,9 +389,7 @@ def calibrate_primitives(
         changed = best_part != base_part
         if changed:
             parts[index] = best_part
-        if str(model["kind"]) == "rect":
-            repair_models[node_id] = dict(model)
-        elif str(model["kind"]) in {"ellipse", "line"}:
+        if str(model["kind"]) in {"rect", "ellipse", "line"}:
             repair_models[node_id] = dict(model)
         reports.append({
             "node_id": node_id,
