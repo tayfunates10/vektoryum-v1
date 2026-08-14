@@ -68,6 +68,11 @@ _PAINTER_STROKE_PIXELS = (1.0, 1.5, 2.0, 3.0)
 # quality-threshold change.
 _PAINTER_UNDERPAINT_MIN_STROKE_PIXELS = 1.5
 _PAINTER_EVAL_SIDE = 512.0
+# FinalArtifactEvaluator freshly rasterizes the SVG on a source-aspect grid whose
+# longest side is 1024. Keep this generation-only mirror explicit: the evaluator
+# remains the unchanged acceptance authority and its thresholds are not imported
+# or modified here.
+_FINAL_EVALUATOR_MAX_SIDE = 1024.0
 _ALPHA_PLANE_FAILURE_CODES = {"alpha_iou_below_min", "alpha_mae_above_max"}
 
 
@@ -378,6 +383,77 @@ def _requantize_alpha(
         opacity_by_level[bucket] = float(alpha[selected].mean()) / 255.0
         quantized[selected] = bucket
     return quantized, opacity_by_level
+
+
+def _evaluator_aligned_source_rgba(source_rgba_full: np.ndarray) -> np.ndarray:
+    """Sample source RGBA on FinalArtifactEvaluator's comparison raster grid.
+
+    The final evaluator downsizes source alpha with ``INTER_AREA`` to a maximum
+    1024-pixel side, then freshly rasterizes the SVG at exactly that size. Painter's
+    established native grid can instead be as large as 1600 and its bounded check
+    downsizes an already-rendered native alpha plane. This helper supplies an
+    additive retry grid whose cell boundaries coincide with the final evaluator's
+    fresh SVG rasterization grid; it does not alter evaluator policy or thresholds.
+    """
+    source = np.asarray(source_rgba_full, dtype=np.uint8)
+    if source.ndim != 3 or source.shape[2] != 4:
+        raise RuntimeError("source_alpha_candidate_painter_evaluator_grid_invalid_rgba")
+    source_height, source_width = source.shape[:2]
+    scale = min(
+        1.0,
+        _FINAL_EVALUATOR_MAX_SIDE / float(max(source_width, source_height)),
+    )
+    eval_width = max(1, int(round(source_width * scale)))
+    eval_height = max(1, int(round(source_height * scale)))
+    if (eval_height, eval_width) == (source_height, source_width):
+        return source.copy()
+
+    aligned = cv2.resize(
+        source,
+        (eval_width, eval_height),
+        interpolation=cv2.INTER_AREA,
+    )
+    aligned = np.asarray(aligned, dtype=np.uint8).copy()
+    # Mirror the evaluator's alpha-plane path exactly: it resizes source alpha as
+    # a standalone plane, not by reading the alpha channel from an RGBA resize.
+    aligned[:, :, 3] = cv2.resize(
+        source[:, :, 3],
+        (eval_width, eval_height),
+        interpolation=cv2.INTER_AREA,
+    )
+    return aligned
+
+
+def _alpha_only_evaluator_retry_labels(
+    attempts: list[dict[str, Any]],
+) -> set[str]:
+    """Return candidate labels that reached evaluator and failed alpha-plane gates.
+
+    Byte/native/bounded/structure/journal failures are deliberately excluded.  The
+    returned labels are only retry eligibility; every retry must still pass the
+    unchanged native, bounded, FinalArtifactEvaluator and TransformJournal gates.
+    """
+    prefix = "source_alpha_candidate_painter_evaluator_rejected:"
+    labels: set[str] = set()
+    for entry in attempts:
+        if entry.get("status") != "evaluator_rejected":
+            continue
+        if entry.get("validation_stage") != "evaluator":
+            continue
+        error_code = str(entry.get("exact_error_code") or "")
+        if not error_code.startswith(prefix):
+            continue
+        reasons = {
+            reason
+            for reason in error_code[len(prefix):].split(",")
+            if reason
+        }
+        if not reasons or not reasons.issubset(_ALPHA_PLANE_FAILURE_CODES):
+            continue
+        label = str(entry.get("encoding_label") or "")
+        if label:
+            labels.add(label)
+    return labels
 
 
 def _serialized_children_size(children: list[ET.Element]) -> int:
@@ -1231,21 +1307,61 @@ def apply_candidate_painter_reconstruction(
                     Path(accepted[4]).unlink(missing_ok=True)
         return best
 
-    def _evaluate_paint_deficit() -> list[Any] | None:
+    def _evaluate_paint_deficit(
+        source_grid_rgba: np.ndarray | None = None,
+        assessment_grid_alpha: np.ndarray | None = None,
+        *,
+        family: str = "paint_deficit",
+        label_suffix: str = "",
+        allowed_base_labels: set[str] | None = None,
+    ) -> list[Any] | None:
         from app.alpha_candidate_paint_deficit import (  # noqa: PLC0415
             build_paint_deficit_reconstruction_tree,
         )
 
-        def _try(mask_encoding: str, label: str) -> list[Any] | None:
+        active_rgba = (
+            grid_rgba
+            if source_grid_rgba is None
+            else np.asarray(source_grid_rgba, dtype=np.uint8)
+        )
+        active_alpha = (
+            grid_alpha
+            if assessment_grid_alpha is None
+            else np.asarray(assessment_grid_alpha, dtype=np.uint8)
+        )
+        if active_rgba.ndim != 3 or active_rgba.shape[2] != 4:
+            raise RuntimeError("source_alpha_candidate_painter_retry_invalid_rgba")
+        if active_alpha.ndim != 2 or active_rgba.shape[:2] != active_alpha.shape:
+            raise RuntimeError("source_alpha_candidate_painter_retry_grid_mismatch")
+        if assessment_grid_alpha is None:
+            active_source_alpha_sha256 = source_alpha_sha256
+            active_source_level_count = source_level_count
+        else:
+            active_source_alpha_sha256 = hashlib.sha256(
+                np.ascontiguousarray(active_alpha).tobytes()
+            ).hexdigest()
+            active_quantized, active_opacity = _quantize_alpha(active_alpha)
+            del active_quantized
+            active_source_level_count = len(
+                [lvl for lvl in active_opacity if int(lvl) > 0]
+            )
+
+        def _try(mask_encoding: str, base_label: str) -> list[Any] | None:
+            if (
+                allowed_base_labels is not None
+                and base_label not in allowed_base_labels
+            ):
+                return None
+            label = f"{base_label}{label_suffix}"
             txn = alpha_transaction_id(
-                parent_sha256, source_alpha_sha256, mode, label
+                parent_sha256, active_source_alpha_sha256, mode, label
             )
             entry: dict[str, Any] = {
                 "stroke_width": 0.0,
                 "encoding_label": label,
                 "encoding_family": "paint_deficit",
-                "exact_or_quantized": "paint_deficit",
-                "source_alpha_level_count": int(source_level_count),
+                "exact_or_quantized": family,
+                "source_alpha_level_count": int(active_source_level_count),
                 "encoded_alpha_level_count": 24,
                 "actual_serialized_bytes": None,
                 "byte_limit": int(byte_limit),
@@ -1276,7 +1392,7 @@ def apply_candidate_painter_reconstruction(
                     build_paint_deficit_reconstruction_tree(
                         original_root,
                         canvas,
-                        grid_rgba,
+                        active_rgba,
                         txn,
                         mask_encoding=mask_encoding,
                     )
@@ -1314,7 +1430,7 @@ def apply_candidate_painter_reconstruction(
             assessment = _assess_painter_candidate(
                 probe_temp,
                 source_rgba_full,
-                grid_alpha,
+                active_alpha,
                 mode,
                 parent_counts,
                 transaction_id=txn,
@@ -1361,6 +1477,19 @@ def apply_candidate_painter_reconstruction(
                 probe_temp.unlink(missing_ok=True)
                 return None
 
+            accepted_geometry = dict(probe_geometry)
+            accepted_report = dict(assessment["report"] or {})
+            if family == "evaluator_aligned":
+                accepted_geometry.update(
+                    {
+                        "evaluator_aligned_retry": True,
+                        "evaluator_aligned_grid_width": int(active_alpha.shape[1]),
+                        "evaluator_aligned_grid_height": int(active_alpha.shape[0]),
+                    }
+                )
+                accepted_report["painter_retry_source_alignment"] = (
+                    "final_evaluator_comparison_grid"
+                )
             attempts.append(entry)
             return [
                 probe_size,
@@ -1368,8 +1497,8 @@ def apply_candidate_painter_reconstruction(
                 int(assessment["actual_node_count"] or 0),
                 0,
                 probe_temp,
-                probe_geometry,
-                dict(assessment["report"] or {}),
+                accepted_geometry,
+                accepted_report,
                 label,
                 0.0,
             ]
@@ -1394,6 +1523,32 @@ def apply_candidate_painter_reconstruction(
             winner = _evaluate_phase(quantized_specs)
         if winner is None:
             winner = _evaluate_paint_deficit()
+        if winner is None:
+            # GÖREV B / public-04: native + bounded geçen fakat final evaluator'ın
+            # fresh 1024-side rasterizasyonunda alpha-plane kapısına düşen mevcut
+            # paint-deficit adaylarını SON bir eklemeli fazda evaluator'ın gerçek
+            # source-alpha karşılaştırma gridinden yeniden kur. Mevcut geçen adaylar
+            # buraya asla ulaşmaz; byte/native/bounded/journal redleri uygun değildir.
+            retry_labels = _alpha_only_evaluator_retry_labels(attempts)
+            retry_labels.intersection_update(
+                {"paint-deficit-q24", "paint-deficit-cumulative"}
+            )
+            if retry_labels:
+                aligned_rgba = _evaluator_aligned_source_rgba(source_rgba_full)
+                aligned_alpha = np.asarray(
+                    aligned_rgba[:, :, 3], dtype=np.uint8
+                ).copy()
+                if (
+                    aligned_alpha.shape != grid_alpha.shape
+                    or not np.array_equal(aligned_alpha, grid_alpha)
+                ):
+                    winner = _evaluate_paint_deficit(
+                        aligned_rgba,
+                        aligned_alpha,
+                        family="evaluator_aligned",
+                        label_suffix="-evaluator-aligned",
+                        allowed_base_labels=retry_labels,
+                    )
     finally:
         parent_journal_path.unlink(missing_ok=True)
 
@@ -1428,8 +1583,12 @@ def apply_candidate_painter_reconstruction(
             "candidate_path_data_preserved": True,
             "trace_rgb_bytes_preserved": True,
             "candidate_identity_preserved": True,
-            "painter_grid_width": int(grid_width),
-            "painter_grid_height": int(grid_height),
+            "painter_grid_width": int(
+                w_geometry.get("evaluator_aligned_grid_width", grid_width)
+            ),
+            "painter_grid_height": int(
+                w_geometry.get("evaluator_aligned_grid_height", grid_height)
+            ),
             "preflight_parent_path_count": int(parent_counts[0]),
             "preflight_parent_node_count": int(parent_counts[1]),
             "preflight_path_limit": int(limits["path_limit"]),
