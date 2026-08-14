@@ -1,6 +1,5 @@
 name: Task B isolated canonical port
 
-# second push intentionally triggers the branch-local workflow after registration
 on:
   push:
     branches:
@@ -28,6 +27,7 @@ jobs:
         run: |
           set -euo pipefail
           git config core.autocrlf false
+          git reset --hard HEAD
           git fetch origin "${CANONICAL_BRANCH}"
           git checkout -B task-b-port "origin/${CANONICAL_BRANCH}"
           test "$(git rev-parse HEAD)" = "${EXPECTED_CANONICAL_HEAD}"
