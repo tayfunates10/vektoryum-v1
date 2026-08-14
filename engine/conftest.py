@@ -1,76 +1,116 @@
-"""Temporary Issue #152 true-contract primitive diagnostic; removed before final."""
+"""Temporary generic renderer probe for Issue #152; removed before final."""
 from __future__ import annotations
 
-from pathlib import Path
-import tempfile
-
-import cv2
 import numpy as np
 
 
+def _fmt(value: float) -> str:
+    text = f"{float(value):.4f}".rstrip("0").rstrip(".")
+    return text if text not in {"", "-0"} else "0"
+
+
 def pytest_sessionfinish(session, exitstatus):  # noqa: ANN001
-    from app import semantic_region_geometry_core as core
-    from app.source_palette_vector import _svg_document
-    from engine.regression.output_quality_suite import _draw_small_details
-    from engine.regression.residual_multiscale_source import measure_multiscale_svg_from_base
+    from app import semantic_region_geometry_impl as impl
+    from app.scale_stable_primitive_geometry import FACTORS, model_mask
 
-    source256 = np.asarray(_draw_small_details(256).convert("RGB"), dtype=np.uint8)
-    colors, inverse = np.unique(source256.reshape(-1, 3), axis=0, return_inverse=True)
-    labels = inverse.reshape(256, 256)
-    original = core._ellipse_from_cycle
-    results = []
-    with tempfile.TemporaryDirectory(prefix="issue152-direct-ellipse-sweep-") as tmp:
-        root = Path(tmp)
-        try:
-            for center_shift in (-0.5, -0.25, 0.0, 0.25, 0.5):
-                for radius_inset in (-0.5, -0.25, 0.0, 0.1, 0.25, 0.5, 0.75):
-                    def candidate(points, cs=center_shift, ri=radius_inset):
-                        if len(points) < 8:
-                            return None
-                        arr = np.asarray(points, dtype=np.float64)
-                        low = arr.min(axis=0); high = arr.max(axis=0); span = high - low
-                        if min(span) < 2.0 or max(span) / max(1e-9, min(span)) > 1.35:
-                            return None
-                        area = abs(float(cv2.contourArea(arr.astype(np.float32).reshape(-1, 1, 2))))
-                        occupancy = area / max(1.0, float(span[0] * span[1]))
-                        if not (0.48 <= occupancy <= 0.90):
-                            return None
-                        rx = float(span[0]) / 2.0 - float(ri)
-                        ry = float(span[1]) / 2.0 - float(ri)
-                        if min(rx, ry) < 1.0:
-                            return None
-                        cx = float(low[0] + high[0]) / 2.0 + float(cs)
-                        cy = float(low[1] + high[1]) / 2.0 + float(cs)
-                        return (
-                            f"M{core._fmt(cx-rx)} {core._fmt(cy)}"
-                            f"A{core._fmt(rx)} {core._fmt(ry)} 0 1 0 {core._fmt(cx+rx)} {core._fmt(cy)}"
-                            f"A{core._fmt(rx)} {core._fmt(ry)} 0 1 0 {core._fmt(cx-rx)} {core._fmt(cy)}Z"
-                        )
+    colors = np.asarray([[0, 0, 0], [255, 255, 255]], dtype=np.uint8)
+    sw = sh = 256
+    background = '<path fill="#ffffff" d="M0 0H256V256H0Z"/>'
 
-                    core._ellipse_from_cycle = candidate
-                    semantic = core.build_semantic_region_elements(labels, colors)
-                    output = root / f"small-{center_shift}-{radius_inset}.svg"
-                    output.write_text(_svg_document(256, 256, list(semantic["elements"])), encoding="utf-8")
-                    multi = measure_multiscale_svg_from_base(output, _draw_small_details)
-                    levels = multi.get("levels") or []
-                    if not levels:
-                        continue
-                    results.append({
-                        "center_shift": float(center_shift),
-                        "radius_inset": float(radius_inset),
-                        "min_iou": min(float(level.get("min_component_iou") or 0.0) for level in levels),
-                        "min_recall": min(float(level.get("source_component_recall") or 0.0) for level in levels),
-                        "min_precision": min(float(level.get("render_component_precision") or 0.0) for level in levels),
-                        "min_small": min(float(level.get("small_component_recall") or 0.0) for level in levels),
-                        "max_visible": max(float(level.get("visible_error_ratio") or 0.0) for level in levels),
-                        "max_de": max(float(level.get("de00_p95") or 0.0) for level in levels),
-                        "max_boundary": max(float(level.get("normalized_boundary_excess_px") or 0.0) for level in levels),
-                        "levels": [
-                            (level.get("scale"), level.get("min_component_iou"), level.get("source_component_recall"), level.get("render_component_precision"), level.get("small_component_recall"), level.get("visible_error_ratio"), level.get("de00_p95"), level.get("normalized_boundary_excess_px"))
-                            for level in levels
-                        ],
-                    })
-        finally:
-            core._ellipse_from_cycle = original
-    results.sort(key=lambda item: (item["min_recall"], item["min_precision"], item["min_small"], item["min_iou"], -item["max_visible"], -item["max_de"], -item["max_boundary"]), reverse=True)
-    print("\nISSUE152_DIRECT_REAL_ELLIPSE_SWEEP_TOP=" + repr(results[:10]))
+    def bbox(mask):
+        ys, xs = np.nonzero(np.asarray(mask, dtype=bool))
+        if not len(xs):
+            return None
+        return [int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())]
+
+    def measure(model, element):
+        levels = []
+        for factor in FACTORS:
+            tw = th = max(16, int(round(256 * factor)))
+            rendered = impl._render(sw, sh, [background, element], colors, tw, th)
+            if rendered is None:
+                return None
+            actual = rendered == 0
+            expected = model_mask(model, sw, sh, tw, th)
+            inter = int(np.count_nonzero(actual & expected))
+            union = int(np.count_nonzero(actual | expected))
+            levels.append({
+                "scale": f"{factor:g}x",
+                "iou": 1.0 if union == 0 else inter / float(union),
+                "actual_area": int(np.count_nonzero(actual)),
+                "expected_area": int(np.count_nonzero(expected)),
+                "actual_bbox": bbox(actual),
+                "expected_bbox": bbox(expected),
+                "components": int(impl._cc(actual)),
+            })
+        return levels
+
+    ellipse_results = []
+    for phase in range(4):
+        cx = cy = 128.0 + float(phase)
+        for radius in (1.0, 2.0, 3.0, 4.0):
+            model = {"kind": "ellipse", "cx": cx, "cy": cy, "rx": radius, "ry": radius}
+            candidates = []
+            for delta in (-0.5, -0.375, -0.25, -0.125, 0.0, 0.125, 0.25, 0.375, 0.5):
+                rr = max(0.125, radius + delta)
+                candidates.append((f"fill_d{delta:g}", f'<ellipse cx="{_fmt(cx)}" cy="{_fmt(cy)}" rx="{_fmt(rr)}" ry="{_fmt(rr)}" fill="#000000"/>'))
+                for stroke_width in (0.5, 0.75, 1.0, 1.25, 1.5):
+                    candidates.append((
+                        f"ns_d{delta:g}_w{stroke_width:g}",
+                        f'<ellipse cx="{_fmt(cx)}" cy="{_fmt(cy)}" rx="{_fmt(rr)}" ry="{_fmt(rr)}" fill="#000000" stroke="#000000" stroke-width="{_fmt(stroke_width)}" vector-effect="non-scaling-stroke"/>'
+                    ))
+            ranked = []
+            for name, element in candidates:
+                levels = measure(model, element)
+                if not levels:
+                    continue
+                ranked.append((
+                    min(float(level["iou"]) for level in levels),
+                    sum(float(level["iou"]) for level in levels) / len(levels),
+                    name,
+                    levels,
+                ))
+            ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
+            ellipse_results.append({
+                "phase": phase,
+                "radius": radius,
+                "top": [
+                    {"name": item[2], "min_iou": item[0], "mean_iou": item[1], "levels": item[3]}
+                    for item in ranked[:4]
+                ],
+            })
+
+    rect_results = []
+    for phase in range(4):
+        x = y = 128.0 + float(phase)
+        for side in (1.0, 2.0, 3.0, 4.0):
+            model = {"kind": "rect", "x": x, "y": y, "width": side, "height": side}
+            candidates = [
+                ("full", f'<rect x="{_fmt(x)}" y="{_fmt(y)}" width="{_fmt(side)}" height="{_fmt(side)}" fill="#000000"/>'),
+                ("full_m01", f'<rect x="{_fmt(x-.01)}" y="{_fmt(y-.01)}" width="{_fmt(side+.02)}" height="{_fmt(side+.02)}" fill="#000000"/>'),
+                ("inclusive_ns", f'<rect x="{_fmt(x)}" y="{_fmt(y)}" width="{_fmt(max(.001, side-1.0))}" height="{_fmt(max(.001, side-1.0))}" fill="#000000" stroke="#000000" stroke-width="1" vector-effect="non-scaling-stroke"/>'),
+                ("center_point_ns", f'<path d="M{_fmt(x+(side-1)/2)} {_fmt(y+(side-1)/2)}h0.001" fill="none" stroke="#000000" stroke-width="1" vector-effect="non-scaling-stroke" stroke-linecap="square"/>'),
+            ]
+            ranked = []
+            for name, element in candidates:
+                levels = measure(model, element)
+                if not levels:
+                    continue
+                ranked.append((
+                    min(float(level["iou"]) for level in levels),
+                    sum(float(level["iou"]) for level in levels) / len(levels),
+                    name,
+                    levels,
+                ))
+            ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
+            rect_results.append({
+                "phase": phase,
+                "side": side,
+                "top": [
+                    {"name": item[2], "min_iou": item[0], "mean_iou": item[1], "levels": item[3]}
+                    for item in ranked
+                ],
+            })
+
+    print("\nISSUE152_GENERIC_ELLIPSE_PROBE=" + repr(ellipse_results))
+    print("ISSUE152_GENERIC_RECT_PROBE=" + repr(rect_results))
