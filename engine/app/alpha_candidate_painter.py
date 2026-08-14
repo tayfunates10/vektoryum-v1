@@ -1068,6 +1068,33 @@ def apply_candidate_painter_reconstruction(
         quantized_specs.append(
             (f"contour-q{target_levels}", "contour", "quantized", requant, requant_opacity)
         )
+    # Son çare: DÜĞÜM EKLEMEYEN kodlamanın nicemlenmiş varyantları.
+    #
+    # İki bütçe aynı anda bağlar ve mevcut kodlamaların hiçbiri ikisini birden
+    # sağlayamıyordu:
+    #   * polygon/rect <polygon>/<rect> yazar → journal düğüm/path sayımına HİÇ
+    #     katkı vermez, ama yalnız tam (127 seviye) kafeste denendiği için bayt
+    #     bütçesini aşar (ör. public-05: 1.201.085 > 327.120).
+    #   * contour/cumulative <path> yazar → kompakt bayt, ama düğüm sayılır ve
+    #     node_complexity_explosion eşiğini (parent+2500) katbekat aşar.
+    # Kaba kafeste polygon çok daha az döngü üretir: bayt bütçesine sığar, düğüm
+    # bütçesini zaten hiç zorlamaz ve (rect'in aksine) iç kenarı olmadığı için
+    # ölçekli AA dikişi üretmez. Yalnız polygon alınır; rect'in iç kenar dikişi
+    # tam da onarmaya çalıştığımız seam_regression'ı besler.
+    node_free_quantized_specs: list[
+        tuple[str, str, str, np.ndarray, dict[int, float]]
+    ] = []
+    for target_levels in (64, 32, 16):
+        requant, requant_opacity = _requantize_alpha(grid_alpha, target_levels)
+        node_free_quantized_specs.append(
+            (
+                f"polygon-q{target_levels}",
+                "polygon",
+                "quantized",
+                requant,
+                requant_opacity,
+            )
+        )
 
     attempts: list[dict[str, Any]] = []
 
@@ -1431,6 +1458,11 @@ def apply_candidate_painter_reconstruction(
             winner = _evaluate_phase(quantized_specs)
         if winner is None:
             winner = _evaluate_paint_deficit()
+        if winner is None:
+            # Mevcut tüm kademeler tükendiğinde, hata yükseltmeden ÖNCEKİ son
+            # aday kümesi. Kasıtlı olarak en sonda: böylece hâlihazırda bir
+            # kazanan üreten hiçbir vakanın yolu değişmez (kesin eklemelilik).
+            winner = _evaluate_phase(node_free_quantized_specs)
     finally:
         parent_journal_path.unlink(missing_ok=True)
 

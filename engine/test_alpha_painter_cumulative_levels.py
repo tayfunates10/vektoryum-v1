@@ -29,7 +29,11 @@ from app.alpha_candidate_paint_deficit import (
 from app.alpha_candidate_painter import (
     _PAINT_DEFICIT_CUMULATIVE_LEVELS,
     _cumulative_threshold_children,
+    _painter_loops,
+    _painter_polygon_children,
+    _requantize_alpha,
 )
+from app.alpha_svg_mask import _quantize_alpha
 
 _SVG = "http://www.w3.org/2000/svg"
 
@@ -158,6 +162,62 @@ class CumulativeLevelLadderTests(unittest.TestCase):
             counts[1],
             "kaba kafes daha az kodlanmış seviye bildirmeli",
         )
+
+
+class NodeFreePolygonQuantizationTests(unittest.TestCase):
+    """Düğüm eklemeyen polygon kodlamasının nicemlenmiş varyantları.
+
+    İki bütçe aynı anda bağlar: ``<polygon>`` journal düğüm sayımına katkı
+    vermez ama tam kafeste bayt bütçesini aşar; ``<path>`` tabanlı kompakt
+    kodlamalar ise düğüm bütçesini aşar. Kaba kafeste polygon her ikisini de
+    sağlayabilen tek kodlamadır — bu testler bayt kazancını sabitler.
+    """
+
+    @staticmethod
+    def _polygon_mask_bytes(
+        quantized: np.ndarray, opacity: dict[int, float]
+    ) -> int:
+        children = _painter_polygon_children(
+            _painter_loops(quantized, opacity), _qname
+        )
+        return sum(len(ET.tostring(child)) for child in children)
+
+    def test_coarser_lattice_strictly_reduces_polygon_mask_bytes(self) -> None:
+        alpha = _dense_alpha_ramp()
+        exact_quantized, exact_opacity = _quantize_alpha(alpha)
+        baseline = self._polygon_mask_bytes(exact_quantized, exact_opacity)
+        previous = baseline
+        for levels in (64, 32, 16):
+            requantized, opacity = _requantize_alpha(alpha, levels)
+            current = self._polygon_mask_bytes(requantized, opacity)
+            self.assertLess(
+                current,
+                previous,
+                f"polygon-q{levels} bir öncekinden küçük olmalı",
+            )
+            previous = current
+        # Tam kafestekinin dörtte birinin altına inmeli; aksi hâlde bütçeyi
+        # katbekat aşan bir adayı kurtaramaz.
+        self.assertLess(
+            previous,
+            baseline * 0.25,
+            "en kaba polygon basamağı tam kafesin %25'inin altına inmeli",
+        )
+
+    def test_polygon_encoding_emits_no_path_elements(self) -> None:
+        """Düğüm bütçesini zorlamamanın koşulu: hiç ``<path>`` yazılmaması."""
+        alpha = _dense_alpha_ramp(160)
+        for levels in (64, 32, 16):
+            requantized, opacity = _requantize_alpha(alpha, levels)
+            children = _painter_polygon_children(
+                _painter_loops(requantized, opacity), _qname
+            )
+            self.assertTrue(children, f"q{levels} boş maske üretmemeli")
+            for child in children:
+                self.assertTrue(
+                    str(child.tag).endswith("}polygon"),
+                    "polygon kodlaması yalnız <polygon> yazmalı",
+                )
 
 
 if __name__ == "__main__":  # pragma: no cover
