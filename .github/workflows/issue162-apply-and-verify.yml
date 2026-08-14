@@ -1,0 +1,367 @@
+name: Issue 162 apply and verify
+
+on:
+  push:
+    branches:
+      - claude/yoneticilik-sorunlari-gorevler-b1pfya
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PYTHONHASHSEED: "0"
+      PYTHONPATH: engine:.
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/yoneticilik-sorunlari-gorevler-b1pfya
+          fetch-depth: 0
+
+      - name: Apply Issue 162 production patch and regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("engine/app/alpha_candidate_painter.py")
+          text = path.read_text(encoding="utf-8")
+
+          constants_old = '''_PAINT_DEFICIT_CUMULATIVE_LEVELS = (20, 16, 12, 8)
+          _PAINTER_EVAL_SIDE = 512.0
+          '''
+          constants_new = '''_PAINT_DEFICIT_CUMULATIVE_LEVELS = (20, 16, 12, 8)
+          # Son-çare polygon nicemleme taraması contour'un "quantized" ledger
+          # sözleşmesinden ayrı tutulur. Bu bir kalite eşiği değildir; her aday
+          # değişmemiş evaluator + TransformJournal kapılarından geçer.
+          _NODE_FREE_QUANTIZED_FAMILY = "count_preserving_quantized"
+          _NODE_FREE_QUANTIZED_LEVELS = (64, 32, 16)
+          _PAINTER_EVAL_SIDE = 512.0
+          '''
+          assert text.count(constants_old) == 1, "Issue 162 constants anchor drifted"
+          text = text.replace(constants_old, constants_new, 1)
+
+          helper_anchor = '''    return (
+              "source_alpha_candidate_painter_no_admissible_reconstruction:"
+              f"primary=none:no_candidate;attempts_sha256={attempts_sha}"
+          )
+
+
+          def apply_candidate_painter_reconstruction(
+          '''
+          helper_replacement = '''    return (
+              "source_alpha_candidate_painter_no_admissible_reconstruction:"
+              f"primary=none:no_candidate;attempts_sha256={attempts_sha}"
+          )
+
+
+          def _has_nonretryable_journal_rejection(
+              attempts: list[dict[str, Any]],
+          ) -> bool:
+              """Whether any fresh journal rejection is terminal for painter retry."""
+              from app.alpha_svg_mask import _painter_retry_eligible  # noqa: PLC0415
+
+              for entry in attempts:
+                  if not entry.get("journal_gate_started"):
+                      continue
+                  if entry.get("journal_passed") is not False:
+                      continue
+                  if not _painter_retry_eligible(entry.get("journal_reason_codes")):
+                      return True
+              return False
+
+
+          def _node_free_polygon_retry_eligible(
+              attempts: list[dict[str, Any]],
+          ) -> bool:
+              """Gate polygon-q on the exact polygon path being retried.
+
+              A byte-only exact-polygon failure is eligible because requantization
+              directly shrinks that same node-free encoding.  If exact polygon
+              reached TransformJournal, every fresh rejection must remain inside
+              the existing retry-eligible topology/seam/edge/SSIM reason set.
+              Rejections from contour/cumulative do not veto this retry: their
+              counted-path/node cost is exactly the constraint polygon-q avoids.
+              """
+              from app.alpha_svg_mask import _painter_retry_eligible  # noqa: PLC0415
+
+              polygon_exact = [
+                  entry
+                  for entry in attempts
+                  if entry.get("encoding_label") == "polygon"
+                  and entry.get("encoding_family") == "polygon"
+                  and entry.get("exact_or_quantized") == "exact"
+              ]
+              if not polygon_exact:
+                  return False
+              if _has_nonretryable_journal_rejection(polygon_exact):
+                  return False
+
+              journal_rejections = [
+                  entry
+                  for entry in polygon_exact
+                  if entry.get("journal_gate_started")
+                  and entry.get("journal_passed") is False
+              ]
+              if journal_rejections:
+                  return all(
+                      _painter_retry_eligible(entry.get("journal_reason_codes"))
+                      for entry in journal_rejections
+                  )
+
+              # public-05 sınıfı: exact polygon yalnız serialization bütçesinde
+              # düşer; validation/journal'a hiç ulaşmadan aynı geometriyi daha az
+              # alfa seviyesiyle tekrar kodlamak doğrudan bu ön-eleme kusurunu hedefler.
+              return all(entry.get("status") == "byte_rejected" for entry in polygon_exact)
+
+
+          def apply_candidate_painter_reconstruction(
+          '''
+          assert text.count(helper_anchor) == 1, "Issue 162 helper anchor drifted"
+          text = text.replace(helper_anchor, helper_replacement, 1)
+
+          phase_anchor = '''        return winner
+
+              try:
+                  # Kademe 1 → Kademe 2 → Kademe 3: render-güvenli sayı-koruyan kodlamalar
+          '''
+          phase_replacement = '''        return winner
+
+              def _evaluate_node_free_quantized() -> list[Any] | None:
+                  """Try the finest node-free polygon lattice that can pass unchanged gates."""
+                  for target_levels in _NODE_FREE_QUANTIZED_LEVELS:
+                      requant, requant_opacity = _requantize_alpha(
+                          grid_alpha, target_levels
+                      )
+                      attempt_start = len(attempts)
+                      candidate = _evaluate_phase(
+                          [
+                              (
+                                  f"polygon-q{target_levels}",
+                                  "polygon",
+                                  _NODE_FREE_QUANTIZED_FAMILY,
+                                  requant,
+                                  requant_opacity,
+                              )
+                          ]
+                      )
+                      if candidate is not None:
+                          # q64 -> q32 -> q16: ilk geçen en ince kafestir. Daha kaba
+                          # bir adayı sırf daha küçük byte olduğu için seçme.
+                          return candidate
+                      if _has_nonretryable_journal_rejection(
+                          attempts[attempt_start:]
+                      ):
+                          # Yeni fazın kendi içinde de "dur ve geri al" sözleşmesi.
+                          return None
+                  return None
+
+              try:
+                  # Kademe 1 → Kademe 2 → Kademe 3: render-güvenli sayı-koruyan kodlamalar
+          '''
+          assert text.count(phase_anchor) == 1, "Issue 162 phase anchor drifted"
+          text = text.replace(phase_anchor, phase_replacement, 1)
+
+          final_old = '''        if winner is None:
+                      winner = _evaluate_paint_deficit()
+              finally:
+          '''
+          final_new = '''        if winner is None:
+                      winner = _evaluate_paint_deficit()
+                  if winner is None and _node_free_polygon_retry_eligible(attempts):
+                      # Kesin eklemeli son çare: mevcut tüm aday yolları önce aynen
+                      # tüketilir; bugün winner üreten hiçbir vaka bu fazı görmez.
+                      winner = _evaluate_node_free_quantized()
+              finally:
+          '''
+          assert text.count(final_old) == 1, "Issue 162 final phase anchor drifted"
+          text = text.replace(final_old, final_new, 1)
+          path.write_text(text, encoding="utf-8")
+
+          test_path = Path("engine/test_alpha_painter_polygon_quantized_retry.py")
+          test_path.write_text(r'''from __future__ import annotations
+
+          import unittest
+          import xml.etree.ElementTree as ET
+
+          import numpy as np
+
+          from app.alpha_candidate_painter import (
+              _NODE_FREE_QUANTIZED_FAMILY,
+              _NODE_FREE_QUANTIZED_LEVELS,
+              _node_free_polygon_retry_eligible,
+              _painter_loops,
+              _painter_polygon_children,
+              _requantize_alpha,
+          )
+          from app.alpha_svg_mask import _quantize_alpha
+
+          _SVG_NS = "http://www.w3.org/2000/svg"
+
+
+          def _qname(name: str) -> str:
+              return f"{{{_SVG_NS}}}{name}"
+
+
+          def _dense_alpha_ramp() -> np.ndarray:
+              row = np.arange(256, dtype=np.uint8)
+              return np.tile(row[None, :], (256, 1))
+
+
+          def _polygon_bytes(
+              quantized: np.ndarray,
+              opacity: dict[int, float],
+          ) -> int:
+              children = _painter_polygon_children(
+                  _painter_loops(quantized, opacity), _qname
+              )
+              return sum(len(ET.tostring(child)) for child in children)
+
+
+          class NodeFreePolygonQuantizationTests(unittest.TestCase):
+              def test_family_does_not_pollute_existing_quantized_ledger_contract(self) -> None:
+                  self.assertNotEqual(_NODE_FREE_QUANTIZED_FAMILY, "quantized")
+
+              def test_coarser_lattice_strictly_reduces_polygon_bytes(self) -> None:
+                  alpha = _dense_alpha_ramp()
+                  exact_quantized, exact_opacity = _quantize_alpha(alpha)
+                  baseline = _polygon_bytes(exact_quantized, exact_opacity)
+                  previous = baseline
+                  for levels in _NODE_FREE_QUANTIZED_LEVELS:
+                      requantized, opacity = _requantize_alpha(alpha, levels)
+                      current = _polygon_bytes(requantized, opacity)
+                      self.assertLess(current, previous, f"polygon-q{levels}")
+                      previous = current
+                  self.assertLess(previous, baseline * 0.25)
+
+              def test_quantized_polygon_emits_no_path_elements(self) -> None:
+                  alpha = _dense_alpha_ramp()
+                  for levels in _NODE_FREE_QUANTIZED_LEVELS:
+                      requantized, opacity = _requantize_alpha(alpha, levels)
+                      children = _painter_polygon_children(
+                          _painter_loops(requantized, opacity), _qname
+                      )
+                      self.assertTrue(children)
+                      self.assertTrue(
+                          all(str(child.tag).endswith("}polygon") for child in children)
+                      )
+
+
+          class NodeFreePolygonRetryGateTests(unittest.TestCase):
+              @staticmethod
+              def _polygon_exact(**updates):
+                  entry = {
+                      "encoding_label": "polygon",
+                      "encoding_family": "polygon",
+                      "exact_or_quantized": "exact",
+                      "status": "byte_rejected",
+                      "journal_gate_started": False,
+                      "journal_passed": None,
+                      "journal_reason_codes": [],
+                  }
+                  entry.update(updates)
+                  return entry
+
+              def test_byte_only_exact_polygon_failure_is_eligible(self) -> None:
+                  self.assertTrue(
+                      _node_free_polygon_retry_eligible([self._polygon_exact()])
+                  )
+
+              def test_retry_eligible_exact_polygon_journal_failure_is_eligible(self) -> None:
+                  self.assertTrue(
+                      _node_free_polygon_retry_eligible(
+                          [
+                              self._polygon_exact(
+                                  status="geometry_rejected",
+                                  journal_gate_started=True,
+                                  journal_passed=False,
+                                  journal_reason_codes=[
+                                      "topology_hole_regression",
+                                      "seam_regression",
+                                  ],
+                              )
+                          ]
+                      )
+                  )
+
+              def test_noneligible_exact_polygon_journal_failure_blocks_retry(self) -> None:
+                  self.assertFalse(
+                      _node_free_polygon_retry_eligible(
+                          [
+                              self._polygon_exact(
+                                  status="geometry_rejected",
+                                  journal_gate_started=True,
+                                  journal_passed=False,
+                                  journal_reason_codes=["node_complexity_explosion"],
+                              )
+                          ]
+                      )
+                  )
+
+              def test_mixed_exact_polygon_journal_failure_blocks_retry(self) -> None:
+                  self.assertFalse(
+                      _node_free_polygon_retry_eligible(
+                          [
+                              self._polygon_exact(
+                                  status="geometry_rejected",
+                                  journal_gate_started=True,
+                                  journal_passed=False,
+                                  journal_reason_codes=[
+                                      "topology_hole_regression",
+                                      "node_complexity_explosion",
+                                  ],
+                              )
+                          ]
+                      )
+                  )
+
+              def test_noneligible_contour_does_not_veto_byte_only_polygon_retry(self) -> None:
+                  attempts = [
+                      self._polygon_exact(),
+                      {
+                          "encoding_label": "contour",
+                          "encoding_family": "contour",
+                          "exact_or_quantized": "exact",
+                          "status": "geometry_rejected",
+                          "journal_gate_started": True,
+                          "journal_passed": False,
+                          "journal_reason_codes": ["node_complexity_explosion"],
+                      },
+                  ]
+                  self.assertTrue(_node_free_polygon_retry_eligible(attempts))
+
+
+          if __name__ == "__main__":
+              unittest.main()
+          '''.replace("\n          ", "\n"), encoding="utf-8")
+          PY
+
+      - name: Compile changed Python
+        run: |
+          python -m py_compile \
+            engine/app/alpha_candidate_painter.py \
+            engine/test_alpha_painter_polygon_quantized_retry.py
+
+      - name: Run frozen painter contracts and Issue 162 regressions
+        run: |
+          python -m unittest \
+            engine.test_alpha_painter_ledger \
+            engine.test_alpha_painter_stroke_continuation \
+            engine.test_alpha_painter_cumulative_levels \
+            engine.test_alpha_painter_polygon_quantized_retry \
+            -v
+
+      - name: Commit verified patch to PR branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add engine/app/alpha_candidate_painter.py engine/test_alpha_painter_polygon_quantized_retry.py
+          git diff --cached --check
+          git commit -m "Fix retry-gated node-free polygon quantization sweep (#162)"
+          git push origin HEAD:claude/yoneticilik-sorunlari-gorevler-b1pfya
