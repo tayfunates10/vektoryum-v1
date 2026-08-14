@@ -186,6 +186,7 @@ def build_paint_deficit_reconstruction_tree(
     source_rgba_grid: np.ndarray,
     transaction_id: str,
     mask_encoding: str = "polygon",
+    levels: int = _ALPHA_LEVELS,
 ) -> tuple[ET.Element, dict[str, Any]]:
     """Build one q24 source-alpha mask plus a compact deficit overlay.
 
@@ -198,6 +199,13 @@ def build_paint_deficit_reconstruction_tree(
       →yüksek gri). Komşu seviye sınırındaki ölçekli-AA dikişini (seam_gap) kapatır;
       yalnız poligon varyantı journal geometri kapısında (seam/topology) reddedilirse
       turnuvada ek aday olarak denenir.
+
+    ``levels`` alfa kafesinin çözünürlüğüdür (varsayılan ``_ALPHA_LEVELS``; mevcut
+    üretim davranışı). Kümülatif kodlamada seviye başına bir ``<path>`` yazıldığı
+    için bayt maliyeti seviye sayısıyla ölçeklenir; çağıran katman, dikişi kapatan
+    bu kodlamayı bayt bütçesine sığdırmak için kafesi kademeli seyreltebilir.
+    Kabul yetkisi DEĞİŞMEZ: kafes seyreldikçe alfa sadakati düşerse aday, aynı
+    değişmemiş alfa IoU/MAE ve TransformJournal kapılarında reddedilir.
     """
     from app.alpha_candidate_knockout import (  # noqa: PLC0415
         _local_name,
@@ -289,7 +297,7 @@ def build_paint_deficit_reconstruction_tree(
         )
 
     view_x, view_y, view_width, view_height = _viewbox(root)
-    quantized, opacity = _fixed_alpha_levels(source[:, :, 3])
+    quantized, opacity = _fixed_alpha_levels(source[:, :, 3], levels)
     if mask_encoding not in ("polygon", "cumulative"):
         raise RuntimeError(
             "source_alpha_candidate_painter_paint_deficit_unknown_mask_encoding:"

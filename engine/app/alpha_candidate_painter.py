@@ -67,6 +67,14 @@ _PAINTER_STROKE_PIXELS = (1.0, 1.5, 2.0, 3.0)
 # unchanged source-topology sentinel; this is an encoding preflight, not a
 # quality-threshold change.
 _PAINTER_UNDERPAINT_MIN_STROKE_PIXELS = 1.5
+# Kümülatif paint-deficit kafesinin seyreltme merdiveni. Kümülatif kodlama
+# seviye başına bir <path> yazdığı için bayt maliyeti kafes çözünürlüğüyle
+# ölçeklenir; sabit q24 kafesi yoğun alfa rampalı kaynaklarda bayt bütçesini
+# aşıp journal kapısına hiç ulaşamıyordu. Bu merdiven contour ailesinin
+# q128/q64/q32 taramasının kümülatif karşılığıdır. Değerler yalnızca kodlama
+# ön-elemesidir; kalite eşiği DEĞİLDİR — kabul, değişmemiş alfa IoU/MAE ve
+# TransformJournal kapılarındadır.
+_PAINT_DEFICIT_CUMULATIVE_LEVELS = (20, 16, 12, 8)
 _PAINTER_EVAL_SIDE = 512.0
 _ALPHA_PLANE_FAILURE_CODES = {"alpha_iou_below_min", "alpha_mae_above_max"}
 
@@ -1233,10 +1241,15 @@ def apply_candidate_painter_reconstruction(
 
     def _evaluate_paint_deficit() -> list[Any] | None:
         from app.alpha_candidate_paint_deficit import (  # noqa: PLC0415
+            _ALPHA_LEVELS,
             build_paint_deficit_reconstruction_tree,
         )
 
-        def _try(mask_encoding: str, label: str) -> list[Any] | None:
+        def _try(
+            mask_encoding: str,
+            label: str,
+            levels: int = _ALPHA_LEVELS,
+        ) -> list[Any] | None:
             txn = alpha_transaction_id(
                 parent_sha256, source_alpha_sha256, mode, label
             )
@@ -1246,7 +1259,7 @@ def apply_candidate_painter_reconstruction(
                 "encoding_family": "paint_deficit",
                 "exact_or_quantized": "paint_deficit",
                 "source_alpha_level_count": int(source_level_count),
-                "encoded_alpha_level_count": 24,
+                "encoded_alpha_level_count": int(levels),
                 "actual_serialized_bytes": None,
                 "byte_limit": int(byte_limit),
                 "projected_path_count": int(parent_counts[0]),
@@ -1279,6 +1292,7 @@ def apply_candidate_painter_reconstruction(
                         grid_rgba,
                         txn,
                         mask_encoding=mask_encoding,
+                        levels=levels,
                     )
                 )
             except RuntimeError as exc:
@@ -1293,7 +1307,7 @@ def apply_candidate_painter_reconstruction(
             probe_size = int(probe_temp.stat().st_size)
             entry["actual_serialized_bytes"] = probe_size
             entry["encoded_alpha_level_count"] = int(
-                probe_geometry.get("encoded_alpha_level_count", 24)
+                probe_geometry.get("encoded_alpha_level_count", levels)
             )
             if probe_size > byte_limit:
                 entry["preflight_status"] = "over_budget"
@@ -1381,6 +1395,29 @@ def apply_candidate_painter_reconstruction(
         winner = _try("polygon", "paint-deficit-q24")
         if winner is None:
             winner = _try("cumulative", "paint-deficit-cumulative")
+        if winner is None:
+            # Dikişi kapatan TEK kodlama kümülatif eşiktir; ayrık seviye
+            # poligonları komşu seviye sınırında tasarımı gereği seam bırakır
+            # (bkz. _cumulative_threshold_children). Kümülatif kodlamada seviye
+            # başına bir <path> yazıldığından bayt maliyeti kafes çözünürlüğüyle
+            # ölçeklenir: yoğun alfa rampalı kaynaklarda sabit q24 kafesi bayt
+            # bütçesini aşıp journal kapısına HİÇ ulaşamıyordu, dolayısıyla seam
+            # reddi onarılamaz kalıyordu. contour ailesinin q128/q64/q32
+            # taramasının kümülatif karşılığı: kafesi kademeli seyreltip bütçeye
+            # sığan ilk dikiş-kapatan adayı üret.
+            #
+            # Bu adım kesinlikle EKlemedir: yukarıdaki iki deneme aynen korunur,
+            # yalnız ikisi de başarısızken devreye girer. Seyreltme kaliteyi
+            # düşürürse aday, DEĞİŞMEMİŞ alfa IoU/MAE ve TransformJournal
+            # kapılarında reddedilir — kalite düşürerek geçme yolu yoktur.
+            for coarse_levels in _PAINT_DEFICIT_CUMULATIVE_LEVELS:
+                winner = _try(
+                    "cumulative",
+                    f"paint-deficit-cumulative-q{coarse_levels}",
+                    levels=coarse_levels,
+                )
+                if winner is not None:
+                    break
         return winner
 
     try:
