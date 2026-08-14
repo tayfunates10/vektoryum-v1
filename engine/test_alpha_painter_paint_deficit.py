@@ -15,6 +15,8 @@ from app.alpha_candidate_paint_deficit import (
     _paint_deficit_labels,
     build_paint_deficit_reconstruction_tree,
 )
+from app.alpha_candidate_painter import _paint_deficit_palette_retry_eligible
+from app.alpha_svg_mask import _merged_rectangles_by_level
 
 SVG_NS = "http://www.w3.org/2000/svg"
 
@@ -103,6 +105,92 @@ class PaintDeficitCandidateTests(unittest.TestCase):
         self.assertTrue(np.all(labels[1:5, 3] > 0))
         self.assertFalse(np.any(labels[1:5, 7:9]))
         self.assertEqual(stats["detached_source_component_count"], 1)
+
+    def test_palette_coarsening_preserves_coverage_and_reduces_rectangles(self):
+        source = np.zeros((8, 8, 4), dtype=np.uint8)
+        source[:, :, 3] = 255
+        for y in range(8):
+            for x in range(8):
+                source[y, x, :3] = (
+                    (32, 32, 32)
+                    if (x + y) % 2 == 0
+                    else (224, 32, 32)
+                )
+        artwork = np.full_like(source, 255)
+
+        labels8, palette8, stats8 = _paint_deficit_labels(source, artwork)
+        labels1, palette1, stats1 = _paint_deficit_labels(
+            source,
+            artwork,
+            palette_limit=1,
+        )
+        labels1_again, palette1_again, stats1_again = _paint_deficit_labels(
+            source,
+            artwork,
+            palette_limit=1,
+        )
+
+        np.testing.assert_array_equal(labels8 > 0, labels1 > 0)
+        self.assertEqual(stats8, stats1)
+        self.assertEqual(stats1, stats1_again)
+        self.assertGreaterEqual(len(palette8), 2)
+        self.assertEqual(len(palette1), 1)
+        np.testing.assert_array_equal(labels1, labels1_again)
+        np.testing.assert_array_equal(palette1, palette1_again)
+
+        rects8 = _merged_rectangles_by_level(labels8)
+        rects1 = _merged_rectangles_by_level(labels1)
+        count8 = sum(
+            len(rectangles)
+            for label, rectangles in rects8.items()
+            if int(label) > 0
+        )
+        count1 = sum(
+            len(rectangles)
+            for label, rectangles in rects1.items()
+            if int(label) > 0
+        )
+        self.assertGreater(count8, count1)
+        self.assertEqual(count1, 1)
+
+    def test_explicit_default_palette_limit_is_byte_identical(self):
+        root, canvas = self._root()
+        source = self._source()
+        default_tree, default_report = build_paint_deficit_reconstruction_tree(
+            root,
+            canvas,
+            source,
+            "txn-default-palette",
+            mask_encoding="cumulative",
+        )
+        root2 = copy.deepcopy(root)
+        canvas2 = list(root2)[0]
+        explicit_tree, explicit_report = build_paint_deficit_reconstruction_tree(
+            root2,
+            canvas2,
+            source,
+            "txn-default-palette",
+            mask_encoding="cumulative",
+            palette_limit=8,
+        )
+        self.assertEqual(ET.tostring(default_tree), ET.tostring(explicit_tree))
+        self.assertEqual(default_report, explicit_report)
+
+    def test_palette_retry_requires_two_legacy_byte_rejections(self):
+        byte = {"status": "byte_rejected"}
+        self.assertTrue(_paint_deficit_palette_retry_eligible([byte, byte]))
+        self.assertFalse(_paint_deficit_palette_retry_eligible([]))
+        self.assertFalse(_paint_deficit_palette_retry_eligible([byte]))
+        self.assertFalse(
+            _paint_deficit_palette_retry_eligible(
+                [byte, {"status": "geometry_rejected"}]
+            )
+        )
+        self.assertFalse(
+            _paint_deficit_palette_retry_eligible(
+                [byte, {"status": "evaluator_rejected"}]
+            )
+        )
 
     def test_builder_is_vector_only_deterministic_and_repairs_paint(self):
         root, canvas = self._root()

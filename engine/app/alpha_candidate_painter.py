@@ -878,6 +878,26 @@ def _emit_painter_attempts(attempts: list[dict[str, Any]]) -> str:
     return digest
 
 
+
+def _paint_deficit_palette_retry_eligible(
+    legacy_attempts: list[dict[str, Any]],
+) -> bool:
+    """Allow palette compaction only after both legacy attempts miss byte budget.
+
+    This gate is intentionally narrower than the general painter retry policy:
+    evaluator, journal, geometry, render, identity, structure, or mixed failures
+    must keep the existing fail-closed result. Exactly two entries are required
+    because the legacy paint-deficit phase consists of q24 polygon followed by
+    cumulative encoding.
+    """
+    return (
+        len(legacy_attempts) == 2
+        and all(
+            entry.get("status") == "byte_rejected"
+            for entry in legacy_attempts
+        )
+    )
+
 def _painter_primary_error(
     attempts: list[dict[str, Any]], attempts_sha: str
 ) -> str:
@@ -912,9 +932,11 @@ def _painter_primary_error(
         _validated("exact")
         or _validated("quantized")
         or _validated("paint_deficit")
+        or _validated("paint_deficit_palette")
         or _smallest_byte_rejected("exact")
         or _smallest_byte_rejected("quantized")
         or _smallest_byte_rejected("paint_deficit")
+        or _smallest_byte_rejected("paint_deficit_palette")
     )
     if primary is not None:
         label = primary["encoding_label"]
@@ -1236,15 +1258,28 @@ def apply_candidate_painter_reconstruction(
             build_paint_deficit_reconstruction_tree,
         )
 
-        def _try(mask_encoding: str, label: str) -> list[Any] | None:
+        def _try(
+            mask_encoding: str,
+            label: str,
+            *,
+            palette_limit: int | None = None,
+        ) -> list[Any] | None:
             txn = alpha_transaction_id(
                 parent_sha256, source_alpha_sha256, mode, label
             )
             entry: dict[str, Any] = {
                 "stroke_width": 0.0,
                 "encoding_label": label,
-                "encoding_family": "paint_deficit",
-                "exact_or_quantized": "paint_deficit",
+                "encoding_family": (
+                    "paint_deficit"
+                    if palette_limit is None
+                    else "paint_deficit_palette"
+                ),
+                "exact_or_quantized": (
+                    "paint_deficit"
+                    if palette_limit is None
+                    else "paint_deficit_palette"
+                ),
                 "source_alpha_level_count": int(source_level_count),
                 "encoded_alpha_level_count": 24,
                 "actual_serialized_bytes": None,
@@ -1271,16 +1306,30 @@ def apply_candidate_painter_reconstruction(
                 "journal_passed": None,
                 "journal_reason_codes": [],
             }
+            if palette_limit is not None:
+                entry["paint_deficit_palette_limit"] = int(palette_limit)
             try:
-                probe_root, probe_geometry = (
-                    build_paint_deficit_reconstruction_tree(
-                        original_root,
-                        canvas,
-                        grid_rgba,
-                        txn,
-                        mask_encoding=mask_encoding,
+                if palette_limit is None:
+                    probe_root, probe_geometry = (
+                        build_paint_deficit_reconstruction_tree(
+                            original_root,
+                            canvas,
+                            grid_rgba,
+                            txn,
+                            mask_encoding=mask_encoding,
+                        )
                     )
-                )
+                else:
+                    probe_root, probe_geometry = (
+                        build_paint_deficit_reconstruction_tree(
+                            original_root,
+                            canvas,
+                            grid_rgba,
+                            txn,
+                            mask_encoding=mask_encoding,
+                            palette_limit=int(palette_limit),
+                        )
+                    )
             except RuntimeError as exc:
                 entry["preflight_status"] = "not_constructed"
                 entry["validation_stage"] = "paint_deficit_geometry"
@@ -1374,14 +1423,42 @@ def apply_candidate_painter_reconstruction(
                 0.0,
             ]
 
-        # Mevcut ayrık poligon paint-deficit önce denenir (geçen vakaları — ör.
-        # class_reklam — korur). Yalnız o TAZE journal geometri kapısında (seam/
-        # topology) reddedilirse kümülatif eşik varyantı ek aday olarak denenir.
-        # Kabul yetkisi her iki varyantta da değişmemiş evaluator + journal'dadır.
+        # Legacy ordering and labels stay untouched. Palette compaction is
+        # a strictly additive byte-pressure phase: it cannot run unless BOTH
+        # existing paint-deficit encodings were constructed and rejected solely
+        # by the unchanged byte budget.
+        legacy_start = len(attempts)
         winner = _try("polygon", "paint-deficit-q24")
         if winner is None:
             winner = _try("cumulative", "paint-deficit-cumulative")
-        return winner
+        if winner is not None:
+            return winner
+
+        legacy_attempts = attempts[legacy_start:]
+        if not _paint_deficit_palette_retry_eligible(legacy_attempts):
+            return None
+
+        # Cumulative is already the smaller legacy alpha-mask representation.
+        # Keep that mask fixed and reduce only the palette-labelled support
+        # fragmentation. Once a compacted candidate fits the byte budget but a
+        # quality/journal gate rejects it, stop: a coarser palette must never be
+        # used to route around a quality rejection.
+        for palette_limit in (4, 2, 1):
+            fallback_start = len(attempts)
+            winner = _try(
+                "cumulative",
+                f"paint-deficit-cumulative-p{palette_limit}",
+                palette_limit=palette_limit,
+            )
+            if winner is not None:
+                return winner
+            fallback_attempts = attempts[fallback_start:]
+            if (
+                len(fallback_attempts) != 1
+                or fallback_attempts[0].get("status") != "byte_rejected"
+            ):
+                break
+        return None
 
     try:
         # Kademe 1 → Kademe 2 → Kademe 3: render-güvenli sayı-koruyan kodlamalar
