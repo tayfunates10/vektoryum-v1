@@ -96,6 +96,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           PINNED_ARTIFACT_ID: "8354853386"
           PINNED_ARTIFACT_SHA256: "a8be8c0782a8aeb037a2736de8adbd357c5074ad0da6355562e2543092d6af76"
+          QUALIFIED_CASES_SHA256: "5f151a6cb1a433b0cb0989a67bd7cc7940162f4b36d67903d6ccdd173f9e7d89"
         run: |
           set -uo pipefail
           RFV_ROOT="${RUNNER_TEMP}/rfv3b-acquire"
@@ -142,9 +143,35 @@ jobs:
                 --audit "${RFV_ROOT}/out/qualification-audit.json" \
                 --bundle-out "${RFV_ROOT}/out/rfv2-public-corpus.tar.gz" \
                 --checksums-out "${RFV_ROOT}/out/bundle-checksums.json"
-              echo "RFV-3B source mode: live acquisition"
-            else
-              echo "RFV-3B live acquisition unavailable; restoring SHA-pinned immutable corpus"
+
+              # Bir indirmenin başarılı olması, nitelenmiş korpusun yeniden
+              # üretildiği anlamına gelmez. Kaynak baytları sürüklendiyse
+              # kimlik tutmaz; bu durumda ölçüm sürüklenmiş baytlarla değil,
+              # SHA-sabitli değişmez korpusla yapılmalıdır.
+              observed_cases_sha256="$(
+                RFV_OUT="${RFV_ROOT}/out" python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          checksums = json.loads(
+              (Path(os.environ["RFV_OUT"]) / "bundle-checksums.json").read_text()
+          )
+          print(checksums["cases_sha256"])
+          PY
+              )"
+
+              if [ "${observed_cases_sha256}" = "${QUALIFIED_CASES_SHA256}" ]; then
+                echo "RFV-3B source mode: live acquisition"
+              else
+                echo "RFV-3B provenance drift: live corpus identity ${observed_cases_sha256}" \
+                  "does not equal qualified identity ${QUALIFIED_CASES_SHA256}"
+                acquired=0
+              fi
+            fi
+
+            if [ "${acquired}" -eq 0 ]; then
+              echo "RFV-3B live acquisition unusable; restoring SHA-pinned immutable corpus"
               cache_zip="${RFV_ROOT}/pinned-rfv2-corpus.zip"
               curl \
                 --fail-with-body \
@@ -227,18 +254,30 @@ jobs:
               echo "RFV-3B source mode: pinned immutable artifact ${PINNED_ARTIFACT_ID}"
             fi
 
-            RFV_OUT="${RFV_ROOT}/out" python - <<'PY'
+            RFV_OUT="${RFV_ROOT}/out" \
+            QUALIFIED_CASES_SHA256="${QUALIFIED_CASES_SHA256}" python - <<'PY'
           import hashlib
           import json
           import os
           from pathlib import Path
 
           root = Path(os.environ["RFV_OUT"])
+          qualified = os.environ["QUALIFIED_CASES_SHA256"]
           bundle = root / "rfv2-public-corpus.tar.gz"
           checksums = json.loads((root / "bundle-checksums.json").read_text())
           assert checksums["schema"] == "vektoryum-rfv2-live-bundle-checksums-v1"
           assert checksums["qualified_case_count"] == 24
-          assert checksums["cases_sha256"] == "5f151a6cb1a433b0cb0989a67bd7cc7940162f4b36d67903d6ccdd173f9e7d89"
+
+          # Hangi kaynak modu kullanılmış olursa olsun, ölçülecek korpus
+          # nitelenmiş korpusun tam kimliğini taşımak zorundadır.
+          observed = checksums["cases_sha256"]
+          if observed != qualified:
+              raise SystemExit(
+                  "RFV-3B korpus kimliği uyuşmuyor: "
+                  f"beklenen {qualified}, bulunan {observed}. "
+                  "Sabitlenmiş değişmez korpus geri yüklenemedi."
+              )
+
           assert bundle.stat().st_size == checksums["bundle_bytes"]
           assert hashlib.sha256(bundle.read_bytes()).hexdigest() == checksums["bundle_sha256"]
           PY
