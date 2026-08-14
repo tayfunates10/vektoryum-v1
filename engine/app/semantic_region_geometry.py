@@ -9,6 +9,7 @@ import numpy as np
 
 from app import semantic_region_geometry_impl as _impl
 from app.scale_stable_discrete_optimizer import refine_scale_stable_geometry
+from app.scale_stable_final_refiner import refine_final_geometry
 from app.scale_stable_parent_geometry import calibrate_parent_regions
 from app.scale_stable_primitive_geometry import calibrate_primitives
 from app.scale_stable_seam_geometry import stabilize_nested_seams
@@ -214,7 +215,16 @@ def build_semantic_region_elements(labels: np.ndarray, colors: np.ndarray) -> di
         primitive_report,
         refinement_report,
     )
-    seamed, seam_report = stabilize_nested_seams(labels, colors, phase_refined)
+    final_refined, final_report = refine_final_geometry(
+        labels,
+        colors,
+        phase_refined,
+        regions,
+        primitive_report,
+        refinement_report,
+        phase_report,
+    )
+    seamed, seam_report = stabilize_nested_seams(labels, colors, final_refined)
     repaired, repair_report = _impl._repair(
         labels, colors, seamed, regions, models
     )
@@ -222,7 +232,8 @@ def build_semantic_region_elements(labels: np.ndarray, colors: np.ndarray) -> di
     primitive_delta = len(regularized) - len(base)
     refinement_delta = len(refined) - len(regularized)
     phase_delta = len(phase_refined) - len(refined)
-    seam_delta = len(seamed) - len(phase_refined)
+    final_delta = len(final_refined) - len(phase_refined)
+    seam_delta = len(seamed) - len(final_refined)
     anchor_delta = len(repaired) - len(seamed)
     total_delta = len(repaired) - len(base)
     if total_delta:
@@ -233,6 +244,8 @@ def build_semantic_region_elements(labels: np.ndarray, colors: np.ndarray) -> di
             strategies["five_scale_contract_refinement"] = refinement_delta
         if phase_delta:
             strategies["five_scale_source_phase_refinement"] = phase_delta
+        if final_delta:
+            strategies["five_scale_final_bounded_refinement"] = final_delta
         if seam_delta:
             strategies["five_scale_nested_seam_stabilization"] = seam_delta
         if anchor_delta:
@@ -261,6 +274,10 @@ def build_semantic_region_elements(labels: np.ndarray, colors: np.ndarray) -> di
     report["five_scale_source_phase_refinement"] = phase_report
     report["five_scale_source_phase_refinement_changed"] = sum(
         1 for item in phase_report if bool(item.get("changed"))
+    )
+    report["five_scale_final_bounded_refinement"] = final_report
+    report["five_scale_final_bounded_refinement_changed"] = sum(
+        1 for item in final_report if bool(item.get("changed"))
     )
     report["five_scale_nested_seam_stabilization"] = seam_report
     report["five_scale_nested_seam_count"] = seam_delta
