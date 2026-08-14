@@ -75,6 +75,11 @@ _PAINTER_UNDERPAINT_MIN_STROKE_PIXELS = 1.5
 # ön-elemesidir; kalite eşiği DEĞİLDİR — kabul, değişmemiş alfa IoU/MAE ve
 # TransformJournal kapılarındadır.
 _PAINT_DEFICIT_CUMULATIVE_LEVELS = (20, 16, 12, 8)
+# Son-çare polygon nicemleme taraması contour'un "quantized" ledger
+# sözleşmesinden ayrı tutulur. Bu bir kalite eşiği değildir; her aday
+# değişmemiş evaluator + TransformJournal kapılarından geçer.
+_NODE_FREE_QUANTIZED_FAMILY = "count_preserving_quantized"
+_NODE_FREE_QUANTIZED_LEVELS = (64, 32, 16)
 _PAINTER_EVAL_SIDE = 512.0
 _ALPHA_PLANE_FAILURE_CODES = {"alpha_iou_below_min", "alpha_mae_above_max"}
 
@@ -937,6 +942,66 @@ def _painter_primary_error(
     )
 
 
+def _has_nonretryable_journal_rejection(
+    attempts: list[dict[str, Any]],
+) -> bool:
+    """Whether any fresh journal rejection is terminal for painter retry."""
+    from app.alpha_svg_mask import _painter_retry_eligible  # noqa: PLC0415
+
+    for entry in attempts:
+        if not entry.get("journal_gate_started"):
+            continue
+        if entry.get("journal_passed") is not False:
+            continue
+        if not _painter_retry_eligible(entry.get("journal_reason_codes")):
+            return True
+    return False
+
+
+def _node_free_polygon_retry_eligible(
+    attempts: list[dict[str, Any]],
+) -> bool:
+    """Gate polygon-q on the exact polygon path being retried.
+
+    Byte-only exact-polygon failure is eligible because requantization
+    directly shrinks that node-free encoding. If exact polygon reached
+    TransformJournal, every fresh rejection must remain inside the
+    existing retry-eligible topology/seam/edge/SSIM reason set.
+    Rejections from contour/cumulative do not veto this retry because
+    their counted-path/node cost is exactly the constraint polygon-q avoids.
+    """
+    from app.alpha_svg_mask import _painter_retry_eligible  # noqa: PLC0415
+
+    polygon_exact = [
+        entry
+        for entry in attempts
+        if entry.get("encoding_label") == "polygon"
+        and entry.get("encoding_family") == "polygon"
+        and entry.get("exact_or_quantized") == "exact"
+    ]
+    if not polygon_exact:
+        return False
+    if _has_nonretryable_journal_rejection(polygon_exact):
+        return False
+
+    journal_rejections = [
+        entry
+        for entry in polygon_exact
+        if entry.get("journal_gate_started")
+        and entry.get("journal_passed") is False
+    ]
+    if journal_rejections:
+        return all(
+            _painter_retry_eligible(entry.get("journal_reason_codes"))
+            for entry in journal_rejections
+        )
+
+    # public-05 sınıfı: exact polygon yalnız serialization bütçesinde
+    # düşer; aynı geometriyi daha az alfa seviyesiyle tekrar kodlamak
+    # doğrudan bu preflight kusurunu hedefler.
+    return all(entry.get("status") == "byte_rejected" for entry in polygon_exact)
+
+
 def apply_candidate_painter_reconstruction(
     svg_path: Path,
     source_path: Path,
@@ -1433,6 +1498,31 @@ def apply_candidate_painter_reconstruction(
                     break
         return winner
 
+
+    def _evaluate_node_free_quantized() -> list[Any] | None:
+        """Try the finest node-free polygon lattice that passes unchanged gates."""
+        for target_levels in _NODE_FREE_QUANTIZED_LEVELS:
+            requant, requant_opacity = _requantize_alpha(grid_alpha, target_levels)
+            attempt_start = len(attempts)
+            candidate = _evaluate_phase(
+                [
+                    (
+                        f"polygon-q{target_levels}",
+                        "polygon",
+                        _NODE_FREE_QUANTIZED_FAMILY,
+                        requant,
+                        requant_opacity,
+                    )
+                ]
+            )
+            if candidate is not None:
+                # q64 -> q32 -> q16: ilk geçen en ince kafestir.
+                return candidate
+            if _has_nonretryable_journal_rejection(attempts[attempt_start:]):
+                # Yeni fazın kendi içinde de "dur ve geri al" sözleşmesi.
+                return None
+        return None
+
     try:
         # Kademe 1 → Kademe 2 → Kademe 3: render-güvenli sayı-koruyan kodlamalar
         # bütçeye sığdığında tercih; contour yalnız onlar sığmadığında; quantized
@@ -1444,6 +1534,10 @@ def apply_candidate_painter_reconstruction(
             winner = _evaluate_phase(quantized_specs)
         if winner is None:
             winner = _evaluate_paint_deficit()
+        if winner is None and _node_free_polygon_retry_eligible(attempts):
+            # Kesin eklemeli son çare: mevcut tüm aday yolları önce aynen
+            # tüketilir; bugün winner üreten hiçbir vaka bu fazı görmez.
+            winner = _evaluate_node_free_quantized()
     finally:
         parent_journal_path.unlink(missing_ok=True)
 
