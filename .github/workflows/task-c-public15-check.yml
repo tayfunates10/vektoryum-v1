@@ -1,0 +1,174 @@
+name: Task C public-15 production check
+
+on:
+  push:
+    branches:
+      - codex/task-c-public15-check
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  public15:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      PYTHONHASHSEED: "0"
+      PYTHONPATH: engine
+      VEKTORYUM_WORKERS: "1"
+      TASK_HEAD_SHA: "37f7a0f88781736c6a9f1c89a85e306ef769fc3a"
+      RFV_RUN_ID: "31849111662"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: engine/requirements.txt
+
+      - name: Install system validators
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ghostscript libcairo2
+
+      - name: Install production pipeline dependencies
+        run: python -m pip install -r engine/requirements.txt pytest httpx
+
+      - name: Download exact RFV-3B corpus from task HEAD run
+        uses: actions/download-artifact@v4
+        with:
+          name: rfv3b-corpus-37f7a0f88781736c6a9f1c89a85e306ef769fc3a
+          path: ${{ runner.temp }}/rfv3b-input
+          github-token: ${{ github.token }}
+          repository: tayfunates10/vektoryum-v1
+          run-id: 31849111662
+
+      - name: Verify and prepare immutable corpus
+        run: |
+          python -m engine.regression.rfv3_live_prepare \
+            --bundle "${RUNNER_TEMP}/rfv3b-input/rfv2-public-corpus.tar.gz" \
+            --checksums "${RUNNER_TEMP}/rfv3b-input/bundle-checksums.json" \
+            --destination "${RUNNER_TEMP}/rfv3b-corpus" \
+            --evidence-out "${RUNNER_TEMP}/public15-prepare.json"
+
+      - name: Run qualification-public-15 through production pipeline
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p "${RUNNER_TEMP}/public15-out"
+          RFV_CORPUS="${RUNNER_TEMP}/rfv3b-corpus" \
+          RFV_OUT="${RUNNER_TEMP}/public15-out" \
+          python - <<'PY' 2>&1 | tee "${RUNNER_TEMP}/public15-production.log"
+          import json
+          import os
+          from pathlib import Path
+
+          from benchmark.pipeline_results import run_case
+          from app.pipeline_entry import run_pipeline
+          from engine.regression.rfv3_measurement_runner import load_qualification_cases
+
+          corpus = Path(os.environ["RFV_CORPUS"])
+          output = Path(os.environ["RFV_OUT"])
+          case = next(
+              item
+              for item in load_qualification_cases(corpus)
+              if item.case_id == "qualification-public-15"
+          )
+          result = run_case(
+              case,
+              corpus_root=corpus,
+              work_root=output,
+              pipeline=run_pipeline,
+              engine_version=os.environ["TASK_HEAD_SHA"],
+              trace_mode="auto",
+              peak_rss_mb=None,
+          )
+          payload = result.to_dict()
+          (output / "benchmark-result.json").write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print("TASK_C_PUBLIC15_RESULT=" + json.dumps(payload, sort_keys=True))
+          PY
+
+      - name: Extract painter ledger and assert Task C invariants
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          log_path = Path(os.environ["RUNNER_TEMP"]) / "public15-production.log"
+          lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+          prefix = "source_alpha_candidate_painter_attempts="
+          payloads = [json.loads(line.split(prefix, 1)[1]) for line in lines if prefix in line]
+          out = Path(os.environ["RUNNER_TEMP"]) / "public15-out"
+          (out / "painter-attempts.json").write_text(
+              json.dumps(payloads, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print(f"painter ledger payload count={len(payloads)}")
+          if not payloads:
+              raise SystemExit("public-15 produced no painter attempt ledger")
+
+          matching = []
+          for payload in payloads:
+              entries = payload if isinstance(payload, list) else payload.get("attempts", [])
+              if not isinstance(entries, list):
+                  continue
+              labels = [str(item.get("encoding_label", "")) for item in entries if isinstance(item, dict)]
+              if any(label.startswith("paint-deficit") for label in labels):
+                  matching.append(entries)
+          if not matching:
+              raise SystemExit("public-15 painter ledger contains no paint-deficit attempts")
+
+          entries = matching[-1]
+          selected = [
+              item for item in entries
+              if isinstance(item, dict) and str(item.get("encoding_label", "")).startswith("paint-deficit")
+          ]
+          for item in selected:
+              print("TASK_C_ATTEMPT=" + json.dumps(item, sort_keys=True))
+
+          legacy = [item for item in selected if item.get("encoding_label") in {"paint-deficit-q24", "paint-deficit-cumulative"}]
+          if len(legacy) != 2:
+              raise SystemExit(f"expected two legacy paint-deficit attempts, got {len(legacy)}")
+          if any(item.get("status") != "byte_rejected" for item in legacy):
+              raise SystemExit("legacy public-15 attempts no longer fail solely on byte budget")
+
+          fallbacks = [item for item in selected if item.get("exact_or_quantized") == "paint_deficit_palette"]
+          if not fallbacks:
+              raise SystemExit("byte-only exhaustion did not trigger palette fallback")
+          for item in fallbacks:
+              if item.get("paint_deficit_pixel_count") != 1099083:
+                  raise SystemExit(
+                      "palette fallback changed public-15 deficit coverage: "
+                      + json.dumps(item, sort_keys=True)
+                  )
+
+          summary = {
+              "legacy": legacy,
+              "fallbacks": fallbacks,
+              "budget": 304990,
+          }
+          (out / "task-c-summary.json").write_text(
+              json.dumps(summary, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Upload public-15 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: task-c-public15-${{ env.TASK_HEAD_SHA }}
+          path: |
+            ${{ runner.temp }}/public15-production.log
+            ${{ runner.temp }}/public15-prepare.json
+            ${{ runner.temp }}/public15-out/benchmark-result.json
+            ${{ runner.temp }}/public15-out/painter-attempts.json
+            ${{ runner.temp }}/public15-out/task-c-summary.json
+          if-no-files-found: warn
+          retention-days: 14
+          compression-level: 0
