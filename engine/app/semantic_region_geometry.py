@@ -8,6 +8,7 @@ from typing import Any
 import numpy as np
 
 from app import semantic_region_geometry_impl as _impl
+from app.scale_stable_discrete_optimizer import refine_scale_stable_geometry
 from app.scale_stable_parent_geometry import calibrate_parent_regions
 from app.scale_stable_primitive_geometry import calibrate_primitives
 from app.scale_stable_seam_geometry import stabilize_nested_seams
@@ -201,19 +202,25 @@ def build_semantic_region_elements(labels: np.ndarray, colors: np.ndarray) -> di
     regularized, primitive_report, models = calibrate_primitives(
         labels, colors, parented, regions
     )
-    seamed, seam_report = stabilize_nested_seams(labels, colors, regularized)
+    refined, refinement_report = refine_scale_stable_geometry(
+        labels, colors, regularized, regions, primitive_report
+    )
+    seamed, seam_report = stabilize_nested_seams(labels, colors, refined)
     repaired, repair_report = _impl._repair(
         labels, colors, seamed, regions, models
     )
 
     primitive_delta = len(regularized) - len(base)
-    seam_delta = len(seamed) - len(regularized)
+    refinement_delta = len(refined) - len(regularized)
+    seam_delta = len(seamed) - len(refined)
     anchor_delta = len(repaired) - len(seamed)
     total_delta = len(repaired) - len(base)
     if total_delta:
         strategies = dict(report.get("strategy_counts") or {})
         if primitive_delta:
             strategies["five_scale_source_primitive_calibration"] = primitive_delta
+        if refinement_delta:
+            strategies["five_scale_contract_refinement"] = refinement_delta
         if seam_delta:
             strategies["five_scale_nested_seam_stabilization"] = seam_delta
         if anchor_delta:
@@ -234,6 +241,10 @@ def build_semantic_region_elements(labels: np.ndarray, colors: np.ndarray) -> di
     report["five_scale_source_primitive_calibration"] = primitive_report
     report["five_scale_source_primitive_changed"] = sum(
         1 for item in primitive_report if bool(item.get("changed"))
+    )
+    report["five_scale_contract_refinement"] = refinement_report
+    report["five_scale_contract_refinement_changed"] = sum(
+        1 for item in refinement_report if bool(item.get("changed"))
     )
     report["five_scale_nested_seam_stabilization"] = seam_report
     report["five_scale_nested_seam_count"] = seam_delta

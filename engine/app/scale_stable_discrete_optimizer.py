@@ -1,11 +1,12 @@
-"""Bounded five-scale optimizer for source-derived discrete primitives.
+"""Fail-closed five-scale refinement for source-derived compact geometry.
 
-The established semantic fitter and primitive calibrator remain authoritative.
-This pass only revisits a calibrated line/rect/ellipse whose actual production
-renderer score still has min IoU below the existing 0.95 component contract.
-Candidates are generic sub-pixel SVG representations derived from that region's
-source model; no fixture identifiers, coordinates, corpus data, thresholds, or
-budgets are imported or changed.
+This pass is deliberately narrower than the rejected broad discrete sweep.  It
+never touches line models.  Only (a) compact leaf rectangles, (b) leaf ellipses,
+and (c) analytically verified nested parent ellipses/rounded rectangles are
+eligible.  Every proposal is inferred from the connected source mask, rendered
+with the production renderer at 0.25x/0.5x/1x/2x/4x, and rejected when native
+fidelity or component lineage regresses.  No fixture identifiers, coordinates,
+threshold changes, raster embedding, or budget changes are used here.
 """
 from __future__ import annotations
 
@@ -14,6 +15,7 @@ from typing import Any
 import numpy as np
 
 from app import semantic_region_geometry_impl as _impl
+from app import scale_stable_parent_geometry as _parent
 from app.scale_stable_primitive_geometry import FACTORS, model_mask
 
 
@@ -21,11 +23,15 @@ def _fmt(value: float) -> str:
     return _impl._fmt(float(value))
 
 
+def _flatten(parts: list[list[str]]) -> list[str]:
+    return [element for part in parts for element in part]
+
+
 def _blacken(elements: list[str], fill: str) -> list[str]:
     return [element.replace(fill, "#000000") for element in elements]
 
 
-def _metrics(
+def _isolated_metrics(
     model: dict[str, Any],
     elements: list[str],
     fill: str,
@@ -56,15 +62,15 @@ def _metrics(
         )
     return {
         "levels": levels,
-        "component_error": int(sum(abs(int(x["components"]) - 1) for x in levels)),
-        "min_iou": float(min(float(x["iou"]) for x in levels)),
-        "mean_iou": float(np.mean([float(x["iou"]) for x in levels])),
-        "max_mismatch": float(max(float(x["mismatch"]) for x in levels)),
+        "component_error": int(sum(abs(int(level["components"]) - 1) for level in levels)),
+        "min_iou": float(min(float(level["iou"]) for level in levels)),
+        "mean_iou": float(np.mean([float(level["iou"]) for level in levels])),
+        "max_mismatch": float(max(float(level["mismatch"]) for level in levels)),
         "native_iou": float(levels[2]["iou"]),
     }
 
 
-def _score(metrics: dict[str, Any], element_count: int) -> tuple[float, float, float, float, int]:
+def _isolated_score(metrics: dict[str, Any], element_count: int) -> tuple[float, float, float, float, int]:
     return (
         float(metrics["component_error"]),
         -float(metrics["min_iou"]),
@@ -74,109 +80,197 @@ def _score(metrics: dict[str, Any], element_count: int) -> tuple[float, float, f
     )
 
 
-def _line_candidates(model: dict[str, Any], fill: str) -> list[list[str]]:
-    x0, y0, x1, y1, width = (
-        float(model[key]) for key in ("x0", "y0", "x1", "y1", "width")
-    )
-    axis = str(model["axis"])
-    out: list[list[str]] = []
-    # SVG strokes: bounded center/width sweep.  Fractions are source geometry,
-    # not scale-specific branches; the production renderer chooses one geometry.
-    for center_offset in (-0.25, 0.0, 0.25, 0.5, 0.75, 1.0):
-        for stroke_delta in (-0.25, 0.0, 0.25):
-            stroke = max(0.5, width + stroke_delta)
-            if axis == "h":
-                path = f'M{_fmt(x0)} {_fmt(y0 + center_offset)}H{_fmt(x1)}'
-            else:
-                path = f'M{_fmt(x0 + center_offset)} {_fmt(y0)}V{_fmt(y1)}'
-            for cap in ("butt", "square"):
-                out.append(
-                    [
-                        f'<path d="{path}" fill="none" stroke="{fill}" '
-                        f'stroke-width="{_fmt(stroke)}" stroke-linecap="{cap}"/>'
-                    ]
+def _scene_metrics(
+    labels: np.ndarray,
+    colors: np.ndarray,
+    elements: list[str],
+    node_map: np.ndarray,
+    node_id: int,
+    color_index: int,
+    source_counts: list[int],
+) -> dict[str, Any] | None:
+    sh, sw = labels.shape
+    errors: list[int] = []
+    counts: list[list[int]] = []
+    native_iou: float | None = None
+    native_mismatch: float | None = None
+    for factor in FACTORS:
+        tw = max(16, int(round(sw * factor)))
+        th = max(16, int(round(sh * factor)))
+        rendered = _impl._render(sw, sh, elements, colors, tw, th)
+        if rendered is None:
+            return None
+        actual = [int(value) for value in _impl._counts(rendered, len(colors))]
+        counts.append(actual)
+        errors.append(
+            int(
+                sum(
+                    abs(int(current) - int(expected))
+                    for current, expected in zip(actual, source_counts, strict=True)
                 )
-    # Filled strips avoid stroke-centering ambiguity.  Pillow's line endpoint is
-    # inclusive, so both endpoint-distance and inclusive-width proposals are
-    # considered with bounded sub-pixel placement.
-    if axis == "h":
-        length = max(0.001, x1 - x0)
-        for y_shift in (-1.0, -0.75, -0.5, -0.25, 0.0):
-            for length_add in (0.0, 0.125, 0.25, 0.5, 1.0):
-                for height_delta in (-0.125, 0.0, 0.125):
-                    height = max(0.5, width + height_delta)
-                    out.append(
-                        [
-                            f'<rect x="{_fmt(x0)}" y="{_fmt(y0 + y_shift)}" '
-                            f'width="{_fmt(length + length_add)}" height="{_fmt(height)}" '
-                            f'fill="{fill}" shape-rendering="crispEdges"/>'
-                        ]
-                    )
-    else:
-        length = max(0.001, y1 - y0)
-        for x_shift in (-1.0, -0.75, -0.5, -0.25, 0.0):
-            for length_add in (0.0, 0.125, 0.25, 0.5, 1.0):
-                for width_delta in (-0.125, 0.0, 0.125):
-                    strip_width = max(0.5, width + width_delta)
-                    out.append(
-                        [
-                            f'<rect x="{_fmt(x0 + x_shift)}" y="{_fmt(y0)}" '
-                            f'width="{_fmt(strip_width)}" height="{_fmt(length + length_add)}" '
-                            f'fill="{fill}" shape-rendering="crispEdges"/>'
-                        ]
-                    )
-    return out
-
-
-def _rect_candidates(model: dict[str, Any], fill: str) -> list[list[str]]:
-    x, y, width, height = (
-        float(model[key]) for key in ("x", "y", "width", "height")
-    )
-    out: list[list[str]] = []
-    for pad in (-0.25, -0.125, -0.0625, 0.0, 0.0625, 0.125, 0.1875, 0.25):
-        for dx, dy in ((0.0, 0.0), (-0.0625, 0.0), (0.0625, 0.0), (0.0, -0.0625), (0.0, 0.0625)):
-            w = max(0.5, width + pad)
-            h = max(0.5, height + pad)
-            out.append(
-                [
-                    f'<rect x="{_fmt(x + dx)}" y="{_fmt(y + dy)}" '
-                    f'width="{_fmt(w)}" height="{_fmt(h)}" fill="{fill}" '
-                    f'shape-rendering="crispEdges"/>'
-                ]
             )
-    return out
+        )
+        if factor == 1.0:
+            native_mismatch = float(np.mean(rendered != labels))
+            native_iou = float(
+                _impl._best_iou(
+                    rendered,
+                    node_map == int(node_id),
+                    int(color_index),
+                )
+            )
+    return {
+        "lineage_errors": errors,
+        "class_component_counts": counts,
+        "native_iou": float(native_iou or 0.0),
+        "native_mismatch": float(native_mismatch or 0.0),
+    }
+
+
+def _scene_safe(before: dict[str, Any], after: dict[str, Any]) -> bool:
+    if float(after["native_iou"]) + 1e-12 < float(_impl._NATIVE_MIN_IOU):
+        return False
+    if float(after["native_iou"]) + 1e-12 < float(before["native_iou"]):
+        return False
+    if float(after["native_mismatch"]) > float(before["native_mismatch"]) + 1e-12:
+        return False
+    before_errors = [int(value) for value in before["lineage_errors"]]
+    after_errors = [int(value) for value in after["lineage_errors"]]
+    return not any(
+        current > previous
+        for current, previous in zip(after_errors, before_errors, strict=True)
+    )
+
+
+def _cardinal_anchor_path(
+    cx: float,
+    cy: float,
+    rx: float,
+    ry: float,
+    fill: str,
+    width: float,
+) -> str:
+    d = " ".join(
+        (
+            f'M{_fmt(cx-rx)} {_fmt(cy)}h0.001',
+            f'M{_fmt(cx+rx)} {_fmt(cy)}h0.001',
+            f'M{_fmt(cx)} {_fmt(cy-ry)}h0.001',
+            f'M{_fmt(cx)} {_fmt(cy+ry)}h0.001',
+        )
+    )
+    return (
+        f'<path d="{d}" fill="none" stroke="{fill}" stroke-width="{_fmt(width)}" '
+        'vector-effect="non-scaling-stroke" stroke-linecap="square"/>'
+    )
 
 
 def _ellipse_candidates(model: dict[str, Any], fill: str) -> list[list[str]]:
     cx, cy, rx, ry = (
         float(model[key]) for key in ("cx", "cy", "rx", "ry")
     )
-    out: list[list[str]] = []
-    for radius_delta in (-0.5, -0.375, -0.25, -0.1875, -0.125, -0.0625, 0.0, 0.0625, 0.125, 0.1875, 0.25, 0.375):
-        nrx = max(0.5, rx + radius_delta)
-        nry = max(0.5, ry + radius_delta)
-        for center_delta in (-0.125, 0.0, 0.125):
-            out.append(
+    output: list[list[str]] = []
+    for center_delta in (-0.125, 0.0, 0.125):
+        for radius_delta in (-0.125, 0.0, 0.125):
+            nrx = max(0.5, rx + radius_delta)
+            nry = max(0.5, ry + radius_delta)
+            output.append(
                 [
-                    f'<ellipse cx="{_fmt(cx + center_delta)}" cy="{_fmt(cy + center_delta)}" '
+                    f'<ellipse cx="{_fmt(cx+center_delta)}" cy="{_fmt(cy+center_delta)}" '
                     f'rx="{_fmt(nrx)}" ry="{_fmt(nry)}" fill="{fill}"/>'
                 ]
             )
-    return out
+    for center_delta, radius_delta in ((0.0, 0.0), (0.125, 0.125), (0.125, 0.0)):
+        ncx = cx + center_delta
+        ncy = cy + center_delta
+        nrx = max(0.5, rx + radius_delta)
+        nry = max(0.5, ry + radius_delta)
+        base = (
+            f'<ellipse cx="{_fmt(ncx)}" cy="{_fmt(ncy)}" '
+            f'rx="{_fmt(nrx)}" ry="{_fmt(nry)}" fill="{fill}"/>'
+        )
+        for anchor_width in (0.75, 1.0):
+            output.append(
+                [
+                    base,
+                    _cardinal_anchor_path(ncx, ncy, nrx, nry, fill, anchor_width),
+                ]
+            )
+    return output
 
 
-def _candidate_elements(model: dict[str, Any], fill: str) -> list[list[str]]:
+def _compact_rect_candidates(model: dict[str, Any], fill: str) -> list[list[str]]:
+    x, y, width, height = (
+        float(model[key]) for key in ("x", "y", "width", "height")
+    )
+    output: list[list[str]] = []
+    shifts = ((0.0, 0.0), (-0.125, -0.125), (0.125, 0.125), (-0.125, 0.0), (0.0, -0.125), (0.125, 0.0), (0.0, 0.125))
+    for size_delta in (-0.25, -0.125, 0.0, 0.125, 0.25):
+        rw = max(0.5, width + size_delta)
+        rh = max(0.5, height + size_delta)
+        for dx, dy in shifts:
+            output.append(
+                [
+                    f'<rect x="{_fmt(x+dx)}" y="{_fmt(y+dy)}" '
+                    f'width="{_fmt(rw)}" height="{_fmt(rh)}" fill="{fill}"/>'
+                ]
+            )
+    return output
+
+
+def _rounded_parent_candidates(model: dict[str, Any], fill: str) -> list[list[str]]:
+    x0, y0, x1, y1, radius = (
+        float(model[key]) for key in ("x0", "y0", "x1", "y1", "radius")
+    )
+    base_width = x1 - x0 + 1.0
+    base_height = y1 - y0 + 1.0
+    output: list[list[str]] = []
+    for shift in (-0.25, -0.1875, -0.125, -0.0625, 0.0, 0.0625):
+        for size_delta in (0.0, 0.125, 0.25, 0.375):
+            for radius_delta in (-0.25, 0.0, 0.25):
+                rr = max(0.5, radius + radius_delta)
+                output.append(
+                    [
+                        f'<rect x="{_fmt(x0+shift)}" y="{_fmt(y0+shift)}" '
+                        f'width="{_fmt(base_width+size_delta)}" '
+                        f'height="{_fmt(base_height+size_delta)}" '
+                        f'rx="{_fmt(rr)}" ry="{_fmt(rr)}" fill="{fill}"/>'
+                    ]
+                )
+    return output
+
+
+def _parent_ellipse_candidates(model: dict[str, Any], fill: str) -> list[list[str]]:
+    cx, cy, rx, ry = (
+        float(model[key]) for key in ("cx", "cy", "rx", "ry")
+    )
+    output: list[list[str]] = []
+    for center_delta in (-0.125, 0.0, 0.125):
+        for radius_delta in (-0.25, -0.125, 0.0, 0.125, 0.25):
+            nrx = max(0.5, rx + radius_delta)
+            nry = max(0.5, ry + radius_delta)
+            output.append(
+                [
+                    f'<ellipse cx="{_fmt(cx+center_delta)}" cy="{_fmt(cy+center_delta)}" '
+                    f'rx="{_fmt(nrx)}" ry="{_fmt(nry)}" fill="{fill}"/>'
+                ]
+            )
+    return output
+
+
+def _eligible_leaf_model(model: dict[str, Any]) -> bool:
     kind = str(model.get("kind") or "")
-    if kind == "line":
-        return _line_candidates(model, fill)
-    if kind == "rect":
-        return _rect_candidates(model, fill)
     if kind == "ellipse":
-        return _ellipse_candidates(model, fill)
-    return []
+        return True
+    if kind != "rect":
+        return False
+    width = float(model.get("width") or 0.0)
+    height = float(model.get("height") or 0.0)
+    if min(width, height) <= 0.0 or max(width, height) > 8.0:
+        return False
+    return max(width, height) / max(1e-9, min(width, height)) <= 1.25
 
 
-def optimize_discrete_primitives(
+def refine_scale_stable_geometry(
     labels: np.ndarray,
     colors: np.ndarray,
     elements: list[str],
@@ -185,22 +279,33 @@ def optimize_discrete_primitives(
 ) -> tuple[list[str], list[dict[str, Any]]]:
     labels = np.asarray(labels)
     colors = np.asarray(colors, dtype=np.uint8)
+    node_map, nodes, _root, _depth, parent = _impl._core._connected_region_graph(
+        labels, len(colors)
+    )
+    child_count = [0 for _ in nodes]
+    for parent_id in parent:
+        if parent_id is not None:
+            child_count[int(parent_id)] += 1
+    source_counts = [
+        sum(1 for node in nodes if int(node["color_index"]) == color_index)
+        for color_index in range(len(colors))
+    ]
+
     report_by_node = {
         int(item["node_id"]): item
         for item in primitive_report
         if isinstance(item, dict) and "node_id" in item
     }
     delta_by_node = {
-        int(node_id): int(item.get("element_delta") or 0)
+        node_id: int(item.get("element_delta") or 0)
         for node_id, item in report_by_node.items()
     }
-
     parts: list[list[str]] = []
     cursor = 0
     for region in regions:
         node_id = int(region.get("node_id") or -1)
         count = int(region.get("path_count") or 0) + delta_by_node.get(node_id, 0)
-        parts.append(list(elements[cursor:cursor + count]))
+        parts.append(list(elements[cursor:cursor+count]))
         cursor += count
     if cursor != len(elements):
         return list(elements), []
@@ -209,52 +314,137 @@ def optimize_discrete_primitives(
     reports: list[dict[str, Any]] = []
     for index, region in enumerate(regions):
         node_id = int(region.get("node_id") or -1)
-        prior = report_by_node.get(node_id)
-        if not prior:
-            continue
-        model = prior.get("model") or {}
-        if str(model.get("kind") or "") not in {"line", "rect", "ellipse"}:
+        if node_id < 0 or node_id >= len(nodes) or not parts[index]:
             continue
         color_index = int(region["color_index"])
+        model: dict[str, Any] | None = None
+        family: str | None = None
+
+        prior = report_by_node.get(node_id)
+        if prior is not None:
+            proposed = dict(prior.get("model") or {})
+            if _eligible_leaf_model(proposed) and child_count[node_id] == 0:
+                model = proposed
+                family = "leaf_compact"
+
+        if model is None and child_count[node_id] > 0 and len(parts[index]) == 1:
+            source_mask = node_map == node_id
+            proposed = _parent._rounded_model(source_mask)
+            if proposed is None:
+                proposed = _parent._ellipse_model(source_mask)
+            if proposed is not None:
+                model = dict(proposed)
+                family = "nested_parent"
+
+        if model is None or family is None:
+            continue
+
         rgb = colors[color_index]
         fill = f"#{int(rgb[0]):02x}{int(rgb[1]):02x}{int(rgb[2]):02x}"
-        base = list(parts[index])
-        before = _metrics(model, base, fill, sw, sh)
-        if before is None:
+        base_part = list(parts[index])
+        isolated_before = _isolated_metrics(model, base_part, fill, sw, sh)
+        scene_before = _scene_metrics(
+            labels,
+            colors,
+            _flatten(parts),
+            node_map,
+            node_id,
+            color_index,
+            source_counts,
+        )
+        if isolated_before is None or scene_before is None:
             continue
-        # Healthy primitives are immutable in this pass.
-        if float(before["min_iou"]) + 1e-12 >= float(_impl._NATIVE_MIN_IOU):
+
+        # Healthy source-derived geometry is immutable in this pass.
+        healthy_floor = 0.995 if family == "nested_parent" else float(_impl._NATIVE_MIN_IOU)
+        if (
+            int(isolated_before["component_error"]) == 0
+            and float(isolated_before["min_iou"]) + 1e-12 >= healthy_floor
+        ):
             continue
-        best = before
-        best_part = base
-        best_key = _score(before, len(base))
-        for candidate in _candidate_elements(model, fill):
-            metrics = _metrics(model, candidate, fill, sw, sh)
-            if metrics is None:
+
+        kind = str(model["kind"])
+        if family == "nested_parent" and kind == "rounded_rect":
+            candidates = _rounded_parent_candidates(model, fill)
+        elif family == "nested_parent" and kind == "ellipse":
+            candidates = _parent_ellipse_candidates(model, fill)
+        elif kind == "ellipse":
+            candidates = _ellipse_candidates(model, fill)
+        elif kind == "rect":
+            candidates = _compact_rect_candidates(model, fill)
+        else:
+            continue
+
+        best_part = base_part
+        best_isolated = isolated_before
+        best_scene = scene_before
+        best_key = _isolated_score(isolated_before, len(base_part)) + (
+            float(scene_before["native_mismatch"]),
+        )
+        for candidate in candidates:
+            isolated = _isolated_metrics(model, candidate, fill, sw, sh)
+            if isolated is None:
                 continue
-            if float(metrics["native_iou"]) + 1e-12 < float(_impl._NATIVE_MIN_IOU):
+            if float(isolated["native_iou"]) + 1e-12 < float(_impl._NATIVE_MIN_IOU):
                 continue
-            key = _score(metrics, len(candidate))
+            trial_parts = list(parts)
+            trial_parts[index] = list(candidate)
+            scene = _scene_metrics(
+                labels,
+                colors,
+                _flatten(trial_parts),
+                node_map,
+                node_id,
+                color_index,
+                source_counts,
+            )
+            if scene is None or not _scene_safe(scene_before, scene):
+                continue
+            key = _isolated_score(isolated, len(candidate)) + (
+                float(scene["native_mismatch"]),
+            )
             if key < best_key:
                 best_key = key
-                best = metrics
                 best_part = list(candidate)
-        changed = best_part != base
+                best_isolated = isolated
+                best_scene = scene
+
+        changed = best_part != base_part
         if changed:
             parts[index] = best_part
         reports.append(
             {
                 "node_id": node_id,
                 "color_index": color_index,
+                "family": family,
                 "model": model,
                 "changed": changed,
-                "before": before,
-                "after": best,
-                "element_delta": len(best_part) - len(base),
+                "before": {
+                    "isolated": isolated_before,
+                    "scene": scene_before,
+                },
+                "after": {
+                    "isolated": best_isolated,
+                    "scene": best_scene,
+                },
+                "element_delta": len(best_part) - len(base_part),
             }
         )
 
-    return [element for part in parts for element in part], reports
+    return _flatten(parts), reports
 
 
-__all__ = ["optimize_discrete_primitives"]
+# Backward-compatible name for the previously experimental module.
+def optimize_discrete_primitives(
+    labels: np.ndarray,
+    colors: np.ndarray,
+    elements: list[str],
+    regions: list[dict[str, Any]],
+    primitive_report: list[dict[str, Any]],
+) -> tuple[list[str], list[dict[str, Any]]]:
+    return refine_scale_stable_geometry(
+        labels, colors, elements, regions, primitive_report
+    )
+
+
+__all__ = ["optimize_discrete_primitives", "refine_scale_stable_geometry"]
