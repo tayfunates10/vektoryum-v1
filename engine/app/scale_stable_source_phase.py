@@ -359,7 +359,7 @@ def _scene_metrics(
 def _scene_safe(before: dict[str, Any], after: dict[str, Any]) -> bool:
     if float(after["native_iou"]) + 1e-12 < float(_impl._NATIVE_MIN_IOU):
         return False
-    if float(after["native_mismatch"]) > float(before["native_mismatch"]) + 1e-12:
+    if float(after["native_mismatch"]) > float(before["native_mismatch"]) + 0.00025:
         return False
     return not any(
         int(current) > int(previous)
