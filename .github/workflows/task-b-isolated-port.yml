@@ -18,6 +18,7 @@ jobs:
     env:
       CANONICAL_BRANCH: codex/task-b-public04-evaluator-aligned-rfv3b
       EXPECTED_CANONICAL_HEAD: 1d45015b2ed21405a7258512c441bed5a0366871
+      PYTHONPATH: engine
     steps:
       - uses: actions/checkout@v4
         with:
@@ -115,6 +116,9 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/task-b-canonical-port.yml
+          git rm .github/workflows/task-b-canonical-port-macos.yml
+          git rm .github/workflows/task-b-canonical-port-windows.yml
           git add engine/app/alpha_candidate_painter.py
           git diff --cached --check
           git commit -m "fix(alpha): add evaluator-aligned terminal painter retry"
