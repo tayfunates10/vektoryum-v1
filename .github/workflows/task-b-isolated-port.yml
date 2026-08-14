@@ -1,5 +1,6 @@
 name: Task B isolated canonical port
 
+# second push intentionally triggers the branch-local workflow after registration
 on:
   push:
     branches:
