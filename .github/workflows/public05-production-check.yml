@@ -1,0 +1,162 @@
+name: Public-05 production alpha support check
+
+on:
+  push:
+    branches:
+      - codex/public05-alpha-support-fallback
+    paths:
+      - .github/workflows/public05-production-check.yml
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  public05:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      PYTHONHASHSEED: "0"
+      PYTHONPATH: engine
+      VEKTORYUM_WORKERS: "1"
+      TASK_HEAD_SHA: "78e1925945ca1678cc4a63f90453b0174165e300"
+      RFV_RUN_ID: "31842029134"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: engine/requirements.txt
+
+      - name: Install system validators
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ghostscript libcairo2
+
+      - name: Install production pipeline dependencies
+        run: python -m pip install -r engine/requirements.txt pytest httpx
+
+      - name: Download immutable RFV-3B corpus
+        uses: actions/download-artifact@v4
+        with:
+          name: rfv3b-corpus-76f961ac9fb08ad6638b3306e8c7855517158964
+          path: ${{ runner.temp }}/rfv3b-input
+          github-token: ${{ github.token }}
+          repository: tayfunates10/vektoryum-v1
+          run-id: 31842029134
+
+      - name: Verify and prepare immutable corpus
+        run: |
+          python -m engine.regression.rfv3_live_prepare \
+            --bundle "${RUNNER_TEMP}/rfv3b-input/rfv2-public-corpus.tar.gz" \
+            --checksums "${RUNNER_TEMP}/rfv3b-input/bundle-checksums.json" \
+            --destination "${RUNNER_TEMP}/rfv3b-corpus" \
+            --evidence-out "${RUNNER_TEMP}/public05-prepare.json"
+
+      - name: Run qualification-public-05 through production pipeline
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p "${RUNNER_TEMP}/public05-out"
+          RFV_CORPUS="${RUNNER_TEMP}/rfv3b-corpus" \
+          RFV_OUT="${RUNNER_TEMP}/public05-out" \
+          python - <<'PY' 2>&1 | tee "${RUNNER_TEMP}/public05-production.log"
+          import json
+          import os
+          from pathlib import Path
+
+          from benchmark.pipeline_results import run_case
+          from app.pipeline_entry import run_pipeline
+          from engine.regression.rfv3_measurement_runner import load_qualification_cases
+
+          corpus = Path(os.environ["RFV_CORPUS"])
+          output = Path(os.environ["RFV_OUT"])
+          case = next(
+              item for item in load_qualification_cases(corpus)
+              if item.case_id == "qualification-public-05"
+          )
+          result = run_case(
+              case,
+              corpus_root=corpus,
+              work_root=output,
+              pipeline=run_pipeline,
+              engine_version=os.environ["TASK_HEAD_SHA"],
+              trace_mode="auto",
+              peak_rss_mb=None,
+          )
+          payload = result.to_dict()
+          (output / "benchmark-result.json").write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print("TASK_A_PUBLIC05_RESULT=" + json.dumps(payload, sort_keys=True))
+          PY
+
+      - name: Extract painter ledger and support-fallback evidence
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          temp = Path(os.environ["RUNNER_TEMP"])
+          log_path = temp / "public05-production.log"
+          out = temp / "public05-out"
+          out.mkdir(parents=True, exist_ok=True)
+          lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines() if log_path.exists() else []
+          prefix = "source_alpha_candidate_painter_attempts="
+          payloads = []
+          for line in lines:
+              if prefix not in line:
+                  continue
+              try:
+                  payloads.append(json.loads(line.split(prefix, 1)[1]))
+              except json.JSONDecodeError:
+                  pass
+          (out / "painter-attempts.json").write_text(
+              json.dumps(payloads, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+          )
+          selected = []
+          for payload in payloads:
+              entries = payload if isinstance(payload, list) else payload.get("attempts", [])
+              if not isinstance(entries, list):
+                  continue
+              pd = [
+                  item for item in entries
+                  if isinstance(item, dict)
+                  and str(item.get("encoding_label", "")).startswith("paint-deficit")
+              ]
+              if pd:
+                  selected = pd
+          for item in selected:
+              print("TASK_A_ATTEMPT=" + json.dumps(item, sort_keys=True))
+          legacy = [item for item in selected if "underpaint" not in str(item.get("encoding_label", ""))]
+          underpaint = [item for item in selected if "underpaint" in str(item.get("encoding_label", ""))]
+          summary = {
+              "legacy": legacy,
+              "underpaint": underpaint,
+              "underpaint_attempted": bool(underpaint),
+              "underpaint_accepted": any(item.get("status") == "accepted" for item in underpaint),
+          }
+          (out / "task-a-summary.json").write_text(
+              json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+          )
+          print("TASK_A_SUMMARY=" + json.dumps(summary, sort_keys=True))
+          PY
+
+      - name: Upload public-05 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: task-a-public05-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/public05-production.log
+            ${{ runner.temp }}/public05-prepare.json
+            ${{ runner.temp }}/public05-out/benchmark-result.json
+            ${{ runner.temp }}/public05-out/painter-attempts.json
+            ${{ runner.temp }}/public05-out/task-a-summary.json
+          if-no-files-found: warn
+          retention-days: 14
+          compression-level: 0
