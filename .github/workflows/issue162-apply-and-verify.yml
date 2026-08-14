@@ -31,9 +31,7 @@ jobs:
           path = Path("engine/app/alpha_candidate_painter.py")
           text = path.read_text(encoding="utf-8")
 
-          constants_old = '''_PAINT_DEFICIT_CUMULATIVE_LEVELS = (20, 16, 12, 8)
-          _PAINTER_EVAL_SIDE = 512.0
-          '''
+          constants_old = "_PAINT_DEFICIT_CUMULATIVE_LEVELS = (20, 16, 12, 8)\n_PAINTER_EVAL_SIDE = 512.0\n"
           constants_new = '''_PAINT_DEFICIT_CUMULATIVE_LEVELS = (20, 16, 12, 8)
           # Son-çare polygon nicemleme taraması contour'un "quantized" ledger
           # sözleşmesinden ayrı tutulur. Bu bir kalite eşiği değildir; her aday
@@ -45,19 +43,9 @@ jobs:
           assert text.count(constants_old) == 1, "Issue 162 constants anchor drifted"
           text = text.replace(constants_old, constants_new, 1)
 
-          helper_anchor = '''    return (
-              "source_alpha_candidate_painter_no_admissible_reconstruction:"
-              f"primary=none:no_candidate;attempts_sha256={attempts_sha}"
-          )
-
-
-          def apply_candidate_painter_reconstruction(
-          '''
-          helper_replacement = '''    return (
-              "source_alpha_candidate_painter_no_admissible_reconstruction:"
-              f"primary=none:no_candidate;attempts_sha256={attempts_sha}"
-          )
-
+          helper_marker = "\n\ndef apply_candidate_painter_reconstruction(\n"
+          assert text.count(helper_marker) == 1, "Issue 162 helper marker drifted"
+          helpers = r'''
 
           def _has_nonretryable_journal_rejection(
               attempts: list[dict[str, Any]],
@@ -80,12 +68,12 @@ jobs:
           ) -> bool:
               """Gate polygon-q on the exact polygon path being retried.
 
-              A byte-only exact-polygon failure is eligible because requantization
-              directly shrinks that same node-free encoding.  If exact polygon
-              reached TransformJournal, every fresh rejection must remain inside
-              the existing retry-eligible topology/seam/edge/SSIM reason set.
-              Rejections from contour/cumulative do not veto this retry: their
-              counted-path/node cost is exactly the constraint polygon-q avoids.
+              Byte-only exact-polygon failure is eligible because requantization
+              directly shrinks that node-free encoding. If exact polygon reached
+              TransformJournal, every fresh rejection must remain inside the
+              existing retry-eligible topology/seam/edge/SSIM reason set.
+              Rejections from contour/cumulative do not veto this retry because
+              their counted-path/node cost is exactly the constraint polygon-q avoids.
               """
               from app.alpha_svg_mask import _painter_retry_eligible  # noqa: PLC0415
 
@@ -114,29 +102,21 @@ jobs:
                   )
 
               # public-05 sınıfı: exact polygon yalnız serialization bütçesinde
-              # düşer; validation/journal'a hiç ulaşmadan aynı geometriyi daha az
-              # alfa seviyesiyle tekrar kodlamak doğrudan bu ön-eleme kusurunu hedefler.
+              # düşer; aynı geometriyi daha az alfa seviyesiyle tekrar kodlamak
+              # doğrudan bu preflight kusurunu hedefler.
               return all(entry.get("status") == "byte_rejected" for entry in polygon_exact)
+          '''.replace("\n          ", "\n")
+          text = text.replace(helper_marker, helpers + helper_marker, 1)
 
-
-          def apply_candidate_painter_reconstruction(
-          '''
-          assert text.count(helper_anchor) == 1, "Issue 162 helper anchor drifted"
-          text = text.replace(helper_anchor, helper_replacement, 1)
-
-          phase_anchor = '''        return winner
-
-              try:
-                  # Kademe 1 → Kademe 2 → Kademe 3: render-güvenli sayı-koruyan kodlamalar
-          '''
-          phase_replacement = '''        return winner
+          try_marker = "\n    try:\n        # Kademe 1 → Kademe 2 → Kademe 3: render-güvenli sayı-koruyan kodlamalar\n"
+          try_index = text.rfind(try_marker)
+          assert try_index >= 0, "Issue 162 final try marker drifted"
+          phase = r'''
 
               def _evaluate_node_free_quantized() -> list[Any] | None:
-                  """Try the finest node-free polygon lattice that can pass unchanged gates."""
+                  """Try the finest node-free polygon lattice that passes unchanged gates."""
                   for target_levels in _NODE_FREE_QUANTIZED_LEVELS:
-                      requant, requant_opacity = _requantize_alpha(
-                          grid_alpha, target_levels
-                      )
+                      requant, requant_opacity = _requantize_alpha(grid_alpha, target_levels)
                       attempt_start = len(attempts)
                       candidate = _evaluate_phase(
                           [
@@ -150,33 +130,20 @@ jobs:
                           ]
                       )
                       if candidate is not None:
-                          # q64 -> q32 -> q16: ilk geçen en ince kafestir. Daha kaba
-                          # bir adayı sırf daha küçük byte olduğu için seçme.
+                          # q64 -> q32 -> q16: ilk geçen en ince kafestir.
                           return candidate
-                      if _has_nonretryable_journal_rejection(
-                          attempts[attempt_start:]
-                      ):
+                      if _has_nonretryable_journal_rejection(attempts[attempt_start:]):
                           # Yeni fazın kendi içinde de "dur ve geri al" sözleşmesi.
                           return None
                   return None
+          '''.replace("\n          ", "\n")
+          text = text[:try_index] + phase + text[try_index:]
 
-              try:
-                  # Kademe 1 → Kademe 2 → Kademe 3: render-güvenli sayı-koruyan kodlamalar
-          '''
-          assert text.count(phase_anchor) == 1, "Issue 162 phase anchor drifted"
-          text = text.replace(phase_anchor, phase_replacement, 1)
-
-          final_old = '''        if winner is None:
-                      winner = _evaluate_paint_deficit()
-              finally:
-          '''
-          final_new = '''        if winner is None:
-                      winner = _evaluate_paint_deficit()
-                  if winner is None and _node_free_polygon_retry_eligible(attempts):
+          final_old = "        if winner is None:\n            winner = _evaluate_paint_deficit()\n"
+          final_new = final_old + '''        if winner is None and _node_free_polygon_retry_eligible(attempts):
                       # Kesin eklemeli son çare: mevcut tüm aday yolları önce aynen
                       # tüketilir; bugün winner üreten hiçbir vaka bu fazı görmez.
                       winner = _evaluate_node_free_quantized()
-              finally:
           '''
           assert text.count(final_old) == 1, "Issue 162 final phase anchor drifted"
           text = text.replace(final_old, final_new, 1)
@@ -212,10 +179,7 @@ jobs:
               return np.tile(row[None, :], (256, 1))
 
 
-          def _polygon_bytes(
-              quantized: np.ndarray,
-              opacity: dict[int, float],
-          ) -> int:
+          def _polygon_bytes(quantized: np.ndarray, opacity: dict[int, float]) -> int:
               children = _painter_polygon_children(
                   _painter_loops(quantized, opacity), _qname
               )
@@ -267,55 +231,44 @@ jobs:
                   return entry
 
               def test_byte_only_exact_polygon_failure_is_eligible(self) -> None:
-                  self.assertTrue(
-                      _node_free_polygon_retry_eligible([self._polygon_exact()])
-                  )
+                  self.assertTrue(_node_free_polygon_retry_eligible([self._polygon_exact()]))
 
               def test_retry_eligible_exact_polygon_journal_failure_is_eligible(self) -> None:
                   self.assertTrue(
                       _node_free_polygon_retry_eligible(
-                          [
-                              self._polygon_exact(
-                                  status="geometry_rejected",
-                                  journal_gate_started=True,
-                                  journal_passed=False,
-                                  journal_reason_codes=[
-                                      "topology_hole_regression",
-                                      "seam_regression",
-                                  ],
-                              )
-                          ]
+                          [self._polygon_exact(
+                              status="geometry_rejected",
+                              journal_gate_started=True,
+                              journal_passed=False,
+                              journal_reason_codes=["topology_hole_regression", "seam_regression"],
+                          )]
                       )
                   )
 
               def test_noneligible_exact_polygon_journal_failure_blocks_retry(self) -> None:
                   self.assertFalse(
                       _node_free_polygon_retry_eligible(
-                          [
-                              self._polygon_exact(
-                                  status="geometry_rejected",
-                                  journal_gate_started=True,
-                                  journal_passed=False,
-                                  journal_reason_codes=["node_complexity_explosion"],
-                              )
-                          ]
+                          [self._polygon_exact(
+                              status="geometry_rejected",
+                              journal_gate_started=True,
+                              journal_passed=False,
+                              journal_reason_codes=["node_complexity_explosion"],
+                          )]
                       )
                   )
 
               def test_mixed_exact_polygon_journal_failure_blocks_retry(self) -> None:
                   self.assertFalse(
                       _node_free_polygon_retry_eligible(
-                          [
-                              self._polygon_exact(
-                                  status="geometry_rejected",
-                                  journal_gate_started=True,
-                                  journal_passed=False,
-                                  journal_reason_codes=[
-                                      "topology_hole_regression",
-                                      "node_complexity_explosion",
-                                  ],
-                              )
-                          ]
+                          [self._polygon_exact(
+                              status="geometry_rejected",
+                              journal_gate_started=True,
+                              journal_passed=False,
+                              journal_reason_codes=[
+                                  "topology_hole_regression",
+                                  "node_complexity_explosion",
+                              ],
+                          )]
                       )
                   )
 
