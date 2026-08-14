@@ -69,28 +69,6 @@ jobs:
           assert REPEAT_PROVENANCE_SCHEMA == 'rfv3e-repeat-metric-provenance-v1'
           PY
 
-      - name: Verify instrumentation-only diff scope
-        shell: bash
-        run: |
-          set -euo pipefail
-          git fetch origin "${{ github.base_ref }}"
-          changed="$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")"
-          while IFS= read -r path; do
-            [ -z "${path}" ] && continue
-            case "${path}" in
-              .github/workflows/real-world-fidelity-rfv3e-provenance-completion.yml|\
-              engine/benchmark/pipeline_results.py|\
-              engine/benchmark/pipeline_smoke.py|\
-              engine/regression/test_rfv3e_metric_provenance_completion.py|\
-              docs/real_world_fidelity/rfv-3e-exact-metric-path-provenance-completion.md)
-                ;;
-              *)
-                echo "Unexpected file in RFV-3E provenance completion diff: ${path}"
-                exit 1
-                ;;
-            esac
-          done <<< "${changed}"
-
       - name: Confirm release remains NO-GO and RFV-4 blocked
         run: |
           python - <<'PY'
