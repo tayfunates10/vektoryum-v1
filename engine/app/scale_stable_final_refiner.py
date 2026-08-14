@@ -2,9 +2,11 @@
 
 This pass evaluates only candidate families not already exhausted by the prior
 source-phase pass: non-scaling cardinal anchors for leaf ellipses and compact
-nested ellipse phase corrections.  It remains source-derived and fail-closed;
-external acceptance thresholds, policies, corpus, palette caps, shared budgets
-and vector-only requirements are unchanged.
+nested ellipse phase corrections.  Ellipse models are reconstructed directly
+from connected source masks so scoring follows Pillow's source semantics rather
+than a prior raster-cell approximation.  External acceptance thresholds,
+policies, corpus, palette caps, shared budgets and vector-only requirements are
+unchanged.
 """
 from __future__ import annotations
 
@@ -14,7 +16,7 @@ import numpy as np
 
 from app import semantic_region_geometry_impl as _impl
 from app import scale_stable_discrete_optimizer as _disc
-from app import scale_stable_parent_geometry as _parent
+from app import scale_stable_source_phase as _phase
 
 _NATIVE_MISMATCH_SLACK = 0.00025
 _SCENE_CANDIDATE_LIMIT = 3
@@ -37,12 +39,35 @@ def _scene_safe(before: dict[str, Any], after: dict[str, Any]) -> bool:
     )
 
 
+def _ellipse_model_from_source(mask: np.ndarray, *, parent: bool) -> dict[str, Any] | None:
+    raw = _phase._endpoint_parent_ellipse(mask) if parent else _phase._exact_leaf_ellipse(mask)
+    if raw is None:
+        return None
+    if str(raw.get("kind") or "") == "center_radius_ellipse":
+        return {
+            "kind": "ellipse",
+            "cx": float(raw["cx"]),
+            "cy": float(raw["cy"]),
+            "rx": float(raw["rx"]),
+            "ry": float(raw["ry"]),
+        }
+    if str(raw.get("kind") or "") == "endpoint_ellipse":
+        x0, y0, x1, y1 = (float(raw[key]) for key in ("x0", "y0", "x1", "y1"))
+        return {
+            "kind": "ellipse",
+            "cx": (x0 + x1) / 2.0,
+            "cy": (y0 + y1) / 2.0,
+            "rx": (x1 - x0) / 2.0,
+            "ry": (y1 - y0) / 2.0,
+        }
+    return None
+
+
 def _candidate_parts(model: dict[str, Any], family: str, fill: str) -> list[list[str]]:
-    kind = str(model.get("kind") or "")
-    if family == "leaf_ellipse" and kind == "ellipse":
+    if family == "leaf_ellipse":
         # Single-element ellipse phase candidates are already covered upstream.
         return [part for part in _disc._ellipse_candidates(model, fill) if len(part) > 1]
-    if family == "nested_ellipse" and kind == "ellipse":
+    if family == "nested_ellipse":
         return _disc._parent_ellipse_candidates(model, fill)
     return []
 
@@ -69,11 +94,6 @@ def refine_final_geometry(
         for color_index in range(len(colors))
     ]
 
-    primitive_by_node = {
-        int(item["node_id"]): item
-        for item in primitive_report
-        if isinstance(item, dict) and "node_id" in item
-    }
     delta_by_node: dict[int, int] = {}
     for collection in (primitive_report, *prior_reports):
         for item in collection:
@@ -101,20 +121,16 @@ def refine_final_geometry(
         if node_id < 0 or node_id >= len(nodes) or not parts[index]:
             continue
 
+        source_mask = node_map == node_id
         model: dict[str, Any] | None = None
         family: str | None = None
-        prior = primitive_by_node.get(node_id)
-        if prior is not None and child_count[node_id] == 0:
-            proposed = dict(prior.get("model") or {})
-            if str(proposed.get("kind") or "") == "ellipse":
-                model = proposed
+        if child_count[node_id] == 0:
+            model = _ellipse_model_from_source(source_mask, parent=False)
+            if model is not None:
                 family = "leaf_ellipse"
-
-        if model is None and child_count[node_id] > 0 and len(parts[index]) == 1:
-            source_mask = node_map == node_id
-            proposed = _parent._ellipse_model(source_mask)
-            if proposed is not None:
-                model = dict(proposed)
+        elif len(parts[index]) == 1:
+            model = _ellipse_model_from_source(source_mask, parent=True)
+            if model is not None:
                 family = "nested_ellipse"
 
         if model is None or family is None:
