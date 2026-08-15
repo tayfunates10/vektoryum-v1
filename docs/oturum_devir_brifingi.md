@@ -36,7 +36,7 @@ dıştaki fail-closed mesajı.
 |---|---|---|
 | `public-04` | native/evaluator arası sabit boşluk | native 0,99888 · evaluator 0,9914 · fark ~0,0075 |
 | `public-05` | hizasızlık şüphesi | native alfa IoU **0,4274**, kafesten bağımsız sabit |
-| `public-12` | **TimeoutError** (kalite kapısı değil) | iki koşuda da tekrarladı, ~135 dk |
+| `public-12` | ~~TimeoutError~~ → **kontur fallback düğüm patlaması** (madde 10) | plan 4 034 685 düğüm üretiyor, paya düşen 71 838 → **56×** |
 | `public-14` | knockout bayt bütçesi | 1 800 596 > 1 273 782 (%41 aşım) |
 | `public-15` | deficit örtüsü baytı | 1 099 083 deficit px; kafes seyreltmesi baytı yalnız %17,5 düşürüyor |
 
@@ -538,3 +538,32 @@ Kalan gerçek kaldıraçlar:
 ⚠️ Sonraki oturuma: `<rect>` → `<path>` yolunu **kapalı** say. Denendi (iki
 varyant), ölçüldü, ikisi de düştü ve nedeni artık biliniyor. Bunun yerine rect
 SAYISINI düşüren işlere bak.
+
+
+### 10.1 Düğüm patlamasının ayrıştırması (aritmetik)
+
+`alpha_mask_budget.py:123` → `node_limit = max(parent*4, parent+2500)`.
+Gözlenen limit **95 784** olduğuna göre parent×4 baskın ve
+**parent_node_count = 23 946** (23 946 × 4 = 95 784).
+
+| bileşen | düğüm | not |
+|---|---|---|
+| ana çizim (parent artwork) | **23 946** | normal, sorun değil |
+| kontur fallback planı | **4 034 685** | 4 058 631 − 23 946 |
+| plana kalan pay | 71 838 | 95 784 − 23 946 |
+| aşım | **56×** | 4 034 685 / 71 838 |
+
+Yani patlama **ana çizimden gelmiyor**; tamamen
+`alpha_mask_adaptive._build_contour_plan()` içinde üretiliyor. Bu fonksiyon
+`_quantize_alpha` çıktısındaki **her alfa seviyesi için kontur** çıkarıyor;
+`public-12` gibi gürültülü/fotoğrafımsı alfada seviye başına kontur sayısı
+patlıyor. Süre de bunun sonucu: 4 milyon komut üretmek 4 197 s sürüyor.
+
+**Sıradaki ölçülebilir adım** (denenmedi, öneri): `_build_contour_plan`'a
+üretim sırasında bir **erken durdurma** koymak — komut sayısı paya düşen
+bütçeyi aştığı anda plan üretimini bırakıp `contour_fallback_unavailable`
+dönmek. Bu kaliteyi düşürmez (plan zaten reddediliyor), yalnız 4 197 s'lik
+boşa hesabı kesip vakayı hızlı-başarısız yapar. Böylece `public-12` shard'ı
+saatler yerine dakikalar sürer ve korpus koşusu bir daha 150 dk'ya dayanmaz.
+⚠️ Erken durdurma kalite kapısı DEĞİL; yalnız zaten reddedilecek bir hesabı
+kısaltır. Yine de ölçülerek doğrulanmalı.
