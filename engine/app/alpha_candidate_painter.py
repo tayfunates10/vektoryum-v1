@@ -892,7 +892,7 @@ def _emit_painter_attempts(attempts: list[dict[str, Any]]) -> str:
 
 
 
-def _paint_deficit_palette_retry_eligible(
+def _paint_deficit_support_retry_eligible(
     attempts: list[dict[str, Any]],
 ) -> bool:
     """Retry support palette only after the complete legacy ladder is byte-bound.
@@ -953,11 +953,11 @@ def _painter_primary_error(
         _validated("exact")
         or _validated("quantized")
         or _validated("paint_deficit")
-        or _validated("paint_deficit_palette")
+        or _validated("paint_deficit_support_compact")
         or _smallest_byte_rejected("exact")
         or _smallest_byte_rejected("quantized")
         or _smallest_byte_rejected("paint_deficit")
-        or _smallest_byte_rejected("paint_deficit_palette")
+        or _smallest_byte_rejected("paint_deficit_support_compact")
     )
     if primary is not None:
         label = primary["encoding_label"]
@@ -1345,7 +1345,7 @@ def apply_candidate_painter_reconstruction(
             label: str,
             levels: int = _ALPHA_LEVELS,
             *,
-            palette_limit: int | None = None,
+            support_encoding: str | None = None,
         ) -> list[Any] | None:
             txn = alpha_transaction_id(
                 parent_sha256, source_alpha_sha256, mode, label
@@ -1355,13 +1355,13 @@ def apply_candidate_painter_reconstruction(
                 "encoding_label": label,
                 "encoding_family": (
                     "paint_deficit"
-                    if palette_limit is None
-                    else "paint_deficit_palette"
+                    if support_encoding is None
+                    else "paint_deficit_support_compact"
                 ),
                 "exact_or_quantized": (
                     "paint_deficit"
-                    if palette_limit is None
-                    else "paint_deficit_palette"
+                    if support_encoding is None
+                    else "paint_deficit_support_compact"
                 ),
                 "source_alpha_level_count": int(source_level_count),
                 "encoded_alpha_level_count": int(levels),
@@ -1389,10 +1389,10 @@ def apply_candidate_painter_reconstruction(
                 "journal_passed": None,
                 "journal_reason_codes": [],
             }
-            if palette_limit is not None:
-                entry["paint_deficit_palette_limit"] = int(palette_limit)
+            if support_encoding is not None:
+                entry["paint_deficit_support_encoding"] = str(support_encoding)
             try:
-                if palette_limit is None:
+                if support_encoding is None:
                     probe_root, probe_geometry = (
                         build_paint_deficit_reconstruction_tree(
                             original_root,
@@ -1412,7 +1412,7 @@ def apply_candidate_painter_reconstruction(
                             txn,
                             mask_encoding=mask_encoding,
                             levels=levels,
-                            palette_limit=int(palette_limit),
+                            support_encoding=str(support_encoding),
                         )
                     )
             except RuntimeError as exc:
@@ -1442,11 +1442,14 @@ def apply_candidate_painter_reconstruction(
             ):
                 if stat_key in probe_geometry:
                     entry[stat_key] = int(probe_geometry[stat_key])
-            if palette_limit is not None:
+            if support_encoding is not None:
                 for stat_key in (
                     "paint_deficit_palette_count",
                     "paint_deficit_support_rect_count",
                     "paint_deficit_support_serialized_bytes",
+                    "paint_deficit_support_base_label",
+                    "paint_deficit_support_legacy_serialized_bytes",
+                    "paint_deficit_support_saved_bytes",
                 ):
                     if stat_key in probe_geometry:
                         entry[stat_key] = int(probe_geometry[stat_key])
@@ -1562,35 +1565,20 @@ def apply_candidate_painter_reconstruction(
                     break
 
         legacy_paint_attempts = attempts[paint_deficit_attempt_start:]
-        if winner is None and _paint_deficit_palette_retry_eligible(
+        if winner is None and _paint_deficit_support_retry_eligible(
             legacy_paint_attempts
         ):
-            # Task C: the measured public-15 ladder has an alpha-independent
-            # serialization floor. Keep the smallest existing cumulative lattice
-            # fixed and compact only the palette-labelled support geometry. This
-            # family is byte-only: once a candidate fits the byte budget but fails
-            # any unchanged evaluator/Journal gate, a coarser palette MUST NOT be
-            # used to route around that quality rejection.
+            # Task C: public-15's q-ladder proves an alpha-independent byte floor.
+            # Keep the smallest existing q8 cumulative mask and every original
+            # source-palette colour unchanged. Factor only support geometry as
+            # one binary base fill plus exact-colour correction rectangles.
             fallback_levels = min(_PAINT_DEFICIT_CUMULATIVE_LEVELS)
-            for palette_limit in (4, 2, 1):
-                attempt_start = len(attempts)
-                winner = _try(
-                    "cumulative",
-                    (
-                        f"paint-deficit-cumulative-q{fallback_levels}"
-                        f"-p{palette_limit}"
-                    ),
-                    levels=fallback_levels,
-                    palette_limit=palette_limit,
-                )
-                if winner is not None:
-                    break
-                fallback_attempts = attempts[attempt_start:]
-                if (
-                    len(fallback_attempts) != 1
-                    or fallback_attempts[0].get("status") != "byte_rejected"
-                ):
-                    break
+            winner = _try(
+                "cumulative",
+                f"paint-deficit-cumulative-q{fallback_levels}-base-delta",
+                levels=fallback_levels,
+                support_encoding="base_delta",
+            )
         return winner
 
 
