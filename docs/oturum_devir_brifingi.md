@@ -686,3 +686,55 @@ vektörel, `np.nonzero` gibi ~0,01 s) ya da `cv2.connectedComponents`
 
 ⚠️ Sonuç korunmalı: ön-kontrol yalnız zaten reddedilecek alanları elemeli.
 Eşik, kabul edilen hiçbir vakayı etkilemeyecek şekilde bütçeden türetilmeli.
+
+
+### 10.5 BELİRLEYİCİ: `_encode_contours` seviye başına **2 komut** üretiyor
+
+`alpha_mask_budget.py:255` son satır:
+
+```python
+return f"M{x0} {y0}l" + ",".join(deltas)
+```
+
+`_PATH_COMMAND` yalnız harfleri sayar → bu dizge **her zaman 2 komut** (`M` +
+`l`), kontur sayısından ve nokta sayısından **bağımsız**. Docstring zaten
+söylüyor: *"One M and one l command encode an entire alpha level."*
+
+Bu, madde 10.3/10.4'teki tüm akıl yürütmeyi geçersiz kılar ve resmi düzeltir:
+
+- **Kompakt dalın düğüm maliyeti önemsizdir** (2 × seviye sayısı). Bu dal
+  düğüm bütçesini pratikte hiç zorlamaz.
+- `public-12`'nin **4 058 631 düğümünün tamamı pahalı piksel-başı daldan**
+  geliyor (hücre başına 5 komut).
+- Dolayısıyla asıl soru "düğüm sayısı ne olacak" değil, **"pahalı dala
+  düşecek miyiz"**. O karar tek yerde veriliyor:
+  `contour_count > _MAX_COMPACT_CONTOURS` (**4096**) ya da tüm konturların
+  degenerate olması.
+
+### Doğru kapının koşulu (kısmen ölçüldü, tamamlanmadı)
+
+Pahalı dala düşüleceği ÖNCEDEN bilinirse, o dalın düğüm maliyeti **tam olarak
+5 × hücre_sayısı**'dır ve `np.count_nonzero` ile **0,14 ms**'de hesaplanır.
+`5 × hücre > node_allowance` ise ret kanıtlıdır.
+
+Eksik olan tek halka: `contour_count > 4096` olacağını `findContours`
+çağırmadan ucuza bilmek. Ölçülenler:
+
+| girdi | 4-komşu bileşen | 8-komşu bileşen | gerçek kontur |
+|---|---|---|---|
+| dama tahtası | 720 000 | **1** | 717 603 |
+| logo benzeri | 2 | 2 | 3 |
+
+⚠️ Dikkat: **8-komşuluk kontur sayısının alt sınırıdır ama işe yaramaz**
+(dama tahtasında 1). **4-komşuluk ise üst sınır tarafındadır**, yani
+`C4 > 4096` tek başına `kontur > 4096` demek DEĞİLDİR — sağlam bir kapı için
+yeterli değil.
+
+Dama tahtasındaki 717 603 konturun kaynağı `RETR_CCOMP`'un **delikleri** de
+sayması. Dolayısıyla doğru ucuz ölçüt muhtemelen **delik sayısı**, o da Euler
+karakteristiğinden gelir (2×2 bit-quad sayımı, numpy ile vektörel ve ucuz
+olması beklenir). **Ölçülmedi.** Sonraki oturum buradan devam etmeli:
+önce bit-quad Euler maliyetini `findContours`'a karşı ölç, sonra kapıyı kur.
+
+Yani zincir: `delik/kontur tahmini > 4096` → pahalı dal kesin →
+`5 × hücre > pay` ise kanıtlı ret → `findContours` hiç çağrılmaz.
