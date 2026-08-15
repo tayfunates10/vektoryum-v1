@@ -591,6 +591,50 @@ Kritik ayrıntı: bu maliyet `_build_contour_plan`'ın **ilk** döngüsünde, ya
 pahalı dala düşmeden ÖNCE ödeniyor. Dolayısıyla pahalı dalı kısaltan hiçbir
 optimizasyon `public-12`'yi hızlandıramaz.
 
+### 10.3 ÖN-KONTROL TASARIMI — ölçüldü, kanıtlanabilir, uygulanmadı
+
+Ön-kontrol adaylarının maliyeti ve tahmin gücü ölçüldü (1200x1200):
+
+| ölçüt | dama tahtası (patolojik) | logo benzeri (normal) |
+|---|---|---|
+| `count_nonzero` | 0,14 ms | 0,15 ms |
+| satır geçişi (`np.diff`) | 24,76 ms | 6,20 ms |
+| `connectedComponents` 8-komşuluk | 4,95 ms → **1 bileşen** | 1,11 ms → 2 |
+| **`connectedComponents` 4-komşuluk** | **3,01 ms → 720 000 bileşen** | **1,32 ms → 2** |
+| `cv2.findContours` | **98 647 ms** | 1,24 ms |
+
+İki sonuç:
+1. `findContours` normal girdide zaten hızlı (1,24 ms); ön-kontrolün yalnız
+   **patolojik** durumu yakalaması yeterli.
+2. **8-komşuluk kullanılamaz** — dama tahtasına "1 bileşen" diyor. Doğru olan
+   **4-komşuluk**: köşeden değen dolgular ayrı kapalı alt-yollardır.
+
+### Kanıt (bu sefer ampirik benzerlik değil, alt sınır)
+
+Her SVG dolgu gösterimi, 4-komşu bileşen başına **en az bir kapalı alt-yol**,
+alt-yol başına **en az 4 komut** (M + en az iki çizgi + Z) gerektirir.
+Dolayısıyla `komut_sayısı >= 4 * C`. Eğer `4 * C > node_allowance` ise kabul
+**matematiksel olarak imkânsızdır** ve `findContours`'a hiç girilmemelidir.
+
+- `public-12` benzeri alan: 4 × 720 000 = 2 880 000 > 71 838 → kanıtlı ret,
+  ~98 s (çok seviyede ~4 000 s) hesap atlanır, maliyet 3 ms.
+- Normal logo: 4 × 2 = 8, bütçenin çok altında → hiçbir şey değişmez.
+
+Bu, bu oturumdaki diğer denemelerden farklı: gerekçe "izole testte aynı
+görünüyor" değil, **matematiksel alt sınır**. Yine de regresyonla doğrulanmalı.
+
+### ⚠️ Uygulamadan önce çözülecek tek soru
+
+Ön-kontrol hangi hatayı fırlatmalı? Şu an bu yol
+`..._budget_rejected:path_bytes=...,path_count=...,path_nodes=...` veriyor;
+erken çıkışta gerçek sayılar hesaplanmamış olacak. `..._unavailable`
+fırlatmak **farklı bir dal** olduğundan çağıranın davranışını değiştirebilir.
+Güvenli seçenek: aynı `budget_rejected` kodunu, `path_nodes` yerine kanıtlı
+alt sınırla (`>=4C`) bildirmek. Karar verilmeden uygulanmamalı.
+
+Doğrulama planı: sözleşme testleri + `test_visual_regression.py` (kabul edilen
+vaka etkilenmemeli) + canlı korpusta `public-12` shard süresi (asıl kanıt).
+
 ### Sıradaki gerçek kaldıraç (ölçülmedi, öneri)
 
 `cv2.findContours` çağrılmadan ÖNCE ucuz bir parçalanma ön-kontrolü: alan
