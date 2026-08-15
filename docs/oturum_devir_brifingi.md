@@ -253,10 +253,35 @@ Merdiven boşaltma **yalnız ölçüm betiğinin kendi sürecinde** yapılır �
 dokunmak RFV-3B canlı iş akışını (6 shard × saatler) tetiklerdi ve varsayılan
 davranış değişmediği için o koşu `7dfab89` ile aynı sonucu verirdi.
 
-Okuma: `ladder-free` 3600 s altında biterken `ladder-on` aşıyorsa timeout
-sorumluluğu eklediğimiz adaylarındır. İkisi de aşıyorsa timeout vakaya
-özgüdür — o zaman `public-12` ayrı bir performans işi olur, kalite işi değil.
-Kanıt: `PUBLIC12_TIMING=` satırı + `public12-timing-<kol>.json` artefaktı.
+### SONUÇ (gözlemlenmiş, artefakt beklemeden)
+
+Koşu `31884729592`, iki kol da **12:30:15'te** ölçüme girdi. 13:48 itibarıyla
+**ikisi de hâlâ koşuyordu: ~78 dk = ~4 680 s**, yani üretimdeki
+`repeat_timeout_seconds = 3600` bütçesini **ikisi de aştı**.
+
+Karar tablosuna göre okuma: **timeout sorumluluğu merdiven adaylarında DEĞİL.**
+`public-12` merdivenler tamamen boşaltılmışken bile 3600 s'yi aşıyor. Yani bu
+bir kalite işi değil, **vakaya özgü bir performans işi** — brifingdeki "zayıf
+işaret" (süre vakaya özgü olabilir) ölçümle desteklendi.
+
+⚠️ Bu, duvar saatinden **doğrudan gözlem**; kesin `elapsed_seconds` değil.
+
+### Harness kusuru: `signal.alarm` yerli kodu kesemiyor
+
+Bütçeyi `signal.alarm(3600)` ile zorlamıştım. Fire etmedi. Nedeni: Python
+sinyal işleyicileri yalnız bytecode'lar arasında çalışır; boru hattı zamanının
+çoğunu C uzantılarında (vtracer/cv2/resvg) bloke geçirdiğinden SIGALRM
+**ertelenir**. Bu yüzden kol 3600 s'de temiz "budget_exceeded" verip
+`public12-timing-<kol>.json` yazamadı; iş 150 dk'lık job timeout'una kadar
+sürecek ve zamanlama artefaktı üretmeyecek.
+
+Üretim ölçüm koşucusunun bunu doğru yapmasının sebebi de bu: o, tekrarları
+**izole işçi süreçlerinde** koşturup süreci dışarıdan öldürüyor. Aynı deney
+tekrar kurulacaksa alarm değil, `subprocess` + hard kill kullanılmalı.
+
+Bu kusur sonucu **değiştirmiyor** (gözlem zaten 3600 s'yi aşmış durumda), yalnız
+kesin sayıyı vermiyor. Koşu, iptal edip 2 saat daha CI yakmamak için kendi
+haline bırakıldı; `if: always()` yüklemesi kısmi kanıtı taşıyabilir.
 
 ## 11. Geliştirme: destek katmanı geometri kodlaması (`<rect>` → `<path>`)
 
