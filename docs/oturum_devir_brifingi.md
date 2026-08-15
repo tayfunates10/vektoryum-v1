@@ -396,3 +396,54 @@ Bayt kazancını almak isteyen önce şunu yanıtlamalı: **hangi downstream aş
 - Knockout'ta aynı oran public-14'ü **sığdırabilirdi** (1 800 596 × 0,70 ≈
   1 260 000 < 1 273 782) — ama oraya hiç dokunulmadı ve `test_alpha_clip_encoding.py:142`
   sözleşmesi orada da `<rect>` bekliyor. Aynı downstream sorusu orada da geçerli.
+
+### 11.1 CANLI KORPUS SAYILARI (bedava geldi — sentetik tahmini değiştirin)
+
+Geri alınan ilk varyant (birleşik `<path>`) `a3025963` head'inde canlı korpusa
+karşı koştu (run `31887421488`, shard 2). Ledger alanlarını oraya bağlamış
+olmam sayesinde **gerçek** sayılar elimizde:
+
+| ölçüm | `public-15` gerçek değeri |
+|---|---|
+| destek katmanı rect sayısı | **15 283** |
+| `<rect>` biçimi | **701 625 B** |
+| birleşik `<path>` biçimi | **225 166 B** |
+| kazanç | **%67,9** |
+
+Sentetik profilim %68,1 demişti; gerçek %67,9. **Ölçüm yöntemi sağlam** —
+`_merged_rectangles_by_level` ile üretilen profil gerçek korpusu temsil ediyor.
+(Madde 3.5'teki hatanın tekrarı değil: bu kez öncül doğrulandı.)
+
+Adayların toplam baytı (birleşik `<path>` desteğiyle):
+
+| aday | toplam bayt | bütçe 335 503'e göre |
+|---|---|---|
+| `paint-deficit-q24` | 854 316 | 2,55× |
+| `paint-deficit-cumulative` | 530 748 | 1,58× |
+| `-q20` | 491 669 | 1,47× |
+| `-q16` | 453 803 | 1,35× |
+| `-q12` | 415 916 | 1,24× |
+| **`-q8`** | **378 072** | **1,13×** |
+
+Yani `-q8` bütçeye **yalnız 42 569 B** uzakta kalmış (önceki 854 531'de 2,55×
+idi). Bu, public-15 için şimdiye kadarki en yakın nokta.
+
+### ⚠️ Ama bu sayı GÜVENLİ BİÇİMDE ALINAMAZ
+
+Yukarıdaki 378 072, **birleşik** `<path>` biçiminin sayısıdır ve o biçim
+render'ı bozuyor (206 660 piksel farkı, madde 11). Piksel-özdeş olan biçim
+rect başına ayrı `<path>` ve onun kazancı yalnız ~%35:
+
+```
+destek:  701 625 -> ~454 000   (rect basina path, ~%35)
+-q8 toplam: 378 072 + (454 000 - 225 166) ~= 606 900   -> butce 335 503'un 1,81 kati
+```
+
+Yani **public-15'i bu site tek başına kurtarmıyor**: güvenli biçim yetmiyor,
+yeten biçim güvenli değil. Üstelik rect başına path varyantı da topoloji
+kapısından düştü (eleman tipi downstream'e bağlı, madde 11).
+
+**Sonuç:** buradaki asıl kilit bayt değil, `<rect>` eleman tipine bağlı
+downstream aşamanın kim olduğu. O çözülürse 42 569 B'lik açık (#164'ün
+base_delta kazancı ~84 727 B ile birlikte) kapanabilir görünüyor — ama bu da
+ölçülmeden iddia edilmemeli.
