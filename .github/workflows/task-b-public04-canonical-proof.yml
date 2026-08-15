@@ -1,6 +1,5 @@
 name: Task B canonical public-04 production proof
 
-# Runs only the immutable qualification-public-04 case with the existing RFV-3 policy.
 on:
   push:
     branches:
@@ -16,27 +15,23 @@ jobs:
     timeout-minutes: 180
     env:
       PYTHONHASHSEED: "0"
-      PYTHONPATH: engine
+      PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/engine
       VEKTORYUM_WORKERS: "1"
       PINNED_ARTIFACT_ID: "8354853386"
       PINNED_ARTIFACT_SHA256: "a8be8c0782a8aeb037a2736de8adbd357c5074ad0da6355562e2543092d6af76"
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: engine/requirements.txt
-
       - name: Install production dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends ghostscript libcairo2
           python -m pip install -r engine/requirements.txt
-
       - name: Restore SHA-pinned immutable RFV corpus
-        shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
@@ -59,9 +54,7 @@ jobs:
               for name in ("rfv2-public-corpus.tar.gz", "bundle-checksums.json"):
                   (root / "input" / name).write_bytes(package.read(name))
           PY
-
       - name: Verify corpus identity and prepare outside repository
-        shell: bash
         run: |
           set -euo pipefail
           ROOT="${RUNNER_TEMP}/task-b-public04-canonical"
@@ -70,9 +63,7 @@ jobs:
             --checksums "${ROOT}/input/bundle-checksums.json" \
             --destination "${ROOT}/corpus" \
             --evidence-out "${ROOT}/prepare-evidence.json"
-
       - name: Run three-repeat production measurement for qualification-public-04
-        shell: bash
         env:
           HEAD_SHA: ${{ github.sha }}
         run: |
@@ -82,47 +73,26 @@ jobs:
           import json
           import os
           from pathlib import Path
-
-          from engine.regression.rfv3_measurement_runner import (
-              POLICY_PATH,
-              load_json,
-              load_qualification_cases,
-              run_repeated_case,
-              validate_policy,
-          )
+          from engine.regression.rfv3_measurement_runner import POLICY_PATH, load_json, load_qualification_cases, run_repeated_case, validate_policy
 
           def main() -> None:
               root = Path(os.environ["ROOT"])
               corpus = root / "corpus"
               policy = validate_policy(load_json(POLICY_PATH))
-              cases = load_qualification_cases(corpus)
-              selected = [c for c in cases if c.case_id == "qualification-public-04"]
-              assert len(selected) == 1
+              cases = [c for c in load_qualification_cases(corpus) if c.case_id == "qualification-public-04"]
+              assert len(cases) == 1
               result, audit = run_repeated_case(
-                  selected[0],
-                  corpus_root=corpus,
-                  work_root=root / "work" / selected[0].case_id,
-                  engine_version=os.environ["HEAD_SHA"],
-                  repeat_count=policy["repeat_count"],
+                  cases[0], corpus_root=corpus, work_root=root / "work" / cases[0].case_id,
+                  engine_version=os.environ["HEAD_SHA"], repeat_count=policy["repeat_count"],
                   timeout_seconds=policy["repeat_timeout_seconds"],
                   max_transient_retries=policy["max_transient_retries_per_repeat"],
               )
-              payload = {
-                  "schema": "vektoryum-task-b-public04-canonical-proof-v1",
-                  "result": result.to_dict(),
-                  "audit": audit,
-              }
-              (root / "public04-result.json").write_text(
-                  json.dumps(payload, indent=2, sort_keys=True) + "\n",
-                  encoding="utf-8",
-              )
+              payload = {"schema":"vektoryum-task-b-public04-canonical-proof-v1","result":result.to_dict(),"audit":audit}
+              (root / "public04-result.json").write_text(json.dumps(payload, indent=2, sort_keys=True)+"\n", encoding="utf-8")
               print(json.dumps(payload, sort_keys=True))
-
-          if __name__ == "__main__":
-              main()
+          if __name__ == "__main__": main()
           PY
           ROOT="${ROOT}" python "${ROOT}/run_public04.py" 2>&1 | tee "${ROOT}/public04.log"
-
       - name: Upload canonical public-04 proof
         if: always()
         uses: actions/upload-artifact@v4
