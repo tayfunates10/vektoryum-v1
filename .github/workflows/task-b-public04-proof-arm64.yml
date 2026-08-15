@@ -1,0 +1,99 @@
+name: Task B public-04 ARM64 production proof
+
+on:
+  push:
+    branches:
+      - validation/task-b-public04-proof-arm64
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  public04:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    env:
+      PYTHONHASHSEED: "0"
+      PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/engine
+      VEKTORYUM_WORKERS: "1"
+      PINNED_ARTIFACT_ID: "8354853386"
+      PINNED_ARTIFACT_SHA256: "a8be8c0782a8aeb037a2736de8adbd357c5074ad0da6355562e2543092d6af76"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: engine/requirements.txt
+      - name: Install production dependencies
+        run: python -m pip install -r engine/requirements.txt
+      - name: Restore SHA-pinned immutable RFV corpus
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ROOT="${RUNNER_TEMP}/task-b-public04-arm64"
+          mkdir -p "${ROOT}/input" "${ROOT}/unzipped"
+          curl --fail-with-body --location --silent --show-error --retry 3 --retry-all-errors \
+            --header "Authorization: Bearer ${GITHUB_TOKEN}" \
+            --header "Accept: application/vnd.github+json" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${PINNED_ARTIFACT_ID}/zip" \
+            --output "${ROOT}/pinned.zip"
+          ACTUAL="$(sha256sum "${ROOT}/pinned.zip" | awk '{print $1}')"
+          test "${ACTUAL}" = "${PINNED_ARTIFACT_SHA256}"
+          unzip -q "${ROOT}/pinned.zip" -d "${ROOT}/unzipped"
+          cp "${ROOT}/unzipped/rfv2-public-corpus.tar.gz" "${ROOT}/input/"
+          cp "${ROOT}/unzipped/bundle-checksums.json" "${ROOT}/input/"
+      - name: Prepare immutable corpus
+        run: |
+          set -euo pipefail
+          ROOT="${RUNNER_TEMP}/task-b-public04-arm64"
+          python -m engine.regression.rfv3_live_prepare \
+            --bundle "${ROOT}/input/rfv2-public-corpus.tar.gz" \
+            --checksums "${ROOT}/input/bundle-checksums.json" \
+            --destination "${ROOT}/corpus" \
+            --evidence-out "${ROOT}/prepare-evidence.json"
+      - name: Measure qualification-public-04 three times
+        env:
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          ROOT="${RUNNER_TEMP}/task-b-public04-arm64"
+          cat > "${ROOT}/run_public04.py" <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from engine.regression.rfv3_measurement_runner import POLICY_PATH, load_json, load_qualification_cases, run_repeated_case, validate_policy
+
+          def main() -> None:
+              root = Path(os.environ["ROOT"])
+              corpus = root / "corpus"
+              policy = validate_policy(load_json(POLICY_PATH))
+              cases = [c for c in load_qualification_cases(corpus) if c.case_id == "qualification-public-04"]
+              assert len(cases) == 1
+              result, audit = run_repeated_case(
+                  cases[0], corpus_root=corpus, work_root=root / "work" / cases[0].case_id,
+                  engine_version=os.environ["HEAD_SHA"], repeat_count=policy["repeat_count"],
+                  timeout_seconds=policy["repeat_timeout_seconds"],
+                  max_transient_retries=policy["max_transient_retries_per_repeat"],
+              )
+              payload = {"schema":"vektoryum-task-b-public04-arm64-proof-v1","result":result.to_dict(),"audit":audit}
+              (root / "public04-result.json").write_text(json.dumps(payload, indent=2, sort_keys=True)+"\n", encoding="utf-8")
+              print(json.dumps(payload, sort_keys=True))
+          if __name__ == "__main__": main()
+          PY
+          ROOT="${ROOT}" python "${ROOT}/run_public04.py" 2>&1 | tee "${ROOT}/public04.log"
+      - name: Upload proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: task-b-public04-arm64-proof-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/task-b-public04-arm64/public04-result.json
+            ${{ runner.temp }}/task-b-public04-arm64/public04.log
+            ${{ runner.temp }}/task-b-public04-arm64/prepare-evidence.json
+          if-no-files-found: warn
+          retention-days: 14
+          compression-level: 0
