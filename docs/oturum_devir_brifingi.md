@@ -738,3 +738,56 @@ olması beklenir). **Ölçülmedi.** Sonraki oturum buradan devam etmeli:
 
 Yani zincir: `delik/kontur tahmini > 4096` → pahalı dal kesin →
 `5 × hücre > pay` ise kanıtlı ret → `findContours` hiç çağrılmaz.
+
+
+### 10.6 EKSİK HALKA BULUNDU: kontur sayısı `findContours` çağrılmadan TAM hesaplanıyor
+
+2×2 bit-quad Euler sayımı ölçüldü ve `RETR_CCOMP` kontur sayısını **birebir**
+veriyor:
+
+```
+kontur_sayisi = C8 + H8   ve   H8 = C8 - E8   =>   kontur = 2*C8 - E8
+```
+
+| girdi | öngörü `2*C8 - E8` | GERÇEK kontur | Euler+connComp | `findContours` |
+|---|---|---|---|---|
+| dama tahtası | **717 603** | **717 603** | 9,6 ms | **103 350 ms** |
+| logo benzeri | **3** | **3** | 8,5 ms | 0,93 ms |
+
+Bu bir sezgisel tahmin değil **kimlik**: `RETR_CCOMP` dış konturları + delikleri
+döndürür, Euler karakteristiği deliği tam verir. Maliyet ~**10 000×** daha az.
+
+Bit-quad (numpy, vektörel):
+
+```python
+b = np.pad(mask.astype(np.uint8), 1)
+idx = (b[:-1,:-1] + 2*b[:-1,1:] + 4*b[1:,:-1] + 8*b[1:,1:]).ravel()
+q = np.bincount(idx, minlength=16)
+E8 = (Q1 - Q3 - 2*QD) / 4.0     # Q1=q1+q2+q4+q8, Q3=q7+q11+q13+q14, QD=q6+q9
+```
+
+### ⚠️ Kalan tek sağlamlık boşluğu (uygulamadan önce kapatılmalı)
+
+Koddaki `contour_count`, `_canonical_contour` ile **budanmış** (3 noktadan az
+konturlar atılmış) sayıdır. `2*C8 - E8` ise **budanmamış toplamdır**, yani
+koddaki sayının ÜST sınırıdır. Üst sınırın 4096'yı aşması, budanmış sayının
+aştığını **kanıtlamaz**.
+
+Kritik orta durum: toplam kontur çok yüksek ama neredeyse hepsi degenerate ve
+birkaç gerçek kontur var → kod kompakt dalı kullanır ve rahatça sığar; kapı
+ise yanlışlıkla reddeder. (Not: hepsi degenerate ise
+`not layers and pruned_contour_count` koşulu zaten pahalı dala düşürür, o
+durum sorun değil.)
+
+Kapatma yolu: degenerate bileşenleri düşmek. `cv2.connectedComponentsWithStats`
+alanları veriyor; alanı 1-2 olan bileşenler degenerate dış kontur üretir.
+Delik tarafı için de aynısı arka plan üzerinde yapılabilir. **Ölçülmedi.**
+
+### Tamamlanmış zincir (son halka hariç)
+
+1. `2*C8 - E8` ile kontur sayısı — ~10 ms, tam. *(degenerate düzeltmesi eksik)*
+2. Budanmış kontur > 4096 → kompakt dal kullanılamaz → pahalı dal kesin.
+3. Pahalı dal düğüm maliyeti **tam olarak** `5 * hücre` — `count_nonzero`, 0,14 ms.
+4. `5 * hücre > pay` → ret kanıtlı → `findContours` hiç çağrılmaz.
+
+`public-12` için: ~10 ms maliyetle ~4 000 s hesap atlanır.
