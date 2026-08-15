@@ -180,6 +180,93 @@ def _paint_deficit_labels(
     }
 
 
+def _qname(name: str) -> str:
+    return f"{{{_SVG_NS}}}{name}"
+
+
+def _compact_rectangle_path_data(
+    rectangles: list[tuple[int, int, int, int]],
+) -> str:
+    """Birleştirilmiş dikdörtgenleri tek bir bağıl path ``d`` verisine kodla.
+
+    ``z`` geçerli noktayı alt-yolun başlangıcına döndürür; bu yüzden imleç
+    bir sonraki ``m`` için (x, y) olarak taşınır. Dikdörtgenler ayrık
+    olduğundan nonzero doldurma kuralı birleşimlerini verir — ayrı ``<rect>``
+    kümesiyle aynı piksel sonucu.
+    """
+    parts: list[str] = []
+    cursor_x = 0
+    cursor_y = 0
+    for x, y, width, height in rectangles:
+        parts.append(f"m{x - cursor_x} {y - cursor_y}h{width}v{height}h-{width}z")
+        cursor_x = x
+        cursor_y = y
+    return "".join(parts)
+
+
+def _emit_paint_deficit_support_geometry(
+    support: ET.Element,
+    layers: list[tuple[Any, list[tuple[int, int, int, int]]]],
+) -> dict[str, Any]:
+    """Destek katmanını iki kodlamadan ÖLÇÜLEREK küçük olanıyla yaz.
+
+    Geometri her iki kodlamada da birebir aynı; değişen yalnız serileştirme.
+    Kazanç ölçülemezse ``<rect>`` biçimi aynen korunur, yani bu adım kesinlikle
+    eklemelidir: bugün bütçeye sığan hiçbir aday büyümez.
+    """
+
+    def fill_of(color: Any) -> str:
+        return f"rgb({int(color[0])},{int(color[1])},{int(color[2])})"
+
+    def build_rect_form(parent: ET.Element) -> None:
+        for color, rectangles in layers:
+            group = ET.SubElement(parent, _qname("g"), {"fill": fill_of(color)})
+            for x, y, width, height in rectangles:
+                ET.SubElement(
+                    group,
+                    _qname("rect"),
+                    {
+                        "x": str(x),
+                        "y": str(y),
+                        "width": str(width),
+                        "height": str(height),
+                    },
+                )
+
+    def build_path_form(parent: ET.Element) -> None:
+        for color, rectangles in layers:
+            ET.SubElement(
+                parent,
+                _qname("path"),
+                {
+                    "fill": fill_of(color),
+                    "d": _compact_rectangle_path_data(rectangles),
+                },
+            )
+
+    def measure(builder: Any) -> int:
+        probe = ET.Element(_qname("g"))
+        builder(probe)
+        return len(ET.tostring(probe, encoding="utf-8"))
+
+    rect_bytes = measure(build_rect_form)
+    path_bytes = measure(build_path_form)
+    if path_bytes < rect_bytes:
+        build_path_form(support)
+        encoding = "path"
+        saved = rect_bytes - path_bytes
+    else:
+        build_rect_form(support)
+        encoding = "rect"
+        saved = 0
+    return {
+        "paint_deficit_support_geometry_encoding": encoding,
+        "paint_deficit_support_rect_form_bytes": int(rect_bytes),
+        "paint_deficit_support_path_form_bytes": int(path_bytes),
+        "paint_deficit_support_geometry_saved_bytes": int(saved),
+    }
+
+
 def build_paint_deficit_reconstruction_tree(
     original_root: ET.Element,
     canvas_element: ET.Element | None,
@@ -420,36 +507,20 @@ def build_paint_deficit_reconstruction_tree(
     rectangles = _merged_rectangles_by_level(labels)
     support_rect_count = 0
     used_palette_count = 0
+    support_layers: list[tuple[Any, list[tuple[int, int, int, int]]]] = []
     for label in sorted(rectangles):
         if label <= 0 or label > len(palette):
             continue
         level_rectangles = rectangles[label]
         if not level_rectangles:
             continue
-        color = palette[label - 1]
-        group = ET.SubElement(
-            support,
-            qname("g"),
-            {
-                "fill": (
-                    f"rgb({int(color[0])},{int(color[1])},"
-                    f"{int(color[2])})"
-                )
-            },
-        )
-        for x, y, width, height in level_rectangles:
-            ET.SubElement(
-                group,
-                qname("rect"),
-                {
-                    "x": str(x),
-                    "y": str(y),
-                    "width": str(width),
-                    "height": str(height),
-                },
-            )
-            support_rect_count += 1
+        support_layers.append((palette[label - 1], level_rectangles))
+        support_rect_count += len(level_rectangles)
         used_palette_count += 1
+
+    support_geometry_stats = _emit_paint_deficit_support_geometry(
+        support, support_layers
+    )
 
     layer.set("mask", f"url(#{mask_id})")
     return root, {
@@ -471,6 +542,7 @@ def build_paint_deficit_reconstruction_tree(
         ),
         "paint_deficit_palette_count": int(used_palette_count),
         "paint_deficit_support_rect_count": int(support_rect_count),
+        **support_geometry_stats,
         "comparison_canvas_knocked_out": bool(target_canvas is not None),
         "comparison_canvas_retained_under_mask": False,
         "candidate_support_expanded_geometry_count": 0,

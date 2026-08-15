@@ -1397,9 +1397,19 @@ def apply_candidate_painter_reconstruction(
                 "source_component_count",
                 "anchored_source_component_count",
                 "detached_source_component_count",
+                # Destek katmanı geometri kodlamasının ölçülen bayt kazancı;
+                # bütçe reddi hangi kodlamayla alındığı okunabilsin diye.
+                "paint_deficit_support_rect_count",
+                "paint_deficit_support_rect_form_bytes",
+                "paint_deficit_support_path_form_bytes",
+                "paint_deficit_support_geometry_saved_bytes",
             ):
                 if stat_key in probe_geometry:
                     entry[stat_key] = int(probe_geometry[stat_key])
+            if "paint_deficit_support_geometry_encoding" in probe_geometry:
+                entry["paint_deficit_support_geometry_encoding"] = str(
+                    probe_geometry["paint_deficit_support_geometry_encoding"]
+                )
             if probe_size > byte_limit:
                 entry["preflight_status"] = "over_budget"
                 entry["status"] = "byte_rejected"

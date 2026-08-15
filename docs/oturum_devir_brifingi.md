@@ -257,3 +257,70 @@ Okuma: `ladder-free` 3600 s altında biterken `ladder-on` aşıyorsa timeout
 sorumluluğu eklediğimiz adaylarındır. İkisi de aşıyorsa timeout vakaya
 özgüdür — o zaman `public-12` ayrı bir performans işi olur, kalite işi değil.
 Kanıt: `PUBLIC12_TIMING=` satırı + `public12-timing-<kol>.json` artefaktı.
+
+## 11. Geliştirme: destek katmanı geometri kodlaması (`<rect>` → `<path>`)
+
+Madde 9.1'in işaret ettiği yere yapılan ilk somut müdahale. Ölçüm şunu
+söylüyordu: baytı **seviye sayısı değil, destek katmanının rect sayısı**
+sürüyor (public-15: 13 348 rect / 617 139 B ≈ **46 B/rect**), ve palet zaten
+8'e inmiş durumda — nicemlemeden sıkacak bir şey kalmamış.
+
+### Önce ölçüldü, sonra yazıldı
+
+Sentetik rampa yerine deponun **kendi** `_merged_rectangles_by_level`
+birleştiricisiyle logo benzeri bir alfadan gerçek dikdörtgen dağılımı üretildi
+(7 seviye, 6 824 rect). Bu profil `<rect>` biçiminde **49,1 B/rect** veriyor —
+public-15'te ölçülen 46,2 B/rect'e çok yakın, yani profil temsil edici:
+
+| kodlama | bayt | B/rect | kazanç |
+|---|---|---|---|
+| `<rect>` kümesi | 335 291 | 49,1 | — |
+| `<path>` mutlak | 113 081 | 16,6 | %66,3 |
+| `<path>` bağıl (`m dx dy h w v h h-w z`) | **96 240** | **14,1** | **%71,3** |
+
+### Piksel denkliği resvg ile doğrulandı
+
+Endişe, bitişik dikdörtgenlerin tek path altında birleşince kenar
+yumuşatmasının değişmesiydi. Ölçüldü, **çürütüldü**: iki bağlamda da
+262 144 pikselin **0'ı** farklı, maksimum kanal farkı **0**:
+
+- doğrudan boyama (destek katmanı deseni): AYNI
+- `clipPath` içinde (knockout deseni): AYNI
+
+Birleştirici ayrık dikdörtgen üretiyor ve alt-yollar aynı yönde olduğundan
+nonzero doldurma kuralı birleşimi veriyor — `<rect>` kümesiyle birebir aynı.
+
+### Uygulama kesinlikle eklemeli
+
+`_emit_paint_deficit_support_geometry` iki biçimi de kurar, **serileştirilmiş
+baytı ölçer** ve küçük olanı yazar. Kazanç ölçülemezse `<rect>` biçimi aynen
+korunur; bugün bütçeye sığan hiçbir aday büyüyemez. Yeni ledger alanları:
+`paint_deficit_support_geometry_encoding`,
+`paint_deficit_support_rect_form_bytes`,
+`paint_deficit_support_path_form_bytes`,
+`paint_deficit_support_geometry_saved_bytes`.
+
+`paint_deficit_support_rect_count` anlamını korudu (geometrideki dikdörtgen
+sayısı), kodlamadan bağımsız.
+
+### Beklenen etki — CANLI ÖLÇÜMLE DOĞRULANMALI
+
+%71 kazanç public-15'in 617 139 B'lik destek katmanına uygulanırsa ≈ 177 000 B
+kalır; #164'ün `base_delta` adayı 769 804 → **≈ 330 000 B**, bütçe ise
+335 503 B. Yani **sınırda sığabilir**. Bu bir tahmindir ve madde 3.5'teki
+hatanın tekrarı olmaması için **kanıt sayılmamalıdır** — gerçek sayı canlı
+korpustan gelmeli. Ledger alanları tam da bunu raporlasın diye eklendi.
+
+⚠️ Bu adım tek başına #164'ü kurtarmaz: `base_delta` ailesi #164'te, bu kodlama
+`65bc297` tabanında. İkisi birleşince ölçülmeli.
+
+### Knockout'a neden dokunulmadı
+
+Aynı kazanç `alpha_candidate_knockout.py`'daki `clipPath` dikdörtgenleri için
+de geçerli (public-14: 1 800 596 > 1 273 782, yani %41 aşım — bu kodlamayla
+kapanabilecek büyüklükte) ve `clipPath` içi denklik yukarıda ölçüldü. Ama
+`engine/test_alpha_clip_encoding.py:142` clipPath metninden `<rect .../>`
+düzenli ifadeyle çekip eşdeğer `<mask>` kuruyor; kodlama değişirse o sözleşme
+testi kırılır. Testi değiştirip geçmek yanlış olacağından bu adım **ayrı bir
+iş** olarak bırakıldı — kazancı ölçülmüş, yolu açık, sözleşme sahibiyle
+konuşulmalı.
