@@ -840,3 +840,51 @@ yolu bulunamadı. Seçenekler (hiçbiri ölçülmedi): konturları seviye seviye
 tembel çıkarıp bütçe aşılınca durmak (sonuç aynı kalır mı? ölçülmeli), ya da
 `public-12`'yi kalite değil **performans** sınırı olarak kabul edip korpus
 zaman aşımını vakaya özel yönetmek.
+
+
+## 12. `public-14` ilk teşhis (bugüne kadar hiç çalışılmamıştı)
+
+Shard 1 günlüğü, tek değil **iki** knockout bütçe reddi gösteriyor — biri
+legacy denemesinde, biri retry'da (`alpha_pipeline_retry.legacy_first`
+`raise retry_error from first_error`):
+
+| aşama | bayt | bütçe | oran |
+|---|---|---|---|
+| legacy (first_error) | 1 737 177 | 1 083 525 | **1,60×** |
+| retry (bildirilen) | 1 800 596 | 1 273 782 | **1,41×** |
+
+`apply_candidate_geometry_knockout` (`alpha_candidate_knockout.py:507`) birden
+çok kodlamayı deneyip `last_budget_error`'ı saklıyor; yani bildirilen sayı en
+son denemenin sayısı.
+
+**Neden önemli:** 1,41× oranı, beş vakanın **bütçeye en yakını**
+(`public-15` 2,29× / 2,55×). Yani kapanmaya en yakın aday bu olabilir.
+
+### Ölçülmemiş ama somut ipucu: `%.12g` koordinatlar
+
+`alpha_candidate_knockout.py:254` clipPath dikdörtgenlerini şöyle yazıyor:
+
+```python
+"x": f"{view_x + x * sx:.12g}",   "y": f"{view_y + y * sy:.12g}",
+"width": f"{width * sx:.12g}",    "height": f"{height * sy:.12g}",
+```
+
+`%.12g` koordinat başına 13 karaktere kadar çıkabilir (`123.456789012`).
+Bu, `public-15`'te ölçülen tamsayı rect'lerin (~46 B/rect) çok üstünde bir
+maliyet demek.
+
+⚠️ İki uyarı, ikisi de bugünkü hatalardan öğrenildi:
+1. **Rect'lerin 1,8 MB'ı domine ettiği ÖLÇÜLMEDİ.** Önce bayt ayrıştırması
+   yapılmalı (`public-15`'te olduğu gibi ledger alanı ekleyip canlı koşudan
+   okumak işe yaradı — madde 11.1).
+2. Hassasiyet düşürmek **serileştirme değil kalite** değişikliğidir; geometri
+   alt-piksel kayar. Kalite kapılarıyla ölçülmeli, "bayt düştü" yeterli değil.
+   Ayrıca `test_alpha_clip_encoding.py:142` clipPath'ten `<rect .../>` regex'le
+   çekiyor; kodlama değil ama **biçim** değişikliği o testi etkileyebilir.
+
+### Sıradaki adım (öneri)
+
+`public-15`'te işe yarayan deseni tekrarla: knockout ledger'ına bayt
+ayrıştırması ekle (rect baytı / diğer marküp / koordinat karakter sayısı),
+canlı korpustan oku, sonra hassasiyet seçeneklerini **ölçülmüş** taban
+üzerinde değerlendir. Tahminle başlama.
