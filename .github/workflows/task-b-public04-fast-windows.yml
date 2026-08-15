@@ -1,4 +1,4 @@
-name: Task B public-04 fast Windows proof
+name: Task B public-04 direct pipeline diagnostic
 
 on:
   push:
@@ -15,7 +15,7 @@ jobs:
     timeout-minutes: 180
     env:
       PYTHONHASHSEED: "0"
-      PYTHONPATH: engine
+      PYTHONPATH: ${{ github.workspace }};${{ github.workspace }}/engine
       VEKTORYUM_WORKERS: "1"
       PINNED_ARTIFACT_ID: "8354853386"
       PINNED_ARTIFACT_SHA256: "a8be8c0782a8aeb037a2736de8adbd357c5074ad0da6355562e2543092d6af76"
@@ -34,7 +34,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $root = Join-Path $env:RUNNER_TEMP "task-b-public04-fast"
+          $root = Join-Path $env:RUNNER_TEMP "task-b-public04-direct"
           New-Item -ItemType Directory -Force -Path (Join-Path $root "input") | Out-Null
           $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = "application/vnd.github+json"; "X-GitHub-Api-Version" = "2022-11-28" }
           $zip = Join-Path $root "pinned.zip"
@@ -47,54 +47,99 @@ jobs:
       - name: Prepare immutable corpus
         shell: pwsh
         run: |
-          $root = Join-Path $env:RUNNER_TEMP "task-b-public04-fast"
+          $root = Join-Path $env:RUNNER_TEMP "task-b-public04-direct"
           python -m engine.regression.rfv3_live_prepare `
             --bundle (Join-Path $root "input/rfv2-public-corpus.tar.gz") `
             --checksums (Join-Path $root "input/bundle-checksums.json") `
             --destination (Join-Path $root "corpus") `
             --evidence-out (Join-Path $root "prepare-evidence.json")
-      - name: Measure qualification-public-04 three times
+      - name: Run direct production pipeline three times
         shell: pwsh
         env:
           HEAD_SHA: ${{ github.sha }}
         run: |
-          $root = Join-Path $env:RUNNER_TEMP "task-b-public04-fast"
-          $script = Join-Path $root "run_public04.py"
+          $root = Join-Path $env:RUNNER_TEMP "task-b-public04-direct"
+          $script = Join-Path $root "run_direct.py"
           @'
+          import hashlib
           import json
           import os
           from pathlib import Path
-          from engine.regression.rfv3_measurement_runner import POLICY_PATH, load_json, load_qualification_cases, run_repeated_case, validate_policy
 
-          def main():
+          from app.pipeline_entry import run_pipeline
+          from benchmark.manifest import BenchmarkCase
+          from benchmark.pipeline_results import run_case
+
+          def sha256_file(path: Path) -> str:
+              h = hashlib.sha256()
+              with path.open("rb") as f:
+                  for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          def main() -> None:
               root = Path(os.environ["ROOT"])
               corpus = root / "corpus"
-              policy = validate_policy(load_json(POLICY_PATH))
-              cases = [c for c in load_qualification_cases(corpus) if c.case_id == "qualification-public-04"]
-              assert len(cases) == 1
-              result, audit = run_repeated_case(
-                  cases[0], corpus_root=corpus, work_root=root / "work" / cases[0].case_id,
-                  engine_version=os.environ["HEAD_SHA"], repeat_count=policy["repeat_count"],
-                  timeout_seconds=policy["repeat_timeout_seconds"],
-                  max_transient_retries=policy["max_transient_retries_per_repeat"],
+              manifest = json.loads((corpus / "qualification-manifest.json").read_text(encoding="utf-8"))
+              records = [item for item in manifest["cases"] if item["case_id"] == "qualification-public-04"]
+              assert len(records) == 1
+              record = records[0]
+              assert record["category"] == "badge_seal"
+              source_path = Path("objects") / record["storage_object_id"]
+              resolved = corpus / source_path
+              assert sha256_file(resolved) == record["source_sha256"]
+              case = BenchmarkCase(
+                  case_id=record["case_id"],
+                  category="seals",
+                  source_path=source_path.as_posix(),
+                  license_id=record["license"],
+                  source_sha256=record["source_sha256"],
+                  tags=("rfv2", "rfv_category:badge_seal", "source_format:png"),
               )
-              payload = {"schema":"vektoryum-task-b-public04-fast-proof-v1","result":result.to_dict(),"audit":audit}
-              (root / "public04-result.json").write_text(json.dumps(payload, indent=2, sort_keys=True)+"\n", encoding="utf-8")
-              print(json.dumps(payload, sort_keys=True))
-          if __name__ == "__main__": main()
+              case.validate()
+              repeats = []
+              for index in range(1, 4):
+                  result = run_case(
+                      case,
+                      corpus_root=corpus,
+                      work_root=root / "work" / f"repeat-{index}",
+                      pipeline=run_pipeline,
+                      engine_version=os.environ["HEAD_SHA"],
+                      trace_mode="auto",
+                      peak_rss_mb=None,
+                  )
+                  payload = result.to_dict()
+                  repeats.append(payload)
+                  print(json.dumps({"repeat": index, "result": payload}, sort_keys=True), flush=True)
+              artifact_shas = {item["artifact_sha256"] for item in repeats}
+              summary = {
+                  "schema": "vektoryum-task-b-public04-direct-diagnostic-v1",
+                  "repeat_count": 3,
+                  "artifact_shas": sorted(artifact_shas),
+                  "all_failure_none": all(item.get("failure") is None for item in repeats),
+                  "alpha_iou": [item["metrics"].get("alpha_iou") for item in repeats],
+                  "repeats": repeats,
+              }
+              (root / "public04-direct-result.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+              print(json.dumps(summary, sort_keys=True))
+              if len(artifact_shas) != 1 or not summary["all_failure_none"]:
+                  raise SystemExit(1)
+
+          if __name__ == "__main__":
+              main()
           '@ | Set-Content -Encoding utf8 $script
           $env:ROOT = $root
-          python $script 2>&1 | Tee-Object -FilePath (Join-Path $root "public04.log")
+          python $script 2>&1 | Tee-Object -FilePath (Join-Path $root "public04-direct.log")
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Upload proof
+      - name: Upload direct diagnostic
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: task-b-public04-fast-proof-${{ github.sha }}
+          name: task-b-public04-direct-diagnostic-${{ github.sha }}
           path: |
-            ${{ runner.temp }}/task-b-public04-fast/public04-result.json
-            ${{ runner.temp }}/task-b-public04-fast/public04.log
-            ${{ runner.temp }}/task-b-public04-fast/prepare-evidence.json
+            ${{ runner.temp }}/task-b-public04-direct/public04-direct-result.json
+            ${{ runner.temp }}/task-b-public04-direct/public04-direct.log
+            ${{ runner.temp }}/task-b-public04-direct/prepare-evidence.json
           if-no-files-found: warn
           retention-days: 14
           compression-level: 0
