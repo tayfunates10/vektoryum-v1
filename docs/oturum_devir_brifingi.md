@@ -266,22 +266,54 @@ işaret" (süre vakaya özgü olabilir) ölçümle desteklendi.
 
 ⚠️ Bu, duvar saatinden **doğrudan gözlem**; kesin `elapsed_seconds` değil.
 
+### KESİN SAYILAR (artefaktlar geldi — önceki tahminimi düzeltiyorum)
+
+⚠️ "Zamanlama artefaktı üretilemeyecek" demiştim. **Yanlıştı** — iki artefakt da
+indi. Alarm gerçekten hiç ateşlenmedi, ama koşular kendiliğinden bitti:
+
+| kol | `elapsed_seconds` | bütçe içi | nasıl bitti |
+|---|---|---|---|
+| `ladder-free` | **4 197,0** | **hayır** | boru hattının kendi hatası |
+| `ladder-on` | **≈5 482** (zaman damgasından) | hayır | — |
+
+`ladder-free` kolunda merdivenlerin gerçekten boş olduğu ledger'da doğrulandı:
+`effective_paint_deficit_cumulative_levels: []`,
+`effective_node_free_quantized_levels: []`.
+
+**Sonuç kesinleşti:** merdivenler süreye ~1 285 s (~%23) ekliyor, ama tamamen
+kaldırıldığında bile 4 197 s > 3 600 s. Yani merdivenler **katkıda bulunuyor,
+sorumlu değil**. `public-12` merdivensiz de bütçeyi aşar.
+
+### KÖK NEDEN ÖLÇÜLDÜ: düğüm patlaması (timeout değil)
+
+`ladder-free` kolu zaman aşımıyla değil, boru hattının kendi bütçe reddiyle
+bitti:
+
+```
+source_alpha_mask_contour_fallback_budget_rejected:
+  path_bytes = 14 277 024 / 3 138 171   (4,5x)
+  path_count =      1 157 /     4 120   (uygun)
+  path_nodes =  4 058 631 /    95 784   (42x)
+```
+
+`alpha_mask_adaptive.py:631` `_contour_fallback_plan`. Yani `public-12`'nin
+sorunu "yavaş çalışması" değil: kontur fallback'i **4,06 milyon düğüm**
+üretiyor, bütçenin **42 katı**. Süre bunun sonucu, sebebi değil.
+
+Bu, `public-12`'yi tamamen yeniden sınıflandırıyor: bir zaman aşımı vakası
+değil, bir **geometri karmaşıklığı** vakası. Doğru iş, süreyi hızlandırmak
+değil, kontur fallback'inin düğüm sayısını düşürmek (ya da bu vakada o
+fallback'e hiç düşmemek).
+
 ### Harness kusuru: `signal.alarm` yerli kodu kesemiyor
 
-Bütçeyi `signal.alarm(3600)` ile zorlamıştım. Fire etmedi. Nedeni: Python
-sinyal işleyicileri yalnız bytecode'lar arasında çalışır; boru hattı zamanının
-çoğunu C uzantılarında (vtracer/cv2/resvg) bloke geçirdiğinden SIGALRM
-**ertelenir**. Bu yüzden kol 3600 s'de temiz "budget_exceeded" verip
-`public12-timing-<kol>.json` yazamadı; iş 150 dk'lık job timeout'una kadar
-sürecek ve zamanlama artefaktı üretmeyecek.
+Bütçeyi `signal.alarm(3600)` ile zorlamıştım; 4 197 s'de bile ateşlenmedi
+(status `failed`, `budget_exceeded` değil). Python sinyal işleyicileri yalnız
+bytecode'lar arasında koşar, zaman C uzantılarında bloke geçer. Üretim ölçüm
+koşucusunun tekrarları izole **süreçlerde** koşturup dışarıdan öldürmesinin
+sebebi bu. Aynı deney tekrar kurulursa `subprocess` + hard kill gerekir.
 
-Üretim ölçüm koşucusunun bunu doğru yapmasının sebebi de bu: o, tekrarları
-**izole işçi süreçlerinde** koşturup süreci dışarıdan öldürüyor. Aynı deney
-tekrar kurulacaksa alarm değil, `subprocess` + hard kill kullanılmalı.
-
-Bu kusur sonucu **değiştirmiyor** (gözlem zaten 3600 s'yi aşmış durumda), yalnız
-kesin sayıyı vermiyor. Koşu, iptal edip 2 saat daha CI yakmamak için kendi
-haline bırakıldı; `if: always()` yüklemesi kısmi kanıtı taşıyabilir.
+Bu kez sonucu etkilemedi çünkü boru hattı kendi hatasıyla zaten sonlandı.
 
 ## 11. Geliştirme: destek katmanı geometri kodlaması (`<rect>` → `<path>`)
 
