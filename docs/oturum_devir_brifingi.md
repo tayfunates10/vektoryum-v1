@@ -791,3 +791,52 @@ Delik tarafı için de aynısı arka plan üzerinde yapılabilir. **Ölçülmedi
 4. `5 * hücre > pay` → ret kanıtlı → `findContours` hiç çağrılmaz.
 
 `public-12` için: ~10 ms maliyetle ~4 000 s hesap atlanır.
+
+
+### 10.7 KARŞI ÖRNEK: toplam kontur sayısı SAĞLAM BİR KAPI DEĞİL (kapandı)
+
+Madde 10.6'daki sağlamlık boşluğu teorik değilmiş. Ölçüldü:
+
+Girdi: iki gerçek şekil (dikdörtgen + halka) + 800x800 alanda izole tek piksel
+gürültü (taranmış/gürültülü kaynağı temsil eder).
+
+| ölçüm | değer |
+|---|---|
+| öngörü `2*C8 - E8` | 16 860 |
+| GERÇEK toplam kontur | **16 860** (kimlik yine tam) |
+| **budanmış = kodun `contour_count`'u** | **3** |
+| `_MAX_COMPACT_CONTOURS` | 4 096 |
+| üst sınır 4096'yı aşıyor mu | **evet** |
+| **kod pahalı dala düşer mi** | **HAYIR** — kompakt dal, başarılı |
+
+`2*C8 - E8 > 4096` kapısı bu girdiyi **yanlışlıkla reddederdi**. Kapı sağlam
+değil; bu bir boşluk değil **kesin karşı örnek**.
+
+Sebep: izole tek pikseller findContours'ta kontur üretir ama
+`_canonical_contour` onları budar (3 noktadan az). Kod bunu bilinçli yapıyor —
+`_build_contour_plan` docstring'i: *"Degenerate one/two point islands are
+omitted when measurable contours exist."* Toplam sayı bu budamayı göremez ve
+alan tabanlı düzeltme de kesin değildir (1x3 düz çizgi 3 piksel ama
+CHAIN_APPROX_SIMPLE ile 2 nokta üretip budanır).
+
+### Bu hattın durumu: KAPALI
+
+Toplam kontur sayısından türetilen hiçbir ucuz kapı sağlam olamaz, çünkü
+karar **budanmış** sayıya bağlı ve budama ancak konturlar çıkarıldıktan sonra
+bilinir. Sonraki oturum bu yolu tekrar denemesin.
+
+**Saklanacak sağlam sonuçlar:**
+- `kontur = 2*C8 - E8` **kimliği tamdır** (üç ayrı girdide birebir doğrulandı:
+  717 603 / 3 / 16 860). Kapı olarak değil ama **tanılama** olarak değerli:
+  bir vakanın neden yavaş olduğunu `findContours` çağırmadan 10 ms'de söyler.
+- `findContours` maliyeti kontur sayısıyla **süperdoğrusal** artıyor:
+  16 860 kontur → 16 ms, 717 603 kontur → 103 350 ms.
+- Pahalı dalın düğüm maliyeti tam olarak `5 * hücre` (0,14 ms'de hesaplanır).
+- Kompakt dal seviye başına yalnız **2 komut** üretir (madde 10.5).
+
+**Geriye kalan gerçek seçenek:** `public-12`'nin maliyeti `findContours`'un
+süperdoğrusal davranışından geliyor ve bunu sonucu değiştirmeden ucuzlatmanın
+yolu bulunamadı. Seçenekler (hiçbiri ölçülmedi): konturları seviye seviye
+tembel çıkarıp bütçe aşılınca durmak (sonuç aynı kalır mı? ölçülmeli), ya da
+`public-12`'yi kalite değil **performans** sınırı olarak kabul edip korpus
+zaman aşımını vakaya özel yönetmek.
