@@ -129,6 +129,8 @@ def _anchored_source_component_mask(
     }
 
 
+
+
 def _paint_deficit_labels(
     source_rgba: np.ndarray,
     artwork_rgba: np.ndarray,
@@ -180,6 +182,139 @@ def _paint_deficit_labels(
     }
 
 
+
+def _build_paint_deficit_support(
+    labels: np.ndarray,
+    palette: np.ndarray,
+    transform: str,
+    transaction_id: str,
+    *,
+    support_encoding: str = "per_label",
+) -> tuple[ET.Element, dict[str, Any]]:
+    """Serialize deficit support without changing its visible palette assignment.
+
+    ``per_label`` is the byte-identical legacy representation: one colour group
+    per source-palette label. ``base_delta`` is the Task C fallback. It paints the
+    entire binary deficit once with one *existing* palette colour, then overwrites
+    every non-base label with that label's original colour. The final colour of
+    every deficit cell is therefore identical to ``per_label``; only repeated
+    rectangle geometry is factored out.
+
+    At most eight base labels are possible. Build all exact-colour candidates and
+    deterministically choose the smallest serialized support (then fewer rects,
+    then the lower base label). If factoring is not actually smaller, fail closed.
+    """
+    from app.alpha_svg_mask import _merged_rectangles_by_level  # noqa: PLC0415
+
+    qname = lambda name: f"{{{_SVG_NS}}}{name}"
+    label_array = np.asarray(labels, dtype=np.int32)
+    palette_array = np.asarray(palette, dtype=np.uint8)
+    rectangles = _merged_rectangles_by_level(label_array)
+    active_labels = [
+        int(label)
+        for label in sorted(rectangles)
+        if 0 < int(label) <= len(palette_array) and rectangles[label]
+    ]
+    if not active_labels:
+        raise RuntimeError("source_alpha_candidate_painter_paint_deficit_empty_support")
+
+    def new_support() -> ET.Element:
+        node = ET.Element(
+            qname("g"),
+            {
+                "transform": transform,
+                "data-vektoryum-paint-deficit": "source-palette-v1",
+            },
+        )
+        tag_transform_node(node, ROLE_MASK_GEOMETRY, transaction_id)
+        return node
+
+    def append_colour(
+        support: ET.Element,
+        label: int,
+        rects: list[tuple[int, int, int, int]],
+    ) -> int:
+        if not rects:
+            return 0
+        color = palette_array[label - 1]
+        group = ET.SubElement(
+            support,
+            qname("g"),
+            {
+                "fill": (
+                    f"rgb({int(color[0])},{int(color[1])},"
+                    f"{int(color[2])})"
+                )
+            },
+        )
+        for x, y, width, height in rects:
+            ET.SubElement(
+                group,
+                qname("rect"),
+                {
+                    "x": str(x),
+                    "y": str(y),
+                    "width": str(width),
+                    "height": str(height),
+                },
+            )
+        return len(rects)
+
+    legacy = new_support()
+    legacy_rect_count = 0
+    for label in active_labels:
+        legacy_rect_count += append_colour(legacy, label, rectangles[label])
+    legacy_bytes = len(ET.tostring(legacy, encoding="utf-8"))
+
+    if support_encoding == "per_label":
+        return legacy, {
+            "paint_deficit_palette_count": int(len(active_labels)),
+            "paint_deficit_support_rect_count": int(legacy_rect_count),
+            "paint_deficit_support_serialized_bytes": int(legacy_bytes),
+            "paint_deficit_support_encoding": "per_label",
+            "paint_deficit_support_base_label": 0,
+            "paint_deficit_support_legacy_serialized_bytes": int(legacy_bytes),
+            "paint_deficit_support_saved_bytes": 0,
+        }
+    if support_encoding != "base_delta":
+        raise RuntimeError(
+            "source_alpha_candidate_painter_paint_deficit_unknown_support_encoding:"
+            f"{support_encoding}"
+        )
+
+    binary = (label_array > 0).astype(np.int32)
+    coverage = _merged_rectangles_by_level(binary).get(1, [])
+    if not coverage:
+        raise RuntimeError("source_alpha_candidate_painter_paint_deficit_empty_support")
+
+    best: tuple[int, int, int, ET.Element] | None = None
+    for base_label in active_labels:
+        candidate = new_support()
+        rect_count = append_colour(candidate, base_label, coverage)
+        for label in active_labels:
+            if label == base_label:
+                continue
+            rect_count += append_colour(candidate, label, rectangles[label])
+        serialized_bytes = len(ET.tostring(candidate, encoding="utf-8"))
+        key = (int(serialized_bytes), int(rect_count), int(base_label))
+        if best is None or key < best[:3]:
+            best = (key[0], key[1], key[2], candidate)
+
+    if best is None or int(best[0]) >= int(legacy_bytes):
+        raise RuntimeError(
+            "source_alpha_candidate_painter_paint_deficit_base_delta_not_smaller"
+        )
+    compact_bytes, compact_rect_count, base_label, support = best
+    return support, {
+        "paint_deficit_palette_count": int(len(active_labels)),
+        "paint_deficit_support_rect_count": int(compact_rect_count),
+        "paint_deficit_support_serialized_bytes": int(compact_bytes),
+        "paint_deficit_support_encoding": "base_delta",
+        "paint_deficit_support_base_label": int(base_label),
+        "paint_deficit_support_legacy_serialized_bytes": int(legacy_bytes),
+        "paint_deficit_support_saved_bytes": int(legacy_bytes - compact_bytes),
+    }
+
 def build_paint_deficit_reconstruction_tree(
     original_root: ET.Element,
     canvas_element: ET.Element | None,
@@ -187,6 +322,7 @@ def build_paint_deficit_reconstruction_tree(
     transaction_id: str,
     mask_encoding: str = "polygon",
     levels: int = _ALPHA_LEVELS,
+    support_encoding: str = "per_label",
 ) -> tuple[ET.Element, dict[str, Any]]:
     """Build one q24 source-alpha mask plus a compact deficit overlay.
 
@@ -404,52 +540,18 @@ def build_paint_deficit_reconstruction_tree(
         {"href": f"#{paint_id}"},
     )
 
-    support = ET.SubElement(
-        layer,
-        qname("g"),
-        {
-            "transform": (
-                f"translate({view_x:.12g} {view_y:.12g}) "
-                f"scale({view_width / grid_width:.12g} "
-                f"{view_height / grid_height:.12g})"
-            ),
-            "data-vektoryum-paint-deficit": "source-palette-v1",
-        },
+    support, support_stats = _build_paint_deficit_support(
+        labels,
+        palette,
+        (
+            f"translate({view_x:.12g} {view_y:.12g}) "
+            f"scale({view_width / grid_width:.12g} "
+            f"{view_height / grid_height:.12g})"
+        ),
+        transaction_id,
+        support_encoding=support_encoding,
     )
-    tag_transform_node(support, ROLE_MASK_GEOMETRY, transaction_id)
-    rectangles = _merged_rectangles_by_level(labels)
-    support_rect_count = 0
-    used_palette_count = 0
-    for label in sorted(rectangles):
-        if label <= 0 or label > len(palette):
-            continue
-        level_rectangles = rectangles[label]
-        if not level_rectangles:
-            continue
-        color = palette[label - 1]
-        group = ET.SubElement(
-            support,
-            qname("g"),
-            {
-                "fill": (
-                    f"rgb({int(color[0])},{int(color[1])},"
-                    f"{int(color[2])})"
-                )
-            },
-        )
-        for x, y, width, height in level_rectangles:
-            ET.SubElement(
-                group,
-                qname("rect"),
-                {
-                    "x": str(x),
-                    "y": str(y),
-                    "width": str(width),
-                    "height": str(height),
-                },
-            )
-            support_rect_count += 1
-        used_palette_count += 1
+    layer.append(support)
 
     layer.set("mask", f"url(#{mask_id})")
     return root, {
@@ -469,8 +571,7 @@ def build_paint_deficit_reconstruction_tree(
         "encoded_alpha_level_count": int(
             len([value for value in opacity if int(value) > 0])
         ),
-        "paint_deficit_palette_count": int(used_palette_count),
-        "paint_deficit_support_rect_count": int(support_rect_count),
+        **support_stats,
         "comparison_canvas_knocked_out": bool(target_canvas is not None),
         "comparison_canvas_retained_under_mask": False,
         "candidate_support_expanded_geometry_count": 0,
