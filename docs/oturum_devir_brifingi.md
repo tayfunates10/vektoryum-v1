@@ -328,49 +328,71 @@ korunur; bugün bütçeye sığan hiçbir aday büyüyemez. Yeni ledger alanlar�
 `paint_deficit_support_rect_count` anlamını korudu (geometrideki dikdörtgen
 sayısı), kodlamadan bağımsız.
 
-### SONUÇ: ÇÜRÜTÜLDÜ ve GERİ ALINDI
+### SONUÇ: İKİ VARYANT DA ÇÜRÜTÜLDÜ, İKİSİ DE GERİ ALINDI
 
-Tahmin şuydu: %71 kazanç public-15'in 617 139 B destek katmanını ≈177 000 B'ye
-indirir, #164'ün adayı 769 804 → ≈330 000 B olur ve 335 503 B bütçesine sınırda
-sığar.
-
-**Bu hiç sınanamadı, çünkü değişiklik zorunlu regresyon kapısını kırdı:**
+Bayt kazancı gerçek, ama bu sitede **kodlama biçimi serbest değil**. İki varyant
+denendi, ikisi de aynı kapıdan düştü:
 
 ```
-class_reklam  taban (65bc297)          : PASS  (mode=geometric_logo, best=geo_standard)
-class_reklam  <path> kodlamasıyla      : FAIL
-  source_alpha_mask_transform_gate_rejected:
-      topology_component_regression,topology_hole_regression
+class_reklam  taban (65bc297)              : PASS
+class_reklam  tek birleşik <path>          : FAIL  topology_component_regression,
+class_reklam  dikdörtgen başına <path>     : FAIL  topology_hole_regression
 ```
 
-Aynı vaka, aynı koşucu, tek değişken kodlama. CI'da da `hard-svg-regressions`
-aynı head'de düştü. `arcaates` FAIL'i ilgisiz (madde 5: main'de de düşüyor).
+Aynı vaka, aynı koşucu, tek değişken kodlama.
 
-### Neden yanıldım — izole doğrulama tuzağı (madde 5'in tekrarı)
+### ⚠️ ÖNCEKİ AÇIKLAMAM YANLIŞTI — düzeltme
 
-resvg piksel denkliğini **destek katmanını tek başına** render ederek ölçtüm ve
-0 fark buldum. Bu ölçüm doğruydu ama **yanlış soruyu** yanıtlıyordu: üretimde bu
-geometri bir `<mask>` bağlamında, başka dönüşümlerin altında kullanılıyor ve
-topoloji kapısı bileşen/delik sayıyor. Ayrı `<rect>`'ler kenar paylaşsalar bile
-ayrı bileşen olarak ölçülürken, tek `<path>` altındaki alt-yollar **tek bileşene
-kaynıyor** — bileşen ve delik sayısı bu yüzden değişiyor. Yani piksel aynı
-kalırken topoloji değişebiliyor; kapının ölçtüğü şey piksel değil.
+İlk yazdığım "alt-yollar tek bileşene kaynıyor, o yüzden topoloji sayacı farklı
+okuyor" açıklaması **yanlıştı**. Topoloji SVG elemanlarından sayılmıyor:
+`transform_journal.py:196-210` render edilmiş **rasteri** `cv2` ile bağlı
+bileşenlere ayırıp kaynakla karşılaştırıyor (`component_delta`, `hole_delta`).
 
-Brifingin 5. maddesi tam olarak bunu söylüyordu: "Bir fonksiyonu izole test edip
-'sağlam' demek yanıltıcıdır." Ben de aynı tuzağa düştüm.
+Doğru ölçümler:
 
-### Geriye kalan sağlam bilgi
+| karşılaştırma (üretimdeki gibi kesirli ölçek altında) | farklı piksel | bayt |
+|---|---|---|
+| ayrı `<rect>` vs tek birleşik `<path>` | **206 660** (max kanal 80) | %68,1 kazanç |
+| ayrı `<rect>` vs rect başına `<path>` | **0 — piksel özdeş** | %35,3 kazanç |
 
-- Bayt kazancı **gerçek ve ölçülmüş**: bağıl `<path>` kodlaması 49,1 → 14,1
-  B/rect (%71,3). Bu sayı hâlâ geçerli.
-- Ama kazanç **bu biçimde** alınamaz: topoloji kapısı kodlamaya duyarlı.
-- Doğru yön, baytı düşürürken **bileşen kimliğini korumak**: ya her dikdörtgen
-  ayrı `<path>` olarak kalmalı (kazanç çok daha az: sarmalayıcı `<g>` düşer,
-  `<rect>`→`<path>` başına ~10 B), ya da topoloji kapısının kodlamadan bağımsız
-  ölçmesi gerekir — ikincisi kapı sahibiyle konuşulacak bir sözleşme değişikliği,
-  tek taraflı yapılmamalı.
-- Knockout'a dokunulmadı; iyi ki dokunulmamış — aynı kaynaşma orada da olurdu.
+Yani *birleşik* varyantın düşmesinin sebebi gerçekten render farkıydı: birleşik
+path'te paylaşılan kenarlar iç kenar olup yumuşatılmıyor, ayrı dikdörtgenlerde
+ayrı ayrı harmanlanıyor. İlk testimi **ölçeksiz** yaptığım için bunu kaçırmıştım.
 
-⚠️ Sıradaki oturuma: bu yolu "bayt kazancı yok" diye kapatma. Kazanç var, engel
-topoloji kapısının kodlama duyarlılığı. Ölçülmemiş tek şey, dikdörtgen başına
-ayrı `<path>` biçiminin ne kadar kazandırdığı.
+### Asıl ders: rect başına path piksel-özdeş AMA yine de düştü
+
+Ve kritik nokta bu. `rect başına <path>` kesirli ölçekte bile 0 piksel farkı
+veriyor, buna rağmen üretimde aynı kapıdan düşüyor. Demek ki bu sitede sorun
+**render değil**: destek katmanının eleman tipi downstream aşamalar için
+yük taşıyor.
+
+Somut ipucu: `app/alpha_candidate_support_compact.py:753`
+`_install_runtime_compactors()` **import anında** koşuyor ve
+`apply_direct_element_alpha` ile adaptive mask fabrikasını sarmalıyor
+(`_compact_direct_artifact`, `_compact_complex_clip`, `make_compact_primitive_alpha_first`).
+Bu katman `<rect>` bekliyor olabilir; `<path>` verince devreye girmiyor ve
+nihai artefakt değişiyor.
+
+### Sıradaki oturuma kural
+
+Bu siteyi **izole doğrulamayla onaylama**. Üç kez yanıldım: ölçeksiz render,
+ölçekli render, ikisi de "güvenli" dedi, üretim ikisini de reddetti. Bu depoda
+tek güvenilir kontrol:
+
+```
+cd engine && python3 test_visual_regression.py --case class_reklam
+```
+
+Bayt kazancını almak isteyen önce şunu yanıtlamalı: **hangi downstream aşama
+`<rect>` eleman tipine bağlı?** Cevap bulunmadan kodlama değiştirilmemeli.
+
+### Saklanacak sayılar
+
+- `<rect>` biçimi: 49,1 B/rect (public-15'te ölçülen 46,2'ye yakın)
+- rect başına `<path>`: %35,3 kazanç, piksel-özdeş
+- tek birleşik `<path>`: %68-71 kazanç ama render'ı bozuyor — bu yol kapalı
+- public-15 için %35,3 bile yetmez: 617 139 → ≈399 000, aday 769 804 → ≈552 000,
+  bütçe 335 503 (hâlâ 1,65×). Yani bu site tek başına public-15'i kurtarmıyor.
+- Knockout'ta aynı oran public-14'ü **sığdırabilirdi** (1 800 596 × 0,70 ≈
+  1 260 000 < 1 273 782) — ama oraya hiç dokunulmadı ve `test_alpha_clip_encoding.py:142`
+  sözleşmesi orada da `<rect>` bekliyor. Aynı downstream sorusu orada da geçerli.
