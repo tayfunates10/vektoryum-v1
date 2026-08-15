@@ -623,6 +623,47 @@ Dolayısıyla `komut_sayısı >= 4 * C`. Eğer `4 * C > node_allowance` ise kabu
 Bu, bu oturumdaki diğer denemelerden farklı: gerekçe "izole testte aynı
 görünüyor" değil, **matematiksel alt sınır**. Yine de regresyonla doğrulanmalı.
 
+### ⚠️ 10.4 ÖN-KONTROL UYGULANDI ve ÇÜRÜTÜLDÜ — "kanıt" yanlıştı
+
+Yukarıdaki alt sınır tasarımı uygulandı ve deponun **kendi sözleşme testi**
+tarafından anında reddedildi:
+
+```
+engine/test_alpha_mask_adaptive.py
+  test_rect_alpha_seams_retry_as_budgeted_contours -> ERROR
+  source_alpha_mask_contour_fallback_budget_rejected:
+      path_nodes=>=2533/2505
+```
+
+Yani şu anda **başarıyla kabul edilen** bir vaka, benim kapımla kıl payı
+(2533 > 2505) reddedildi. Kapı yanlış.
+
+**Neden yanıldım — kanıtı yanlış gösterime kurdum.** "Her bileşen en az bir
+kapalı alt-yol, alt-yol başına en az 4 komut" önermesi genel SVG semantiği
+için doğru, ama bu depo o gösterimi kullanmıyor. `alpha_mask_budget.py:220`
+`_encode_contours` docstring'i açıkça söylüyor:
+
+> "Encode disconnected contours as one even-odd walk with doubled bridges."
+
+Konturlar **köprülerle tek bir even-odd yürüyüşe** bağlanıyor; bileşen başına
+ayrı `M...Z` yok. Ek kontur başına maliyet ~4 değil, köprü gidiş-dönüşü kadar
+(~2). Ben `_encode_contours`'a bakmadan genel semantikten akıl yürüttüm —
+madde 11.2'deki hatanın (deponun mevcut mekanizmasına bakmamak) aynısı.
+
+**Gözlenen veri noktası:** başarısız vakada 4×C = 2 533 iken gerçek plan
+2 505 limitine sığıyor → C ≈ 633, gerçek maliyet bileşen başına **4'ten
+küçük**. Dama tahtasında 2×C = 1 440 000 hâlâ 71 838'i aşıyor, yani daha
+küçük bir katsayı patolojik vakayı yine yakalar.
+
+⚠️ Ama katsayıyı **tahmin etmeyin**. Doğrusu `_encode_contours`'un ürettiği
+komut sayısını kontur sayısına bağlayan gerçek formülü o fonksiyondan
+türetmek. Ölçmeden konulan her katsayı bu tuzağın tekrarıdır.
+
+Darboğaz teşhisi (madde 10.2: `cv2.findContours` 98 647 ms) **geçerliliğini
+koruyor**; çürüyen yalnız kapının eşiği. Ucuz ön-kontrol fikri de geçerli:
+4-komşuluk `connectedComponents` 3,01 ms ve `public-12` benzeri alanı
+ayırt ediyor. Eksik olan tek şey doğru katsayı.
+
 ### ⚠️ Uygulamadan önce çözülecek tek soru
 
 Ön-kontrol hangi hatayı fırlatmalı? Şu an bu yol
