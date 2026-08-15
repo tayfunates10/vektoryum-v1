@@ -448,9 +448,26 @@ def apply_candidate_geometry_knockout(
             try:
                 after_size = temporary.stat().st_size
                 if after_size > int(limits["byte_limit"]):
+                    # Tanılama: hangi kodlamanın, kaç dikdörtgenle ve ana
+                    # çizimin üstüne kaç bayt ekleyerek düştüğü. `public-14`
+                    # bütçeye en yakın vaka (1,41x) ama baytın nereye gittiği
+                    # ölçülmemişti; painter'ın aksine knockout'ta ledger yok,
+                    # dolayısıyla kanıt yalnız bu satırdan okunabiliyor.
+                    added_bytes = int(after_size) - int(before_size)
+                    rectangles = int(geometry.get("reconstruction_rectangle_count", 0))
+                    per_rect = (
+                        f"{added_bytes / rectangles:.1f}" if rectangles else "na"
+                    )
                     last_budget_error = (
                         "source_alpha_candidate_knockout_byte_budget_rejected:"
                         f"{after_size}>{limits['byte_limit']}"
+                        f",encoding={encoding_name}"
+                        f",parent_bytes={int(before_size)}"
+                        f",added_bytes={added_bytes}"
+                        f",rects={rectangles}"
+                        f",clips={int(geometry.get('reconstruction_clip_count', 0))}"
+                        f",uses={int(geometry.get('reconstruction_use_count', 0))}"
+                        f",added_bytes_per_rect={per_rect}"
                     )
                     continue
                 with Image.open(source) as source_image:
