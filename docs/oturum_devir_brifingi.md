@@ -447,3 +447,62 @@ kapısından düştü (eleman tipi downstream'e bağlı, madde 11).
 downstream aşamanın kim olduğu. O çözülürse 42 569 B'lik açık (#164'ün
 base_delta kazancı ~84 727 B ile birlikte) kapanabilir görünüyor — ama bu da
 ölçülmeden iddia edilmemeli.
+
+### 11.2 CEVAP BULUNDU: bu optimizasyon depoda ZATEN var — ama başka yerde
+
+"Hangi downstream aşama `<rect>`'e bağlı?" sorusunun cevabı:
+
+**`engine/app/alpha_mask_adaptive.py:36` `_rect_path()` + `:68`
+`_compact_mask_rectangles()`** — depo, dikdörtgenleri tek bir path'e birleştiren
+optimizasyonu **zaten yapıyor**:
+
+```python
+commands.append(f"M{x} {y}h{width}v{height}h-{width}Z")   # _rect_path
+```
+
+Bu, benim "icat ettiğim" birleşik biçimin **birebir aynısı**. Ama yalnız
+`<mask>` içindeki `data-vektoryum-alpha-level` gruplarına uygulanıyor:
+
+```python
+if group.get("data-vektoryum-alpha-level") is None: continue
+rectangles = [c for c in group if _local_name(c.tag) == "rect"]
+```
+
+Yani seçici olarak **`rect` çocuk bekliyor**; `<path>` verilirse liste boşalır ve
+adım sessizce atlanır. `alpha_candidate_support_compact.py:632`
+(`_compact_complex_clip`) de aynı deseni izliyor: çocukların **hepsi** `rect`
+değilse `return 0`.
+
+Her ikisi de `_install_runtime_compactors()` ile **import anında** üretim
+fonksiyonlarına takılıyor (brifing madde 5'teki monkey-patch uyarısı).
+
+### Üç başarısızlığımın tek açıklaması
+
+| katman | birleştirme | neden |
+|---|---|---|
+| `<mask>` alfa-seviye grupları | **GÜVENLİ, zaten yapılıyor** | ikili maske; paylaşılan kenarda yumuşatma sorunu yok |
+| paint-deficit **destek** katmanı (görünür boya) | **GÜVENLİ DEĞİL** | kesirli ölçekte 206 660 piksel farkı |
+
+Ben `_rect_path`'i yeniden icat edip **görünür boya** katmanına uyguladım.
+Depo bunu maske geometrisinde yapıyor çünkü orada güvenli; destek katmanında
+yapmıyor çünkü orada değil. Sınır bilinçliymiş, ben fark etmemişim.
+
+Rect başına `<path>` varyantının düşmesi de aynı kökten: eleman tipini
+değiştirince yukarıdaki `rect` filtreleri devre dışı kalıyor ve daha önce
+koşan compaction adımı artık koşmuyor — nihai artefakt bu yüzden değişiyor.
+
+### Bunun public-15 için anlamı
+
+Maske tarafı **zaten sıkıştırılmış**. `public-15`'in 701 625 B'lik destek
+katmanı, geriye kalan sıkıştırılmamış kütle — ve orada birleştirme yasak.
+Dolayısıyla 42 569 B'lik açık **eleman tipi değiştirerek kapatılamaz**.
+
+Kalan gerçek kaldıraçlar:
+1. **Dikdörtgen sayısını düşürmek** (15 283 rect). Bayt/rect değil, rect sayısı.
+   #164'ün adacık eleme + döngü sadeleştirme yönü doğru olan buydu.
+2. **#164'ün `base_delta`'sı** (~84 727 B ölçülmüş kazanç).
+3. Destek katmanının hiç üretilmemesi (deficit'i baştan azaltmak).
+
+⚠️ Sonraki oturuma: `<rect>` → `<path>` yolunu **kapalı** say. Denendi (iki
+varyant), ölçüldü, ikisi de düştü ve nedeni artık biliniyor. Bunun yerine rect
+SAYISINI düşüren işlere bak.
