@@ -1501,8 +1501,31 @@ def apply_candidate_painter_reconstruction(
 
     def _evaluate_node_free_quantized() -> list[Any] | None:
         """Try the finest node-free polygon lattice that passes unchanged gates."""
+        # Merdiven boyunca kafes kimliğini kayda geçir. Bir bölüntüyü inceltmek
+        # kovaları BÖLER, birleştiremez: bu yüzden kaba kafesin ürettiği pozitif
+        # seviye sayısı, daha ince kafesinkinden BÜYÜK OLAMAZ. Üretimde bunun
+        # ihlal edildiği ölçüldü (q32 -> 1 seviye iken q16 -> 15). Aynı girdiyle
+        # imkânsız olduğundan girdinin basamaklar arasında değiştiğinden
+        # şüpheleniyoruz; kaynağı ancak ölçerek bulabiliriz.
+        ladder_probe: list[dict[str, Any]] = []
         for target_levels in _NODE_FREE_QUANTIZED_LEVELS:
+            grid_digest = hashlib.sha256(
+                np.ascontiguousarray(grid_alpha).tobytes()
+            ).hexdigest()[:16]
             requant, requant_opacity = _requantize_alpha(grid_alpha, target_levels)
+            encoded_levels = len([lvl for lvl in requant_opacity if int(lvl) > 0])
+            ladder_probe.append(
+                {
+                    "target_levels": int(target_levels),
+                    "encoded_levels": int(encoded_levels),
+                    "grid_alpha_sha256_16": grid_digest,
+                    "grid_alpha_positive": int(np.count_nonzero(grid_alpha)),
+                    "grid_alpha_distinct_positive": int(
+                        len(np.unique(grid_alpha[grid_alpha > 0]))
+                    ),
+                    "requant_distinct": int(len(np.unique(requant))),
+                }
+            )
             attempt_start = len(attempts)
             candidate = _evaluate_phase(
                 [
@@ -1515,6 +1538,30 @@ def apply_candidate_painter_reconstruction(
                     )
                 ]
             )
+            # Bu basamağın kafes kimliğini kendi ledger girdilerine mühürle;
+            # aksi hâlde CI çıktısından hangi kafesin ölçüldüğü okunamıyor.
+            probe = ladder_probe[-1]
+            for entry in attempts[attempt_start:]:
+                entry.update(
+                    {
+                        "ladder_target_levels": probe["target_levels"],
+                        "ladder_encoded_levels": probe["encoded_levels"],
+                        "ladder_grid_alpha_sha256_16": probe["grid_alpha_sha256_16"],
+                        "ladder_grid_alpha_positive": probe["grid_alpha_positive"],
+                        "ladder_grid_alpha_distinct_positive": probe[
+                            "grid_alpha_distinct_positive"
+                        ],
+                        "ladder_requant_distinct": probe["requant_distinct"],
+                        # İnceltme kovaları bölebilir ama birleştiremez: kaba
+                        # kafes, kendinden ince olanın seviye sayısını AŞAMAZ.
+                        # Bu bayrak True ise ölçüm tutarsızdır ve o basamağın
+                        # sonucu geçerli bir aday ölçümü sayılmamalıdır.
+                        "ladder_monotonicity_violated": any(
+                            probe["encoded_levels"] > earlier["encoded_levels"]
+                            for earlier in ladder_probe[:-1]
+                        ),
+                    }
+                )
             if candidate is not None:
                 # q64 -> q32 -> q16: ilk geçen en ince kafestir.
                 return candidate
