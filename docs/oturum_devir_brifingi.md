@@ -559,11 +559,45 @@ Yani patlama **ana çizimden gelmiyor**; tamamen
 `public-12` gibi gürültülü/fotoğrafımsı alfada seviye başına kontur sayısı
 patlıyor. Süre de bunun sonucu: 4 milyon komut üretmek 4 197 s sürüyor.
 
-**Sıradaki ölçülebilir adım** (denenmedi, öneri): `_build_contour_plan`'a
-üretim sırasında bir **erken durdurma** koymak — komut sayısı paya düşen
-bütçeyi aştığı anda plan üretimini bırakıp `contour_fallback_unavailable`
-dönmek. Bu kaliteyi düşürmez (plan zaten reddediliyor), yalnız 4 197 s'lik
-boşa hesabı kesip vakayı hızlı-başarısız yapar. Böylece `public-12` shard'ı
-saatler yerine dakikalar sürer ve korpus koşusu bir daha 150 dk'ya dayanmaz.
-⚠️ Erken durdurma kalite kapısı DEĞİL; yalnız zaten reddedilecek bir hesabı
-kısaltır. Yine de ölçülerek doğrulanmalı.
+### 10.2 Erken durdurma DENENDİ ve ÖLÇÜMLE ÇÜRÜTÜLDÜ
+
+Önerdiğim adım şuydu: pahalı dal reddedilecekse dev dizgeleri kurmayalım,
+sayıları aritmetikle çıkaralım. Uygulandı ve aritmetik **birebir** doğrulandı
+(`command_count`, `path_markup_bytes`, `path_count`, `contour_count` tümü aynı;
+`d` yalnız sayaç yolunda `None`).
+
+Ama kazanç ölçülünce: **1,0×**. 1200×1200 dama tahtası, 720 000 hücre,
+3 600 000 komut: dizge kuran yol 202,26 s, sayaç yolu 197,85 s. Yani dizge
+kurma toplam maliyetin **~%2'si**. Değişiklik geri alındı — karmaşıklık ekleyip
+hiçbir şey kazandırmıyor.
+
+### Profil: zaman NEREDE geçiyor (ölçüldü)
+
+Tek seviye, 1200×1200, 717 603 kontur:
+
+| adım | süre |
+|---|---|
+| maske kurma | 0,00 s |
+| **`cv2.findContours`** | **204,52 s** |
+| `_canonical_contour` Python döngüsü | 5,14 s |
+| `np.nonzero` | 0,01 s |
+| dizge kurma (yukarıdan) | ~4 s |
+
+**Darboğaz `cv2.findContours`** — `RETR_CCOMP` ile parçalı alanda 700 binden
+fazla kontur çıkarıyor. `public-12`'nin 4 197 s'si buradan geliyor, pahalı
+yeniden ifadeden değil.
+
+Kritik ayrıntı: bu maliyet `_build_contour_plan`'ın **ilk** döngüsünde, yani
+pahalı dala düşmeden ÖNCE ödeniyor. Dolayısıyla pahalı dalı kısaltan hiçbir
+optimizasyon `public-12`'yi hızlandıramaz.
+
+### Sıradaki gerçek kaldıraç (ölçülmedi, öneri)
+
+`cv2.findContours` çağrılmadan ÖNCE ucuz bir parçalanma ön-kontrolü: alan
+kabul edilebilir hiçbir bütçeye sığmayacak kadar parçalıysa kontur çıkarmaya
+hiç girmemek. Aday ucuz ölçüt: satır-içi geçiş sayısı (`np.diff` ile
+vektörel, `np.nonzero` gibi ~0,01 s) ya da `cv2.connectedComponents`
+(findContours'tan ucuz olması beklenir ama **ölçülmeli**).
+
+⚠️ Sonuç korunmalı: ön-kontrol yalnız zaten reddedilecek alanları elemeli.
+Eşik, kabul edilen hiçbir vakayı etkilemeyecek şekilde bütçeden türetilmeli.
