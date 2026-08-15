@@ -166,3 +166,94 @@ yani süre vakaya özgü olabilir. Kanıt değil.
 
 RFV-3 `pending`, RFV-4 bloke, yayın kararı `no_go`. Bu koşuda hiçbiri
 değişmedi ve **canlı korpus kanıtı gelmeden değişmemeli**.
+
+---
+
+## 9. ÖLÇÜLDÜ — Deney A kapandı: #164 canlı korpusa karşı ölçüldü
+
+Brifing yazıldıktan **sonra** üç görev dalı da canlı korpusa karşı koştu.
+Deney A'nın "canlı kanıtı yok" durumu artık geçerli değil.
+
+| koşu | head | taban | sonuç |
+|---|---|---|---|
+| `31872218993` | `a513c52` (#164) | `5c4f790` | measure 0 ✅, 1-5 ❌ |
+| `31875365505` | `7dfab89` (#158, siluet düzeltmeli) | — | measure 0 ✅, 1-5 ❌ |
+
+Kafes eşlemesi (`ordered[shard::6]`, case id'leri sıralı): shard 1→public-14,
+2→**public-15**, 3→public-04, 4→public-05, 5→public-12. Yani düşen 5 shard,
+brifingin 5 vakasıyla birebir örtüşüyor; mekanizmalar da değişmedi.
+
+### 9.1 #164 çalışıyor ama **2,29× yetersiz**
+
+`public-15`'te #164'ün yeni ailesi gerçekten devreye giriyor — tabanda
+bulunmayan bir aday üretiyor:
+
+```
+encoding_label  = paint-deficit-cumulative-q8-base-delta
+encoding_family = paint_deficit_support_compact
+actual_serialized_bytes = 769804   byte_limit = 335503   -> byte_rejected
+paint_deficit_support_serialized_bytes        = 617139
+paint_deficit_support_legacy_serialized_bytes = 701866
+paint_deficit_support_saved_bytes             =  84727
+paint_deficit_support_rect_count              =  13348
+paint_deficit_palette_count = 8    paint_deficit_pixel_count = 943372
+```
+
+Yani: en iyi eski paint-deficit adayı 854 531 B iken yeni aday 769 804 B —
+**%9,9 kazanç, ölçülmüş**. Ama bütçe 335 503 B; kalan açık **434 301 B** ve
+sığmak için bir **%56,4 daha** düşüş gerekiyor. Yön doğru, ölçek yanlış.
+
+Baytı süren şey seviye sayısı değil **destek katmanının dikdörtgen sayısı**:
+13 348 rect / 617 139 B ≈ **46 B/rect**. Bütçeye girmek için rect sayısının
+kabaca yarıya inmesi gerek. (Madde 3.5'teki nicel öncül hatasının aynısı:
+kontur/döngü geometrisi domine ediyor.)
+
+### 9.2 Eski merdiven baytları iki koşuda **bayt bayt aynı**
+
+`public-15` için taban ile #164 head'i arasında eski adayların hiçbiri
+oynamadı — #164'ün "mevcut yolları yerinden etme" sözleşmesi tutuyor:
+
+| ölçüm | taban (`7dfab89`) | #164 (`a513c52`) |
+|---|---|---|
+| `paint_deficit_pixel_count` | 943372 / 943310 | 943372 / 943310 |
+| `ladder_grid_alpha_sha256_16` | `c3e91c292a493bb1` | `c3e91c292a493bb1` |
+| `paint-deficit-cumulative` | 1007207>335503 | 1007207>335503 |
+| `-q8` / `-q12` / `-q16` / `-q20` | 854531 / 892375 / 930262 / 968128 | aynı |
+
+⚠️ Brifingdeki 1 099 083 deficit pikseli **artık 943 372**. Bu düşüş #164'ten
+gelmiyor (iki koşuda da aynı); 5c4f790 öncesindeki polygon-q/#162 çalışmasından
+geliyor. Yeni bayt tahminlerini 943 372 üzerinden kur.
+
+### 9.3 Siluet düzeltmesi korpus sonucunu değiştirmedi
+
+`7dfab89` merdiveni gerçekten onarıyor — `ladder_encoded_levels` 63/**31**/15,
+`requant_distinct` 64/**32**/16, `ladder_monotonicity_violated` **hep false**
+(#164 tabanında hâlâ 63/**1**/15, distinct 2, violated **true**). Ama
+`public-15`'in bayt redleri iki koşuda da birebir aynı → siluet kusuru bu
+vakanın bayt tabanını hiç etkilemiyormuş. Düzeltme doğru, etkisi başka yerde.
+
+### 9.4 Üç görev dalı da siluet düzeltmesinden ÖNCEKİ tabanda
+
+`#164`, `#166`, `#170` üçü de `5c4f790` üzerinde; `7dfab89` hiçbirinde yok
+(`git merge-base --is-ancestor 7dfab89 <dal>` → NO). Ölçümleri bu yüzden
+merdiven kusuru **açıkken** alındı. `public-15` için bunun sonucu değiştirmediği
+yukarıda ölçüldü, ama `public-04`/`public-05` için aynı şey **gösterilmedi** —
+o iki dalı yeniden ölçmeden önce `65bc297` üzerine taşımak gerekir.
+
+## 10. Deney B kuruldu — `public-12` merdiven sorumluluğu
+
+`.github/workflows/public12-ladder-timeout-check.yml` (tek seferlik):
+aynı runner sınıfında iki kol koşar — `ladder-on` (üretimdeki hâl) ve
+`ladder-free` (`_PAINT_DEFICIT_CUMULATIVE_LEVELS` ve
+`_NODE_FREE_QUANTIZED_LEVELS` boşaltılmış). Korpus, kimliği zaten doğrulanmış
+`31875365505` koşusunun artefaktından iner; yeniden edinim yok.
+
+Merdiven boşaltma **yalnız ölçüm betiğinin kendi sürecinde** yapılır —
+`engine/app` altında tek satır değişmez. Bu bilinçli: `engine/app/**`'e
+dokunmak RFV-3B canlı iş akışını (6 shard × saatler) tetiklerdi ve varsayılan
+davranış değişmediği için o koşu `7dfab89` ile aynı sonucu verirdi.
+
+Okuma: `ladder-free` 3600 s altında biterken `ladder-on` aşıyorsa timeout
+sorumluluğu eklediğimiz adaylarındır. İkisi de aşıyorsa timeout vakaya
+özgüdür — o zaman `public-12` ayrı bir performans işi olur, kalite işi değil.
+Kanıt: `PUBLIC12_TIMING=` satırı + `public12-timing-<kol>.json` artefaktı.
