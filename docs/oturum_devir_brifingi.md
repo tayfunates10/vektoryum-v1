@@ -4,6 +4,43 @@ Bu belge, tükenmiş bir oturumdan devralacak yeni oturum için yazıldı. Amac�
 aynı yolları tekrar yürümeni önlemek: nelerin **ölçüldüğünü**, nelerin
 **çürütüldüğünü** ve sıradaki iki somut deneyi içerir.
 
+
+---
+
+## 0. ÖNCE BUNU OKU — bu oturumda neler kapandı
+
+⚠️ Aşağıdaki 1-8. maddeler **ilk** oturumun brifingidir ve bazı yerleri
+sonradan **çürütüldü**. Çakışma görürsen 9+ maddeler geçerlidir.
+
+**Kapanan sorular**
+
+| soru | cevap | madde |
+|---|---|---|
+| #164 canlı korpusta işe yarıyor mu? | Evet ama 2,29× yetersiz; sözleşmesi temiz | 9 |
+| `public-12` timeout'undan merdivenler mi sorumlu? | **Hayır** — merdivensiz de 4 197 s | 10 |
+| `public-12`'nin kök nedeni ne? | Kontur fallback düğüm patlaması, 56× | 10.1 |
+| `public-15`'in destek katmanı kaç bayt? | 701 625 B / 15 283 rect (canlı ölçüm) | 11.1 |
+
+**Tekrar denenmemesi gereken kapalı yollar** (hepsi ölçüldü)
+
+1. Destek katmanını tek birleşik `<path>` yapmak → render bozuluyor (206 660 px) — 11
+2. Rect başına ayrı `<path>` → topoloji kapısı düşüyor, eleman tipi downstream'e bağlı — 11
+3. `_rect_path`'i yeniden icat etmek → depoda **zaten var**, yalnız `<mask>`'te güvenli — 11.2
+4. Pahalı dalda erken durdurma → kazanç **1,0×**, dizge kurma maliyetin %2'si — 10.2
+5. `4*C` alt sınır kapısı → sözleşme testini kırdı, `_encode_contours` köprü kullanıyor — 10.4
+6. Toplam kontur sayısıyla kapı → **karşı örnek** ölçüldü (16 860 toplam / 3 budanmış) — 10.7
+
+**Doğrulanmış araçlar** (kullan)
+
+- `kontur = 2*C8 - E8` kimliği — 10 ms'de tam, `findContours` 103 s. Tanılama için değerli (10.6)
+- Sentetik profil kurarken deponun **kendi** `_merged_rectangles_by_level`'ını kullan:
+  tahmin %68,1 / gerçek %67,9 tuttu (11.1)
+- Bu depoda izole doğrulama yanıltır. Tek güvenilir kontrol:
+  `cd engine && python3 test_visual_regression.py --case class_reklam`
+
+**Sıradaki en umutlu iş:** `public-14` — bütçeye **en yakın** vaka (1,41×),
+bugüne dek hiç çalışılmadı. Madde 12.
+
 ---
 
 ## 1. Depo durumu (bu belge yazıldığında)
