@@ -363,7 +363,10 @@ def _cumulative_threshold_children(
 
 
 def _requantize_alpha(
-    alpha: np.ndarray, max_levels: int
+    alpha: np.ndarray,
+    max_levels: int,
+    *,
+    allow_silhouette_shortcut: bool = True,
 ) -> tuple[np.ndarray, dict[int, float]]:
     """Kaynak alfayı ≤ ``max_levels`` düzeye deterministik yeniden nicele.
 
@@ -372,6 +375,16 @@ def _requantize_alpha(
     alfaların ORTALAMASIdır (round-trip gri = round(mean_alpha)). Daha kaba
     nicemleme daha küçük kodlama verir; kabul YALNIZ değişmemiş alfa IoU/MAE
     kapıları geçerse — kalite düşürerek testi geçme yoktur.
+
+    ``allow_silhouette_shortcut``: bu fonksiyon üretimde
+    ``alpha_candidate_identity`` tarafından sarmalanır ve sarmalayıcı, belirli
+    bir kafes için tam nicemleme yerine ikili siluet döndürebilir. Kısayol
+    contour merdiveni için KASITLIDIR; ancak sarmalayıcı bunu ``max_levels``
+    DEĞERİNE bakarak seçtiğinden, aynı değeri kullanan her yeni tüketici
+    kısayola sessizce yakalanıyordu (ölçüldü: polygon merdiveninin orta
+    basamağı 31 seviye yerine 1 seviye üretiyordu). Bu bayrak seçimi değerden
+    NİYETE taşır: siluet istemeyen çağıran ``False`` geçer ve kafes değerinden
+    bağımsız olarak tam nicemleme alır.
     """
     alpha = np.asarray(alpha, dtype=np.uint8)
     quantized = np.zeros(alpha.shape, dtype=np.int32)
@@ -1512,7 +1525,11 @@ def apply_candidate_painter_reconstruction(
             grid_digest = hashlib.sha256(
                 np.ascontiguousarray(grid_alpha).tobytes()
             ).hexdigest()[:16]
-            requant, requant_opacity = _requantize_alpha(grid_alpha, target_levels)
+            # Düğüm eklemeyen polygon merdiveni tam nicemleme İSTER: amacı
+            # bayt bütçesine sığan EN İNCE kafesi bulmaktır, ikili siluet değil.
+            requant, requant_opacity = _requantize_alpha(
+                grid_alpha, target_levels, allow_silhouette_shortcut=False
+            )
             encoded_levels = len([lvl for lvl in requant_opacity if int(lvl) > 0])
             ladder_probe.append(
                 {
