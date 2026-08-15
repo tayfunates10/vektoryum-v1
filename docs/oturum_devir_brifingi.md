@@ -303,24 +303,49 @@ korunur; bugün bütçeye sığan hiçbir aday büyüyemez. Yeni ledger alanlar�
 `paint_deficit_support_rect_count` anlamını korudu (geometrideki dikdörtgen
 sayısı), kodlamadan bağımsız.
 
-### Beklenen etki — CANLI ÖLÇÜMLE DOĞRULANMALI
+### SONUÇ: ÇÜRÜTÜLDÜ ve GERİ ALINDI
 
-%71 kazanç public-15'in 617 139 B'lik destek katmanına uygulanırsa ≈ 177 000 B
-kalır; #164'ün `base_delta` adayı 769 804 → **≈ 330 000 B**, bütçe ise
-335 503 B. Yani **sınırda sığabilir**. Bu bir tahmindir ve madde 3.5'teki
-hatanın tekrarı olmaması için **kanıt sayılmamalıdır** — gerçek sayı canlı
-korpustan gelmeli. Ledger alanları tam da bunu raporlasın diye eklendi.
+Tahmin şuydu: %71 kazanç public-15'in 617 139 B destek katmanını ≈177 000 B'ye
+indirir, #164'ün adayı 769 804 → ≈330 000 B olur ve 335 503 B bütçesine sınırda
+sığar.
 
-⚠️ Bu adım tek başına #164'ü kurtarmaz: `base_delta` ailesi #164'te, bu kodlama
-`65bc297` tabanında. İkisi birleşince ölçülmeli.
+**Bu hiç sınanamadı, çünkü değişiklik zorunlu regresyon kapısını kırdı:**
 
-### Knockout'a neden dokunulmadı
+```
+class_reklam  taban (65bc297)          : PASS  (mode=geometric_logo, best=geo_standard)
+class_reklam  <path> kodlamasıyla      : FAIL
+  source_alpha_mask_transform_gate_rejected:
+      topology_component_regression,topology_hole_regression
+```
 
-Aynı kazanç `alpha_candidate_knockout.py`'daki `clipPath` dikdörtgenleri için
-de geçerli (public-14: 1 800 596 > 1 273 782, yani %41 aşım — bu kodlamayla
-kapanabilecek büyüklükte) ve `clipPath` içi denklik yukarıda ölçüldü. Ama
-`engine/test_alpha_clip_encoding.py:142` clipPath metninden `<rect .../>`
-düzenli ifadeyle çekip eşdeğer `<mask>` kuruyor; kodlama değişirse o sözleşme
-testi kırılır. Testi değiştirip geçmek yanlış olacağından bu adım **ayrı bir
-iş** olarak bırakıldı — kazancı ölçülmüş, yolu açık, sözleşme sahibiyle
-konuşulmalı.
+Aynı vaka, aynı koşucu, tek değişken kodlama. CI'da da `hard-svg-regressions`
+aynı head'de düştü. `arcaates` FAIL'i ilgisiz (madde 5: main'de de düşüyor).
+
+### Neden yanıldım — izole doğrulama tuzağı (madde 5'in tekrarı)
+
+resvg piksel denkliğini **destek katmanını tek başına** render ederek ölçtüm ve
+0 fark buldum. Bu ölçüm doğruydu ama **yanlış soruyu** yanıtlıyordu: üretimde bu
+geometri bir `<mask>` bağlamında, başka dönüşümlerin altında kullanılıyor ve
+topoloji kapısı bileşen/delik sayıyor. Ayrı `<rect>`'ler kenar paylaşsalar bile
+ayrı bileşen olarak ölçülürken, tek `<path>` altındaki alt-yollar **tek bileşene
+kaynıyor** — bileşen ve delik sayısı bu yüzden değişiyor. Yani piksel aynı
+kalırken topoloji değişebiliyor; kapının ölçtüğü şey piksel değil.
+
+Brifingin 5. maddesi tam olarak bunu söylüyordu: "Bir fonksiyonu izole test edip
+'sağlam' demek yanıltıcıdır." Ben de aynı tuzağa düştüm.
+
+### Geriye kalan sağlam bilgi
+
+- Bayt kazancı **gerçek ve ölçülmüş**: bağıl `<path>` kodlaması 49,1 → 14,1
+  B/rect (%71,3). Bu sayı hâlâ geçerli.
+- Ama kazanç **bu biçimde** alınamaz: topoloji kapısı kodlamaya duyarlı.
+- Doğru yön, baytı düşürürken **bileşen kimliğini korumak**: ya her dikdörtgen
+  ayrı `<path>` olarak kalmalı (kazanç çok daha az: sarmalayıcı `<g>` düşer,
+  `<rect>`→`<path>` başına ~10 B), ya da topoloji kapısının kodlamadan bağımsız
+  ölçmesi gerekir — ikincisi kapı sahibiyle konuşulacak bir sözleşme değişikliği,
+  tek taraflı yapılmamalı.
+- Knockout'a dokunulmadı; iyi ki dokunulmamış — aynı kaynaşma orada da olurdu.
+
+⚠️ Sıradaki oturuma: bu yolu "bayt kazancı yok" diye kapatma. Kazanç var, engel
+topoloji kapısının kodlama duyarlılığı. Ölçülmemiş tek şey, dikdörtgen başına
+ayrı `<path>` biçiminin ne kadar kazandırdığı.
