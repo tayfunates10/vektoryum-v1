@@ -1517,3 +1517,47 @@ ikisi aynen bırakılmalı — ya da onların da ne tükettiği önce okunmalı.
 `required_metrics={"alpha_fidelity"}` zaten geçiliyor ama değerlendirici bunu
 **hesaplamayı atlamak için kullanmıyor**, yalnız "unmeasured" işaretlemek için.
 Boşluk tam olarak burada.
+
+### 13.10 ZORUNLU KONTROL YAPILDI — alfa-yalnız yol GLOBAL uygulanamaz
+
+Madde 13.9'daki fırsat, diğer tüketiciler okunmadan uygulanmamalıydı. Okundu
+ve iki tüketici **taban tabana zıt** çıktı:
+
+**`alpha_candidate_knockout.py:354-362` — HİÇBİR hard fail kabul etmiyor:**
+
+```python
+if alpha_group.get("alpha_fidelity_status") != "passed":
+    raise RuntimeError("...knockout_evaluator_rejected:...")
+if report.hard_fail_codes:                      # <-- HERHANGI bir kod
+    raise RuntimeError("...knockout_evaluator_hard_fail:...")
+```
+
+`ssim_below_min`, `topology_component_delta`, `alpha_*_ssim_below_min` —
+hepsi knockout'u reddettiriyor. Ayrıca `alpha_fidelity_status`, herhangi bir
+`alpha_` kodu tetiklendiğinde "failed" oluyor (`final_artifact_evaluator.py:610`).
+
+**`alpha_candidate_painter.py:709` —** yalnız iki kodu süzüyor (madde 13.9).
+
+**`alpha_candidate_validation.py:59` —** `evaluate_final_svg`'yi içe aktarıyor
+ama birincil kontrolü **kendi** yapıyor: `render_svg_to_rgba` +
+`alpha_plane_metrics` ile doğrudan IoU/MAE ölçüp eşiklere bakıyor.
+
+### Sonuç: fırsat gerçek ama KAPSAMI DAR
+
+Alfa-yalnız değerlendirme **global** uygulanamaz. Hesaplanmayan metriklerin
+kodları hiç tetiklenmezdi ve **knockout şu an reddettiği adayları kabul
+ederdi** — kapıyı gevşetme yönünde sessiz davranış değişikliği.
+
+Uygulanabilir tek biçim: **yalnız painter çağrı noktasına** özel bir
+alfa-yalnız yol. Knockout ve validation aynen bırakılmalı.
+
+⚠️ O daraltılmış biçimde bile kazanç **ölçülmedi**. 134,4 s'nin ne kadarı
+painter çağrılarına ait, ne kadarı knockout/validation'a — bu dağılım
+bilinmiyor. Ölçmeden uygulanmamalı; painter payı küçükse iş değmez.
+
+### Bu kontrolün değeri
+
+Madde 13.9'da "fırsat" derken global uygulanabilir sanıyordum. Kontrol
+etmeden yazsaydım knockout'un kapısını sessizce gevşetmiş olacaktım. Bu
+oturumda yedinci kez, "yalnızca X etkilenir" varsayımı yanlış çıktı — ama bu
+kez koda dokunmadan önce yakalandı.
