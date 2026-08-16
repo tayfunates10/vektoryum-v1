@@ -1561,3 +1561,41 @@ Madde 13.9'da "fırsat" derken global uygulanabilir sanıyordum. Kontrol
 etmeden yazsaydım knockout'un kapısını sessizce gevşetmiş olacaktım. Bu
 oturumda yedinci kez, "yalnızca X etkilenir" varsayımı yanlış çıktı — ama bu
 kez koda dokunmadan önce yakalandı.
+
+### 13.11 Çağrı noktası dağılımı ölçüldü — painter payı %61
+
+`class_reklam`, 439,9 s. `evaluate_final_svg` toplam 128,0 s (%29,1):
+
+| çağrı noktası | adet | süre | pay | çağrı başına |
+|---|---|---|---|---|
+| **`alpha_candidate_painter:709`** | **35** | **78,2 s** | **%61,1** | 2,23 s |
+| `alpha_candidate_validation:108` | 2 | 49,8 s | %38,9 | **24,9 s** |
+
+Karar kuralı ölçümden **önce** yazılmıştı (>%60 → değer). Painter payı %61,1,
+yani daraltılmış alfa-yalnız yol değer: boru hattının **%17,8'i** (78,2/439,9)
+painter'ın tam değerlendirme çağrılarında ve orada gerekli olan yalnız
+render + alfa IoU/MAE.
+
+⚠️ **Düzeltme:** madde 13.10'da `validation`ı 59-90 satırları üzerinden
+"birincil kontrolü kendi yapıyor" diye tanımlamıştım. Eksik okumaydı;
+`:108`'de ayrı bir `evaluate_final_svg` çağrısı var ve incelenmedi.
+
+⚠️ **Açıklanmamış:** validation çağrı başına 24,9 s, painter 2,23 s —
+**11 kat** fark. Yalnız 2 çağrıyla 49,8 s tüketiyor. Nedeni bilinmiyor;
+büyük olasılıkla farklı çözünürlük/girdi ama **ölçülmedi**. Kendi başına
+ayrı bir inceleme konusu (%11 boru hattı payı).
+
+### Uygulama planı (henüz uygulanmadı)
+
+1. `evaluate_final_svg` yanına **alfa-yalnız** bir yol; yalnız `painter:709`
+   kullanır. Knockout ve validation aynen kalır (madde 13.10: global uygulama
+   knockout'un kapısını gevşetir).
+2. Eşiklere dokunulmaz; yalnız hesaplanan metrik kümesi daralır.
+3. **Doğrulama:** yerel e2e ile kazanan SVG'nin **bayt bayt aynı** kaldığı
+   gösterilmeli (taban: `geo_standard_alpha.svg`, 267 523 B,
+   `selection_reason=highest_total_score+source_alpha_vector_mask`), süre
+   düşüşü ölçülmeli, ardından `test_visual_regression.py`.
+4. Riskli nokta: metrikleri hesaplamamak `alpha_fidelity_status`u "failed"
+   yerine başka bir değere kaydırabilir. Painter bu alanı okumuyor (kontrol
+   edildi) ama aynı rapor nesnesi başka yere sızıyorsa etkisi olur —
+   uygulanırsa bu ayrıca doğrulanmalı.
