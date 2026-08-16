@@ -1301,3 +1301,56 @@ tutarlı ve alfa yolunun üretimde ne kadar dar bir yerde çalıştığını gö
 `cProfile` ile tek koşuda fonksiyon bazında döküm alınmalı. Aday şüpheliler
 (ölçülmedi): VTracer aday üretimi, shape fitting, `findContours` (madde 10.2'de
 patolojik girdide 98 s ölçüldü), skorlama.
+
+### 13.6 cProfile — 526 s nerede geçiyor (ve madde 13.5'in DÜZELTMESİ)
+
+⚠️ **Madde 13.5'teki "render %16" rakamı YANLIŞTI.** Orada yalnız
+`app.fidelity.render_svg_to_rgb` ve `source_truth.render_svg_to_rgba`
+sarmalanmıştı (275 çağrı). cProfile gerçek sayıyı veriyor:
+`resvg_py.svg_to_bytes` **695 çağrı, 171,4 s = %32,6**. Yaklaşık 420 çağrı
+o iki sarmalayıcıyı atlayarak doğrudan resvg'ye gidiyor. Ders: bir maliyeti
+sarmalayıcıyla ölçerken **tüm çağrı yollarının** oradan geçtiği doğrulanmalı.
+
+`class_reklam`, profil altında 526,4 s (taban 452 s, ek yük ~%16):
+
+**Kümülatif (çağrı ağacı):**
+
+| aşama | çağrı | süre | pay |
+|---|---|---|---|
+| `apply_candidate_painter_reconstruction` | 2 | **237,2 s** | %45 |
+| `evaluate_final_svg_bytes` | **37** | **191,3 s** | %36 |
+| `_evaluate_phase` (painter) | 9 | 189,6 s | %36 |
+| `validate_alpha_reconstruction_contract` | 11 | 149,4 s | %28 |
+
+**Kendi süresi (tottime):**
+
+| işlev | çağrı | süre |
+|---|---|---|
+| `resvg_py.svg_to_bytes` | 695 | **171,4 s** |
+| `numpy.ufunc.reduce` | 56 569 | 51,3 s |
+| `ndarray.nonzero` | 24 376 | 24,9 s |
+| `_thread.lock.acquire` | 98 | 20,9 s |
+| `scipy.ndimage.correlate1d` | 6 460 | 18,0 s |
+| `palette_ops.classify_features` | 524 | 17,2 s (küm. 54,6) |
+| `numpy.linalg.norm` | 11 600 | 15,0 s (küm. 45,5) |
+| `ciede2000` | 74 | 9,5 s |
+| `_ssim` | 646 | 6,7 s (küm. 26,5) |
+| `alpha_mask_contour.add` | **3 959 860** | 5,3 s |
+
+Toplam **250 308 803 fonksiyon çağrısı**.
+
+### Yorum: yavaşlık hata değil, tasarımın bedeli
+
+Alfa painter merdiveni 526 s'nin 237'sini tüketiyor. Maliyetin kaynağı:
+her aday için resvg ile rasterleştirme (695 render) **ve tam final artifact
+değerlendirmesinin 37 kez** koşturulması (ciede2000 + SSIM + kmeans + palet
+sınıflandırma). Bu, "ölçüm-kapılı iyileştirme" felsefesinin doğrudan bedeli.
+
+Hızlandırmanın iki yolu var ve ikisi de bedava değil:
+1. **Aday sayısını azaltmak** — kalite kapılarına dokunur, riskli.
+2. **Değerlendirmeyi ucuzlatmak** — `evaluate_final_svg` 37 kez tam suite
+   koşuyor; erken eleme (ucuz metrikle önce ele, pahalıyı sonra) mümkün
+   görünüyor ama **ölçülmedi** ve sonucu değiştirmemesi kanıtlanmalı.
+
+⚠️ Profil dosyası saklandı: `scratchpad/pipeline.prof` (pstats ile açılabilir).
+Bu konteyner geçici; kalıcı analiz gerekiyorsa yeniden üretilmeli.
