@@ -1647,3 +1647,37 @@ Knockout artefaktlarının render maliyeti: **2 çağrıda 49,5 s**, boru hattı
 iyileştirebilir.
 
 ⚠️ Bu bir gözlem; ortak çözümün işe yarayacağı **ölçülmedi**.
+
+### ⚠️ 13.13 DÜZELTME — madde 13.12'deki "clipPath sürücüdür" iddiası DESTEKLENMİYOR
+
+Madde 13.12'de 11 kat farkı "clipPath ağırlıklı geometri resvg'de patolojik"
+diye açıklamıştım. O çıkarım `public-14`'ün CI'daki yapısından
+(16 712 rect / 127 clipPath, madde 12.1) yapıldı ve **yerel vakayla
+karıştırıldı**. İki farklı vaka.
+
+Yerel artefaktların yapısı ve render süresi ölçüldü (512×275):
+
+| artefakt | bayt | clipPath | rect | path | render |
+|---|---|---|---|---|---|
+| `geo_standard_alpha.svg` | 267 523 | **0** | 772 | 23 | 57-71 ms |
+| `alpha-knockout.svg` | 187 395 | **0** | **3 580** | 23 | **68 ms** |
+| `geo_contour.svg` | 2 991 | 0 | 0 | 2 | 20 ms |
+| `geo_standard.svg` | 19 918 | 0 | 0 | 24 | 17 ms |
+
+**Yerel artefaktların hiçbirinde clipPath yok** — knockout artefaktında bile.
+3 580 rect'li knockout artefaktı **68 ms**'de render ediliyor. Yani
+`class_reklam`'ın 25 saniyelik `validation:108` çağrıları bu ölçümle
+**açıklanamıyor** ve clipPath yoğunluğu sorumlu tutulamaz.
+
+**Ne biliyoruz:** `validation:108`'in 2 çağrısı 49,5 s sürüyor (ölçüldü,
+tekrarlandı) ve bunlar 253 983 / 254 032 B artefaktlar üzerinde.
+**Ne bilmiyoruz:** o artefaktların iç yapısı — geçici oldukları için
+silinmişlerdi.
+
+Sıradaki adım: çağrıdan önce kopyalayıp yavaş olanları saklamak
+(`scratchpad/capture.py`), sonra yapılarını ölçmek. Spekülasyon yerine
+dosyayla çalışmak.
+
+⚠️ `public-14`'ün **bayt** hedefi (82,3 → 50,8 B/rect, madde 12.1) bu
+düzeltmeden **etkilenmiyor** — o ayrı ve ölçülmüş bir sonuç. Etkilenen tek
+şey, bayt ile render süresinin aynı kökten geldiği varsayımıydı.
