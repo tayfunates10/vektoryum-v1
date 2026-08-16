@@ -1599,3 +1599,51 @@ ayrı bir inceleme konusu (%11 boru hattı payı).
    yerine başka bir değere kaydırabilir. Painter bu alanı okumuyor (kontrol
    edildi) ama aynı rapor nesnesi başka yere sızıyorsa etkisi olur —
    uygulanırsa bu ayrıca doğrulanmalı.
+
+### 13.12 11 KAT FARKIN NEDENİ: bayt değil, clipPath geometrisi
+
+Madde 13.11'deki açıklanmamış fark ölçüldü. Hipotezim ("validation'ın
+çağrıları 254 KB'lık büyük SVG'ler olduğu için yavaş") **çürüdü**:
+
+| çağrı noktası | SVG bayt | süre |
+|---|---|---|
+| `validation:108` | 253 983 | **25,20 s** |
+| `validation:108` | 254 032 | **24,28 s** |
+| `painter:709` | **263 496** | **2,60 s** |
+| `painter:709` | 263 428 | 2,52 s |
+| `painter:709` | 258 464 | 2,51 s |
+
+Painter **daha büyük** SVG'yi 2,6 s'de değerlendiriyor; validation daha
+küçüğünü 25 s'de. **Bayt boyutu sürücü değil.**
+
+### Sürücü: artefaktın iç geometrisi
+
+`alpha_candidate_validation`'ın hata dizgeleri `source_alpha_candidate_knockout_*`
+— yani bu yol **knockout adaylarını** doğruluyor. Madde 12.1'de o adayların
+yapısı ölçülmüştü: **16 712 rect / 127 clipPath**. Painter'ın adayları ise
+polygon/contour tabanlı.
+
+**Sonuç: clipPath ağırlıklı geometri resvg'de patolojik olarak yavaş** —
+benzer baytta ~10× (değerlendirme düzeyinde), render düzeyinde §13.5'te
+ölçülen 21 s vs 0,2 s ile ~100×.
+
+### Planın güncellenmesi
+
+- **Alfa-yalnız yol validation'ı KURTARMAZ.** Oradaki maliyet metrik hesabı
+  değil, alfa metriği için zaten gerekli olan render. Hedef painter'ın
+  **78,7 s**'sinde kalıyor (%61).
+- ⚠️ Madde 13.10'daki "yalnız painter'a uygulanabilir" ifadesi de düzeltilmeli:
+  `validation:108` painter ile **birebir aynı deseni** kullanıyor
+  (`required_metrics={"alpha_fidelity"}` → `alpha_iou`/`alpha_mae` +
+  süzülmüş kodlar). Katı olan tek tüketici `knockout:354`. Ama validation'a
+  uygulamak kazanç getirmez (yukarıdaki sebep).
+
+### Yeni ve muhtemelen daha değerli hedef
+
+Knockout artefaktlarının render maliyeti: **2 çağrıda 49,5 s**, boru hattının
+**%11'i**. Ve bu, `public-14`'ün bayt sorunuyla **aynı kökten**: 16 712 rect /
+127 clipPath. Yani clipPath sayısını/rect yoğunluğunu düşürmek hem baytı
+(madde 12.1: 82,3 → 50,8 B/rect hedefi) hem render süresini birlikte
+iyileştirebilir.
+
+⚠️ Bu bir gözlem; ortak çözümün işe yarayacağı **ölçülmedi**.
