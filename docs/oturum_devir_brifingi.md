@@ -1188,7 +1188,30 @@ piksellerin ~%10'u).
    aynı olduğundan fark yalnız AA/kompozit davranışında, ama büyüklüğü kapı
    toleransını aşıyor.
 
-⚠️ Genel uyarı: bu iki yol depoda karışık kullanılıyor. Aynı artefaktı biri
-parent, diğeri candidate için kullanan **her** karşılaştırma sahte regresyon
-üretebilir. `measure_alpha`'nın aşamaya bağlı olması (13.1) tam olarak böyle
-bir karışıklık noktasıdır.
+### ⚠️ DÜZELTME — "yollar karışık kullanılıyor" uyarım YANLIŞTI
+
+İlk yazdığım genel uyarı ("aynı artefaktı biri parent diğeri candidate için
+kullanan her karşılaştırma sahte regresyon üretebilir") **koddan denetlenince
+çürüdü**:
+
+`_measurement_stage_id` aşama başına bir kez set ediliyor
+(`transform_journal.py:538-544`) ve parent ile candidate ölçümlerinin **ikisi
+de** o pencerede yapılıyor. Dolayısıyla her karşılaştırmada iki taraf da aynı
+`measure_alpha` bayrağını, yani **aynı renderer yolunu** kullanır. Sistematik
+parent/candidate uyuşmazlığı **yoktur**.
+
+Geriye yalnız dar bir açık kalır: `render_svg_to_rgba` taraflardan birinde
+`None` dönerse o taraf `render_svg_to_rgb`'ye düşer ve karşılaştırma iki farklı
+yoldan gelir. Bu **asimetrik renderer başarısızlığı** gerektirir; olağan durum
+değildir.
+
+**Bunun sonucu:** RFV-3B'de düşen vakaların (`public-05`, `public-15` vb.)
+`seam_regression`'larını ölçüm tabanı tutarsızlığına bağlamak **yanlış olur**;
+o redler büyük olasılıkla gerçektir. `public-04`'ün `edge_f1_regression`'ı
+zaten bağımsız olarak bunu destekliyor: ölçtüğüm gibi `edge_f1` iki renderer
+yolunda birebir 1,000000, yani bu metrik farka tamamen duyarsız.
+
+**Geçerli kalan tek sonuç:** renderer yolunu *değiştirmek* (yani
+`measure_alpha` bayrağını açmak) 0,0018 SSIM kayması üretir ve kapı toleransı
+0,0005 olduğundan tehlikelidir. Seçenek 1'in neden `class_reklam`'ı düşürdüğü
+budur — mevcut redleri açıklamaz.
