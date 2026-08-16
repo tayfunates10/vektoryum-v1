@@ -973,3 +973,60 @@ Yani koordinat biçimini tamsayı mertebesine indirmek `public-14`'ü bütçeye
    çekiyor; biçim değişikliği o sözleşmeyi etkileyebilir, önce bakılmalı.
 4. 46,0 referansı **başka bağlamdan** (paint-deficit destek katmanı, tamsayı
    ızgara). Garanti değil, yalnız hedefin ulaşılabilir olduğunun göstergesi.
+
+## 13. Uçtan uca durum ölçümü (yerel, `class_reklam` fixture)
+
+`engine/regression/fixtures/class_reklam.png` (1001×538, 36 657 B), `mode=auto`.
+
+| katman | sonuç |
+|---|---|
+| **1 — çekirdek** | `refine` **applied=False**; `edge_cleanup` **applied=False, journal=rolled_back** |
+| **2 — alfa sonlandırma** | ✅ başarılı, `source_alpha_vector_mask` ile kapanıyor |
+| **3 — export** | ✅ **5/5 format**, 1,9 s |
+
+**Toplam süre: 388 s** (tek küçük logo için).
+
+### Bulgu 1 — `edge_cleanup` kalite yüzünden değil, ÖLÇÜLEMEDİĞİ için geri alınıyor
+
+```
+applied=False  journal=rolled_back  fidelity=91.69  absorbed=0
+reasons=['required_metric_unmeasured', 'alpha_stage_metrics_incomplete']
+```
+
+Aşama koşuyor, işini yapıyor, sonra **gerekli metrik ölçülemediği için** geri
+alınıyor. Bu bir kalite reddi değil, ölçüm zincirinde boşluk. Kapı hiçbir zaman
+geçemeyeceği için aşama pratikte ölü ağırlık. Deponun "ölçüm-kapılı iyileştirme"
+felsefesiyle doğrudan çelişen tek yer burası: kapı ölçemiyorsa iyileştirme
+hiç değerlendirilemiyor.
+
+### Bulgu 2 — `refine` de uygulanmıyor
+
+`refine_info.applied=False`. Reddin ölçülmüş mü yoksa aday hiç üretilmemiş mi
+olduğu ayrımı **yapılmadı**; `refine_best` (`pipeline.py:672`) incelenmeli.
+
+### Bulgu 3 — `refine_cache` %2,8 isabet
+
+`render_calls=36, hits=1, misses=35, evictions=33` (cls: 42/5/37/31).
+Önbellek sürekli tahliye edip yeniden hesaplıyor. Kapasite iş kümesinin
+altında görünüyor. 388 s'nin ölçülebilir bir parçası olabilir ve düzeltmesi
+kalite kapılarına dokunmaz.
+
+### Katman 3 sağlıklı — yanlış alarma dikkat
+
+pdf/eps ilk koşuda "render edilemedi" verdi; sebep **yerel ortamda
+`cairosvg`/`svglib` kurulu olmamasıydı** (ikisi de `engine/requirements.txt`'te
+var, brifingdeki kısa kurulum listesi onları atlıyor). Kurulunca:
+
+```
+svg 267 523 B | pdf 35 657 B | eps 209 377 B | dxf 768 766 B | png 26 453 B
+```
+
+⚠️ Brifing madde 5'teki yerel kurulum komutu eksik; `cairosvg svglib reportlab`
+eklenmeli yoksa export sahte hata verir.
+
+### Sıradaki en iyi hedef
+
+**Bulgu 1.** Ölçüm boşluğu, kalite kapısına dokunmadan kapatılabilir ve
+kapanınca `edge_cleanup` ilk kez gerçekten değerlendirilebilir hâle gelir.
+`required_metric_unmeasured` / `alpha_stage_metrics_incomplete` kodlarının
+kaynağı izlenmeli.
