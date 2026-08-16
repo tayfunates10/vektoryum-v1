@@ -144,3 +144,33 @@ def test_support_scores_and_snapshot_validation_are_bounded(monkeypatch) -> None
     scores = mode_support_scores(snapshot)
     assert set(scores) == set(AUTO_RECOMMENDATION_MODES)
     assert all(0.0 <= score <= 1.0 for score in scores.values())
+
+
+def test_continuous_paint_detector_separates_smooth_ramp_from_palette_steps() -> None:
+    # Issue #153: general continuous-paint evidence; no fixture-name/coordinate override.
+    ramp = np.full((256, 256, 4), 255, dtype=np.uint8)
+    ramp[48:208, 128:232, :3] = (35, 92, 220)
+    for x in range(24, 128):
+        t = (x - 24) / 103.0
+        ramp[48:208, x, :3] = np.rint(
+            np.asarray((225, 40, 35)) * (1.0 - t) + np.asarray((245, 188, 35)) * t
+        ).astype(np.uint8)
+    stepped = ramp.copy()
+    for index, x0 in enumerate(range(24, 128, 26)):
+        stepped[48:208, x0:min(128, x0 + 26), :3] = (225 + index * 5, 40 + index * 32, 35)
+    assert analyzer.detect_gradient_like_surface(Image.fromarray(ramp, "RGBA")) is True
+    assert analyzer.detect_gradient_like_surface(Image.fromarray(stepped, "RGBA")) is False
+
+    smooth_only = np.full((256, 256, 4), 255, dtype=np.uint8)
+    for x in range(24, 232):
+        t = (x - 24) / 207.0
+        smooth_only[48:208, x, :3] = np.rint(
+            np.asarray((225, 40, 35)) * (1.0 - t) + np.asarray((35, 92, 220)) * t
+        ).astype(np.uint8)
+    assert analyzer.detect_gradient_like_surface(Image.fromarray(smooth_only, "RGBA")) is False
+
+    thin = np.full((256, 256, 4), 255, dtype=np.uint8)
+    for x in range(32, 224):
+        value = 40 + (x - 32) % 80
+        thin[126:130, x, :3] = (value, value, value)
+    assert analyzer.detect_gradient_like_surface(Image.fromarray(thin, "RGBA")) is False

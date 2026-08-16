@@ -1,14 +1,10 @@
-"""Dual evaluator contract for renderer-native source-alpha reconstruction.
+"""Composite-aware validation for renderer-native source-alpha reconstruction.
 
-The alpha transform owns source-alpha plane fidelity. It therefore requires the
-unchanged direct alpha IoU/MAE gates and independently confirms the same two
-metrics through FinalArtifactEvaluator on the bounded comparison grid.
-
-FinalArtifactEvaluator also reports white, black and checker appearance under
-``alpha_*`` codes. Those are RGB/color-composite judgements rather than alpha
-plane measurements. They are recorded here but remain fail-closed in the
-immediately following real TransformJournal parent-to-candidate comparison,
-together with absolute SSIM, topology, seam, color and complexity policy.
+Alpha reconstruction owns both the source alpha plane and the visible RGBA
+result produced when that alpha is composited onto real backgrounds.  The
+existing alpha IoU/MAE thresholds remain unchanged.  In addition, the worst
+normalized RGB mean-absolute residual across white, black and checker
+backgrounds must not exceed one percent.
 """
 from __future__ import annotations
 
@@ -19,7 +15,12 @@ from typing import Any
 import numpy as np
 
 from app.alpha_candidate_knockout import _source_rgb_on_white
-from app.source_truth import alpha_plane_metrics, render_svg_to_rgba, resize_rgba
+from app.source_truth import (
+    alpha_plane_metrics,
+    multibackground_pairs,
+    render_svg_to_rgba,
+    resize_rgba,
+)
 
 _ALPHA_PLANE_FAILURE_CODES = {
     "alpha_iou_below_min",
@@ -30,6 +31,7 @@ _ALPHA_APPEARANCE_PREFIXES = (
     "alpha_black_",
     "alpha_checker_",
 )
+_VISIBLE_COMPOSITE_RESIDUAL_MAX = 0.01
 
 
 def _release_transient_memory() -> None:
@@ -45,23 +47,54 @@ def _release_transient_memory() -> None:
         pass
 
 
+def visible_composite_residual_metrics(
+    source_rgba: np.ndarray,
+    rendered_rgba: np.ndarray,
+) -> dict[str, Any]:
+    """Measure visible RGB residual after compositing onto three backgrounds."""
+    backgrounds: dict[str, dict[str, float]] = {}
+    for name, (source_rgb, rendered_rgb) in multibackground_pairs(
+        source_rgba, rendered_rgba
+    ).items():
+        diff = np.abs(
+            source_rgb.astype(np.float32) - rendered_rgb.astype(np.float32)
+        ) / 255.0
+        backgrounds[name] = {
+            "rgb_mae": float(diff.mean()),
+            "rgb_p95": float(np.percentile(diff, 95)),
+            "rgb_max": float(diff.max(initial=0.0)),
+        }
+
+    return {
+        "visible_composite_residual": float(
+            max((item["rgb_mae"] for item in backgrounds.values()), default=0.0)
+        ),
+        "visible_composite_residual_p95": float(
+            max((item["rgb_p95"] for item in backgrounds.values()), default=0.0)
+        ),
+        "visible_composite_residual_max": float(
+            max((item["rgb_max"] for item in backgrounds.values()), default=0.0)
+        ),
+        "visible_composite_backgrounds": backgrounds,
+    }
+
+
 def validate_alpha_reconstruction_contract(
     candidate_path: Path,
     source_rgba_full: np.ndarray,
     mode: str,
     parent_counts: tuple[int, int],
 ) -> dict[str, Any]:
-    """Validate owned alpha-plane metrics twice and preserve candidate geometry."""
+    """Validate alpha-plane and visible-composite fidelity without budget changes."""
     from app.alpha_svg_mask import _MODE_IMAGE_CLASS  # noqa: PLC0415
     from app.final_artifact_evaluator import (  # noqa: PLC0415
+        _boundary_offsets,
+        _color_metrics,
         _structure_check,
         _thresholds,
         evaluate_final_svg,
     )
 
-    # A production request may invoke this contract more than once while trying a
-    # bounded fallback and then compacting the accepted artifact. Release completed
-    # renderer/evaluator allocations before the next exact pass; gates are unchanged.
     _release_transient_memory()
 
     source_height, source_width = source_rgba_full.shape[:2]
@@ -74,13 +107,34 @@ def validate_alpha_reconstruction_contract(
         raise RuntimeError("source_alpha_candidate_knockout_render_unmeasured")
     if rendered.shape[:2] != (eval_height, eval_width):
         rendered = resize_rgba(rendered, eval_width, eval_height)
+
     direct_metrics = alpha_plane_metrics(source_eval[:, :, 3], rendered[:, :, 3])
     direct_values = {
         "alpha_iou": float(direct_metrics["alpha_iou"]),
         "alpha_mae": float(direct_metrics["alpha_mae"]),
+        "alpha_p95": float(direct_metrics["alpha_p95"]),
+        "alpha_max": float(direct_metrics["alpha_max"]),
         "source_coverage": float(direct_metrics["source_coverage"]),
         "render_coverage": float(direct_metrics["render_coverage"]),
     }
+    composite_values = visible_composite_residual_metrics(source_eval, rendered)
+
+    composite_de00_p95 = 0.0
+    for source_rgb, rendered_rgb in multibackground_pairs(
+        source_eval, rendered
+    ).values():
+        composite_de00_p95 = max(
+            composite_de00_p95,
+            float(_color_metrics(source_rgb, rendered_rgb)["de00_p95"]),
+        )
+
+    boundary = _boundary_offsets(
+        np.asarray(source_eval[:, :, 3] > 0, dtype=bool),
+        np.asarray(rendered[:, :, 3] > 0, dtype=bool),
+    )
+    boundary_p95 = (
+        None if boundary is None else float(boundary["hausdorff_p95"])
+    )
 
     image_class = _MODE_IMAGE_CLASS.get(mode, "clean_logo")
     thresholds = _thresholds(image_class, None)
@@ -94,17 +148,21 @@ def validate_alpha_reconstruction_contract(
             "source_alpha_candidate_knockout_mae_gate_failed:"
             f"{direct_values['alpha_mae']:.6f}>{thresholds['alpha_mae_max']}"
         )
+    if (
+        float(composite_values["visible_composite_residual"])
+        > _VISIBLE_COMPOSITE_RESIDUAL_MAX
+    ):
+        raise RuntimeError(
+            "source_alpha_candidate_knockout_visible_composite_residual_failed:"
+            f"{composite_values['visible_composite_residual']:.6f}>"
+            f"{_VISIBLE_COMPOSITE_RESIDUAL_MAX:.6f}"
+        )
 
-    # Bind the second alpha-plane measurement to the same bounded truth. Build
-    # compact evaluator inputs, then release the first renderer result before the
-    # heavier multi-background evaluator pass.
     source_rgb = _source_rgb_on_white(source_eval)
     source_alpha = np.ascontiguousarray(source_eval[:, :, 3])
-    del rendered, direct_metrics, source_eval
+    del rendered, direct_metrics
     _release_transient_memory()
 
-    # The following TransformJournal remains authoritative for RGB appearance and
-    # every parent-relative structural/visual/topology/seam/complexity regression.
     report = evaluate_final_svg(
         candidate_path,
         source_rgb,
@@ -168,8 +226,15 @@ def validate_alpha_reconstruction_contract(
     result = {
         "source_truth_alpha_iou": direct_values["alpha_iou"],
         "source_truth_alpha_mae": direct_values["alpha_mae"],
+        "source_truth_alpha_p95": direct_values["alpha_p95"],
+        "source_truth_alpha_max": direct_values["alpha_max"],
         "source_truth_source_coverage": direct_values["source_coverage"],
         "source_truth_render_coverage": direct_values["render_coverage"],
+        **composite_values,
+        "visible_composite_residual_limit": _VISIBLE_COMPOSITE_RESIDUAL_MAX,
+        "visible_composite_de00_p95": float(composite_de00_p95),
+        "alpha_boundary_p95_px": boundary_p95,
+        "visible_composite_gate_status": "passed",
         "final_evaluator_verdict": report.verdict,
         "final_evaluator_alpha_plane_status": "passed",
         "final_evaluator_alpha_iou": float(evaluator_alpha_iou),
@@ -178,10 +243,11 @@ def validate_alpha_reconstruction_contract(
         "final_evaluator_alpha_appearance_codes": appearance_codes,
         "final_evaluator_other_hard_fail_codes": other_hard_codes,
         "appearance_regression_authority": "transform_journal_parent_delta",
+        "visible_composite_authority": "alpha_reconstruction_direct_composite_gate",
         "non_alpha_regression_authority": "transform_journal_parent_delta",
         "preserved_path_count": int(after_counts[0]),
         "preserved_node_count": int(after_counts[1]),
     }
-    del report, root, source_rgb, source_alpha
+    del report, root, source_rgb, source_alpha, source_eval
     _release_transient_memory()
     return result

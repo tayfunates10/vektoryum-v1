@@ -28,7 +28,7 @@ class AlphaCandidateValidationTests(unittest.TestCase):
             object(),
         )
 
-    def test_composite_appearance_codes_are_delegated_to_transform_journal(self) -> None:
+    def test_composite_appearance_codes_are_still_reported_separately(self) -> None:
         source = self._source()
         evaluator_report = SimpleNamespace(
             metrics={
@@ -73,14 +73,52 @@ class AlphaCandidateValidationTests(unittest.TestCase):
         self.assertEqual(report["final_evaluator_alpha_plane_status"], "passed")
         self.assertEqual(report["final_evaluator_alpha_iou"], 1.0)
         self.assertEqual(report["final_evaluator_alpha_mae"], 0.0)
+        self.assertEqual(report["visible_composite_gate_status"], "passed")
+        self.assertEqual(report["visible_composite_residual"], 0.0)
         self.assertEqual(
-            report["appearance_regression_authority"],
-            "transform_journal_parent_delta",
+            report["visible_composite_authority"],
+            "alpha_reconstruction_direct_composite_gate",
         )
         self.assertIn(
             "alpha_white_ssim_below_min",
             report["final_evaluator_alpha_appearance_codes"],
         )
+
+    def test_good_alpha_but_bad_visible_rgba_fails_before_evaluator(self) -> None:
+        source = self._source()
+        wrong_rgb = source.copy()
+        visible = wrong_rgb[:, :, 3] > 0
+        wrong_rgb[visible, :3] = 224
+
+        evaluator_report = SimpleNamespace(
+            metrics={"G_gradient_alpha": {"alpha_iou": 1.0, "alpha_mae": 0.0}},
+            hard_fail_codes=[],
+            verdict="passed",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            candidate = Path(directory) / "candidate.svg"
+            candidate.write_text('<svg xmlns="http://www.w3.org/2000/svg"/>')
+            with (
+                patch(
+                    "app.alpha_candidate_validation.render_svg_to_rgba",
+                    return_value=wrong_rgb,
+                ),
+                patch(
+                    "app.final_artifact_evaluator.evaluate_final_svg",
+                    return_value=evaluator_report,
+                ) as evaluator,
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "visible_composite_residual_failed",
+                ):
+                    validate_alpha_reconstruction_contract(
+                        candidate,
+                        source,
+                        "logo_color",
+                        (2, 8),
+                    )
+                evaluator.assert_not_called()
 
     def test_evaluator_alpha_plane_failure_remains_fail_closed(self) -> None:
         source = self._source()

@@ -476,7 +476,7 @@ def test_alpha_plane_regression_is_rolled_back_even_when_rgb_is_identical(
     assert stage["alpha_comparison"]["alpha_iou"] < 0.995
 
 
-def test_alpha_measurement_is_scoped_to_source_dimension_restore(
+def test_alpha_only_measurement_remains_scoped_to_source_dimension_restore(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import app.fidelity as fidelity
@@ -665,7 +665,7 @@ def test_gradient_render_regression_and_missing_render_fail_closed(
     assert "gradient_stage_metrics_incomplete" in missing_stage["reason_codes"]
 
 
-def test_gradient_measurement_is_scoped_to_source_dimension_restore(
+def test_gradient_required_measurement_runs_on_downstream_stage(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import app.fidelity as fidelity
@@ -683,12 +683,13 @@ def test_gradient_measurement_is_scoped_to_source_dimension_restore(
     accepted, stage = journal.consider_candidate(
         "boundary_refit", parent, candidate,
     )
-    assert accepted == parent
-    assert stage["status"] == "rolled_back"
-    assert stage["required_unmeasured"] == ["gradient_fidelity"]
-    assert "required_metric_unmeasured" in stage["reason_codes"]
-    assert "gradient_stage_metrics_incomplete" in stage["reason_codes"]
-    assert stage["render_comparison"] is None
+    assert accepted == candidate
+    assert stage["status"] == "accepted"
+    assert stage["required_unmeasured"] == []
+    assert "required_metric_unmeasured" not in stage["reason_codes"]
+    assert "gradient_stage_metrics_incomplete" not in stage["reason_codes"]
+    assert stage["render_comparison"] is not None
+    assert stage["render_comparison"]["ssim"] == pytest.approx(1.0)
 
 def test_assertions_are_real() -> None:
     """Bu dosya global FAILS listesine değil gerçek pytest assertion'a dayanır."""
@@ -711,3 +712,53 @@ def test_merge_detects_broken_sha_chain() -> None:
     assert report is not None
     assert not report["chain_valid"]
     assert "stage_parent_hash_mismatch" in report["chain_failure_codes"]
+
+
+def test_required_gradient_metric_is_measured_on_downstream_stage(tmp_path: Path) -> None:
+    from app.transform_journal import TransformJournal
+    parent = tmp_path / "gradient_parent.svg"
+    candidate = tmp_path / "gradient_candidate.svg"
+    gradient = _svg(
+        '<defs><linearGradient id="g"><stop offset="0" stop-color="#e3000b"/>'
+        '<stop offset="1" stop-color="#554bad"/></linearGradient></defs>'
+        '<rect x="24" y="24" width="80" height="80" fill="url(#g)"/>'
+    )
+    parent.write_bytes(gradient)
+    candidate.write_bytes(gradient.replace(b'</svg>', b'<metadata>same-render</metadata></svg>'))
+    journal = TransformJournal(parent, _square_source(), required_metrics={"gradient_fidelity"})
+    accepted, stage = journal.consider_candidate("boundary_refit", parent, candidate)
+    assert accepted == candidate
+    assert "required_metric_unmeasured" not in stage["reason_codes"]
+    assert "gradient_stage_metrics_incomplete" not in stage["reason_codes"]
+
+
+def test_required_alpha_metric_is_not_faked_on_downstream_stage(tmp_path: Path) -> None:
+    from app.transform_journal import TransformJournal
+    parent = tmp_path / "alpha_parent.svg"
+    candidate = tmp_path / "alpha_candidate.svg"
+    alpha_svg = _svg('<rect x="24" y="24" width="80" height="80" fill="#e3000b" fill-opacity="0.5"/>')
+    parent.write_bytes(alpha_svg)
+    candidate.write_bytes(alpha_svg.replace(b'</svg>', b'<metadata>same-alpha</metadata></svg>'))
+    journal = TransformJournal(parent, _square_source(), required_metrics={"alpha_fidelity"})
+    accepted, stage = journal.consider_candidate("boundary_refit", parent, candidate)
+    assert accepted == parent
+    assert stage["alpha_comparison"] is None
+    assert "required_metric_unmeasured" in stage["reason_codes"]
+    assert "alpha_stage_metrics_incomplete" in stage["reason_codes"]
+
+
+def test_winner_selection_filters_unsafe_when_safe_exists_and_preserves_no_safe_fallback() -> None:
+    from app.pipeline_core import select_best
+    def candidate(name: str, fidelity: float, safe: bool):
+        return {
+            "name": name, "total_score": fidelity, "fidelity_score": fidelity,
+            "rendered_ok": True, "selection_safe": safe,
+            "selection_disqualified": not safe,
+            "score_details": {"path_count": 2, "edge_f1": 1.0, "has_bitmap": False},
+        }
+    chosen, _raw, _reason = select_best(
+        [candidate("unsafe", 99.0, False), candidate("safe", 95.0, True)], "logo_color"
+    )
+    assert chosen["name"] == "safe"
+    fallback, _raw, _reason = select_best([candidate("unsafe", 99.0, False)], "logo_color")
+    assert fallback["name"] == "unsafe"

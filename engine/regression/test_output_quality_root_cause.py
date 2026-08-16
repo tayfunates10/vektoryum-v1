@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import tempfile
 import unittest
+from pathlib import Path
 
 from engine.regression.output_quality_root_cause import (
     candidate_snapshot,
@@ -70,6 +73,46 @@ class OutputQualityRootCauseContractTests(unittest.TestCase):
         self.assertNotIn("svg_path", snapshot["best"])
         self.assertEqual(snapshot["best"]["fidelity_score"], 98.1256789)
         self.assertEqual([item["name"] for item in snapshot["candidates"]], ["logo_gradient", "lower"])
+        self.assertEqual(snapshot["journal_rejections"], [])
+
+    def test_pipeline_snapshot_marks_journal_rollback_candidate_ineligible(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            candidate_path = Path(tmp) / "boundary.svg"
+            candidate_path.write_text(
+                '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0L1 0L1 1Z"/></svg>',
+                encoding="utf-8",
+            )
+            candidate_sha = hashlib.sha256(candidate_path.read_bytes()).hexdigest()
+            output = {
+                "best": {"name": "winner", "fidelity_score": 90.0, "total_score": 80.0},
+                "scored": [
+                    {
+                        "name": "winner_bnd",
+                        "fidelity_score": 99.0,
+                        "total_score": 99.0,
+                        "svg_path": str(candidate_path),
+                        "score_details": {"path_count": 1, "node_count": 3},
+                    }
+                ],
+                "transform_journal": {
+                    "stages": [
+                        {
+                            "stage_id": "boundary_refit",
+                            "status": "rolled_back",
+                            "candidate_sha256": candidate_sha,
+                            "accepted_sha256": "parent-sha",
+                            "reason_codes": ["topology_component_regression"],
+                        }
+                    ]
+                },
+            }
+
+            snapshot = pipeline_snapshot(output)
+
+            self.assertFalse(snapshot["candidates"][0]["final_eligible"])
+            self.assertEqual(snapshot["candidates"][0]["svg_sha256"], candidate_sha)
+            self.assertEqual(snapshot["journal_rejections"][0]["stage_id"], "boundary_refit")
+            self.assertEqual(snapshot["journal_rejections"][0]["status"], "rolled_back")
 
     def test_candidate_snapshot_rejects_non_mapping(self) -> None:
         self.assertIsNone(candidate_snapshot(None))
