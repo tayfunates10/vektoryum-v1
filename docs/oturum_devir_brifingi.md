@@ -1145,3 +1145,50 @@ tek makul aday, çünkü ölçüm tabanına dokunmuyor. Ama kapıyı gevşetme r
 taşıdığından madde 5 gereği sahibiyle konuşulmalı. Üçüncü bir yol da var ve
 ölçülmedi: iki renderer yolunu **aynı** hâle getirmek (o zaman seçenek 1
 güvenli olurdu).
+
+### 13.3 İKİ RENDERER YOLU ÖLÇÜLDÜ — fark, kapı toleransının 3,6 katı
+
+`app.fidelity.render_svg_to_rgb` ile
+`source_truth.composite_rgba(render_svg_to_rgba(...), 255)` aynı SVG'de,
+journal'ın kendi ölçeğinde (512 max_side) karşılaştırıldı. Dört ayrı çıktıda
+tutarlı sonuç:
+
+| SVG | farklı piksel | max kanal | **SSIM (iki render arası)** | edge_f1 |
+|---|---|---|---|---|
+| `e2e.svg` (267 KB) | 15 733 / 140 800 (%11,2) | 36 | **0,998152** | 1,000000 |
+| `geo_clean.svg` | 13 651 (%9,7) | 43 | **0,998183** | 1,000000 |
+| `geo_contour.svg` | 13 847 (%9,8) | 42 | **0,998155** | 1,000000 |
+| `geo_detail.svg` | 14 218 (%10,1) | 43 | **0,998368** | 1,000000 |
+
+### Karar veren sayı
+
+```
+iki renderer yolu arasindaki SSIM farki : ~0,0018
+journal SSIM kapisi toleransi           :  0,0005   (transform_journal.py:452)
+oran                                    :  3,6x
+```
+
+**Renderer yolunu değiştirmek, kapının tüm toleransının 3,6 katı büyüklüğünde
+bir kayma üretiyor.** Bu yüzden `measure_alpha` bayrağını açmak (madde 13.2)
+her aşamada sahte `ssim_regression` üretebilir ve `class_reklam`'ı düşürmesi
+bununla tam tutarlı.
+
+`edge_f1_1px` iki yolda **birebir 1,000000** — yani kenar geometrisi aynı;
+fark tamamen kenar yumuşatma/iç tonlamada (ortalama kanal farkı ~0,53,
+piksellerin ~%10'u).
+
+### Üç seçeneğin güncel durumu
+
+1. **Her aşamada alfa ölç** — ÇÜRÜTÜLDÜ (13.2). Ölçüm tabanını 3,6× tolerans
+   kadar kaydırıyor.
+2. **Ölçülmediği aşamalarda zorunlu sayma** — tek uygulanabilir aday. Ölçüm
+   tabanına dokunmaz. Riski: kapıyı gevşetir (madde 5), sahibiyle konuşulmalı.
+3. **İki renderer yolunu aynı hâle getir** — artık **nicelendi**: piksellerin
+   ~%10'unda AA farkı, 0,0018 SSIM. Küçük bir uyum işi değil; kenarlar zaten
+   aynı olduğundan fark yalnız AA/kompozit davranışında, ama büyüklüğü kapı
+   toleransını aşıyor.
+
+⚠️ Genel uyarı: bu iki yol depoda karışık kullanılıyor. Aynı artefaktı biri
+parent, diğeri candidate için kullanan **her** karşılaştırma sahte regresyon
+üretebilir. `measure_alpha`'nın aşamaya bağlı olması (13.1) tam olarak böyle
+bir karışıklık noktasıdır.
