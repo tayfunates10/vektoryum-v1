@@ -1458,3 +1458,62 @@ değil, büyüklük mertebesi olarak okunmalı.
 Kullanılmıyorsa burada ciddi bir performans fırsatı var; kullanılıyorsa yok.
 Bu, bu hattaki tek açık ve ucuz soru: `evaluate_final_svg` çıktısının
 tüketicilerini izle.
+
+### 13.9 AÇIK SORU KAPANDI — painter tam değerlendirmenin %10'unu kullanıyor
+
+Madde 13.8'de bırakılan soru (`evaluate_final_svg` çıktısını kim tüketiyor)
+koddan yanıtlandı.
+
+`alpha_candidate_painter.py:709` çağırıyor, sonra **yalnız şunları** kullanıyor:
+
+```python
+alpha_group = report.metrics.get("G_gradient_alpha") or {}
+evaluator_alpha_iou = alpha_group.get("alpha_iou")
+evaluator_alpha_mae = alpha_group.get("alpha_mae")
+plane_failure_codes = [c for c in report.hard_fail_codes
+                       if c in _ALPHA_PLANE_FAILURE_CODES]
+```
+
+ve `_ALPHA_PLANE_FAILURE_CODES = {"alpha_iou_below_min", "alpha_mae_above_max"}`
+(`:84`) — **yalnız iki kod**.
+
+**Bu, madde 13.7'deki gizemi tamamen çözüyor:** üç `alpha_*_ssim_below_min`
+kodu bu kümede DEĞİL, painter onları eliyor. "37/37 hard fail veriyor ama
+boru hattı başarılı" çelişkisi bundan ibaret.
+
+### Boşa giden hesap (tek çağrı profili, 6,67 s — ilk çağrı, ısınma dahil)
+
+| iş | süre | painter'a gerekli |
+|---|---|---|
+| `ciede2000` | 0,496 s | hayır |
+| `correlate1d` (SSIM filtresi) | 0,364 s | hayır |
+| `kmeans` (palet) | 0,339 s | hayır |
+| `numpy.linalg.norm` | 0,287 s | hayır |
+| **`resvg_py.svg_to_bytes`** | **0,287 s** | **evet** |
+| `classify_features` | 0,604 s (küm.) | hayır |
+| `_ssim` ×12 (zeminler dahil) | 0,567 s (küm.) | hayır |
+| `composite_rgba` | 0,179 s (küm.) | hayır |
+
+Painter'ın ihtiyacı: **bir render + alfa IoU/MAE**. Gerisi hesaplanıp atılıyor.
+
+### Fırsatın büyüklüğü (TAHMİN — ölçülmedi)
+
+`evaluate_final_svg` boru hattının **%30'u** (134,4 s / 37 çağrı). Painter
+yolunda gerekli olan pay kabaca render + alfa metriği. Eğer alfa-yalnız bir
+yol eklenirse bu 134 s'nin büyük kısmı düşebilir.
+
+⚠️ Bu bir **tahmin**; gerçek kazanç ölçülmeden iddia edilmemeli. Bugün bu tür
+tahminlerin altısı çürüdü.
+
+### Uygulamadan önce zorunlu kontrol
+
+`evaluate_final_svg`'nin **diğer iki tüketicisi** de var ve onların ne
+kullandığı **incelenmedi**:
+- `alpha_candidate_knockout.py:347`
+- `alpha_candidate_validation.py:59`
+
+Alfa-yalnız yol eklenecekse, yalnız painter çağrısına uygulanmalı ve diğer
+ikisi aynen bırakılmalı — ya da onların da ne tükettiği önce okunmalı.
+`required_metrics={"alpha_fidelity"}` zaten geçiliyor ama değerlendirici bunu
+**hesaplamayı atlamak için kullanmıyor**, yalnız "unmeasured" işaretlemek için.
+Boşluk tam olarak burada.
