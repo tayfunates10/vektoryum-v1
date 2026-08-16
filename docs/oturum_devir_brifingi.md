@@ -1087,3 +1087,61 @@ kontrol ettim: `render_svg_to_rgba` üretilen SVG'de **çalışıyor**
 
 ⚠️ Hiçbiri uygulanmadı. Bu, oturumdaki ilk **tamamen yerel** kök neden;
 doğrulaması `class_reklam` ile 388 s'de tekrarlanabilir, CI gerekmez.
+
+### 13.2 SEÇENEK 1 DENENDİ ve ÇÜRÜTÜLDÜ — `measure_alpha` ölçüm tabanını değiştiriyor
+
+Uygulanan tek satır:
+
+```python
+measure_alpha = capture_render or ("alpha_fidelity" in self.required_metrics)
+```
+
+Sonuç: `class_reklam` **tamamen düştü** (önceden başarılıydı):
+
+```
+RuntimeError: source_alpha_candidate_knockout_iou_gate_failed:0.911869<0.995
+```
+
+Geri alındı; motor yine yalnız knockout tanılamasını taşıyor.
+
+### Neden — `measure_alpha` masum bir bayrak değil (`transform_journal.py:136-148`)
+
+```python
+if alpha_required:
+    render_rgba = _source_truth.render_svg_to_rgba(path, w, h)
+    if render_rgba is not None:
+        rnd = _source_truth.composite_rgba(render_rgba, 255)   # RGB buradan
+    else:
+        rnd = render_svg_to_rgb(path, w, h)
+else:
+    rnd = render_svg_to_rgb(path, w, h)                        # normalde buradan
+```
+
+`measure_alpha=True` yapıldığında **RGB görüntüsünün kaynağı değişiyor**:
+`app.fidelity.render_svg_to_rgb` yerine
+`source_truth.composite_rgba(render_svg_to_rgba(...), 255)`.
+
+Bunlar **farklı renderer yolları**; pikselleri birebir aynı değil. Ve `ssim`,
+`edge_f1_1px`, `seam_ratio`, `component_delta`, `hole_delta` kapılarının
+**hepsi** bu `rnd` üzerinden hesaplanıyor. Yani tek satırlık "fazladan alfa
+ölç" değişikliği, **her aşamadaki her görsel kapının ölçüm tabanını** sessizce
+değiştiriyor. Aşağı akıştaki 0,9119 IoU çöküşü bununla tutarlı.
+
+### Bunun anlamı
+
+Seçenek 1 küçük bir düzeltme **değil**. `alpha_fidelity`yi her aşamada ölçmek
+isteniyorsa, önce iki renderer yolunun aynı pikselleri verdiği (ya da tüm
+eşiklerin yeni tabana göre yeniden kalibre edildiği) **gösterilmelidir**.
+Aksi hâlde kapılar sessizce başka bir zeminde karar verir.
+
+⚠️ Bu, madde 11'deki dersin aynısının başka bir kılığı: bir bayrağın
+"yalnızca ölçüm ekler" göründüğü yerde, gerçekte üretim yolunu değiştiriyor.
+Bu depoda bir bayrağı açmadan önce **onun tükettiği tüm dalları** okuyun.
+
+### Geriye kalan yön
+
+Seçenek 2 (`alpha_fidelity`yi ölçülmediği aşamalarda zorunlu saymamak) artık
+tek makul aday, çünkü ölçüm tabanına dokunmuyor. Ama kapıyı gevşetme riski
+taşıdığından madde 5 gereği sahibiyle konuşulmalı. Üçüncü bir yol da var ve
+ölçülmedi: iki renderer yolunu **aynı** hâle getirmek (o zaman seçenek 1
+güvenli olurdu).
