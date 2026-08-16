@@ -1354,3 +1354,60 @@ Hızlandırmanın iki yolu var ve ikisi de bedava değil:
 
 ⚠️ Profil dosyası saklandı: `scratchpad/pipeline.prof` (pstats ile açılabilir).
 Bu konteyner geçici; kalıcı analiz gerekiyorsa yeniden üretilmeli.
+
+### 13.7 ERKEN ELEME TAVANI = 0,0 s — fikir ölçümle öldü
+
+`evaluate_final_svg_bytes` sarmalanıp her çağrının süresi + `hard_fail_codes`
+kaydedildi (`class_reklam`, 450,5 s):
+
+| ölçüm | değer |
+|---|---|
+| `evaluate_final_svg` | **134,4 s** (37 çağrı, boru hattının **%29,8**'i) |
+| çağrı başına | 3 632 ms |
+| hard fail **yok** (geçen) | **0** |
+| hard fail var (düşen) | **37** |
+| **yalnız ucuz kodla düşen** | **0** → **TAVAN 0,0 s** |
+
+Her reddin içinde en az bir pahalı algısal metrik var. **Ucuz kapıları öne
+almak hiçbir şey kazandırmaz.** Madde 13.6'da önerdiğim "erken eleme" yönü
+kapandı; sonraki oturum tekrar açmasın.
+
+### Beklenmedik gözlem: 37 değerlendirmenin TAMAMI düşüyor
+
+```
+37x  alpha_white_ssim_below_min      <- istisnasiz her cagri
+37x  alpha_black_ssim_below_min      <- istisnasiz her cagri
+37x  alpha_checker_ssim_below_min    <- istisnasiz her cagri
+36x  topology_component_delta
+31x  seam_gap
+30x  ssim_below_min
+23x  alpha_{white,black,checker}_mae_above_max
+15x  topology_hole_delta
+```
+
+Hiçbir aday `evaluate_final_svg`'den temiz geçmiyor, buna rağmen boru hattı
+**başarıyla** bitiyor (`source_alpha_vector_mask` kazanıyor). Yani bu
+değerlendirmenin verdict'i aday seçiminde son söz değil.
+
+⚠️ **Yorumu sınanmadı.** Üç alfa-SSIM kapısının her adayda düşmesi iki şeyden
+biri olabilir: (a) gerçekten hiçbir aday yeterli değil, (b) bu üç kapıda
+sistematik bir sorun var (ör. yanlış arka plan kompoziti ya da ölçek). İkisi
+ayırt edilmedi. Ayırt etmenin ucuz yolu: tek bir adayın
+`alpha_white_ssim` değerini ve eşiğini okuyup, aynı adayı gözle
+render edip karşılaştırmak.
+
+Bu, RFV-3B'de `public-04/05/15`'in `ssim_regression`/`seam_regression` ile
+düşmesiyle **aynı aileden** görünüyor — ama madde 13.3'ün düzeltmesinden sonra
+artık renderer tabanı tutarsızlığına bağlanamaz. Bağımsız bir sorgu gerektirir.
+
+### Zaman haritasının özeti (madde 13.5-13.7 birlikte)
+
+| kalem | süre | pay |
+|---|---|---|
+| `resvg_py.svg_to_bytes` (695 çağrı) | 171,4 s | %33 |
+| `evaluate_final_svg` (37 çağrı) | 134,4 s | %30 |
+| alfa painter merdiveni (kümülatif) | 237,2 s | %45 |
+
+İlk ikisi büyük ölçüde üçüncünün **içinde**. Yani boru hattı süresinin
+yarısına yakını alfa aday merdiveninde, ve orada da maliyet rasterleştirme +
+tam değerlendirmenin tekrar tekrar koşturulması.
