@@ -1729,3 +1729,57 @@ katmanı bayt için sembol/`use` kullanıyor) ve render maliyeti ölçülmüyor.
 ⚠️ Henüz ölçülmedi: bu kodlamanın kullanıldığı yerlerde düz rect'e dönmenin
 bayt maliyeti ne olur, ve kalite kapıları bundan etkilenir mi. C hattının
 sıradaki somut adımı bu.
+
+### 13.15 MALİYET YASASI ÖLÇÜLDÜ — alfa seviyesi başına 22,5 ms
+
+`<use>` suçlu değil: `<use>`'ları düz `<rect>`'e açtım, **piksel birebir aynı**
+(0 fark), süre değişmedi (5 879 → 5 551 ms) ve **bayt %18 arttı**
+(254 032 → 299 868). İndirection maliyet değil.
+
+Gerçek yapı (`native-grid-use-v1`):
+
+```xml
+<g data-vektoryum-source-alpha-reconstruction="native-grid-use-v1">
+  <g opacity="0.00392157"><use href="#zp" clip-path="url(#zc1)" /></g>
+  <g opacity="0.00784314"><use href="#zp" clip-path="url(#zc2)" /></g>
+  ...  255 kez
+</g>
+```
+
+**Tüm çizim (`#zp`, 23 path) 255 kez render ediliyor**, her seferinde farklı
+clip maskesi + farklı opaklıkla. Katman sayısı = alfa seviye sayısı.
+
+| katman | bayt | render 512×275 | katman başı |
+|---|---|---|---|
+| 1 | 236 577 | 74 ms | — |
+| 16 | 237 597 | 394 ms | 24,6 ms |
+| 32 | 238 699 | 746 ms | 23,3 ms |
+| 64 | 240 899 | 1 479 ms | 23,1 ms |
+| 128 | 245 302 | 2 879 ms | 22,5 ms |
+| **255** | **254 032** | **5 728 ms** | **22,5 ms** |
+
+**`render ≈ sabit + 22,5 ms × katman`** — 16'dan 255'e kusursuz doğrusal.
+
+### Asimetri: katman başına ~70 bayt, ~22,5 ms
+
+255→64 inmek baytı yalnız **%5** düşürür (254 032 → 240 899) ama render'ı
+**%74** (5 728 → 1 479 ms). Kodlama bayt açısından verimli, render açısından
+felaket — **ve seçim yalnızca bayta bakıyor** (madde 11.2: compaction katmanı
+sembol/`use` ile baytı hedefliyor, render maliyeti ölçülmüyor).
+
+### Projeksiyon (TAHMİN, ölçülmedi)
+
+1001×538'de katman başı maliyet ~3,3× (alanla doğrusal, madde 13.14) → ~75 ms.
+255→64 inmek çağrı başına ~14 s, `validation`'ın iki çağrısında ~28 s
+kazandırabilir — boru hattının **~%6**'sı. ⚠️ Bu bir projeksiyon; gerçek
+kazanç uygulanıp ölçülmeden iddia edilmemeli.
+
+### Kalite tarafı (açık soru)
+
+Katman sayısı = alfa seviye sayısı, yani azaltmak **alfa nicemlemesi** demek —
+kalite etkisi var ve kapılarla ölçülmeli. Depoda bu makine zaten mevcut
+(painter merdiveni q64/q32/q16, `_MAX_ALPHA_LEVELS = 128`). Bu artefakt 255
+seviye taşıyor, yani o merdivenden geçmemiş bir yol.
+
+**Sıradaki somut soru:** `native-grid-use-v1` üretimi neden 255 seviye
+kullanıyor ve mevcut nicemleme merdiveni buraya neden uygulanmıyor?
