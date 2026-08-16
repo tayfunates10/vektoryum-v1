@@ -925,3 +925,51 @@ maliyet demek.
 ayrıştırması ekle (rect baytı / diğer marküp / koordinat karakter sayısı),
 canlı korpustan oku, sonra hassasiyet seçeneklerini **ölçülmüş** taban
 üzerinde değerlendir. Tahminle başlama.
+
+
+### 12.1 ÖLÇÜLDÜ — `public-14` bayt ayrıştırması (canlı korpus)
+
+Tanılama satırı `4f6360b` head'inde koştu (run `31911453085`, shard 1):
+
+```
+encoding=quantized_128  parent_bytes=424594  added_bytes=1376002
+rects=16712  clips=127  uses=127  added_bytes_per_rect=82.3
+```
+
+İki aşamada da `added_bytes` ve `rects` **aynı** (1 376 002 / 16 712); yalnız
+`parent_bytes` değişiyor (361 175 → 424 594), bütçe farkı oradan geliyor.
+
+**Hipotez doğrulandı:** 82,3 B/rect, `public-15`'te ölçülen tamsayı rect
+maliyetinin (~46 B/rect) **1,8 katı**. `%.12g` koordinat biçimi baytı
+gerçekten domine ediyor.
+
+### Hedef sayısal olarak net
+
+| ölçüm | değer |
+|---|---|
+| eklenebilir pay (`limit - parent`) | 849 188 B |
+| mevcut eklenen | 1 376 002 B (**1,62×**) |
+| gerekli düşüş | **%38,3** |
+| mevcut B/rect | **82,3** |
+| **gerekli B/rect** | **50,8** |
+| `public-15` tamsayı referansı | ~46,0 → **hedefin ALTINDA** |
+
+Yani koordinat biçimini tamsayı mertebesine indirmek `public-14`'ü bütçeye
+**sokabilir**. Beş vaka içinde kapanmaya en yakın olan bu.
+
+### ⚠️ Uygulamadan önce
+
+1. **Hassasiyet düşürmek serileştirme değil KALİTE değişikliğidir.** Geometri
+   alt-piksel kayar; alpha IoU/MAE kapılarıyla ölçülmeli. "Bayt düştü"
+   yeterli gerekçe değil.
+2. `alpha_candidate_knockout.py:254`'teki yorum `%.12g`'yi **bilinçli**
+   seçtiğini söylüyor: *"Resvg supports a stricter clipPath subset than Cairo.
+   Emit exact user-space rectangles directly instead of nesting a transformed
+   group inside clipPath so both evaluator renderers agree."* Yani kısa tamsayı
+   koordinatları **dönüşümlü grup** ile almak bu gerekçeyle reddedilmiş.
+   Kalan yol, dönüşüm eklemeden **basamak sayısını** kısaltmak (ör. `%.4g`
+   yerine sabit ondalık ya da 1/64 px yuvarlama).
+3. `test_alpha_clip_encoding.py:142` clipPath'ten `<rect .../>` regex'le
+   çekiyor; biçim değişikliği o sözleşmeyi etkileyebilir, önce bakılmalı.
+4. 46,0 referansı **başka bağlamdan** (paint-deficit destek katmanı, tamsayı
+   ızgara). Garanti değil, yalnız hedefin ulaşılabilir olduğunun göstergesi.
