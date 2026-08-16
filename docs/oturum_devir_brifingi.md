@@ -1030,3 +1030,60 @@ eklenmeli yoksa export sahte hata verir.
 kapanınca `edge_cleanup` ilk kez gerçekten değerlendirilebilir hâle gelir.
 `required_metric_unmeasured` / `alpha_stage_metrics_incomplete` kodlarının
 kaynağı izlenmeli.
+
+### 13.1 KÖK NEDEN BULUNDU — aşama/gereksinim uyuşmazlığı (yerelde, CI'sız)
+
+`transform_journal.py:312-313`:
+
+```python
+capture_render = self._measurement_stage_id == "restore_source_dimensions"
+measure_alpha  = capture_render
+```
+
+Alfa **yalnızca** `restore_source_dimensions` aşamasında ölçülüyor; diğer tüm
+aşamalarda (`edge_cleanup` dahil) `measure_alpha=False`.
+
+Ama `alpha_fidelity`'yi `required_unmeasured` listesinden çıkaran satır
+(`:191-194`) **`if alpha_required:` bloğunun içinde**. Blok atlanınca:
+
+1. `alpha_fidelity` listede kalır → **`required_metric_unmeasured`** (`:394`)
+2. `_render_alpha` hiç yazılmaz → `_alpha_comparison` **None** (`:346`) →
+   **`alpha_stage_metrics_incomplete`** (`:407`)
+
+`_decide` ise `alpha_fidelity`'yi **aşamadan bağımsız** zorunlu sayıyor (`:405`).
+
+**Sonuç yapısal:** `alpha_fidelity` zorunlu metriklerdeyken
+`restore_source_dimensions` dışındaki **her** journal aşaması, kalitesi ne
+olursa olsun bu iki kodla reddedilir. Ara sıra olan bir ölçüm boşluğu değil,
+her koşuda kesin.
+
+Gözlenen çift kod tam da bu imzadır (madde 13):
+`reasons=['required_metric_unmeasured', 'alpha_stage_metrics_incomplete']`.
+
+### Renderer sağlam — yanlış alarma düşmedim
+
+Önce PDF/EPS'teki gibi bir ortam eksiği olabileceğinden şüphelendim ve
+kontrol ettim: `render_svg_to_rgba` üretilen SVG'de **çalışıyor**
+(1001x538 ve 512x275'te doğru şekil). Yani sebep renderer yokluğu değil,
+`measure_alpha` bayrağının aşamaya bağlı olması.
+
+### ⚠️ Kasıtlı mı, kusur mu — KARAR VERİLMEDİ
+
+- **Kusur lehine:** kod adları bir ölçüm başarısızlığını anlatıyor
+  (`..._unmeasured`, `..._incomplete`), bir politika kararını değil. Politika
+  olsaydı `alpha_stage_not_permitted` gibi bir kod beklenirdi.
+- **Kasıt lehine:** alfa taşıyan artefaktı `edge_cleanup`'ın değiştirmemesi
+  bilinçli bir güvenlik olabilir. `:178` yorumu fail-closed davranışı
+  savunuyor (ama renderer yokluğu bağlamında).
+
+### İki olası yön (ikisi de ölçülmeli)
+
+1. **Alfayı `edge_cleanup` aşamasında da ölç.** Doğru sonucu verir ama
+   aşama başına bir render daha ekler — boru hattı zaten 388 s ve madde 10.2'de
+   render/kontur maliyetinin baskın olduğu ölçüldü. Süreyi kötüleştirebilir.
+2. **`alpha_fidelity`'yi ölçülmediği aşamalarda zorunlu saymamak.** Ucuz, ama
+   kapıyı gevşetir; "eşik gevşetmek çözüm değildir" kuralına (madde 5) yakın
+   durduğu için sahibiyle konuşulmalı.
+
+⚠️ Hiçbiri uygulanmadı. Bu, oturumdaki ilk **tamamen yerel** kök neden;
+doğrulaması `class_reklam` ile 388 s'de tekrarlanabilir, CI gerekmez.
