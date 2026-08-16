@@ -1215,3 +1215,42 @@ yolunda birebir 1,000000, yani bu metrik farka tamamen duyarsız.
 `measure_alpha` bayrağını açmak) 0,0018 SSIM kayması üretir ve kapı toleransı
 0,0005 olduğundan tehlikelidir. Seçenek 1'in neden `class_reklam`'ı düşürdüğü
 budur — mevcut redleri açıklamaz.
+
+### 13.4 `refine_cache` kapasitesi SUÇSUZ — ölçüldü, kapasite artırılmadı
+
+`_DEFAULT_MAX_RENDERS = 2` (`refine_cache.py:38`) ve gözlenen isabet %2,8
+olduğu için "önbellek thrash ediyor" hipotezini kurdum. **Kapasiteyi
+artırmadan önce** anahtar izini çıkarıp aynı LRU politikasıyla simüle ettim.
+
+`class_reklam`, 455,9 s koşu:
+
+| ölçüm | değer |
+|---|---|
+| render çağrısı | 68 |
+| benzersiz anahtar | **62** |
+| tekrar (sonsuz kapasitede MAKS isabet) | **6** → tavan **%8,8** |
+| aynı içeriğin birden fazla boyutta istenmesi | **0** |
+
+| kapasite | 2 | 4 | 8 | 16 | 32 | 64 | sonsuz |
+|---|---|---|---|---|---|---|---|
+| isabet | 2 | 2 | 2 | 4 | **6** | 6 | 6 |
+
+**Karar: kapasite artırılmadı.** Sonsuz önbellek bile 68 çağrının yalnız
+6'sını kurtarıyor; 2→32 yalnız **4 ek isabet** getirir. Karşılığında 32 girdi
+~13-51 MB bellek ve CLAUDE.md motor tepe kullanımının 826 MB olduğunu,
+512 MB planların OOM olduğunu söylüyor. Belirsiz %6 render kazancı için
+bellek riski alınmaz.
+
+**Asıl bulgu:** yavaşlık "aynı şeyi tekrar render etmek" değil, **62 ayrı
+render yapmak**. Önbellek doğru çalışıyor; iş yükü gerçekten benzersiz.
+
+### Kaldıraç nerede
+
+1. Render **sayısını** azaltmak — ama aday/varyant sayısı kalite kapılarına
+   bağlı, dokunmak riskli.
+2. Render'ın **kendisini** ucuzlatmak — madde 10.2'deki ölçümle uyumlu
+   (`cv2.findContours` patolojik girdide 98 s).
+
+⚠️ Sonraki oturum: "önbelleği büyütelim" fikrini tekrar açma, ölçüldü ve
+tavanı %8,8. Ölçüm betiği deseni saklanmaya değer: anahtar izini çıkarıp
+kapasiteleri simüle etmek, kod değiştirmeden tavanı verdi.
