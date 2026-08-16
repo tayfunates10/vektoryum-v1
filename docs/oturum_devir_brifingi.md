@@ -1783,3 +1783,54 @@ seviye taşıyor, yani o merdivenden geçmemiş bir yol.
 
 **Sıradaki somut soru:** `native-grid-use-v1` üretimi neden 255 seviye
 kullanıyor ve mevcut nicemleme merdiveni buraya neden uygulanmıyor?
+
+### 13.16 SORU YANITLANDI — merdiven iki basamaklı, render maliyeti hiç bakılmıyor
+
+`alpha_candidate_knockout.py:153`:
+
+```python
+def _alpha_encodings(alpha):
+    """Yield exact alpha first, then the established 128-level fallback."""
+    exact = ...                                   # 255 seviyeye kadar
+    yield "exact", exact, exact_levels
+    quantized, opacity_by_level = _quantize_alpha(exact)    # 128 (_MAX_ALPHA_LEVELS)
+    if not np.array_equal(quantized, exact):
+        yield "quantized_128", quantized, opacity_by_level
+```
+
+**Merdiven yalnız iki basamaklı**: `exact` (≤255) → `quantized_128`. Painter'ın
+q64/q32/q16 merdiveni buraya **uygulanmıyor**; daha kaba adım yok.
+
+`exact` **önce** denendiği için kapılardan geçtiğinde kazanan o oluyor →
+255 katman → 5,7 s (512×275) / 19 s (1001×538) render.
+
+Ölçülen maliyet karşılıkları (madde 13.15):
+
+| kodlama | katman | render 512×275 | bayt |
+|---|---|---|---|
+| `exact` | 255 | **5 728 ms** | 254 032 |
+| `quantized_128` | 128 | 2 879 ms | 245 302 |
+| (yok — 64) | 64 | 1 479 ms | 240 899 |
+| (yok — 32) | 32 | 746 ms | 238 699 |
+
+`public-14`'ün `encoding=quantized_128` ile düşmesi (madde 12.1) bununla
+tutarlı: orada `exact` başarısız olmuş, 128'e düşülmüş.
+
+### Sonuç: kusur değil, gözden kaçmış bir ödünleşim
+
+`exact` alfayı tercih etmenin bedeli **render süresi** ve bu bedel seçim
+sırasında **hiç ölçülmüyor**. Kapılar kaliteyi ve baytı görüyor, süreyi
+görmüyor.
+
+Maliyeti düşürmenin iki yolu var, **ikisi de politika kararı**:
+
+1. **Daha kaba basamaklar ekle** (64/32) — ama yalnız 128 de başarısız olursa
+   devreye girerler, yani `exact`'in geçtiği vakalarda (`class_reklam`)
+   hiçbir şey değişmez.
+2. **Kaba kodlamayı tercih et** kalite kapıları izin verdiğinde — asıl kazanç
+   burada ama bu, "exact alfa öncelikli" politikasını değiştirmek demek.
+
+⚠️ İkisi de kalite/politika kararı; teknik bir kusur düzeltmesi değil.
+Sahibinin kararı olmalı. C hattı buraya kadar **ölçümle** geldi:
+maliyet yasası (22,5 ms/katman), kaynağı (`exact` = 255 katman) ve
+seçim mekanizması (`_alpha_encodings`, exact-first, süre görmüyor) belirlendi.
