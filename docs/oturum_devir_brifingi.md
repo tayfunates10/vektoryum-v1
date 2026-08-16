@@ -1411,3 +1411,50 @@ artık renderer tabanı tutarsızlığına bağlanamaz. Bağımsız bir sorgu ge
 İlk ikisi büyük ölçüde üçüncünün **içinde**. Yani boru hattı süresinin
 yarısına yakını alfa aday merdiveninde, ve orada da maliyet rasterleştirme +
 tam değerlendirmenin tekrar tekrar koşturulması.
+
+### 13.8 "37/37 düşüyor" incelendi — kusur YOK, eşik gerçekten karşılanmıyor
+
+Madde 13.7'deki gözlem (üç alfa-SSIM kodu istisnasız her çağrıda) izlendi.
+
+**Hipotez (çürüdü):** `final_artifact_evaluator.py:604-609`
+
+```python
+entry = backgrounds.get(name) or {}
+if float(entry.get("ssim", 0.0)) < thr["alpha_background_ssim_min"]:
+```
+
+`backgrounds` boş olsaydı `entry.get("ssim", 0.0)` → **0,0** dönerdi ve hata
+koşulsuz tetiklenirdi. Doğrudan sınandı: **`backgrounds` DOLU.**
+
+Kazanan artefaktın gerçek değerleri (`geo_standard_alpha.svg`, geometric):
+
+| zemin | SSIM | eşik 0,995 | RGB MAE | eşik 0,008 |
+|---|---|---|---|---|
+| white | **0,991843** | düşer (−0,0032) | 0,001949 | geçer |
+| black | **0,988900** | düşer (−0,0061) | 0,001707 | geçer |
+| checker | **0,991518** | düşer (−0,0035) | 0,001870 | geçer |
+
+Diğer ölçümler: `alpha_iou` 0,999371 (eşik 0,995 → **geçer**),
+`alpha_mae` 0,000285 (eşik 0,008 → **geçer**), `ssim` **0,942563**
+(eşik 0,985 → düşer), `component_delta` 53, `min_component_iou` 0,0600.
+
+**Sonuç: kusur yok.** Alfa düzlemi mükemmele yakın (IoU 0,9994, MAE 0,0003)
+ama zemin kompozitlerinin SSIM'i eşiğin %0,3-0,6 altında, genel SSIM ise
+belirgin altında (0,9426 / 0,985). Değerlendirme tasarlandığı gibi çalışıyor;
+aday gerçekten bu sınıfın çıtasını karşılamıyor.
+
+⚠️ **Bu ölçümün sınırı:** `image_class='geometric'` tarafımdan seçildi ve
+`palette_rgb`/`fixture_baseline` verilmedi. Eşikler sınıfa bağlı olduğundan
+boru hattının kendi değerlendirmesi farklı sonuç verebilir. Mutlak verdict
+değil, büyüklük mertebesi olarak okunmalı.
+
+### Ayakta kalan yapısal gözlem
+
+37 değerlendirmenin tamamı hard fail veriyor, buna rağmen boru hattı
+**başarıyla** bitiyor. Yani bu yolda `evaluate_final_svg`'nin verdict'i çıktıyı
+**kapatmıyor** — ama çalışma süresinin **%30'unu** (134,4 s) tüketiyor.
+
+⚠️ Metriklerin skorlama/seçim için kullanılıp kullanılmadığı **doğrulanmadı**.
+Kullanılmıyorsa burada ciddi bir performans fırsatı var; kullanılıyorsa yok.
+Bu, bu hattaki tek açık ve ucuz soru: `evaluate_final_svg` çıktısının
+tüketicilerini izle.
