@@ -1254,3 +1254,50 @@ render yapmak**. Önbellek doğru çalışıyor; iş yükü gerçekten benzersiz
 ⚠️ Sonraki oturum: "önbelleği büyütelim" fikrini tekrar açma, ölçüldü ve
 tavanı %8,8. Ölçüm betiği deseni saklanmaya değer: anahtar izini çıkarıp
 kapasiteleri simüle etmek, kod değiştirmeden tavanı verdi.
+
+### 13.5 RENDER DARBOĞAZ DEĞİL — ölçüldü (%16), sürenin %84'ü başka yerde
+
+Renderer fonksiyonlarının kendisi sarmalandı (`app.fidelity.render_svg_to_rgb`,
+`app.source_truth.render_svg_to_rgba`), böylece mutator + journal + alfa
+merdiveni dahil **tüm** render'lar yakalandı. `class_reklam`, 452,0 s:
+
+| ölçüm | değer |
+|---|---|
+| boru hattı toplam | **452,0 s** |
+| **render toplam** | **72,8 s → %16,1** |
+| render çağrısı | **275** (`refine_cache` yalnız 68'ini görüyor) |
+| medyan / p90 / maks | 55,2 ms / 150,8 ms / **21 564 ms** |
+
+**Sürenin %84'ü (≈379 s) render DIŞINDA.** "Render'ı ucuzlatalım" yönü
+(madde 13.4'te önerilmişti) bu ölçümle **çürüdü**.
+
+### Render içindeki patoloji (küçük ama gerçek)
+
+| süre | boyut | svg |
+|---|---|---|
+| 21 564 ms | 1001×538 | 254 032 B |
+| 20 949 ms | 1001×538 | 253 983 B |
+| 6 665 ms | 512×275 | 254 032 B |
+| 6 638 ms | 512×275 | 253 983 B |
+| 168 ms | 1001×538 | 246 472 B |
+
+Render süresinin **%50'si 2 çağrıda** (çağrıların %1'i). Tipik render 55 ms
+iken bunlar 21 s — **380×**. Aynı SVG 512'de 6,6 s, 1001'de 21 s. Bunlar alfa
+maskeli ~254 KB çıktılar; dev maske geometrisi renderer'ı boğuyor.
+
+⚠️ Ama bu ikisini tamamen ortadan kaldırmak bile 452 s'nin yalnız **%9**'unu
+kazandırır. Tek başına hedef değil.
+
+### Sıfır RGBA çağrısı
+
+275 çağrının **tamamı** RGB yolundan geçti; `render_svg_to_rgba` hiç
+çağrılmadı. Yani bu koşuda `measure_alpha` hiçbir yerde açılmamış —
+madde 13.1'deki bulguyla (alfa yalnız `restore_source_dimensions`ta ölçülür)
+tutarlı ve alfa yolunun üretimde ne kadar dar bir yerde çalıştığını gösteriyor.
+
+### Sıradaki adım
+
+**379 saniyenin nerede geçtiği bilinmiyor.** Tahmin edilmemeli;
+`cProfile` ile tek koşuda fonksiyon bazında döküm alınmalı. Aday şüpheliler
+(ölçülmedi): VTracer aday üretimi, shape fitting, `findContours` (madde 10.2'de
+patolojik girdide 98 s ölçüldü), skorlama.
