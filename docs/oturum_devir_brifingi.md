@@ -1681,3 +1681,51 @@ dosyayla çalışmak.
 ⚠️ `public-14`'ün **bayt** hedefi (82,3 → 50,8 B/rect, madde 12.1) bu
 düzeltmeden **etkilenmiyor** — o ayrı ve ölçülmüş bir sonuç. Etkilenen tek
 şey, bayt ile render süresinin aynı kökten geldiği varsayımıydı.
+
+### 13.14 YAVAŞ ARTEFAKTLAR YAKALANDI — `<use>`+`clipPath` kodlaması ~90× yavaş
+
+Madde 13.13'teki düzeltme **fazla genişti**: yerelde bulduğum knockout
+artefaktı yavaş olan değildi. Yavaş çağrıların adayları çağrıdan önce
+kopyalanarak yakalandı (`scratchpad/capture.py`) ve yapıları ölçüldü:
+
+| artefakt | bayt | clipPath | `<use>` | rect | render 512×275 | render 1001×538 |
+|---|---|---|---|---|---|---|
+| `cand001` (22,4 s'lik çağrı) | 254 032 | **255** | **5 371** | 173 | **5 728 ms** | **19 065 ms** |
+| `cand026` (20,8 s'lik çağrı) | 253 983 | **255** | **5 371** | 173 | 5 635 ms | 18 423 ms |
+| `alpha-knockout` (hızlı) | 187 395 | **0** | 1 | **3 580** | **63 ms** | 138 ms |
+
+**Aynı çözünürlükte ~90× fark.** Yavaş artefaktlar `<defs>` + `<use>` +
+seviye başına `clipPath` + `opacity` yapısında — yani
+`alpha_candidate_support_compact`'in **native-grid-use** kodlaması
+(`build_compact_native_use_reconstruction_tree`, sembol yeniden kullanımı).
+
+### Epistemik iz (üç adım)
+
+1. **13.12:** "clipPath sürücüdür" — `public-14`'ün CI yapısından çıkarım.
+2. **13.13:** geri çekildi — ama yanlış artefakta bakılarak (yerel knockout
+   dosyasında clipPath yoktu; o zaten yavaş çağrının adayı değildi).
+3. **13.14:** gerçek adaylar yakalandı — **255 clipPath + 5 371 `<use>`**.
+   Yön doğruymuş, kanıt yanlış dosyadan alınmıştı.
+
+⚠️ Ders: "artefaktı bulamadım" ile "artefakt öyle değil" aynı şey değil.
+13.13'te ikincisini yazdım, oysa elimde yalnız birincisi vardı.
+
+### Ölçülmüş sonuç
+
+Kompakt `<use>`/`clipPath` kodlaması **baytı düşürürken render süresini
+~90× artırıyor**. 3 580 düz rect'li artefakt 63 ms; 5 371 `<use>` + 255
+clipPath'li artefakt 5 728 ms — üstelik ikincisi **daha az** eleman taşıyor.
+
+Ölçekleme kabaca piksel sayısıyla doğrusal (512→1001'de 3,7× alan, 3,3× süre)
+ama sabiti devasa.
+
+### Bunun anlamı (C hattı için)
+
+`validation:108`'in 49,5 s'si (boru hattının %11'i) bu iki artefaktın
+render'ından geliyor. Kaldıraç: bu kodlamanın **render maliyetini** hesaba
+katmak. Şu an seçim yalnız **bayta** göre yapılıyor (madde 11.2: compaction
+katmanı bayt için sembol/`use` kullanıyor) ve render maliyeti ölçülmüyor.
+
+⚠️ Henüz ölçülmedi: bu kodlamanın kullanıldığı yerlerde düz rect'e dönmenin
+bayt maliyeti ne olur, ve kalite kapıları bundan etkilenir mi. C hattının
+sıradaki somut adımı bu.
