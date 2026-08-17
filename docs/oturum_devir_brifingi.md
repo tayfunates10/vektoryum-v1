@@ -2063,3 +2063,72 @@ eklenmişti ve işe yaradı.
 
 Taslak release ve içindeki ekler **duruyor** — silinmedi. Yayımlama kararı
 verilirse tek adım (`draft: false`) yeterli, yeniden yüklemeye gerek yok.
+
+---
+
+## 18. `public-14` — clipPath koordinat hassasiyeti raster ızgarasına bağlandı
+
+Madde 12.1'in ölçtüğü hedef: **82,3 → 50,8 B/rect (−%38,3)**.
+
+### Teşhis tamamlandı
+
+Gerçek serileştirmede rect iskeleti **37 B** (1 karakterlik değerlerle 41 B).
+Buradan:
+
+| | B/rect | koordinatlara düşen | alan başına |
+|---|---|---|---|
+| mevcut (`%.12g`) | 82,3 | 45,3 kr | **11,3 kr** |
+| hedef | 50,8 | 13,8 kr | **3,45 kr** |
+
+Yani hedef ancak tamsayı mertebesinde koordinatla tutar.
+
+### Çözüm: hassasiyet keyfî sabit değil, ızgaranın kendisi
+
+`_raster_grid_precision(scale)` — dikdörtgenler tamsayı raster
+koordinatlarından üretiliyor; kullanıcı uzayındaki komşu sınırlar tam olarak
+`scale` kadar ayrık. Dolayısıyla `10^-d <= scale` olan en küçük `d` geometriyi
+**kayıpsız** temsil eder. Fazlası bilgi taşımaz, yalnız bayt yer.
+
+İki tuzak kapatıldı:
+
+1. **Çökme.** `sx < 1` iken körlemesine tamsayıya yuvarlamak dar dikdörtgenleri
+   sıfır genişliğe indirir, `width <= 0` guard'ı onları düşürür → alfa deliği.
+   Ondalık sayısı ölçekten türediği için bu olamaz.
+2. **Boşluk.** Genişliği ayrı yuvarlamak komşu kenarlar arasında ızgara boyu
+   boşluk açabilirdi. Onun yerine **iki kenar** yuvarlanıp farkı alınıyor;
+   komşu dikdörtgenler aynı raster sınırını paylaştığı için bitişiklik tam
+   korunur.
+
+11 ölçekte 4 000 dikdörtgen üzerinde iki değişmez de doğrulandı:
+**0 çökme, 0 boşluk.**
+
+### Kazanç — sınırıyla birlikte
+
+Fixture geometrisiyle (`arcaates` 50 488 rect, `class_reklam` 3 579 rect):
+
+| ölçek | eski | yeni | fark |
+|---|---|---|---|
+| sx=1 (viewBox=raster) | 45,4 | 45,4 | **%0 — çıktı birebir aynı** |
+| sx=0,5 | 50,6 | 50,6 | **%0** |
+| sx=1,95 (2000/1024) | 72,1 | **46,5** | **−%35,5** |
+
+Değişiklik **yalnız `%.12g`'nin uzun çıktı ürettiği kesirli ölçeklerde** iş
+yapıyor. Temiz ölçeklerde çıktı değişmiyor — kalite riskini de bu daraltıyor.
+
+`public-14`'ün 82,3 B/rect'i tam o rejimde, dolayısıyla ~46–49 B/rect
+bekleniyor (hedef 50,8'in altı). ⚠️ **Bu bir tahmin.** Gerçek sayı canlı
+korpustan, madde 16 öncesi eklenen `added_bytes_per_rect` tanılama satırından
+okunmalı. Madde 3.5'teki ders geçerli: bayt tahmini gerçek korpus verisiyle
+doğrulanmadan kapanmış sayılmaz.
+
+### Doğrulama (tamamı yeşil)
+
+- `test_visual_regression.py` → `class_reklam` PASS, `gradient_logo` PASS,
+  `arcaates` FAIL (`50488>8251` — main'de zaten var olan, sayılar değişmedi)
+- `test_artifact_quality.py` → **36/36**
+- Sözleşme testleri: `test_alpha_clip_encoding`, `test_alpha_mask_adaptive`,
+  `test_alpha_painter_ledger`, `_encoding`, `_retry`, `_paint_deficit`,
+  `_stroke_continuation` → hepsi geçti
+
+`test_alpha_clip_encoding.py:142` clipPath'ten `<rect[^>]*/>` regex'iyle
+çekiyor; biçim değişikliğinden etkilenmedi (madde 12'deki uyarı 3 kapandı).

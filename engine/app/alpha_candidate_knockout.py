@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import math
 import os
 import re
 import tempfile
@@ -167,6 +168,33 @@ def _alpha_encodings(alpha: np.ndarray):
         yield "quantized_128", quantized, opacity_by_level
 
 
+def _raster_grid_precision(scale: float) -> int:
+    """Raster ızgarasını ayırt etmeye YETEN en kısa ondalık basamak sayısı.
+
+    clipPath dikdörtgenleri tamsayı raster koordinatlarından üretiliyor; kullanıcı
+    uzayındaki komşu sınırlar tam olarak `scale` kadar ayrık. Dolayısıyla
+    `10^-d <= scale` olan en küçük `d`, geometriyi kayıpsız temsil eder: bu
+    ızgarada `scale` kadar ayrık iki değer daima ayrı ızgara noktasına düşer,
+    yani hiçbir dikdörtgen sıfır genişliğe çökemez.
+
+    Daha fazla basamak bilgi taşımaz, yalnız bayt yer. `%.12g` koordinat başına
+    ~11 karakter üretiyordu; bu kural `scale >= 1` iken tamsayıya iniyor.
+    """
+    if not (scale > 0.0) or not math.isfinite(scale):
+        return 6
+    # 1e-9: log10'un kayan nokta gürültüsü tam kuvvetlerde basamak şişirmesin.
+    return max(0, math.ceil(-math.log10(scale) - 1e-9))
+
+
+def _format_coordinate(value: float, decimals: int) -> str:
+    if decimals <= 0:
+        return f"{value:.0f}"
+    text = f"{value:.{decimals}f}"
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text or "0"
+
+
 def _build_reconstruction_tree(
     original_root: ET.Element,
     canvas_element: ET.Element,
@@ -225,6 +253,8 @@ def _build_reconstruction_tree(
     raster_height, raster_width = quantized.shape
     sx = view_width / float(raster_width)
     sy = view_height / float(raster_height)
+    decimals_x = _raster_grid_precision(sx)
+    decimals_y = _raster_grid_precision(sy)
 
     clip_count = 0
     rectangle_count = 0
@@ -249,14 +279,26 @@ def _build_reconstruction_tree(
             # Resvg supports a stricter clipPath subset than Cairo. Emit exact
             # user-space rectangles directly instead of nesting a transformed
             # group inside clipPath so both evaluator renderers agree.
+            #
+            # Koordinatlar raster ızgarasını ayırt etmeye yeten en kısa ondalıkla
+            # yazılır (bkz. _raster_grid_precision). Genişlik/yükseklik AYRI
+            # yuvarlanmaz; iki kenar yuvarlanıp farkı alınır. Komşu dikdörtgenler
+            # aynı raster sınırını paylaştığı için bu, bitişikliği tam korur —
+            # ayrı yuvarlama, kenarlar arasında ızgara boyu boşluk açabilirdi.
+            left = round(view_x + x * sx, decimals_x)
+            right = round(view_x + (x + width) * sx, decimals_x)
+            top = round(view_y + y * sy, decimals_y)
+            bottom = round(view_y + (y + height) * sy, decimals_y)
+            if right <= left or bottom <= top:
+                continue
             ET.SubElement(
                 clip,
                 qname("rect"),
                 {
-                    "x": f"{view_x + x * sx:.12g}",
-                    "y": f"{view_y + y * sy:.12g}",
-                    "width": f"{width * sx:.12g}",
-                    "height": f"{height * sy:.12g}",
+                    "x": _format_coordinate(left, decimals_x),
+                    "y": _format_coordinate(top, decimals_y),
+                    "width": _format_coordinate(right - left, decimals_x),
+                    "height": _format_coordinate(bottom - top, decimals_y),
                 },
             )
             rectangle_count += 1
