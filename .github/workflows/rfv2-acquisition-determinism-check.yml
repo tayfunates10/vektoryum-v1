@@ -1,0 +1,264 @@
+name: RFV-2 acquisition determinism check
+
+# Tek seferlik tanılama — #159 madde 1: "Aynı girdiden iki ardışık edinim
+# çalıştır, üretilen storage/ ve records/ ağaçlarını bayt düzeyinde karşılaştır."
+#
+# #159 ölçtü: bir saat içinde aynı depo durumundan üç farklı cases_sha256 ve
+# farklı bundle_bytes (10 888 371 / 10 888 310). Yani sorun sıralama veya zaman
+# damgası değil, üretilen İÇERİK farklı. Hangi ALANIN kaydığı ölçülmedi.
+#
+# Bu iş tam olarak onu ölçer: iki ardışık edinimin kayıtlarını ve lisans
+# kanıtlarını alan alan karşılaştırıp sürüklenen alan adlarını sayar. Kaynak
+# kodda hiçbir değişiklik yok — bu yüzden RFV-3B canlı iş akışını tetiklemez
+# ve ölçüm üretimdeki edinim hattının aynısını görür.
+#
+# Beklenen hipotez (koddan, DOĞRULANMADI): consent_sha256 sürükleniyor, çünkü
+# license-proof.json canlı HTML sayfalarının digest'lerini ve yönlendirme
+# sonrası nihai URL'leri taşıyor (rfv2_public_source_acquire.py:345-366).
+# Kanıtlanması gereken şey bu hipotez DEĞİL, hangi alanların gerçekten kaydığı.
+
+on:
+  push:
+    branches:
+      - claude/new-session-2vpshw
+    paths:
+      - .github/workflows/rfv2-acquisition-determinism-check.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rfv2-acq-determinism-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  determinism:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      PYTHONHASHSEED: "0"
+      PYTHONPATH: engine
+      QUALIFIED_CASES_SHA256: "5f151a6cb1a433b0cb0989a67bd7cc7940162f4b36d67903d6ccdd173f9e7d89"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install acquisition dependencies
+        run: python -m pip install --disable-pip-version-check Pillow
+
+      - name: Acquire the reviewed corpus twice
+        shell: bash
+        run: |
+          set -uo pipefail
+          ROOT="${RUNNER_TEMP}/determinism"
+          rm -rf "${ROOT}"
+
+          # Iki kol ardisik kosuyor; paralel kosmak yukari akista onbellek
+          # varyansi yaratabilir ve olcumu kirletirdi.
+          for run in a b; do
+            base="${ROOT}/${run}"
+            mkdir -p "${base}/downloads" "${base}/storage" "${base}/records"
+            ok=0
+            for attempt in 1 2 3; do
+              if python -m engine.regression.rfv2_live_acquire \
+                  --all \
+                  --download-root "${base}/downloads" \
+                  --storage-root "${base}/storage" \
+                  --records-dir "${base}/records"; then
+                ok=1
+                break
+              fi
+              echo "run ${run}: edinim denemesi ${attempt} basarisiz, yeniden deneniyor"
+              rm -rf "${base}/downloads" "${base}/storage" "${base}/records"
+              mkdir -p "${base}/downloads" "${base}/storage" "${base}/records"
+              sleep "$((attempt * 15))"
+            done
+            echo "run ${run}: acquired=${ok}"
+            echo "ACQ_${run}=${ok}" >> "${GITHUB_ENV}"
+          done
+
+      - name: Compare the two acquisitions field by field
+        shell: bash
+        env:
+          DET_ROOT: ${{ runner.temp }}/determinism
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from collections import Counter
+          from pathlib import Path
+
+          root = Path(os.environ["DET_ROOT"])
+          a, b = root / "a", root / "b"
+
+          def records(base):
+              out = {}
+              d = base / "records"
+              if d.is_dir():
+                  for p in sorted(d.glob("*.json")):
+                      if p.name.startswith("."):
+                          continue
+                      out[p.stem] = json.loads(p.read_text())
+              return out
+
+          def proofs(base):
+              out = {}
+              d = base / "downloads"
+              if d.is_dir():
+                  for p in sorted(d.glob("*/license-proof.json")):
+                      out[p.parent.name] = json.loads(p.read_text())
+              return out
+
+          def objects(base):
+              """storage/ agacindaki her nesnenin icerik digest'i."""
+              out = {}
+              d = base / "storage"
+              if d.is_dir():
+                  for p in sorted(d.rglob("*")):
+                      if p.is_file() and not p.is_symlink():
+                          rel = p.relative_to(d).as_posix()
+                          out[rel] = hashlib.sha256(p.read_bytes()).hexdigest()
+              return out
+
+          ra, rb = records(a), records(b)
+          pa, pb = proofs(a), proofs(b)
+          oa, ob = objects(a), objects(b)
+
+          print("=" * 72)
+          print("EDINIM KAPSAMI")
+          print("=" * 72)
+          print(f"kayit sayisi        : a={len(ra)}  b={len(rb)}")
+          print(f"lisans kaniti       : a={len(pa)}  b={len(pb)}")
+          print(f"depo nesnesi        : a={len(oa)}  b={len(ob)}")
+
+          if not ra or not rb:
+              raise SystemExit(
+                  "iki kolun ikisi de tamamlanmadi; sonuc yorumlanamaz "
+                  "(yukari akis erisimi ya da allowlist sorunu)"
+              )
+
+          shared = sorted(set(ra) & set(rb))
+          print(f"ortak vaka          : {len(shared)}")
+          only_a = sorted(set(ra) - set(rb))
+          only_b = sorted(set(rb) - set(ra))
+          if only_a or only_b:
+              print(f"YALNIZ a'da         : {only_a}")
+              print(f"YALNIZ b'de         : {only_b}")
+
+          def field_drift(da, db, keys, label):
+              print()
+              print("=" * 72)
+              print(f"{label} — ALAN BAZLI SURUKLENME")
+              print("=" * 72)
+              drift = Counter()
+              samples = {}
+              for cid in keys:
+                  x, y = da[cid], db[cid]
+                  for k in sorted(set(x) | set(y)):
+                      xv, yv = x.get(k), y.get(k)
+                      if isinstance(xv, dict) or isinstance(yv, dict):
+                          # ic ice sozlukler (inspection) kanonik olarak kiyaslanir
+                          xv = json.dumps(xv, sort_keys=True)
+                          yv = json.dumps(yv, sort_keys=True)
+                      if xv != yv:
+                          drift[k] += 1
+                          samples.setdefault(k, (cid, xv, yv))
+              if not drift:
+                  print("hicbir alan surüklenmedi — bu kaynak deterministik")
+                  return drift
+              width = max(len(k) for k in drift)
+              for k, n in drift.most_common():
+                  cid, xv, yv = samples[k]
+                  sx, sy = str(xv), str(yv)
+                  if len(sx) > 60:
+                      sx = sx[:57] + "..."
+                  if len(sy) > 60:
+                      sy = sy[:57] + "..."
+                  print(f"  {k:<{width}}  {n:>3}/{len(keys)} vaka")
+                  print(f"  {'':<{width}}    ornek [{cid}]")
+                  print(f"  {'':<{width}}    a: {sx}")
+                  print(f"  {'':<{width}}    b: {sy}")
+              return drift
+
+          rec_drift = field_drift(ra, rb, shared, "KAYIT (records/*.json)")
+          proof_keys = sorted(set(pa) & set(pb))
+          proof_drift = field_drift(pa, pb, proof_keys, "LISANS KANITI (license-proof.json)")
+
+          print()
+          print("=" * 72)
+          print("DEPO NESNELERI (kanonik varlik baytlari)")
+          print("=" * 72)
+          if oa == ob:
+              print(f"{len(oa)} nesnenin tamami bayt bayt AYNI — varliklar kararli")
+          else:
+              changed = [k for k in sorted(set(oa) & set(ob)) if oa[k] != ob[k]]
+              print(f"DEGISEN nesne: {len(changed)}")
+              for k in changed[:10]:
+                  print(f"  {k}\n    a: {oa[k]}\n    b: {ob[k]}")
+              for k in sorted(set(oa) ^ set(ob))[:10]:
+                  print(f"  YALNIZ TEK KOLDA: {k}")
+
+          # Kimlik: manifest birlestiricinin kendisiyle, yeniden uygulama degil.
+          from engine.regression.rfv2_manifest_assembler import assemble_manifest
+
+          print()
+          print("=" * 72)
+          print("KORPUS KIMLIGI")
+          print("=" * 72)
+          ids = {}
+          for name, recs in (("a", ra), ("b", rb)):
+              try:
+                  manifest, _audit = assemble_manifest(
+                      [recs[c] for c in sorted(recs)], require_complete=False
+                  )
+                  ids[name] = manifest["cases_sha256"]
+              except Exception as exc:  # tanilama isi: neden birlestirilemedigi de veri
+                  ids[name] = f"BIRLESTIRILEMEDI: {exc}"
+          print(f"a                   : {ids['a']}")
+          print(f"b                   : {ids['b']}")
+          print(f"nitelenmis (sabit)  : {os.environ.get('QUALIFIED_CASES_SHA256', '(ayarsiz)')}")
+          print()
+          if ids["a"] == ids["b"]:
+              print("SONUC: iki edinim AYNI kimligi uretti — determinizm bu kosuda tutuyor")
+          else:
+              print("SONUC: iki edinim FARKLI kimlik uretti — determinizmsizlik dogrulandi")
+
+          print()
+          print("=" * 72)
+          print("OZET — kimligi hangi alanlar kirletiyor")
+          print("=" * 72)
+          # cases_sha256 yalnizca required_case_fields uzerinden hesaplanir.
+          policy = json.loads(
+              Path("engine/regression/rfv2_qualification_policy.json").read_text()
+          )
+          required = set(policy["required_case_fields"])
+          culprits = {k: n for k, n in rec_drift.items() if k in required}
+          if culprits:
+              for k, n in sorted(culprits.items(), key=lambda kv: -kv[1]):
+                  print(f"  {k}: {n} vakada suruklendi  (required_case_fields icinde)")
+          else:
+              print("  required_case_fields icindeki hicbir alan suruklenmedi")
+          noise = {k: n for k, n in rec_drift.items() if k not in required}
+          if noise:
+              print()
+              print("  kimlige girmeyen surüklenmeler (yalnizca kanit):")
+              for k, n in sorted(noise.items(), key=lambda kv: -kv[1]):
+                  print(f"    {k}: {n} vaka")
+          PY
+
+      - name: Upload determinism evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rfv2-acquisition-determinism
+          path: |
+            ${{ runner.temp }}/determinism/*/records
+            ${{ runner.temp }}/determinism/*/downloads/*/license-proof.json
+          retention-days: 30
+          if-no-files-found: warn
