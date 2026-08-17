@@ -1,0 +1,309 @@
+name: RFV-2 corpus permanent store
+
+# #159 madde 4: "Sabitlenmiş artefakt için kalıcı depolama."
+#
+# Nitelenmiş korpus şu an YALNIZCA geçici bir Actions artefaktında duruyor:
+#
+#   artefakt 8354853386 · expires_at 2026-10-13T19:25:36Z · 10 910 811 B
+#
+# Bu tek hata noktası. Süre dolduğunda RFV-3B ve RFV-2E onarılamaz biçimde
+# ölür; deponun bunun nasıl göründüğünü gösteren örneği var (live-alpha-pair
+# işi, 2026-08-02'de dolan 8441210832 artefaktına sabitlenmişti).
+#
+# Bu iş korpusu SURESI DOLMAYAN bir konuma taşır: depo release'ine ekli
+# varlıklar. Release TASLAK olarak oluşturulur — genel depoda görünmez,
+# yalnız token ile erişilir ve geri alınabilir. Böylece
+# `public_repo_contains_raw_assets: false` ilkesinin ruhu zorlanmaz;
+# varlıklar git ağacına girmez.
+#
+# Taşıma kör kopyalama DEĞİL: dört dosyanın da digest'i, arşivin boyutu ve
+# korpus kimliği taşımadan ÖNCE doğrulanır. Doğrulama düşerse hiçbir şey
+# yayımlanmaz.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - claude/new-session-2vpshw
+    paths:
+      - .github/workflows/rfv2-corpus-permanent-store.yml
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: rfv2-corpus-permanent-store
+  cancel-in-progress: false
+
+jobs:
+  store:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PINNED_ARTIFACT_ID: "8354853386"
+      PINNED_ARTIFACT_SHA256: "a8be8c0782a8aeb037a2736de8adbd357c5074ad0da6355562e2543092d6af76"
+      PINNED_ARTIFACT_BYTES: "10910811"
+      QUALIFIED_CASES_SHA256: "5f151a6cb1a433b0cb0989a67bd7cc7940162f4b36d67903d6ccdd173f9e7d89"
+      RELEASE_TAG: "rfv2-corpus-5f151a6c"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download and verify the pinned immutable corpus
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          OUT="${RUNNER_TEMP}/corpus"
+          rm -rf "${OUT}"
+          mkdir -p "${OUT}"
+
+          curl \
+            --fail-with-body \
+            --location \
+            --silent \
+            --show-error \
+            --retry 3 \
+            --retry-all-errors \
+            --header "Authorization: Bearer ${GITHUB_TOKEN}" \
+            --header "Accept: application/vnd.github+json" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${PINNED_ARTIFACT_ID}/zip" \
+            --output "${OUT}/pinned.zip"
+
+          CORPUS_OUT="${OUT}" python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import stat
+          import zipfile
+          from pathlib import Path, PurePosixPath
+
+          out = Path(os.environ["CORPUS_OUT"])
+          archive = out / "pinned.zip"
+
+          # Beklenen icerik RFV-3B geri yukleme yolundaki sabitlerin aynisi.
+          expected_files = {
+              "rfv2-public-corpus.tar.gz": "1da641ad27b58985e4e1cf8d9972af5a15f5105e85e2c319151a5e373b6afc46",
+              "qualification-manifest.json": "c2b1f4381d4ac9cd96e1ce8ba27589103a3ee696838dbf3dc487db96e51130aa",
+              "qualification-audit.json": "cf42d7d4fb820c915a2023b242c10a54e21ca87c721f9b699d55d6a49bb0c0f0",
+              "bundle-checksums.json": "ff39ab6e320dbede7241ceefa9eea87d31c3b4e52bb31366aa49278067826655",
+          }
+
+          data = archive.read_bytes()
+          assert len(data) == int(os.environ["PINNED_ARTIFACT_BYTES"]), "arsiv boyutu beklenenden farkli"
+          assert hashlib.sha256(data).hexdigest() == os.environ["PINNED_ARTIFACT_SHA256"], "arsiv digest'i tutmuyor"
+
+          with zipfile.ZipFile(archive) as package:
+              infos = package.infolist()
+              names = [info.filename for info in infos]
+              assert len(names) == len(set(names))
+              assert set(names) == set(expected_files)
+              payloads = {}
+              for info in infos:
+                  name = info.filename
+                  assert PurePosixPath(name).name == name
+                  assert not info.is_dir()
+                  assert not (info.flag_bits & 0x1)
+                  mode = (info.external_attr >> 16) & 0o170000
+                  assert mode in (0, stat.S_IFREG)
+                  assert info.file_size <= 12_000_000
+                  blob = package.read(info)
+                  assert len(blob) == info.file_size
+                  assert hashlib.sha256(blob).hexdigest() == expected_files[name], f"{name} digest'i tutmuyor"
+                  payloads[name] = blob
+
+          manifest = json.loads(payloads["qualification-manifest.json"])
+          audit = json.loads(payloads["qualification-audit.json"])
+          checksums = json.loads(payloads["bundle-checksums.json"])
+          qualified = os.environ["QUALIFIED_CASES_SHA256"]
+          assert manifest["status"] == "qualified"
+          assert manifest["qualified_case_count"] == 24
+          assert len(manifest["cases"]) == 24
+          assert audit["complete"] is True
+          assert audit["missing_categories"] == []
+          assert checksums["schema"] == "vektoryum-rfv2-live-bundle-checksums-v1"
+          assert checksums["cases_sha256"] == qualified
+          assert manifest["cases_sha256"] == qualified
+          assert audit["cases_sha256"] == qualified
+          assert checksums["bundle_sha256"] == expected_files["rfv2-public-corpus.tar.gz"]
+
+          for name, blob in payloads.items():
+              (out / name).write_bytes(blob)
+
+          # Kalici depo icin kendi kendini tasiyan bir kimlik dosyasi: hangi
+          # baytlarin nereden geldigini ve neyin dogrulandigini kaydeder.
+          provenance = {
+              "schema": "vektoryum-rfv2-permanent-store-v1",
+              "cases_sha256": qualified,
+              "qualified_case_count": 24,
+              "source_artifact_id": int(os.environ["PINNED_ARTIFACT_ID"]),
+              "source_artifact_sha256": os.environ["PINNED_ARTIFACT_SHA256"],
+              "source_artifact_bytes": int(os.environ["PINNED_ARTIFACT_BYTES"]),
+              "source_artifact_expires_at": "2026-10-13T19:25:36Z",
+              "file_sha256": expected_files,
+              "storage_mode": "github_release_asset_no_expiry",
+              "verified": [
+                  "archive_bytes",
+                  "archive_sha256",
+                  "per_file_sha256",
+                  "manifest_qualified",
+                  "audit_complete",
+                  "cases_sha256_identity",
+              ],
+          }
+          (out / "permanent-store-provenance.json").write_text(
+              json.dumps(provenance, indent=2, sort_keys=True) + "\n"
+          )
+          print("dogrulama tamam — 4 dosya + provenance yazildi")
+          PY
+
+      - name: Publish the corpus to a draft release
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          OUT="${RUNNER_TEMP}/corpus"
+          API="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+
+          api() {
+            curl --fail-with-body --location --silent --show-error \
+              --retry 3 --retry-all-errors \
+              --header "Authorization: Bearer ${GITHUB_TOKEN}" \
+              --header "Accept: application/vnd.github+json" \
+              --header "X-GitHub-Api-Version: 2022-11-28" \
+              "$@"
+          }
+
+          # Var olan taslagi yeniden kullan (is idempotent olsun).
+          release_id="$(
+            api "${API}/releases?per_page=100" \
+              | python -c "import json,os,sys; tag=os.environ['RELEASE_TAG']; print(next((str(r['id']) for r in json.load(sys.stdin) if r.get('tag_name')==tag), ''))"
+          )"
+
+          if [ -z "${release_id}" ]; then
+            echo "taslak release olusturuluyor: ${RELEASE_TAG}"
+            # Govde dosyaya yaziliyor: JSON'u komut ikamesi icinde heredoc ile
+            # beslemek terminator hizalamasina bagli oldugu icin kirilgan.
+            python - > "${OUT}/release.json" <<'PY'
+          import json
+          import os
+
+          print(json.dumps({
+              "tag_name": os.environ["RELEASE_TAG"],
+              "target_commitish": os.environ["GITHUB_SHA"],
+              "name": f"RFV-2 qualification corpus {os.environ['QUALIFIED_CASES_SHA256']}",
+              "body": (
+                  "Nitelenmis RFV-2 korpusunun suresi dolmayan kopyasi.\n\n"
+                  f"cases_sha256: {os.environ['QUALIFIED_CASES_SHA256']}\n"
+                  f"kaynak artefakt: {os.environ['PINNED_ARTIFACT_ID']} "
+                  "(expires_at 2026-10-13T19:25:36Z)\n\n"
+                  "TASLAK: yayimlanmadi, genel depoda gorunmez. Bu ek yalnizca "
+                  "RFV-3B / RFV-2E olcum hatlarinin korpusu geri yuklemesi "
+                  "icindir. Icerik yuklemeden once bayt bayt dogrulandi; "
+                  "ayrintilar permanent-store-provenance.json icinde."
+              ),
+              "draft": True,
+              "prerelease": False,
+          }))
+          PY
+            release_id="$(
+              api --request POST "${API}/releases" --data "@${OUT}/release.json" \
+                | python -c "import json,sys; print(json.load(sys.stdin)['id'])"
+            )"
+          else
+            echo "var olan taslak yeniden kullaniliyor: ${release_id}"
+          fi
+
+          echo "release_id=${release_id}"
+
+          for name in rfv2-public-corpus.tar.gz qualification-manifest.json qualification-audit.json bundle-checksums.json permanent-store-provenance.json; do
+            # Ayni adli eski eki temizle, sonra yukle.
+            asset_id="$(
+              api "${API}/releases/${release_id}/assets" \
+                | python -c "import json,sys; n='${name}'; print(next((str(a['id']) for a in json.load(sys.stdin) if a.get('name')==n), ''))"
+            )"
+            if [ -n "${asset_id}" ]; then
+              api --request DELETE "${API}/releases/assets/${asset_id}" >/dev/null
+              echo "  eski ek silindi: ${name}"
+            fi
+            api --request POST \
+              --header "Content-Type: application/octet-stream" \
+              --data-binary "@${OUT}/${name}" \
+              "https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets?name=${name}" \
+              >/dev/null
+            echo "  yuklendi: ${name}"
+          done
+
+      - name: Verify the stored copy is byte-identical
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          OUT="${RUNNER_TEMP}/corpus"
+          VERIFY="${RUNNER_TEMP}/verify"
+          rm -rf "${VERIFY}"
+          mkdir -p "${VERIFY}"
+          API="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+
+          # Yukleme "basarili dondu" demek, geri okununca ayni bayt gelir demek
+          # degil. Kalici depoya guvenmeden once geri indirilip karsilastirilir.
+          release_id="$(
+            curl --fail-with-body --location --silent --show-error \
+              --header "Authorization: Bearer ${GITHUB_TOKEN}" \
+              --header "Accept: application/vnd.github+json" \
+              "${API}/releases?per_page=100" \
+              | python -c "import json,os,sys; tag=os.environ['RELEASE_TAG']; print(next(str(r['id']) for r in json.load(sys.stdin) if r.get('tag_name')==tag))"
+          )"
+
+          curl --fail-with-body --location --silent --show-error \
+            --header "Authorization: Bearer ${GITHUB_TOKEN}" \
+            --header "Accept: application/vnd.github+json" \
+            "${API}/releases/${release_id}/assets" > "${VERIFY}/assets.json"
+
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+
+          out = Path(os.environ["RUNNER_TEMP"]) / "corpus"
+          verify = Path(os.environ["RUNNER_TEMP"]) / "verify"
+          token = os.environ["GITHUB_TOKEN"]
+          assets = {a["name"]: a for a in json.loads((verify / "assets.json").read_text())}
+
+          expected = sorted(p.name for p in out.iterdir() if p.name != "pinned.zip")
+          missing = [n for n in expected if n not in assets]
+          if missing:
+              raise SystemExit(f"kalici depoda eksik ek: {missing}")
+
+          failures = []
+          for name in expected:
+              target = verify / name
+              subprocess.run(
+                  [
+                      "curl", "--fail-with-body", "--location", "--silent", "--show-error",
+                      "--retry", "3", "--retry-all-errors",
+                      "--header", f"Authorization: Bearer {token}",
+                      "--header", "Accept: application/octet-stream",
+                      assets[name]["url"],
+                      "--output", str(target),
+                  ],
+                  check=True,
+              )
+              local = hashlib.sha256((out / name).read_bytes()).hexdigest()
+              stored = hashlib.sha256(target.read_bytes()).hexdigest()
+              status = "AYNI" if local == stored else "FARKLI"
+              print(f"  {name:<38} {status}  {stored[:16]}")
+              if local != stored:
+                  failures.append(name)
+
+          if failures:
+              raise SystemExit(f"kalici kopya bayt bayt AYNI DEGIL: {failures}")
+          print()
+          print("KALICI DEPO DOGRULANDI — korpus artik suresi dolan tek artefakta bagli degil")
+          PY
