@@ -2027,3 +2027,39 @@ Kanıt JSON'ları geçmiş koşuların kaydı — kimlik tanımı değişirse bu
 Artefakt `8354853386`: `expired: false`, `expires_at` **2026-10-13T19:25:36Z**,
 10 910 811 B, digest sabitlenen `a8be8c07…` ile aynı. Ölçüm günü itibarıyla
 **57 gün**.
+
+---
+
+## 17. Kalıcı depo: taslak release ÇALIŞMIYOR — ölçüldü
+
+Korpus taslak release ekine taşındı ve **yazma tarafı tamamen doğrulandı**
+(koşu 32022012771): 4 dosyanın digest'i + arşiv boyutu + manifest/audit +
+kimlik yüklemeden önce; geri indirilip 5 dosyanın da bayt bayt aynı geldiği
+yüklemeden sonra.
+
+Ama tüketici tarafı düştü (koşu 32022307181):
+
+```
+contents:read ile taslak release GORUNMUYOR (rfv2-corpus-5f151a6c).
+```
+
+`store` işi `contents: write` ile çalışıyor; RFV-3B `acquire` işi ise yalnız
+`contents: read` taşıyor. **Taslak release'ler push yetkisi gerektiriyor.**
+Depo tüketicinin yetkisiyle okunamıyorsa fiilen yoktur:
+**13 Ekim son tarihi KALKMADI.**
+
+Bu, "yazma başarılı oldu" ile "tüketici okuyabiliyor" arasındaki farkı
+ölçmeden kabul etmemenin karşılığıdır — `verify_read` işi tam bunun için
+eklenmişti ve işe yaradı.
+
+### Seçenekler (ölçülmüş kısıtlarla)
+
+| seçenek | çalışır mı | bedeli |
+|---|---|---|
+| Release'i **yayımla** (taslaktan çıkar) | Evet — `contents: read` yayımlanmış release'i görür | Varlıklar genel depoda **görünür** olur. Lisans sorunu yok (24 varlığın tamamı CC0/kamu malı) ama görünürlük kullanıcı kararı |
+| RFV-3B'ye `contents: write` ver | Evet | Ölçüm iş akışının yetkisini yükseltmek — motor kodunu koşturan bir işte yanlış |
+| Actions artefaktını periyodik tazele | Evet, `actions: read` zaten var | Değirmen: zamanlama 90 gün durursa ölür. GitHub, hareketsiz depolarda zamanlanmış işleri 60 günde devre dışı bırakıyor |
+| HF Dataset | Bilinmiyor | Dataset deposu + yazma yetkili token gerekiyor; ikisi de doğrulanamıyor |
+
+Taslak release ve içindeki ekler **duruyor** — silinmedi. Yayımlama kararı
+verilirse tek adım (`draft: false`) yeterli, yeniden yüklemeye gerek yok.
