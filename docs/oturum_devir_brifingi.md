@@ -1835,7 +1835,7 @@ Sahibinin kararı olmalı. C hattı buraya kadar **ölçümle** geldi:
 maliyet yasası (22,5 ms/katman), kaynağı (`exact` = 255 katman) ve
 seçim mekanizması (`_alpha_encodings`, exact-first, süre görmüyor) belirlendi.
 
-## 14. KARAR: Seçenek A — painter için alfa-yalnız değerlendirme (tarif hazır, UYGULANMADI)
+## 14. KARAR: Seçenek A — painter için alfa-yalnız değerlendirme (UYGULANDI, madde 15)
 
 Üç seçenek arasından **A** seçildi. Gerekçe: kalite kapılarına dokunmuyor
 (C2 politika değişikliği gerektiriyor, D korpus/CI turu gerektiriyor), hedefi
@@ -1891,3 +1891,74 @@ yere sızmadığı uygulama sırasında teyit edilmeli.
 ⚠️ **Uygulanmadı** — bu oturumda doğrulamayı (2 koşu ≈ 15 dk + regresyon)
 tamamlayacak bağlam kalmadı. Yarım doğrulanmış motor değişikliği bırakmamak
 için tarif yazıldı, kod yazılmadı.
+
+---
+
+## 15. Seçenek A uygulandı ve ölçüldü — painter çağrı noktası %88,9 ucuzladı
+
+Madde 14'teki tarif birebir uygulandı: `final_artifact_evaluator.py`'ye
+`alpha_plane_only: bool = False` parametresi eklendi (yeniden yazma yok,
+mevcut kod bloğu koşula alındı), `alpha_candidate_painter` tek çağrısında
+`True` geçiliyor. `knockout:354` ve `validation:108` **dokunulmadı**.
+
+### Ne korundu / ne atlandı
+
+| Korunan (alfa yolu, birebir aynı) | Atlanan (bu tüketicinin okumadığı) |
+|---|---|
+| `w,h` türetmesi + `source_alpha_cmp` | `B_visual` (ssim, ms_ssim, cross_renderer) |
+| `render_svg_to_rgba` (tek render) | `C_color` (ciede2000, palet uyumu) |
+| `alpha_plane_metrics` | `D_edge_geometry` (edge-F1, boundary offset) |
+| `seam_ratio` + seam eşiği | `E_topology`, `F_small_detail` |
+| `alpha_iou_min` / `alpha_mae_max` eşikleri | halo / roundtrip / `_appearance_metrics` |
+
+Değerler yeniden hesaplanmadığı, yalnız **hesaplanmayanlar atlandığı** için
+alfa metrikleri inşa gereği aynı; eşik gevşetmesi yok.
+
+### Ölçüm (aynı enstrümantasyon, `class_reklam`, aynı 35 çağrı)
+
+| | taban (13.11) | Seçenek A | fark |
+|---|---|---|---|
+| `alpha_candidate_painter` | 78,7 s / 35 çağrı | **8,7 s / 35 çağrı** | **−70,0 s (−%88,9)** |
+| `evaluate_final_svg` toplamı | 134,4 s | 58,0 s | −76,4 s |
+| boru hattı payı | %30,4 | **%15,0** | — |
+| boru hattı (enstrümanlı) | 440–456 s | 386,9 s | gürültü bandına yakın¹ |
+
+¹ Boru hattı toplamı için **hızlanma iddia edilmiyor**: e2e tabanları 387,5–455,9 s
+arasında salınıyordu. Savunulabilir sayı çağrı-noktası ölçümüdür (aynı koşu,
+aynı sayıda çağrı, aynı sarmalayıcı).
+
+Yeni darboğaz açıkça görünür oldu: **`alpha_candidate_validation:108` — 2 çağrı,
+49,3 s, evaluate_final_svg'nin %85'i.** Buradaki tüketici tüm algısal grupları
+gerçekten okuyor (madde 13.12), yani aynı hile uygulanamaz; sonraki adım
+kazanç aramak yerine bu iki çağrının neden 25 s sürdüğünü ölçmektir.
+
+### Doğrulama (tamamı yeşil)
+
+- `e2e.py class_reklam` → kazanan `geo_standard_alpha.svg` **267 523 B**,
+  tabanla **bayt bayt aynı**; `selection_reason`, `mode/best` değişmedi;
+  5 format (svg/pdf/eps/dxf/png) üretildi. (PDF/DXF 1–2 bayt oynuyor —
+  exporter metadata belirsizliği, bu değişiklikle ilgisiz.)
+- `test_visual_regression.py` → `class_reklam` PASS, `gradient_logo` PASS,
+  `arcaates` FAIL (`source_alpha_mask_rectangle_budget_exceeded:50488>8251` —
+  main'de zaten var olan).
+- `test_artifact_quality.py` → **36/36 kontrol geçti**.
+- Sözleşme testleri: `test_alpha_painter_ledger`, `_paint_deficit`,
+  `_stroke_continuation`, `_encoding`, `_retry`, `test_alpha_mask_adaptive` → hepsi OK.
+
+Madde 14'teki ⚠️ `verdict` sızıntısı riski **kapandı**: `report` painter içinde
+yerel; yalnız `metrics["G_gradient_alpha"]` ve `_ALPHA_PLANE_FAILURE_CODES` ile
+süzülmüş `hard_fail_codes` okunuyor. `result["report"]` ayrı bir sözlük
+(native/direct metriklerden kuruluyor), evaluator raporundan türemiyor.
+
+### Ortam notu
+
+Bu konteynerde `engine/.venv` **yok**. Koşucular şöyle çalışır:
+
+```
+cd engine && python3 test_visual_regression.py && python3 test_artifact_quality.py
+PYTHONPATH=<repo>:<repo>/engine python3 -m engine.test_alpha_painter_stroke_continuation
+```
+
+(`test_alpha_painter_stroke_continuation` hem `engine.` paketini hem `app.`
+modülünü içe aktarıyor; tek başına hiçbir çalışma dizininden koşmuyor —
+iki yolu birden `PYTHONPATH`'e koymak gerekiyor.)
