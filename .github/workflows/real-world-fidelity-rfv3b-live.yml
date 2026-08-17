@@ -97,6 +97,9 @@ jobs:
           PINNED_ARTIFACT_ID: "8354853386"
           PINNED_ARTIFACT_SHA256: "a8be8c0782a8aeb037a2736de8adbd357c5074ad0da6355562e2543092d6af76"
           QUALIFIED_CASES_SHA256: "5f151a6cb1a433b0cb0989a67bd7cc7940162f4b36d67903d6ccdd173f9e7d89"
+          # Suresi dolmayan kopya (#159 madde 4). Artefakt 2026-10-13'te sona
+          # erecegi icin birincil geri yukleme kaynagi budur.
+          PERMANENT_STORE_TAG: "rfv2-corpus-5f151a6c"
         run: |
           set -uo pipefail
           RFV_ROOT="${RUNNER_TEMP}/rfv3b-acquire"
@@ -170,8 +173,109 @@ jobs:
               fi
             fi
 
+            restored=0
             if [ "${acquired}" -eq 0 ]; then
-              echo "RFV-3B live acquisition unusable; restoring SHA-pinned immutable corpus"
+              # ONCE KALICI DEPO (#159 madde 4). Sabitlenmis Actions artefakti
+              # 2026-10-13'te sona eriyor; suresi dolmayan release kopyasi
+              # birincil kaynak, artefakt yalnizca yedek. Bu kol duserse
+              # asagidaki artefakt yolu aynen devreye girer.
+              echo "RFV-3B live acquisition unusable; trying the permanent corpus store"
+              set +e
+              (
+                set -euo pipefail
+                store_dir="${RFV_ROOT}/permanent"
+                mkdir -p "${store_dir}"
+                release_assets="${store_dir}/assets.json"
+                curl \
+                  --fail-with-body --location --silent --show-error \
+                  --retry 3 --retry-all-errors \
+                  --header "Authorization: Bearer ${GITHUB_TOKEN}" \
+                  --header "Accept: application/vnd.github+json" \
+                  --header "X-GitHub-Api-Version: 2022-11-28" \
+                  "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+                  --output "${store_dir}/releases.json"
+
+                asset_url_list="$(
+                  RELEASE_TAG="${PERMANENT_STORE_TAG}" python - "${store_dir}/releases.json" <<'PY'
+          import json
+          import os
+          import sys
+
+          tag = os.environ["RELEASE_TAG"]
+          releases = json.load(open(sys.argv[1]))
+          match = next((r for r in releases if r.get("tag_name") == tag), None)
+          if match is None:
+              raise SystemExit(f"kalici depo release'i bulunamadi: {tag}")
+          print(match["assets_url"])
+          PY
+                )"
+
+                curl \
+                  --fail-with-body --location --silent --show-error \
+                  --retry 3 --retry-all-errors \
+                  --header "Authorization: Bearer ${GITHUB_TOKEN}" \
+                  --header "Accept: application/vnd.github+json" \
+                  "${asset_url_list}" --output "${release_assets}"
+
+                RFV_OUT="${RFV_ROOT}/out" STORE_ASSETS="${release_assets}" \
+                GITHUB_TOKEN="${GITHUB_TOKEN}" \
+                QUALIFIED_CASES_SHA256="${QUALIFIED_CASES_SHA256}" python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+
+          # Kalici depodan gelen baytlar da artefakt yolundaki ayni digest
+          # sozlesmesine tabidir; "kalici" demek "dogrulanmamis" demek degil.
+          expected_files = {
+              "rfv2-public-corpus.tar.gz": "1da641ad27b58985e4e1cf8d9972af5a15f5105e85e2c319151a5e373b6afc46",
+              "qualification-manifest.json": "c2b1f4381d4ac9cd96e1ce8ba27589103a3ee696838dbf3dc487db96e51130aa",
+              "qualification-audit.json": "cf42d7d4fb820c915a2023b242c10a54e21ca87c721f9b699d55d6a49bb0c0f0",
+              "bundle-checksums.json": "ff39ab6e320dbede7241ceefa9eea87d31c3b4e52bb31366aa49278067826655",
+          }
+
+          output = Path(os.environ["RFV_OUT"])
+          token = os.environ["GITHUB_TOKEN"]
+          assets = {a["name"]: a for a in json.load(open(os.environ["STORE_ASSETS"]))}
+          missing = [n for n in expected_files if n not in assets]
+          if missing:
+              raise SystemExit(f"kalici depoda eksik dosya: {missing}")
+
+          output.mkdir(parents=True, exist_ok=True)
+          for name, digest in expected_files.items():
+              temporary = output / f".{name}.store.tmp"
+              subprocess.run(
+                  [
+                      "curl", "--fail-with-body", "--location", "--silent", "--show-error",
+                      "--retry", "3", "--retry-all-errors",
+                      "--header", f"Authorization: Bearer {token}",
+                      "--header", "Accept: application/octet-stream",
+                      assets[name]["url"], "--output", str(temporary),
+                  ],
+                  check=True,
+              )
+              blob = temporary.read_bytes()
+              if hashlib.sha256(blob).hexdigest() != digest:
+                  raise SystemExit(f"kalici depo digest'i tutmuyor: {name}")
+              temporary.replace(output / name)
+
+          checksums = json.loads((output / "bundle-checksums.json").read_text())
+          if checksums["cases_sha256"] != os.environ["QUALIFIED_CASES_SHA256"]:
+              raise SystemExit("kalici depo korpus kimligi nitelenmis kimlikle esit degil")
+          PY
+              )
+              if [ "$?" -eq 0 ]; then
+                restored=1
+                echo "RFV-3B source mode: permanent corpus store (${PERMANENT_STORE_TAG})"
+              else
+                echo "RFV-3B permanent store unavailable; falling back to the expiring artifact"
+              fi
+              set -e
+            fi
+
+            if [ "${acquired}" -eq 0 ] && [ "${restored}" -eq 0 ]; then
+              echo "RFV-3B restoring SHA-pinned immutable corpus"
               cache_zip="${RFV_ROOT}/pinned-rfv2-corpus.zip"
               curl \
                 --fail-with-body \

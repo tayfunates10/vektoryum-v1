@@ -315,3 +315,99 @@ jobs:
           print()
           print("KALICI DEPO DOGRULANDI — korpus artik suresi dolan tek artefakta bagli degil")
           PY
+
+  # Kalici depo, TUKETICININ yetkisiyle okunabilmeli. Store isi contents:write
+  # ile calisiyor; RFV-3B geri yukleme yolu ise yalnizca contents:read tasiyor.
+  # Taslak release'ler push yetkisi gerektirebildigi icin bu fark onemli:
+  # okunamiyorsa kalici depo fiilen yoktur ve son tarih kalkmamis demektir.
+  verify_read:
+    needs: store
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      RELEASE_TAG: "rfv2-corpus-5f151a6c"
+      QUALIFIED_CASES_SHA256: "5f151a6cb1a433b0cb0989a67bd7cc7940162f4b36d67903d6ccdd173f9e7d89"
+    steps:
+      - name: Read the permanent store with a read-only token
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          WORK="${RUNNER_TEMP}/readonly"
+          mkdir -p "${WORK}"
+          API="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+
+          curl --fail-with-body --location --silent --show-error \
+            --retry 3 --retry-all-errors \
+            --header "Authorization: Bearer ${GITHUB_TOKEN}" \
+            --header "Accept: application/vnd.github+json" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "${API}/releases?per_page=100" --output "${WORK}/releases.json"
+
+          WORK="${WORK}" python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+
+          work = Path(os.environ["WORK"])
+          tag = os.environ["RELEASE_TAG"]
+          token = os.environ["GITHUB_TOKEN"]
+          releases = json.loads((work / "releases.json").read_text())
+          match = next((r for r in releases if r.get("tag_name") == tag), None)
+          if match is None:
+              raise SystemExit(
+                  f"contents:read ile taslak release GORUNMUYOR ({tag}). "
+                  "Kalici depo bu yetkiyle okunamaz; RFV-3B geri yukleme yolu "
+                  "artefakta dusmeye devam eder ve son tarih KALKMAMISTIR."
+              )
+          print(f"taslak release contents:read ile gorunuyor (draft={match.get('draft')})")
+
+          subprocess.run(
+              [
+                  "curl", "--fail-with-body", "--location", "--silent", "--show-error",
+                  "--header", f"Authorization: Bearer {token}",
+                  "--header", "Accept: application/vnd.github+json",
+                  match["assets_url"], "--output", str(work / "assets.json"),
+              ],
+              check=True,
+          )
+          assets = {a["name"]: a for a in json.loads((work / "assets.json").read_text())}
+
+          expected = {
+              "rfv2-public-corpus.tar.gz": "1da641ad27b58985e4e1cf8d9972af5a15f5105e85e2c319151a5e373b6afc46",
+              "qualification-manifest.json": "c2b1f4381d4ac9cd96e1ce8ba27589103a3ee696838dbf3dc487db96e51130aa",
+              "qualification-audit.json": "cf42d7d4fb820c915a2023b242c10a54e21ca87c721f9b699d55d6a49bb0c0f0",
+              "bundle-checksums.json": "ff39ab6e320dbede7241ceefa9eea87d31c3b4e52bb31366aa49278067826655",
+          }
+          missing = [n for n in expected if n not in assets]
+          if missing:
+              raise SystemExit(f"read-only yetkiyle gorunmeyen ek: {missing}")
+
+          for name, digest in expected.items():
+              target = work / name
+              subprocess.run(
+                  [
+                      "curl", "--fail-with-body", "--location", "--silent", "--show-error",
+                      "--retry", "3", "--retry-all-errors",
+                      "--header", f"Authorization: Bearer {token}",
+                      "--header", "Accept: application/octet-stream",
+                      assets[name]["url"], "--output", str(target),
+                  ],
+                  check=True,
+              )
+              observed = hashlib.sha256(target.read_bytes()).hexdigest()
+              if observed != digest:
+                  raise SystemExit(f"read-only indirmede digest tutmadi: {name}")
+              print(f"  {name:<34} indirildi ve dogrulandi")
+
+          checksums = json.loads((work / "bundle-checksums.json").read_text())
+          if checksums["cases_sha256"] != os.environ["QUALIFIED_CASES_SHA256"]:
+              raise SystemExit("kalici depo korpus kimligi nitelenmis kimlikle esit degil")
+          print()
+          print("TUKETICI YOLU DOGRULANDI — RFV-3B kalici depodan geri yukleyebilir")
+          PY
