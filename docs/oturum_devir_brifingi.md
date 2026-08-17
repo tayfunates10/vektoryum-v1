@@ -1962,3 +1962,68 @@ PYTHONPATH=<repo>:<repo>/engine python3 -m engine.test_alpha_painter_stroke_cont
 (`test_alpha_painter_stroke_continuation` hem `engine.` paketini hem `app.`
 modülünü içe aktarıyor; tek başına hiçbir çalışma dizininden koşmuyor —
 iki yolu birden `PYTHONPATH`'e koymak gerekiyor.)
+
+---
+
+## 16. Aşama 0 / #159 — determinizmsizliğin kök nedeni ÖLÇÜLDÜ
+
+Tanılama işi (`rfv2-acquisition-determinism-check.yml`, koşu 32012776663,
+5,5 dk) aynı runner üzerinde iki ardışık tam edinim koşturdu.
+
+### Ölçüm
+
+| gözlem | sonuç |
+|---|---|
+| edinilen vaka | a=24, b=24 (ikisi de tam) |
+| **depo nesneleri (kanonik varlık baytları)** | **24/24 BAYT BAYT AYNI** |
+| sürüklenen kayıt alanı | `consent_sha256`, `inspection_sha256` — **yalnız 1/24 vaka** |
+| sürüklenen lisans kanıtı alanı | `license_proof_sha256` — yalnız 1/24 |
+| sürüklenen vaka | `qualification-public-19` |
+| `cases_sha256` a | `f0a119e31937f4f5…` |
+| `cases_sha256` b | `ba88981e121cb9a5…` |
+| nitelenmiş (sabit) | `5f151a6cb1a433b0…` |
+
+**Varlıklar tamamen kararlı.** Sürüklenen tek şey lisans kanıtı sayfasının
+baytları. Zincir: `license_proof_sha256` → `license-proof.json` →
+`consent_sha256` → (`inspection_payload` bunu gömdüğü için) `inspection_sha256`
+→ `cases_sha256`.
+
+### Kök neden: paylaşılan, canlı, varlığa özgü OLMAYAN lisans sayfası
+
+```
+19x  https://openclipart.org/share          <-- 24 vakanın 19'u AYNI sayfa
+ 1x  https://www.loc.gov/item/2016812028/
+ 1x  https://www.loc.gov/item/2016812750/
+ 1x  https://www.loc.gov/item/2016812878/
+ 1x  https://www.loc.gov/item/2016812821/
+ 1x  https://www.loc.gov/item/2016812728/
+```
+
+`openclipart.org/share` genel bir site sayfası — 19 farklı varlık için aynı
+bayt kümesi hash'leniyor. Varlığa özgü hiçbir şey kanıtlamıyor ve canlı olduğu
+için her düzenlemede 19 vakanın kimliğini birden yeniden atıyor. Bu koşuda
+şans eseri yalnız 1 vaka yakalandı; sayfa iki koşu arasında bütünüyle
+değişseydi **19 vaka birden** sürüklenirdi. #159'un bir saatte üç farklı
+kimlik görmesi bununla tutarlı.
+
+### Bunun ağır sonucu: `5f151a6c…` yeniden türetilemez
+
+Nitelenmiş kimlik, artık var olmayan bir sayfanın anlık baytlarını içeriyor.
+**Hangi onarım yapılırsa yapılsın canlı edinim bu kimliği bir daha
+üretemez** — çünkü kimliğin girdisi geri getirilemez. Determinizmi onarmak
+kimliği zorunlu olarak DEĞİŞTİRİR.
+
+### Kan alanı
+
+`5f151a6c…` sabiti ~24 yerde: 3 workflow, `rfv3_measurement_runner.py`,
+`rfv3_measurement_policy.json`, `rfv3_quality_decision_policy.json`,
+`rfv2_qualification_manifest.json`, `test_rfv2_qualified_evidence.py`, 5 doküman
+ve **9 kanıt JSON'u** (`rfv3_pipeline_results.json`, yayın zarfları, denetimler).
+Kanıt JSON'ları geçmiş koşuların kaydı — kimlik tanımı değişirse bunlar
+"eski kimlik" olarak yeniden etiketlenmeli.
+
+### Son tarih doğrulandı
+
+Artefakt `8354853386`: `expired: false`, `expires_at` **2026-10-13T19:25:36Z**,
+10 910 811 B, digest sabitlenen `a8be8c07…` ile aynı. Ölçüm günü itibarıyla
+**57 gün**.
