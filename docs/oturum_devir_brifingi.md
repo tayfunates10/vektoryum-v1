@@ -1834,3 +1834,60 @@ Maliyeti düşürmenin iki yolu var, **ikisi de politika kararı**:
 Sahibinin kararı olmalı. C hattı buraya kadar **ölçümle** geldi:
 maliyet yasası (22,5 ms/katman), kaynağı (`exact` = 255 katman) ve
 seçim mekanizması (`_alpha_encodings`, exact-first, süre görmüyor) belirlendi.
+
+## 14. KARAR: Seçenek A — painter için alfa-yalnız değerlendirme (tarif hazır, UYGULANMADI)
+
+Üç seçenek arasından **A** seçildi. Gerekçe: kalite kapılarına dokunmuyor
+(C2 politika değişikliği gerektiriyor, D korpus/CI turu gerektiriyor), hedefi
+ölçülmüş, doğrulaması yerelde koşuyor.
+
+**Hedef:** `alpha_candidate_painter:709`, 35 çağrı, **78,7 s** = boru hattının
+**%17,8'i** (madde 13.11). Painter bu çağrıdan yalnız `alpha_iou`/`alpha_mae`
+ve `_ALPHA_PLANE_FAILURE_CODES`'u (**iki kod**) kullanıyor (madde 13.9).
+
+### Uygulama tarifi (yeniden yazma DEĞİL, parametre ekleme)
+
+Alfa metrikleri `final_artifact_evaluator.py`'de şu kesin reçeteyle üretiliyor:
+
+```python
+# :478-482  w,h türetmesi + source_alpha_cmp (INTER_AREA ile kapaklı yeniden boyut)
+# :485      render_rgba = render_svg_to_rgba(svg_path, w, h)
+# :556-562  render_rgba yeniden boyutlanır, sonra
+#           alpha_metrics = alpha_plane_metrics(source_alpha_cmp, render_rgba[:, :, 3])
+# :600-603  alpha_iou_below_min / alpha_mae_above_max eşik karşılaştırmaları
+```
+
+**Doğru yaklaşım:** `evaluate_final_svg_bytes`'a `alpha_plane_only: bool = False`
+parametresi ekle. `True` iken:
+- **KORU:** `w,h` türetmesi, `render_svg_to_rgba`, `source_alpha_cmp`,
+  `alpha_plane_metrics`, ve `:600-603`'teki iki eşik kontrolü
+- **ATLA:** `_appearance_metrics` (backgrounds), `boundary_halo_metrics`,
+  `roundtrip_metrics`, B_visual (SSIM/ms_ssim), C/D renk grupları
+  (`ciede2000`, `kmeans`, `classify_features`), E_topology, F_small_detail
+
+Böylece değerler **inşa gereği** birebir aynı olur — yeniden yazımda kaçınılmaz
+olan sapma riski ortadan kalkar.
+
+Sonra yalnız `alpha_candidate_painter.py:709` bu parametreyi geçsin.
+`knockout:354` ve `validation:108` **aynen kalsın** (knockout hiçbir hard fail
+kabul etmiyor, madde 13.10; validation'da kazanç yok, madde 13.12).
+
+### Zorunlu doğrulama (sırayla)
+
+1. `python3 scratchpad/e2e.py class_reklam` → kazanan SVG **bayt bayt aynı**
+   olmalı: `geo_standard_alpha.svg`, **267 523 B**,
+   `selection_reason=highest_total_score+source_alpha_vector_mask`,
+   `mode/best=geometric_logo/geo_standard`. Değişirse **geri al**.
+2. Süre düşüşü ölçül (taban 440-456 s; beklenen kazanç 78,7 s'nin büyük kısmı).
+3. `cd engine && python3 test_visual_regression.py` → `class_reklam` PASS,
+   `gradient_logo` PASS, `arcaates` FAIL (önceden var olan).
+4. Sözleşme testleri: `engine.test_alpha_painter_ledger`,
+   `engine.test_alpha_painter_paint_deficit`, `engine.test_alpha_mask_adaptive`.
+
+⚠️ Doğrulanmamış risk: `verdict` alanı daha az hard fail ile değişir.
+Painter `verdict`'i okumuyor (kontrol edildi) ama aynı rapor nesnesinin başka
+yere sızmadığı uygulama sırasında teyit edilmeli.
+
+⚠️ **Uygulanmadı** — bu oturumda doğrulamayı (2 koşu ≈ 15 dk + regresyon)
+tamamlayacak bağlam kalmadı. Yarım doğrulanmış motor değişikliği bırakmamak
+için tarif yazıldı, kod yazılmadı.
