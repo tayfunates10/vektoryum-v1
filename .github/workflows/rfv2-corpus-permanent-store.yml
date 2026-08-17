@@ -276,7 +276,15 @@ jobs:
           token = os.environ["GITHUB_TOKEN"]
           assets = {a["name"]: a for a in json.loads((verify / "assets.json").read_text())}
 
-          expected = sorted(p.name for p in out.iterdir() if p.name != "pinned.zip")
+          # Acik sozlesme: dizini taramak, yalnizca yerelde bulunan ara
+          # dosyalari (ornegin release govdesi) de beklenen ek sanmaya yol acar.
+          expected = [
+              "rfv2-public-corpus.tar.gz",
+              "qualification-manifest.json",
+              "qualification-audit.json",
+              "bundle-checksums.json",
+              "permanent-store-provenance.json",
+          ]
           missing = [n for n in expected if n not in assets]
           if missing:
               raise SystemExit(f"kalici depoda eksik ek: {missing}")
