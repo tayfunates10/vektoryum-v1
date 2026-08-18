@@ -2197,3 +2197,68 @@ bağlı olduğu **okunmalı**, tahminle başlanmamalı.
 `test_alpha_clip_encoding.py:142` clipPath'ten `<rect[^>]*/>` çekiyor; `<path>`
 kodlamasına geçilirse **o sözleşme kırılır** ve testin kendisi değil, testin
 kurduğu mask eşdeğerliği yeniden düşünülmeli.
+
+---
+
+## 20. `<path>` iskeleti yolu AÇIK — "kapalı yol #2" knockout'a uygulanmıyor
+
+Madde 19 sıradaki kaldıracın koordinat değil **iskelet** olduğunu gösterdi
+(rect iskeleti 37 B, koordinat payı yalnız 12,1 B). Madde 0'daki kapalı yol #2
+bunu yasaklıyor görünüyordu. **Yasaklamıyor** — o ölçüm başka bağlamdaydı.
+
+### `rect` tipine bağlı dört süzgeç okundu
+
+| süzgeç | anahtarı | knockout'u etkiler mi |
+|---|---|---|
+| `alpha_candidate_support_compact.py:632` | `clipPath` **id == `vektoryum-source-alpha`** | **hayır** |
+| `alpha_mask_adaptive.py:76` | `<mask>` içindeki seviye `<g>`'leri | **hayır** |
+| `alpha_svg_mask.py:563` | `<mask>` → clipPath, `_MASK_ID` | **hayır** |
+| `pipeline.py:1047` | belgede **herhangi** `rect/circle/…` → normalizasyonu kapat | **hayır (ölçüldü)** |
+
+Knockout clipPath id'leri `vektoryum-alpha-level-{n}`; ilk üç süzgecin aradığı
+`vektoryum-source-alpha` **değil**. Kapalı yol #2 `<mask>` destek katmanında
+ölçülmüştü (`_compact_mask_rectangles` / `_compact_complex_clip` `rect`
+çocuklarını süzüyor); knockout clipPath'i o yolların hiçbirine girmiyor.
+
+### Dördüncü risk ölçüldü: sıra ters
+
+`pipeline.py:1047` belgede `rect` görürse koordinat normalizasyonunu kapatıyor.
+`<path>`'e geçmek bu kapıyı açardı — **ama yalnızca restore knockout'tan SONRA
+koşuyorsa.** Ölçüldü (`class_reklam`, iki aşama):
+
+```
+olay                              t(s)   belgede knockout clip var mi
+restore_source_dimensions          0.0   -
+knockout_clip_uretildi            19.2   -
+knockout_clip_uretildi            19.3   -
+restore_source_dimensions        207.6   -
+knockout_clip_uretildi           227.5   -
+knockout_clip_uretildi           227.6   -
+
+knockout sonrasi restore cagrisi: 0
+```
+
+Her iki aşamada da **restore önce, knockout sonra**; knockout'tan sonra hiç
+restore çağrısı yok ve restore anında belgede knockout clipPath'i hiç
+bulunmuyor. Yani `pipeline.py:1047` knockout rect'lerini **hiçbir zaman
+görmüyor** — eleman tipini değiştirmek o davranışı değiştiremez.
+
+⚠️ Bu tek fixture (`class_reklam`, 2 aşama) üzerinde ölçüldü. Sıra mimari
+olarak da tutarlı (restore "establish_coordinate_contract" ve opsiyonel
+refit'lerden önce; alfa finalizasyonu daha sonra), ama başka bir vakada
+doğrulanmadı.
+
+### Kalan tek engel: test sözleşmesi
+
+`test_alpha_clip_encoding.py:142` clipPath'ten `<rect[^>]*/>` regex'iyle çekip
+onlardan bir `<mask>` eşdeğeri kuruyor ve iki render'ı karşılaştırıyor.
+`<path>` kodlamasına geçilirse bu **mekanizma** kırılır. Testin *niyeti*
+(clip ile mask render-eş olmalı) korunabilir ama kurulumu yeniden yazılmalı —
+testi "geçsin diye" değil, aynı eşdeğerliği yeni kodlamayla kuracak biçimde.
+
+### Beklenen kazanç
+
+Seviye başına tek `<path>`, rect başına `M x y h w v h h-w z` ≈ **20 B**
+(şu an 49,1). 16 712 rect → ~334 000 B; pay 722 350 B. `public-14` bütçeye
+rahatça girer. ⚠️ Yine **tahmin**: gerçek sayı `added_bytes_per_rect`'ten
+okunmalı.
