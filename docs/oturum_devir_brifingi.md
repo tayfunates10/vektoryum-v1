@@ -2338,3 +2338,97 @@ RFV-3B source mode: permanent corpus store (rfv2-corpus-5f151a6c)
 
 Altı ayrı kimlik. Determinizmsizlik sürüyor ve artık **ölçüm hattını
 etkilemiyor** — kimlik kapısı sürüklenmeyi yakalayıp kalıcı kopyaya düşüyor.
+
+---
+
+## 22. ⚠️ DÜZELTME — madde 20 yanlıştı: `<path>` iskeleti yolu KAPALI
+
+Madde 20 "`<path>` iskeleti yolu açık" sonucuna vardı. **Bu yanlış.** Orada
+`rect` tipine bağlı *süzgeçler* ve çağrı sırası kontrol edildi, ama `path`
+tipine bağlı *sayaçlar* kontrol edilmedi.
+
+`final_artifact_evaluator._structure_check` ağaçtaki **her** `path` etiketini
+sayıyor — `<defs>` / `<clipPath>` içindekiler dahil (`:198` `if tag == "path"`).
+Knockout'ta ise sert bir kimlik kapısı var (`alpha_candidate_knockout.py:415`):
+
+```python
+if after_counts != parent_counts:
+    raise RuntimeError(
+        "source_alpha_candidate_knockout_candidate_geometry_changed:..."
+    )
+```
+
+Seviye başına tek `<path>` yayınlamak `path_count`'u +127, `node_count`'u
+binlerce artırır → **her knockout adayı reddedilir**, yalnız `public-14` değil.
+Bu kimlik kapısı; gevşetilmesi söz konusu değil.
+
+Üstelik `test_alpha_clip_encoding.py`'nin docstring'i bunu zaten söylüyormuş:
+*"clipPath: hiçbir `<path>` EKLEMEZ (path_count sabit)"*. Testin 142. satırına
+bakılmış, başlığına bakılmamıştı.
+
+**Ders:** bir kodlama değişikliğinin downstream bağımlılığını ararken eleman
+tipine bağlı **süzgeçler** kadar eleman tipine bağlı **sayaçlar** da
+taranmalı. "Şu tipi kim süzüyor" sorusu yetmiyor; "şu tipi kim sayıyor"
+sorusu da sorulmalı.
+
+## 23. `public-14` — dikdörtgen SAYISINI azaltma denemeleri
+
+`<path>` kapalı olduğuna göre kalan kaldıraç rect sayısı (bayt sayıyla
+doğrusal). Gereken: **−%12** (16 712 → ≤ 14 711).
+
+### Çürütüldü 1: yön seçimi (satır yerine sütun koşuları)
+
+`_merged_rectangles_by_level` satır bazlı run-length + birebir aynı koşuların
+dikey birleştirmesi yapıyor. Transpoze edip azını seçmek kayıpsız olurdu:
+
+| fixture | satır | sütun | seviye-bazlı min | kazanç |
+|---|---|---|---|---|
+| `arcaates` | 50 488 | 50 596 | 50 484 | **%0,0** |
+| `class_reklam` | 3 579 | 3 666 | 3 579 | **%0,0** |
+| `test1` | 6 450 | 6 805 | 6 450 | **%0,0** |
+
+Satır yönü zaten en az o kadar iyi. **Kapalı yol.**
+
+### Çürütüldü 2: açgözlü maksimal dikdörtgen ayrıştırması
+
+`class_reklam`, en pahalı 6 seviye:
+
+```
+seviye 127: mevcut   678 -> acgozlu   910   (%34 DAHA FAZLA)
+seviye 126:          73  ->            73   (degisim yok)
+...
+toplam:              984 ->          1216   (%23,6 DAHA FAZLA)
+sure: 177,7 s (yalniz 6 seviye; uretimde 127 seviye var -> ~1 saat)
+```
+
+Hem **daha kötü** hem koşulamaz derecede yavaş. Nedeni yapısal: 127 nicemleme
+seviyesinde her seviye ince bir iso-alfa **bandı**; ince bantlarda satır
+koşuları optimale yakın ve "önce en büyük dikdörtgen" stratejisi bandı
+parçalıyor. **Kapalı yol.**
+
+### ÖLÇÜLDÜ: seviye sayısı — tek gerçek kaldıraç
+
+Knockout merdiveni **iki adımlı**: `exact` → `quantized_128`
+(`_alpha_encodings`, `_MAX_ALPHA_LEVELS = 128`). Painter'ınki q64/q32'ye
+iniyor. Seviye sayısı düşünce bantlar birleşiyor:
+
+| seviye | `class_reklam` rect | `arcaates` rect |
+|---|---|---|
+| 128 | 3 699 | 119 271 |
+| 64 | 3 527 (−%4,6) | 48 429 (**−%59,4**) |
+| 32 | 3 337 (−%9,8) | 8 535 (**−%92,8**) |
+| 24 | 3 195 (−%13,6) | 5 692 (−%95,2) |
+| 16 | 3 079 (−%16,8) | 4 377 (−%96,3) |
+
+Kazanç **içeriğe çok bağlı**: düz alfalı `class_reklam`'da mütevazı,
+gradyanlı `arcaates`'te ezici. `public-14`'ün hangi profilde olduğu
+bilinmiyor — ölçülmeli.
+
+### Sıradaki adım (öneri)
+
+Knockout merdivenini painter'ınki gibi q64/q32 ile uzat. Desen zaten depoda
+mevcut ve **ölçüm kapılı**: her adım yeniden skorlanır, alfa IoU/MAE kapıları
+düşerse o adım kullanılmaz. Yani kalite gevşetmesi değil, aday çeşitlendirmesi.
+
+⚠️ Kazanç tahmini yapma — `public-14` için gerçek sayı `added_bytes_per_rect`
+ve `rects` alanlarından okunmalı.
