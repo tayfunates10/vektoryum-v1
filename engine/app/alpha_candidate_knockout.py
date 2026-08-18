@@ -151,13 +151,49 @@ def _unique_id(root: ET.Element, base: str) -> str:
     return f"{base}-{index}"
 
 
+# Merdivenin kaba basamakları. Painter'daki desenle aynı: her adım ayrı bir
+# ADAY'dır, bütçe ve alfa IoU/MAE kapılarından geçmek zorundadır. Kalite
+# gevşetmesi değil, aday çeşitlendirmesidir — kapı düşerse adım kullanılmaz.
+_COARSE_ALPHA_LEVELS: tuple[int, ...] = (64, 32)
+
+
+def _quantize_alpha_to_levels(
+    alpha: np.ndarray, max_levels: int
+) -> tuple[np.ndarray, dict[int, float]]:
+    """`alpha_mask_budget._quantize_alpha`'nın seviye sayısı parametreli eşi.
+
+    Paylaşılan fonksiyon 128'e sabitli ve maske yolu da onu kullanıyor; bu
+    yüzden orası değiştirilmeden burada birebir aynı aritmetik kullanılıyor.
+    """
+    values = np.unique(alpha)
+    nonzero = values[values > 0]
+    if len(nonzero) <= max_levels:
+        quantized = alpha.astype(np.uint8, copy=True)
+        return quantized, {int(value): int(value) / 255.0 for value in nonzero}
+    steps = max_levels - 1
+    indexes = np.rint(alpha.astype(np.float32) * steps / 255.0).astype(np.uint8)
+    return indexes, {
+        int(value): int(value) / float(steps)
+        for value in np.unique(indexes)
+        if int(value) > 0
+    }
+
+
 def _alpha_encodings(alpha: np.ndarray):
-    """Yield exact alpha first, then the established 128-level fallback."""
+    """Önce tam alfa, sonra 128'lik yerleşik yedek, sonra kaba basamaklar.
+
+    Kaba basamakların gerekçesi ölçülmüş (madde 23): seviye sayısı düşünce
+    komşu iso-alfa bantları birleşiyor ve clipPath dikdörtgen sayısı — dolayısıyla
+    bayt — düşüyor. Kazanç içeriğe çok bağlı (`class_reklam` 128->32 için
+    -%9,8, `arcaates` için -%92,8), bu yüzden basamak eklemek tahmin değil
+    aday üretmek demek; hangisinin geçtiğine kapılar karar verir.
+    """
     exact = np.asarray(alpha, dtype=np.uint8).copy()
+    exact_values = np.unique(exact)
+    exact_nonzero = exact_values[exact_values > 0]
     exact_levels = {
         int(value): int(value) / 255.0
-        for value in np.unique(exact)
-        if int(value) > 0
+        for value in exact_nonzero
     }
     yield "exact", exact, exact_levels
 
@@ -166,6 +202,14 @@ def _alpha_encodings(alpha: np.ndarray):
     quantized, opacity_by_level = _quantize_alpha(exact)
     if not np.array_equal(quantized, exact):
         yield "quantized_128", quantized, opacity_by_level
+
+    for levels in _COARSE_ALPHA_LEVELS:
+        # Kaynak zaten bu kadar seviyeliyse nicemleme kimlik olur ve "exact"
+        # adayını tekrarlardı; o adım atlanır.
+        if len(exact_nonzero) <= levels:
+            continue
+        coarse, coarse_levels = _quantize_alpha_to_levels(exact, levels)
+        yield f"quantized_{levels}", coarse, coarse_levels
 
 
 def _raster_grid_precision(scale: float) -> int:

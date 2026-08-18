@@ -2432,3 +2432,52 @@ düşerse o adım kullanılmaz. Yani kalite gevşetmesi değil, aday çeşitlend
 
 ⚠️ Kazanç tahmini yapma — `public-14` için gerçek sayı `added_bytes_per_rect`
 ve `rects` alanlarından okunmalı.
+
+---
+
+## 24. Knockout merdiveni q64/q32 ile uzatıldı
+
+Madde 23 tek gerçek kaldıracın seviye sayısı olduğunu ölçtü. Knockout
+merdiveni iki adımlıydı (`exact` → `quantized_128`); painter'ınkiyle aynı
+desende q64 ve q32 eklendi.
+
+### Neden bu kalite gevşetmesi DEĞİL
+
+Tüketici döngüsü (`:484`) zaten tam bir ölçüm kapısı: her kodlama için
+bayt bütçesi → `_validate_reconstruction` (alfa IoU/MAE + `path_count`/
+`node_count` kimlik eşitliği). Düşerse sıradaki kodlamaya geçiyor. Eşiklerin
+hiçbiri değişmedi; eklenen şey yalnız **aday**. Merdiven en ince adımdan
+başladığı için kaba bir adım ancak tüm ince adımlar düştüğünde kullanılır —
+yani geçen bir aday kaybedilemez, saf ek.
+
+`alpha_mask_budget._quantize_alpha` 128'e sabitli ve maske yolu da onu
+kullanıyor; ona dokunulmadı. Knockout'a birebir aynı aritmetiği kullanan
+parametreli bir eş (`_quantize_alpha_to_levels`) eklendi.
+
+### Merdiven çıktısı (ölçüldü)
+
+| adım | `class_reklam` rect | `arcaates` rect |
+|---|---|---|
+| `exact` (255 seviye) | 3 703 | 130 175 |
+| `quantized_128` (127) | 3 579 (−%3,3) | 50 488 (−%61,2) |
+| `quantized_64` (63) | 3 456 (−%6,7) | 17 684 (−%86,4) |
+| `quantized_32` (31) | 3 270 (−%11,7) | 6 692 (−%94,9) |
+
+### Doğrulama
+
+- `test_visual_regression.py` → taban tablosuyla **birebir aynı**:
+  `class_reklam` PASS, `gradient_logo` PASS, `arcaates` FAIL
+  (`50488>8251` — aynı kod, aynı sayılar)
+- `test_artifact_quality.py` → **36/36**
+- Yedi sözleşme testi → hepsi geçti
+
+⚠️ `arcaates`'in FAIL→PASS dönebileceği bir risk olarak izlendi;
+**gerçekleşmedi** ve nedeni denetlenebilir: o vaka maske *preflight*'ında
+(`alpha_mask_budget._preflight`) düşüyor, knockout yedek zinciri ise yalnız
+`_ALPHA_FAILURE_PREFIXES`'teki IoU/MAE kapı hatalarında tetikleniyor —
+dikdörtgen bütçesi aşımında değil. Merdiven o vakada hiç çalışmıyor.
+
+⚠️ `public-14` üzerindeki etki **ÖLÇÜLMEDİ**. Kazanç içeriğe çok bağlı
+(`class_reklam` −%11,7 / `arcaates` −%94,9) ve `public-14`'ün profili
+bilinmiyor. Gerçek sayı canlı korpustan `rects` ve `added_bytes_per_rect`
+alanlarından okunmalı. Tahmin yürütme.
