@@ -2481,3 +2481,56 @@ dikdörtgen bütçesi aşımında değil. Merdiven o vakada hiç çalışmıyor.
 (`class_reklam` −%11,7 / `arcaates` −%94,9) ve `public-14`'ün profili
 bilinmiyor. Gerçek sayı canlı korpustan `rects` ve `added_bytes_per_rect`
 alanlarından okunmalı. Tahmin yürütme.
+
+---
+
+## 25. `public-14` — bayt sorunu ÇÖZÜLDÜ, bağlayıcı kısıt zamana kaydı
+
+Merdiven uzatması (madde 24) canlı korpusta ölçüldü (koşu `32152467506`,
+shard 1, head `8e388dd`). Sonuç iki yönlü ve mekanizma **değişti**:
+
+| | önce (`875daa6`) | sonra (`8e388dd`) |
+|---|---|---|
+| hata | `knockout_byte_budget_rejected:1181820>1083525` | `source_alpha_mask_transform_gate_rejected:` `evaluation_budget_exhausted` |
+| bayt bütçesi reddi | 2 adet | **0 adet** |
+
+**Bayt bütçesi reddi tamamen kayboldu.** Madde 19'da "kalan 98 295 B" olarak
+tanımlanan sorun kaba basamaklarla çözüldü. Ama şimdi başka bir kapı düşüyor:
+journal'ın **45 s'lik birikmiş değerlendirme bütçesi**
+(`transform_journal.py:290`, `VEKTORYUM_TRANSFORM_EVAL_BUDGET_S`, 5–180 aralığı;
+`_elapsed()` duvar saati değil `evaluation_seconds` döndürüyor).
+
+### Maliyet nerede — ölçüldü
+
+Merge maliyeti **ihmal edilebilir**:
+
+| adım | `arcaates` rect | merge |
+|---|---|---|
+| `exact` | 130 175 | 0,56 s |
+| `quantized_128` | 50 488 | 0,29 s |
+| `quantized_64` | 17 684 | 0,19 s |
+| `quantized_32` | 6 692 | 0,17 s |
+
+İki ek adımın merge yükü toplam **0,36 s**. Pahalı olan başka: önceden q128
+bayt kapısında elenip **hiçbir aday doğrulanmıyordu**; artık bir adım bayt
+kapısını geçip **tam doğrulamaya** (render + `evaluate_final_svg`) giriyor.
+Yani merdiven, daha önce atladığı gerçek işi yapıyor — beklenen ve istenen,
+ama 45 s'ye sığması gerekiyor.
+
+### Karar: bütçe yükseltilmedi
+
+`VEKTORYUM_TRANSFORM_EVAL_BUDGET_S`'i yükseltmek bir vakayı geçirmek için
+kaynak kapısını gevşetmek olurdu. Onun yerine eklenen **doğrulama sayısı
+ikiden bire** indirildi: `_COARSE_ALPHA_LEVELS = (32,)`.
+
+q32 seçildi çünkü ölçülen dikdörtgen düşüşü her iki fixture'da da q64'ün
+belirgin üstünde (`class_reklam` %11,7 / %6,7; `arcaates` %94,9 / %86,4).
+Ölçülen durumda tek adım iki adımı **kesin olarak domine ediyor**: iki adımla
+bütçe tükeniyor ve hiçbir şey kazanılmıyor.
+
+⚠️ Tek adımın 45 s'ye sığıp sığmadığı **ölçülmedi**. Eklenen doğrulama
+maliyeti kabaca yarıya iner ama bu bir tahmin; gerçek sonuç yine canlı
+korpustan okunmalı. Sığmazsa bir sonraki soru "bütçeyi yükseltelim mi"
+değil, "knockout doğrulaması neden bu kadar pahalı" olmalı — painter'ın
+çağrı noktası madde 15'te %88,9 ucuzlatıldı, knockout'unki ise ANY hard fail
+kodunu reddettiği için aynı yöntemle ucuzlatılamıyor.

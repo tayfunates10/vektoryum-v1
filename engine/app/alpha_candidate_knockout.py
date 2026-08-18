@@ -151,10 +151,20 @@ def _unique_id(root: ET.Element, base: str) -> str:
     return f"{base}-{index}"
 
 
-# Merdivenin kaba basamakları. Painter'daki desenle aynı: her adım ayrı bir
-# ADAY'dır, bütçe ve alfa IoU/MAE kapılarından geçmek zorundadır. Kalite
-# gevşetmesi değil, aday çeşitlendirmesidir — kapı düşerse adım kullanılmaz.
-_COARSE_ALPHA_LEVELS: tuple[int, ...] = (64, 32)
+# Merdivenin kaba basamağı. Painter'daki desenle aynı: ayrı bir ADAY'dır,
+# bütçe ve alfa IoU/MAE kapılarından geçmek zorundadır. Kalite gevşetmesi
+# değil, aday çeşitlendirmesidir — kapı düşerse adım kullanılmaz.
+#
+# Neden TEK basamak: q64+q32 birlikte denendiğinde `public-14` bayt bütçesini
+# artık aşmıyor (asıl sorun çözüldü) ama journal'ın 45 s'lik BİRİKMİŞ
+# DEĞERLENDİRME bütçesini tüketiyordu — bağlayıcı kısıt bayttan zamana kaydı
+# (madde 25). Merge maliyeti ihmal edilebilir (iki adım için 0,36 s); pahalı
+# olan, bayt kapısını geçen adayın tam doğrulaması (render + evaluate).
+# Bütçeyi yükseltmek bir vakayı geçirmek için kaynak kapısını gevşetmek
+# olurdu; onun yerine eklenen doğrulama sayısı ikiden bire indirildi.
+# q32 seçildi çünkü ölçülen dikdörtgen düşüşü her iki fixture'da da q64'ün
+# belirgin üstünde (`class_reklam` %11,7 / %6,7, `arcaates` %94,9 / %86,4).
+_COARSE_ALPHA_LEVELS: tuple[int, ...] = (32,)
 
 
 def _quantize_alpha_to_levels(
