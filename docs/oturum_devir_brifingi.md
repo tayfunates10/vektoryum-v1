@@ -2262,3 +2262,49 @@ Seviye başına tek `<path>`, rect başına `M x y h w v h h-w z` ≈ **20 B**
 (şu an 49,1). 16 712 rect → ~334 000 B; pay 722 350 B. `public-14` bütçeye
 rahatça girer. ⚠️ Yine **tahmin**: gerçek sayı `added_bytes_per_rect`'ten
 okunmalı.
+
+---
+
+## 21. Aşama 0 / #159 madde 4 KAPANDI — son tarih kalktı
+
+Madde 17'de kalıcı depo yazılmıştı ama tüketici okuyamıyordu. Release
+yayımlandı (kullanıcı kararı) ve `verify_read` işi geçti (koşu `32099518648`):
+
+```
+release contents:read ile gorunuyor (draft=False)
+  rfv2-public-corpus.tar.gz          indirildi ve dogrulandi
+  qualification-manifest.json        indirildi ve dogrulandi
+  qualification-audit.json           indirildi ve dogrulandi
+  bundle-checksums.json              indirildi ve dogrulandi
+
+TUKETICI YOLU DOGRULANDI — RFV-3B kalici depodan geri yukleyebilir
+```
+
+### Kanıt zinciri
+
+| aşama | doğrulanan |
+|---|---|
+| yazma öncesi | arşiv boyutu 10 910 811 B + sha256, dört dosyanın ayrı sha256'sı, manifest `qualified`/24 vaka, audit `complete`, `cases_sha256` üç kaynakta da `5f151a6c…` |
+| yazma sonrası | beş dosya geri indirilip **bayt bayt** karşılaştırıldı |
+| okuma (tüketici yetkisi) | `contents: read` ile release bulundu, dört ek indirildi, digest'ler tuttu, `draft=False` teyit edildi |
+| bağlantı | RFV-3B geri yükleme yolu önce kalıcı kopyayı deniyor; artefakt yalnız yedek |
+
+**Son tarih (2026-10-13) kalktı.** Korpus artık süresi dolan tek bir Actions
+artefaktına bağlı değil. `storage_mode: github_release_asset_no_expiry`.
+
+Depo etiketi: `rfv2-corpus-5f151a6c`. Varlıklar git ağacına girmiyor, yani
+`public_repo_contains_raw_assets: false` korunuyor; 24 varlığın tamamı
+CC0 / kamu malı.
+
+### #159'un kalan maddeleri
+
+| madde | durum |
+|---|---|
+| 1. determinizmsizliğin kaynağını bul | **kapandı** (madde 16) |
+| 2. `cases_sha256` tanımını daralt | açık — kimlik değişikliği gerektirir |
+| 3. determinizmi teste bağla | açık — 2'ye bağlı |
+| 4. kalıcı depolama | **kapandı** (bu madde) |
+| 5. canlı edinim kimliği yeniden üretiyor mu | **cevaplandı**: üretemez (madde 16) |
+
+Madde 2–3, `5f151a6c…` kimliğinin değişmesi ve ~24 yerdeki sabitin (9 kanıt
+JSON'u dahil) yeniden etiketlenmesi demek. Kullanıcı onayı gerektirir.
