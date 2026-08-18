@@ -2612,3 +2612,37 @@ kapı/politika tasarımına dokunuyor:
 
 Her ikisi de **ölçümle** yakalandı, tahminle değil. Ders: bu alt problemde
 tahmin isabet oranı düşük; her adım canlı korpusla doğrulanmalı.
+
+### 25.1 ⚠️ DÜZELTME — bütçe tükenmesi merdivenden GELMİYOR, önceden vardı
+
+Madde 25 "merdiven, hızlı düşen bir hatayı 45 s bütçesini tüketen bir hataya
+çevirdi" dedi. **Yanlış.** Geri alma sonrası koşu (`32183716477`) ile
+merdiven öncesi koşu (`875daa6`) yan yana konduğunda hata profilleri
+**birebir aynı**:
+
+```
+875daa6 (yalniz koordinat)          7a4a7b9 (geri alinmis)
+  2x soft_ellipse_not_applicable      2x soft_ellipse_not_applicable
+  2x direct_child_render_empty        2x direct_child_render_empty
+  2x knockout_byte_budget_rejected    2x knockout_byte_budget_rejected
+  2x evaluation_budget_exhausted      2x evaluation_budget_exhausted
+```
+
+`evaluation_budget_exhausted` merdivenden **önce de** vardı ve bayt reddiyle
+**birlikte** bulunuyordu. Merdivenin yaptığı şey bütçe tükenmesini yaratmak
+değil, bayt reddini kaldırmaktı; bütçe tükenmesi ise devam etti
+(kod sayımı 3 → 5, geri almayla 3'e döndü).
+
+**Geri alma kararı yine de geçerli** ama gerekçesi düzeltilmeli: merdiven
+hiçbir vakayı PASS'a döndürmedi çünkü `public-14`'ün terminal hatası zaten
+bütçe tükenmesiydi ve bayt reddini kaldırmak onu değiştirmedi. Yani "fayda
+yok" doğru; "zararı vardı" abartıydı (yalnız bütçe baskısını bir miktar
+artırdı).
+
+**Bunun asıl sonucu:** `public-14`'ün gerçek terminal engeli baştan beri
+bayt bütçesi DEĞİL, değerlendirme bütçesiydi. Madde 12/19'da bayt üzerine
+kurulan hedefleme (50,8 → 43,2 B/rect) doğru bir alt problemi çözüyordu ama
+vakayı kapatacak olan o değildi. Bayt işi yine de kalıcı kazanç (82,3 → 49,1)
+— sadece kapanışın anahtarı değil.
+
+**Geri alma doğrulandı:** ağaç `875daa6` ile aynı hata profilini üretiyor.
