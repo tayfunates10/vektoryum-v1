@@ -2534,3 +2534,81 @@ korpustan okunmalı. Sığmazsa bir sonraki soru "bütçeyi yükseltelim mi"
 değil, "knockout doğrulaması neden bu kadar pahalı" olmalı — painter'ın
 çağrı noktası madde 15'te %88,9 ucuzlatıldı, knockout'unki ise ANY hard fail
 kodunu reddettiği için aynı yöntemle ucuzlatılamıyor.
+
+---
+
+## 25. Merdiven uzatması ÖLÇÜLDÜ ve GERİ ALINDI
+
+Madde 24'teki q64/q32 uzatması canlı korpusta iki ayrı yapılandırmayla
+ölçüldü. Sonuç her ikisinde de aynı:
+
+| yapılandırma | koşu | bayt reddi | sonuç |
+|---|---|---|---|
+| q64 + q32 | `32152467506` | **0** (önce 2 idi) | `evaluation_budget_exhausted` |
+| yalnız q32 | `32168367121` | **0** | `evaluation_budget_exhausted` |
+
+### Ne başardı
+
+Bayt bütçesi reddi **tamamen kayboldu**. Madde 12'de "knockout bayt bütçesi
+%41 aşım", madde 19'da "kalan 98 295 B" diye tanımlanan sorun gerçekten
+çözülebilir ve çözüldü. Bu bilgi kalıcı.
+
+### Neden yine de geri alındı
+
+Hiçbir vakayı PASS'a döndürmedi ve **hızlı düşen bir hatayı, 45 s'lik
+birikmiş değerlendirme bütçesini tüketen bir hataya çevirdi**
+(`transform_journal.py:290`, `VEKTORYUM_TRANSFORM_EVAL_BUDGET_S` varsayılan
+45, `_elapsed()` duvar saati değil `evaluation_seconds`). Ölçülmüş fayda yok,
+ölçülmüş maliyet var.
+
+CLAUDE.md: *"İyileştirme adımları ölçüm kapılıdır: skor düşürürse geri
+alınır."* Kural uygulandı.
+
+**Korunan:** koordinat hassasiyeti (madde 18–19). O ölçülmüş net kazanç —
+82,3 → 49,1 B/rect, iki bağımsız koşuda birebir aynı, `rects` değişmedi.
+
+### Maliyetin nerede olduğu ölçüldü
+
+- merge yükü **ihmal edilebilir**: iki ek adım için toplam 0,36 s (`arcaates`)
+- pahalı olan, bayt kapısını geçen adayın **tam doğrulaması**. Daha önce
+  q128 bayt kapısında eleniyor ve hiçbir aday doğrulanmıyordu.
+
+`_validate_reconstruction` sırası zaten doğru: ≤512 px render + alfa IoU/MAE
+(ucuz) → `evaluate_final_svg` (pahalı) → yapı/kimlik (ucuz). Kötü adaylar
+ucuza eleniyor; pahalı yol yalnız ucuz kapıyı geçen aday için ödeniyor.
+
+### Madde 15'teki hile buraya UYGULANAMAZ — kesinleşti
+
+Painter'ın çağrı noktası `alpha_plane_only` ile %88,9 ucuzlamıştı. Knockout'a
+uygulanamaz ve bu artık varsayım değil:
+
+- `final_artifact_evaluator.py:620` — `alpha_fidelity_status` yalnız
+  `code.startswith("alpha_")` kodlarına bakarak `passed`/`failed` atıyor
+- `alpha_candidate_knockout.py` — ayrıca `if report.hard_fail_codes: raise`,
+  yani **her türlü** hard fail'i reddediyor
+
+`alpha_plane_only` açılsaydı `hard_codes` yalnız alfa kodlarını içerirdi ve
+topoloji/SSIM/edge hataları sessizce yakalanmaz olurdu. Bu hızlandırma değil
+**kapı gevşetmesi** olurdu.
+
+### `public-14` durumu
+
+Kapatılamadı. Teşhis ilerledi (bayt sorunu çözülebilir olduğu kanıtlandı) ama
+bağlayıcı kısıt bayttan **değerlendirme bütçesine** kaydı. Buradan sonrası
+kapı/politika tasarımına dokunuyor:
+
+1. `VEKTORYUM_TRANSFORM_EVAL_BUDGET_S`'i yükseltmek → bir vakayı geçirmek için
+   kaynak kapısını gevşetmek
+2. Knockout'un tam-rapor şartını yeniden düşünmek → kalite kapısını gevşetmek
+
+İkisi de kullanıcı kararı. Ölçümsüz üçüncü bir yol bulunamadı.
+
+### İki yanlış tahmin (kayıt için)
+
+1. Madde 20: "`<path>` yolu açık" — yanlış, `path_count` kimlik kapısı
+   kapatıyor (madde 22)
+2. Madde 25: "adım sayısını yarıya indirmek bütçeye sığdırır" — yanlış,
+   tek adımla da bütçe tükendi
+
+Her ikisi de **ölçümle** yakalandı, tahminle değil. Ders: bu alt problemde
+tahmin isabet oranı düşük; her adım canlı korpusla doğrulanmalı.
