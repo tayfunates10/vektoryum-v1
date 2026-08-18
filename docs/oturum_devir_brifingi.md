@@ -2132,3 +2132,68 @@ doğrulanmadan kapanmış sayılmaz.
 
 `test_alpha_clip_encoding.py:142` clipPath'ten `<rect[^>]*/>` regex'iyle
 çekiyor; biçim değişikliğinden etkilenmedi (madde 12'deki uyarı 3 kapandı).
+
+---
+
+## 19. `public-14` — canlı korpus doğrulaması: hedef tuttu, vaka KAPANMADI
+
+Koşu `32073238990`, shard 1, head `875daa6`. Tanılama satırı:
+
+```
+knockout_byte_budget_rejected:1181820>1083525,encoding=quantized_128,
+parent_bytes=361175,added_bytes=820645,rects=16712,clips=127,uses=127,
+added_bytes_per_rect=49.1
+```
+
+| | önce | sonra | fark |
+|---|---|---|---|
+| B/rect | 82,3 | **49,1** | **−%40,3** |
+| eklenen bayt | 1 376 002 | **820 645** | **−%40,4** |
+| toplam / limit | 1 737 177 > 1 083 525 = **1,603×** | 1 181 820 > 1 083 525 = **1,091×** | |
+| **rect sayısı** | 16 712 | **16 712** | **değişmedi** |
+| clips / uses | 127 / 127 | 127 / 127 | değişmedi |
+
+### İki şey doğrulandı
+
+1. **Hedef aşıldı.** Madde 12.1'in koyduğu −%38,3 hedefine karşı **−%40,4**
+   ölçüldü. Tahmin (46–49 B/rect) tuttu: gerçek **49,1**.
+2. **Çökme yok — gerçek veride.** `rects` tam olarak 16 712'de kaldı. Madde
+   18'deki "hiçbir dikdörtgen sıfır genişliğe çökemez" değişmezi sentetik
+   testte değil, canlı korpusta da doğrulandı.
+
+### Ama vaka kapanmadı — ve hedefin kendisi eksikti
+
+`public-14` hâlâ bütçeyi aşıyor: **1,091×**. Madde 12.1'deki 50,8 B/rect
+hedefi **retry** aşamasının sayılarından (limit 1 273 782, parent 424 594)
+türetilmişti; bu koşuda düşen aşama **legacy** (limit 1 083 525, parent
+361 175). Doğru hedef oradan:
+
+| | değer |
+|---|---|
+| pay (`limit − parent`) | 722 350 B |
+| şu anki eklenen | 820 645 B |
+| **kalan aşım** | **98 295 B** |
+| **gereken B/rect** | **43,2** (şu an 49,1 → bir **−%12** daha) |
+
+### Kalan %12 nereden gelebilir — aritmetik sınır
+
+Rect iskeleti **37,0 B**; 16 712 rect için 618 344 B, yani **pay içinde
+kalıyor**. Demek ki koordinatlar tamamen bedava olsaydı vaka geçerdi.
+Koordinat payı şu an 49,1 − 37,0 = **12,1 B/rect (202 300 B)**; bunun
+**%48,6'sını** daha kesmek gerekiyor (alan başına ~1,55 karaktere inmek).
+Koordinat kısaltmasıyla bu gerçekçi değil.
+
+Yani sıradaki kaldıraç koordinat değil **iskelet**: her seviye için tek bir
+`<path>` (`M x y h w v h h-w z`, rect başına ~20 B) rect başına ~49 B'yi
+üçte birine indirir ve payın çok altına düşer.
+
+⚠️ Ama madde 0'daki kapalı yol #2 tam da bu: *"Rect başına ayrı `<path>` →
+topoloji kapısı düşüyor, eleman tipi downstream'e bağlı."* O ölçüm **`<mask>`
+destek katmanında** yapılmıştı (`_compact_mask_rectangles` ve
+`_compact_complex_clip` `rect` çocuklarını süzüyor), burada bağlam **clipPath**.
+Aynı olmayabilir — ama denemeden önce hangi downstream süzgecin `rect` tipine
+bağlı olduğu **okunmalı**, tahminle başlanmamalı.
+
+`test_alpha_clip_encoding.py:142` clipPath'ten `<rect[^>]*/>` çekiyor; `<path>`
+kodlamasına geçilirse **o sözleşme kırılır** ve testin kendisi değil, testin
+kurduğu mask eşdeğerliği yeniden düşünülmeli.
