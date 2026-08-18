@@ -11,10 +11,11 @@ name: RFV-2 corpus permanent store
 # işi, 2026-08-02'de dolan 8441210832 artefaktına sabitlenmişti).
 #
 # Bu iş korpusu SURESI DOLMAYAN bir konuma taşır: depo release'ine ekli
-# varlıklar. Release TASLAK olarak oluşturulur — genel depoda görünmez,
-# yalnız token ile erişilir ve geri alınabilir. Böylece
-# `public_repo_contains_raw_assets: false` ilkesinin ruhu zorlanmaz;
-# varlıklar git ağacına girmez.
+# varlıklar. Release YAYIMLANMIS olarak bırakılır — taslak hali ölçüldü ve
+# `contents: read` taşıyan tüketici (RFV-3B acquire işi) taslak release'i
+# göremiyor, yani taslak depo fiilen yok demekti (madde 17).
+# Varlıklar git ağacına girmediği için `public_repo_contains_raw_assets: false`
+# ilkesi korunur; 24 varlığın tamamı CC0 / kamu malı.
 #
 # Taşıma kör kopyalama DEĞİL: dört dosyanın da digest'i, arşivin boyutu ve
 # korpus kimliği taşımadan ÖNCE doğrulanır. Doğrulama düşerse hiçbir şey
@@ -159,7 +160,7 @@ jobs:
           print("dogrulama tamam — 4 dosya + provenance yazildi")
           PY
 
-      - name: Publish the corpus to a draft release
+      - name: Publish the corpus to a release
         shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -200,12 +201,15 @@ jobs:
                   f"cases_sha256: {os.environ['QUALIFIED_CASES_SHA256']}\n"
                   f"kaynak artefakt: {os.environ['PINNED_ARTIFACT_ID']} "
                   "(expires_at 2026-10-13T19:25:36Z)\n\n"
-                  "TASLAK: yayimlanmadi, genel depoda gorunmez. Bu ek yalnizca "
-                  "RFV-3B / RFV-2E olcum hatlarinin korpusu geri yuklemesi "
-                  "icindir. Icerik yuklemeden once bayt bayt dogrulandi; "
-                  "ayrintilar permanent-store-provenance.json icinde."
+                  "Bu ekler RFV-3B / RFV-2E olcum hatlarinin korpusu geri "
+                  "yuklemesi icindir. Varliklarin tamami CC0 / kamu mali. "
+                  "Icerik yuklemeden once bayt bayt dogrulandi; ayrintilar "
+                  "permanent-store-provenance.json icinde.\n\n"
+                  "Yayimlanmis (taslak degil): tuketici RFV-3B acquire isi "
+                  "yalnizca contents:read tasiyor ve taslak release'leri "
+                  "goremiyor -- olculdu."
               ),
-              "draft": True,
+              "draft": False,
               "prerelease": False,
           }))
           PY
@@ -214,8 +218,17 @@ jobs:
                 | python -c "import json,sys; print(json.load(sys.stdin)['id'])"
             )"
           else
-            echo "var olan taslak yeniden kullaniliyor: ${release_id}"
+            echo "var olan release yeniden kullaniliyor: ${release_id}"
           fi
+
+          # Yayimlanmis duruma getir. Taslak release'ler push yetkisi
+          # gerektiriyor; tuketici (RFV-3B acquire) yalnizca contents:read
+          # tasidigi icin taslak halde depo fiilen okunamiyor -- olculdu.
+          # Bu PATCH hem yeni olusturulan hem onceden taslak birakilmis
+          # release icin gecerli, tekrar kosulmasi zararsiz.
+          api --request PATCH "${API}/releases/${release_id}" \
+            --data '{"draft":false}' >/dev/null
+          echo "release yayimlandi (draft=false)"
 
           echo "release_id=${release_id}"
 
@@ -318,8 +331,9 @@ jobs:
 
   # Kalici depo, TUKETICININ yetkisiyle okunabilmeli. Store isi contents:write
   # ile calisiyor; RFV-3B geri yukleme yolu ise yalnizca contents:read tasiyor.
-  # Taslak release'ler push yetkisi gerektirebildigi icin bu fark onemli:
-  # okunamiyorsa kalici depo fiilen yoktur ve son tarih kalkmamis demektir.
+  # Taslak halde bu is DUSMUSTU (madde 17) -- taslak release'ler push yetkisi
+  # gerektiriyor. Release artik yayimlandigi icin bu isin GECMESI gerekir;
+  # gecmezse kalici depo fiilen yoktur ve son tarih kalkmamis demektir.
   verify_read:
     needs: store
     runs-on: ubuntu-latest
@@ -361,11 +375,16 @@ jobs:
           match = next((r for r in releases if r.get("tag_name") == tag), None)
           if match is None:
               raise SystemExit(
-                  f"contents:read ile taslak release GORUNMUYOR ({tag}). "
+                  f"contents:read ile release GORUNMUYOR ({tag}). "
                   "Kalici depo bu yetkiyle okunamaz; RFV-3B geri yukleme yolu "
                   "artefakta dusmeye devam eder ve son tarih KALKMAMISTIR."
               )
-          print(f"taslak release contents:read ile gorunuyor (draft={match.get('draft')})")
+          if match.get("draft"):
+              raise SystemExit(
+                  f"release hala TASLAK ({tag}). Yayimlama adimi calismamis; "
+                  "tuketici bu release'i contents:read ile goremez."
+              )
+          print(f"release contents:read ile gorunuyor (draft={match.get('draft')})")
 
           subprocess.run(
               [
