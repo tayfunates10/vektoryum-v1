@@ -2308,3 +2308,33 @@ CC0 / kamu malı.
 
 Madde 2–3, `5f151a6c…` kimliğinin değişmesi ve ~24 yerdeki sabitin (9 kanıt
 JSON'u dahil) yeniden etiketlenmesi demek. Kullanıcı onayı gerektirir.
+
+### 21.1 Üretimde doğrulandı (koşu `32099756733`)
+
+`verify_read` sentetik bir kontroldü; asıl kanıt RFV-3B'nin kendi `acquire`
+işinden geldi:
+
+```
+RFV-3B provenance drift: live corpus identity 5f683b30... does not equal
+  qualified identity 5f151a6c...
+RFV-3B live acquisition unusable; trying the permanent corpus store
+RFV-3B source mode: permanent corpus store (rfv2-corpus-5f151a6c)
+```
+
+Ölçüm hattı artık kalıcı depodan geri yüklüyor; süresi dolacak artefakta
+**hiç dokunmuyor**. Adım süresi de düştü: ~5 dk → **58 s**.
+
+**Yan bulgu — madde 16 bağımsız olarak doğrulandı.** Bu koşunun canlı kimliği
+`5f683b30782cb0c1…`, bundle 10 888 312 B. Bilinen kimlikler:
+
+| kaynak | `cases_sha256` | bundle |
+|---|---|---|
+| nitelenmiş (sabit) | `5f151a6cb1a433b0…` | — |
+| #159, 12:01 | `16f7ccae6b8f3cc4…` | 10 888 371 |
+| #159, 12:25 | `bc3230ed5e5d5dd3…` | 10 888 310 |
+| madde 16, kol a | `f0a119e31937f4f5…` | — |
+| madde 16, kol b | `ba88981e121cb9a5…` | — |
+| bu koşu | `5f683b30782cb0c1…` | 10 888 312 |
+
+Altı ayrı kimlik. Determinizmsizlik sürüyor ve artık **ölçüm hattını
+etkilemiyor** — kimlik kapısı sürüklenmeyi yakalayıp kalıcı kopyaya düşüyor.
