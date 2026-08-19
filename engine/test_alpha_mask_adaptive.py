@@ -9,7 +9,7 @@ from unittest.mock import patch
 import numpy as np
 from PIL import Image, ImageDraw
 
-from app import alpha_svg_mask
+from app import alpha_mask_adaptive, alpha_svg_mask
 from app.alpha_contour_budget_guard import (
     _fragmented_one_cell_stats,
     _preflight_fragmented_contour_nodes,
@@ -201,6 +201,40 @@ class AlphaMaskAdaptiveTests(unittest.TestCase):
                 available_nodes=1000,
                 max_compact_contours=4096,
             )
+
+    def test_guard_blocks_legacy_contour_plan_materialization(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_path = root / "checkerboard.png"
+            svg_path = root / "selected.svg"
+
+            source = np.zeros((128, 128, 4), dtype=np.uint8)
+            source[:, :, :3] = (20, 30, 40)
+            yy, xx = np.indices((128, 128))
+            source[:, :, 3] = np.where((xx + yy) % 2 == 0, 255, 0).astype(
+                np.uint8
+            )
+            Image.fromarray(source, mode="RGBA").save(source_path)
+            svg_path.write_text(
+                '<svg xmlns="http://www.w3.org/2000/svg" width="128" '
+                'height="128" viewBox="0 0 128 128">'
+                '<path fill="#141e28" d="M0 0h128v128H0Z"/>'
+                '</svg>',
+                encoding="utf-8",
+            )
+
+            with patch(
+                "app.alpha_mask_budget._build_contour_plan",
+                side_effect=AssertionError("legacy contour plan materialized"),
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    r"source_alpha_mask_contour_fragmentation_budget_rejected:",
+                ):
+                    alpha_mask_adaptive._contour_fallback_plan(
+                        svg_path,
+                        source_path,
+                    )
 
     def test_nonfragmented_contour_keeps_legacy_path(self) -> None:
         quantized = np.zeros((96, 96), dtype=np.uint8)
