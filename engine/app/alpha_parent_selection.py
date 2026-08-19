@@ -236,6 +236,9 @@ def _select(result: dict[str, Any], source_path: Path, job_dir: Path) -> dict[st
             levels = np.unique(np.asarray(source.convert("RGBA"))[:, :, 3])
     except (OSError, ValueError):
         return result
+    # Preserve the proven bounded parent-selection contract. Dense/continuous
+    # alpha stays on the dedicated alpha pipeline; broad parent probing changed
+    # previously accepted knockout topology without cross-corpus proof.
     if len(levels) <= 1 or len(levels) > _MAX_ALPHA_LEVELS:
         return result
 

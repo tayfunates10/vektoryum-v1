@@ -6,10 +6,25 @@ on:
       - ".github/workflows/output-quality-diagnostic.yml"
       - "engine/app/**"
       - "engine/benchmark/**"
+      - "engine/issue144_full_pipeline_acceptance.py"
+      - "engine/issue152_scale_stable_acceptance.py"
       - "engine/regression/output_quality_suite.py"
       - "engine/regression/output_quality_root_cause.py"
+      - "engine/regression/output_quality_residual_suite.py"
+      - "engine/regression/output_quality_residual_root_cause.py"
+      - "engine/regression/output_quality_residual_root_cause_v2.py"
+      - "engine/regression/residual_error_metrics.py"
+      - "engine/regression/residual_measurement_contract.py"
+      - "engine/regression/residual_multiscale_source.py"
+      - "engine/regression/residual_topology_metrics.py"
+      - "engine/regression/residual_evidence_split.py"
       - "engine/regression/test_output_quality_suite.py"
       - "engine/regression/test_output_quality_root_cause.py"
+      - "engine/regression/test_output_quality_residual_suite.py"
+      - "engine/regression/test_output_quality_residual_root_cause.py"
+      - "engine/regression/test_residual_error_metrics.py"
+      - "engine/regression/test_residual_multiscale_source.py"
+      - "engine/regression/test_residual_topology_metrics.py"
       - "engine/requirements.txt"
   workflow_dispatch:
   schedule:
@@ -32,30 +47,46 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: engine/requirements.txt
-
       - name: Install production and test dependencies
         run: python -m pip install --disable-pip-version-check -r engine/requirements.txt pytest
-
       - name: Compile diagnostic files
         run: >-
           python -m py_compile
+          engine/issue144_full_pipeline_acceptance.py
+          engine/issue152_scale_stable_acceptance.py
           engine/regression/output_quality_suite.py
           engine/regression/output_quality_root_cause.py
+          engine/regression/output_quality_residual_suite.py
+          engine/regression/output_quality_residual_root_cause.py
+          engine/regression/output_quality_residual_root_cause_v2.py
+          engine/regression/residual_error_metrics.py
+          engine/regression/residual_measurement_contract.py
+          engine/regression/residual_multiscale_source.py
+          engine/regression/residual_topology_metrics.py
+          engine/regression/residual_evidence_split.py
           engine/regression/test_output_quality_suite.py
           engine/regression/test_output_quality_root_cause.py
-
+          engine/regression/test_output_quality_residual_suite.py
+          engine/regression/test_output_quality_residual_root_cause.py
+          engine/regression/test_residual_error_metrics.py
+          engine/regression/test_residual_multiscale_source.py
+          engine/regression/test_residual_topology_metrics.py
       - name: Run diagnostic contract tests
         run: >-
           python -m unittest
           engine.regression.test_output_quality_suite
           engine.regression.test_output_quality_root_cause
+          engine.regression.test_output_quality_residual_suite
+          engine.regression.test_output_quality_residual_root_cause
+          engine.regression.test_residual_error_metrics
+          engine.regression.test_residual_multiscale_source
+          engine.regression.test_residual_topology_metrics
 
   production-output:
     needs: contract
@@ -68,36 +99,42 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: engine/requirements.txt
-
       - name: Install system render validators
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ghostscript libcairo2
-
       - name: Install production pipeline dependencies
         run: python -m pip install --disable-pip-version-check -r engine/requirements.txt pytest
-
-      - name: Run repeat-aware production output diagnostic
+      - name: Run repeat-aware 12-case residual diagnostic
         shell: bash
         run: |
           set -o pipefail
           OUTPUT="${RUNNER_TEMP}/output-quality"
-          FAIL_ON=structural
-          if [ "${GITHUB_EVENT_NAME}" != "pull_request" ]; then
-            FAIL_ON=hard
-          fi
-          python -m engine.regression.output_quality_root_cause \
+          # The diagnostic remains evidence-generating. Issue-specific acceptance
+          # is evaluated by separate fail-closed production gates below;
+          # FAIL_ON=none is never treated as quality PASS.
+          FAIL_ON=none
+          python -m engine.regression.output_quality_residual_root_cause_v2 \
             --output "${OUTPUT}" \
             --engine-version "${GITHUB_SHA}" \
             --repeat-count 2 \
             --fail-on "${FAIL_ON}" \
             2>&1 | tee "${RUNNER_TEMP}/output-quality.log"
-
+          python -m engine.regression.residual_evidence_split --output "${OUTPUT}"
+      - name: Enforce Issue 144 AI-2 full-pipeline acceptance
+        shell: bash
+        run: |
+          python -m engine.issue144_full_pipeline_acceptance \
+            --output "${RUNNER_TEMP}/output-quality"
+      - name: Enforce Issue 152 AI-2 five-scale acceptance
+        shell: bash
+        run: |
+          python -m engine.issue152_scale_stable_acceptance \
+            --output "${RUNNER_TEMP}/output-quality"
       - name: Publish Markdown summaries
         if: always()
         shell: bash
@@ -105,7 +142,9 @@ jobs:
           found=0
           for SUMMARY in \
             "${RUNNER_TEMP}/output-quality/output-quality-summary.md" \
-            "${RUNNER_TEMP}/output-quality/output-quality-root-cause.md"; do
+            "${RUNNER_TEMP}/output-quality/output-quality-root-cause.md" \
+            "${RUNNER_TEMP}/output-quality/native-residual-evidence.md" \
+            "${RUNNER_TEMP}/output-quality/multiscale-topology-evidence.md"; do
             if [ -f "${SUMMARY}" ]; then
               cat "${SUMMARY}" >> "${GITHUB_STEP_SUMMARY}"
               printf '\n' >> "${GITHUB_STEP_SUMMARY}"
@@ -115,7 +154,6 @@ jobs:
           if [ "${found}" -eq 0 ]; then
             echo "Output-quality summaries were not produced." >> "${GITHUB_STEP_SUMMARY}"
           fi
-
       - name: Upload output-quality evidence
         if: always()
         uses: actions/upload-artifact@v4
