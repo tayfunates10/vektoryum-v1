@@ -106,7 +106,7 @@ def _preflight_fragmented_contour_nodes(
     ):
         raise RuntimeError(
             _FRAGMENTATION_BUDGET_PREFIX
-            f"path_nodes={int(stats['command_count'])}/{int(available_nodes)},"
+            + f"path_nodes={int(stats['command_count'])}/{int(available_nodes)},"
             f"alpha_cells={int(stats['cell_count'])},"
             f"compact_contours={int(stats['compact_contour_count'])},"
             f"pruned_contours={int(stats['pruned_contour_count'])}"
