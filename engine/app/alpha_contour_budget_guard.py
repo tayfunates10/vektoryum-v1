@@ -7,13 +7,16 @@ case materializing millions of path commands only burns CPU/RAM before the same
 budget rejection.
 
 This module keeps admissible contour behavior unchanged. It adds a cheap, exact
-command-count lower bound only for the legacy fragmented one-cell branch. When
-that branch cannot fit the existing node budget, the dedicated rejection is
+command-count lower bound only for the legacy fragmented one-cell branch. The
+preflight is bound to both production routes that can reach ``_build_contour_plan``:
+``alpha_mask_budget._preflight`` and the later adaptive rect-fidelity fallback.
+When that branch cannot fit the existing node budget, the dedicated rejection is
 made eligible for the already-existing candidate-geometry knockout fallback.
 No quality threshold or path/node/byte budget is changed.
 """
 from __future__ import annotations
 
+from contextvars import ContextVar
 from functools import wraps
 from pathlib import Path
 from typing import Any
@@ -25,6 +28,10 @@ _FRAGMENTATION_BUDGET_PREFIX = (
     "source_alpha_mask_contour_fragmentation_budget_rejected:"
 )
 _INSTALLED = False
+_BUDGET_PREFLIGHT_AVAILABLE_NODES: ContextVar[int | None] = ContextVar(
+    "vektoryum_fragmented_contour_available_nodes",
+    default=None,
+)
 
 
 def _fragmented_one_cell_stats(
@@ -114,7 +121,7 @@ def _preflight_fragmented_contour_nodes(
 
 
 def install_contour_budget_guard() -> None:
-    """Install node preflight and route its rejection to existing fallback."""
+    """Install all production node-preflight routes and the existing fallback hook."""
     global _INSTALLED
     if _INSTALLED:
         return
@@ -125,6 +132,69 @@ def install_contour_budget_guard() -> None:
     from app import alpha_mask_budget as budget_module
     from app.alpha_preprocess import _rgba_from_source_at_size
 
+    # The normal production alpha-mask transaction reaches
+    # alpha_mask_budget._preflight first. That function decides whether verbose
+    # rect geometry fits and calls the module-global _build_contour_plan only when
+    # it does not. Bind the already-computed parent node capacity through a
+    # ContextVar so the contour builder can reject the pathological one-cell branch
+    # exactly at that call site, before any SVG path strings are allocated.
+    original_budget_preflight = budget_module._preflight
+    if not getattr(
+        original_budget_preflight,
+        "__vektoryum_fragmentation_budget_context__",
+        False,
+    ):
+        @wraps(original_budget_preflight)
+        def guarded_budget_preflight(
+            svg_path: Path,
+            source_path: Path,
+        ) -> dict[str, Any] | None:
+            target = Path(svg_path)
+            before_size = target.stat().st_size
+            root = SafeET.fromstring(target.read_bytes())
+            limits = budget_module._journal_limits(root, before_size)
+            available_nodes = max(
+                0,
+                int(limits["node_limit"]) - int(limits["parent_node_count"]),
+            )
+            token = _BUDGET_PREFLIGHT_AVAILABLE_NODES.set(available_nodes)
+            try:
+                return original_budget_preflight(target, Path(source_path))
+            finally:
+                _BUDGET_PREFLIGHT_AVAILABLE_NODES.reset(token)
+
+        guarded_budget_preflight.__vektoryum_fragmentation_budget_context__ = True
+        budget_module._preflight = guarded_budget_preflight
+
+    original_build_contour_plan = budget_module._build_contour_plan
+    if not getattr(
+        original_build_contour_plan,
+        "__vektoryum_fragmentation_budget_guard__",
+        False,
+    ):
+        @wraps(original_build_contour_plan)
+        def guarded_build_contour_plan(
+            quantized: np.ndarray,
+            opacity_by_level: dict[int, float],
+        ) -> dict[str, Any] | None:
+            available_nodes = _BUDGET_PREFLIGHT_AVAILABLE_NODES.get()
+            if available_nodes is not None:
+                _preflight_fragmented_contour_nodes(
+                    quantized,
+                    opacity_by_level,
+                    available_nodes=int(available_nodes),
+                    max_compact_contours=budget_module._MAX_COMPACT_CONTOURS,
+                )
+            return original_build_contour_plan(quantized, opacity_by_level)
+
+        guarded_build_contour_plan.__vektoryum_fragmentation_budget_guard__ = True
+        budget_module._build_contour_plan = guarded_build_contour_plan
+
+    # A rect mask can pass the budget preflight and fail only the exact alpha render
+    # gate later. That established adaptive retry computes a fresh parent budget, so
+    # retain a dedicated wrapper there as well. Its original function imports the
+    # module-global (now guarded) builder only after this wrapper has independently
+    # proven the node cost admissible, avoiding duplicate rejection semantics.
     original_contour_fallback_plan = adaptive_module._contour_fallback_plan
     if not getattr(
         original_contour_fallback_plan,
@@ -172,7 +242,7 @@ def install_contour_budget_guard() -> None:
         adaptive_module._contour_fallback_plan = guarded_contour_fallback_plan
 
     # Candidate-knockout is already the next fail-closed production stage after
-    # exact source-alpha reconstruction fails. Mark only this new structural
+    # exact source-alpha reconstruction fails. Mark only this structural
     # impossibility as retry-eligible; no broad exception class is opened.
     prefixes = tuple(knockout_module._ALPHA_FAILURE_PREFIXES)
     if _FRAGMENTATION_BUDGET_PREFIX not in prefixes:
