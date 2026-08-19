@@ -97,6 +97,31 @@ class CandidateGeometryKnockoutTests(unittest.TestCase):
             )
             self.assertEqual(report["rollback_guard"], "armed_and_committed")
 
+    def test_fragmentation_budget_rejection_routes_to_knockout(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_path = root / "source.png"
+            svg_path = root / "candidate.svg"
+            self._source(source_path)
+            self._candidate(svg_path)
+
+            trigger = (
+                "source_alpha_mask_contour_fragmentation_budget_rejected:"
+                "path_nodes=4058631/95784,alpha_cells=811726,"
+                "compact_contours=4097,pruned_contours=0"
+            )
+
+            def rejected(*_args):
+                raise RuntimeError(trigger)
+
+            wrapped = make_candidate_geometry_knockout_fallback(rejected)
+            report = wrapped(svg_path, source_path, "logo_color")
+            self.assertEqual(
+                report["mask_fallback_reason"], "source_alpha_exact_gate_failure"
+            )
+            self.assertEqual(report["mask_fallback_trigger"], trigger)
+            self.assertEqual(report["rollback_guard"], "armed_and_committed")
+
     def test_failed_knockout_restores_exact_original_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
