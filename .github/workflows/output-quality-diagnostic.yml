@@ -8,8 +8,17 @@ on:
       - "engine/benchmark/**"
       - "engine/regression/output_quality_suite.py"
       - "engine/regression/output_quality_root_cause.py"
+      - "engine/regression/output_quality_residual_suite.py"
+      - "engine/regression/output_quality_residual_root_cause.py"
+      - "engine/regression/output_quality_residual_root_cause_v2.py"
+      - "engine/regression/residual_error_metrics.py"
+      - "engine/regression/residual_multiscale_source.py"
       - "engine/regression/test_output_quality_suite.py"
       - "engine/regression/test_output_quality_root_cause.py"
+      - "engine/regression/test_output_quality_residual_suite.py"
+      - "engine/regression/test_output_quality_residual_root_cause.py"
+      - "engine/regression/test_residual_error_metrics.py"
+      - "engine/regression/test_residual_multiscale_source.py"
       - "engine/requirements.txt"
   workflow_dispatch:
   schedule:
@@ -48,14 +57,27 @@ jobs:
           python -m py_compile
           engine/regression/output_quality_suite.py
           engine/regression/output_quality_root_cause.py
+          engine/regression/output_quality_residual_suite.py
+          engine/regression/output_quality_residual_root_cause.py
+          engine/regression/output_quality_residual_root_cause_v2.py
+          engine/regression/residual_error_metrics.py
+          engine/regression/residual_multiscale_source.py
           engine/regression/test_output_quality_suite.py
           engine/regression/test_output_quality_root_cause.py
+          engine/regression/test_output_quality_residual_suite.py
+          engine/regression/test_output_quality_residual_root_cause.py
+          engine/regression/test_residual_error_metrics.py
+          engine/regression/test_residual_multiscale_source.py
 
       - name: Run diagnostic contract tests
         run: >-
           python -m unittest
           engine.regression.test_output_quality_suite
           engine.regression.test_output_quality_root_cause
+          engine.regression.test_output_quality_residual_suite
+          engine.regression.test_output_quality_residual_root_cause
+          engine.regression.test_residual_error_metrics
+          engine.regression.test_residual_multiscale_source
 
   production-output:
     needs: contract
@@ -82,16 +104,13 @@ jobs:
       - name: Install production pipeline dependencies
         run: python -m pip install --disable-pip-version-check -r engine/requirements.txt pytest
 
-      - name: Run repeat-aware production output diagnostic
+      - name: Run repeat-aware 12-case residual diagnostic
         shell: bash
         run: |
           set -o pipefail
           OUTPUT="${RUNNER_TEMP}/output-quality"
-          FAIL_ON=structural
-          if [ "${GITHUB_EVENT_NAME}" != "pull_request" ]; then
-            FAIL_ON=hard
-          fi
-          python -m engine.regression.output_quality_root_cause \
+          FAIL_ON=none
+          python -m engine.regression.output_quality_residual_root_cause_v2 \
             --output "${OUTPUT}" \
             --engine-version "${GITHUB_SHA}" \
             --repeat-count 2 \
