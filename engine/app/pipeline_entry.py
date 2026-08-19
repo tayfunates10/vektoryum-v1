@@ -15,18 +15,9 @@ from PIL import Image
 
 from app.pipeline import WorkerFailure
 from app.pipeline import run_pipeline as _run_pipeline_core
-from app.alpha_contour_budget_guard import install_contour_budget_guard
 from app.pipeline_canonical_report import maybe_attach_canonical_svg_candidate
 from app.production_export_integration import register_pipeline_canonical_report
 from app.shadow_runtime import maybe_attach_shadow_telemetry
-
-# ``app.__init__`` constructs the production alpha wrapper chain before this public
-# facade is imported. The fragmented-contour preflight intentionally patches the
-# adaptive module's global contour planner and the knockout module's accepted trigger
-# tuple; both wrappers resolve those globals at call time. Install here so every real
-# production entry call has the guard armed before the first image is processed.
-# The installer is idempotent and does not alter any quality or journal threshold.
-install_contour_budget_guard()
 
 
 def _audit_path(job_dir: Path) -> Path | None:
