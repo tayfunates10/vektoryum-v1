@@ -32,6 +32,12 @@ _BUDGET_PREFLIGHT_AVAILABLE_NODES: ContextVar[int | None] = ContextVar(
     "vektoryum_fragmented_contour_available_nodes",
     default=None,
 )
+_PENDING_FRAGMENTATION_FALLBACK: ContextVar[
+    tuple[str, str, str] | None
+] = ContextVar(
+    "vektoryum_pending_fragmentation_fallback",
+    default=None,
+)
 
 
 def _fragmented_one_cell_stats(
@@ -120,6 +126,20 @@ def _preflight_fragmented_contour_nodes(
     return stats
 
 
+def _remember_fragmentation_failure(
+    svg_path: Path,
+    source_path: Path,
+    error: RuntimeError,
+) -> None:
+    """Stage structural provenance for the immediate knockout fallback only."""
+    trigger = str(error)
+    if not trigger.startswith(_FRAGMENTATION_BUDGET_PREFIX):
+        return
+    _PENDING_FRAGMENTATION_FALLBACK.set(
+        (str(Path(svg_path)), str(Path(source_path)), trigger)
+    )
+
+
 def install_contour_budget_guard() -> None:
     """Install all production node-preflight routes and the existing fallback hook."""
     global _INSTALLED
@@ -150,6 +170,7 @@ def install_contour_budget_guard() -> None:
             source_path: Path,
         ) -> dict[str, Any] | None:
             target = Path(svg_path)
+            source = Path(source_path)
             before_size = target.stat().st_size
             root = SafeET.fromstring(target.read_bytes())
             limits = budget_module._journal_limits(root, before_size)
@@ -159,7 +180,10 @@ def install_contour_budget_guard() -> None:
             )
             token = _BUDGET_PREFLIGHT_AVAILABLE_NODES.set(available_nodes)
             try:
-                return original_budget_preflight(target, Path(source_path))
+                return original_budget_preflight(target, source)
+            except RuntimeError as error:
+                _remember_fragmentation_failure(target, source, error)
+                raise
             finally:
                 _BUDGET_PREFLIGHT_AVAILABLE_NODES.reset(token)
 
@@ -207,6 +231,7 @@ def install_contour_budget_guard() -> None:
             source_path: Path,
         ) -> tuple[dict[str, Any], dict[str, int]]:
             target = Path(svg_path)
+            source = Path(source_path)
             before_size = target.stat().st_size
             root = SafeET.fromstring(target.read_bytes())
             limits = budget_module._journal_limits(root, before_size)
@@ -218,7 +243,7 @@ def install_contour_budget_guard() -> None:
             raster_width = max(1, int(round(width * scale)))
             raster_height = max(1, int(round(height * scale)))
             rgba = _rgba_from_source_at_size(
-                Path(source_path),
+                source,
                 (raster_width, raster_height),
             )
             quantized, opacity_by_level = budget_module._quantize_alpha(
@@ -228,15 +253,19 @@ def install_contour_budget_guard() -> None:
                 0,
                 int(limits["node_limit"]) - int(limits["parent_node_count"]),
             )
-            _preflight_fragmented_contour_nodes(
-                quantized,
-                opacity_by_level,
-                available_nodes=available_nodes,
-                max_compact_contours=budget_module._MAX_COMPACT_CONTOURS,
-            )
+            try:
+                _preflight_fragmented_contour_nodes(
+                    quantized,
+                    opacity_by_level,
+                    available_nodes=available_nodes,
+                    max_compact_contours=budget_module._MAX_COMPACT_CONTOURS,
+                )
+            except RuntimeError as error:
+                _remember_fragmentation_failure(target, source, error)
+                raise
             # Admissible/non-fragmented cases retain the original construction,
             # serialization, validation and telemetry byte-for-byte.
-            return original_contour_fallback_plan(target, Path(source_path))
+            return original_contour_fallback_plan(target, source)
 
         guarded_contour_fallback_plan.__vektoryum_fragmentation_budget_guard__ = True
         adaptive_module._contour_fallback_plan = guarded_contour_fallback_plan
@@ -249,6 +278,52 @@ def install_contour_budget_guard() -> None:
         knockout_module._ALPHA_FAILURE_PREFIXES = (
             *prefixes,
             _FRAGMENTATION_BUDGET_PREFIX,
+        )
+
+    # Preserve the original structural rejection if that narrow fallback itself
+    # cannot produce a proven candidate. The fallback exception remains chained as
+    # the cause, while the public error keeps the budget failure class used by the
+    # long-standing no-mutation regression. Successful knockout behavior is
+    # unchanged and still reports the original trigger in telemetry.
+    original_knockout = knockout_module.apply_candidate_geometry_knockout
+    if not getattr(
+        original_knockout,
+        "__vektoryum_fragmentation_provenance__",
+        False,
+    ):
+        @wraps(original_knockout)
+        def provenance_preserving_knockout(
+            svg_path: Path,
+            source_path: Path,
+            mode: str,
+        ) -> dict[str, Any]:
+            target = Path(svg_path)
+            source = Path(source_path)
+            pending = _PENDING_FRAGMENTATION_FALLBACK.get()
+            if pending is None:
+                return original_knockout(target, source, mode)
+
+            pending_target, pending_source, trigger = pending
+            if pending_target != str(target) or pending_source != str(source):
+                _PENDING_FRAGMENTATION_FALLBACK.set(None)
+                return original_knockout(target, source, mode)
+
+            try:
+                return original_knockout(target, source, mode)
+            except BaseException as fallback_error:
+                fallback_code = str(fallback_error).split("\n", 1)[0]
+                raise RuntimeError(
+                    trigger
+                    + ",fallback_error="
+                    + fallback_code
+                    + ",failure_class=source_alpha_mask_byte_budget_exceeded"
+                ) from fallback_error
+            finally:
+                _PENDING_FRAGMENTATION_FALLBACK.set(None)
+
+        provenance_preserving_knockout.__vektoryum_fragmentation_provenance__ = True
+        knockout_module.apply_candidate_geometry_knockout = (
+            provenance_preserving_knockout
         )
 
     _INSTALLED = True
