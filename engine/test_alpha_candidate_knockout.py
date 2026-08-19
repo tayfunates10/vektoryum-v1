@@ -122,6 +122,28 @@ class CandidateGeometryKnockoutTests(unittest.TestCase):
             self.assertEqual(report["mask_fallback_trigger"], trigger)
             self.assertEqual(report["rollback_guard"], "armed_and_committed")
 
+    def test_production_pipeline_entry_installs_fragmentation_guard(self) -> None:
+        # Regression for #173: defining the preflight helper is not sufficient.
+        # The public production facade must arm it before a real benchmark/API call.
+        import app.pipeline_entry  # noqa: F401, PLC0415
+        from app import alpha_candidate_knockout as knockout_module  # noqa: PLC0415
+        from app import alpha_mask_adaptive as adaptive_module  # noqa: PLC0415
+        from app.alpha_contour_budget_guard import (  # noqa: PLC0415
+            _FRAGMENTATION_BUDGET_PREFIX,
+        )
+
+        self.assertTrue(
+            getattr(
+                adaptive_module._contour_fallback_plan,
+                "__vektoryum_fragmentation_budget_guard__",
+                False,
+            )
+        )
+        self.assertIn(
+            _FRAGMENTATION_BUDGET_PREFIX,
+            tuple(knockout_module._ALPHA_FAILURE_PREFIXES),
+        )
+
     def test_failed_knockout_restores_exact_original_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
