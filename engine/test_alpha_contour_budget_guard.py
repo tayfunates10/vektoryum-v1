@@ -72,7 +72,7 @@ class AlphaContourBudgetGuardTests(unittest.TestCase):
         wrapped = alpha_mask_adaptive.make_rect_fidelity_fallback(guarded_builder)
         contour_error = RuntimeError(
             _FRAGMENTATION_BUDGET_PREFIX
-            "path_nodes=4058631/95784,alpha_cells=811726,"
+            + "path_nodes=4058631/95784,alpha_cells=811726,"
             "compact_contours=4097,pruned_contours=0"
         )
         with patch.object(
