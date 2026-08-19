@@ -185,3 +185,10 @@ def validate_alpha_reconstruction_contract(
     del report, root, source_rgb, source_alpha
     _release_transient_memory()
     return result
+
+
+# Install before app.__init__ imports and freezes the alpha wrapper factories.
+# The guard changes no evaluator threshold or TransformJournal budget.
+from app.alpha_contour_budget_guard import install_contour_budget_guard  # noqa: E402
+
+install_contour_budget_guard()
