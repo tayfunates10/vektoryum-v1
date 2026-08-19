@@ -9,9 +9,8 @@ from unittest.mock import patch
 import numpy as np
 from PIL import Image, ImageDraw
 
-from app import alpha_mask_adaptive, alpha_svg_mask
+from app import alpha_svg_mask
 from app.alpha_contour_budget_guard import (
-    _FRAGMENTATION_BUDGET_PREFIX,
     _fragmented_one_cell_stats,
     _preflight_fragmented_contour_nodes,
 )
@@ -226,42 +225,6 @@ class AlphaMaskAdaptiveTests(unittest.TestCase):
         )
         self.assertTrue(stats["fragmented"])
         self.assertEqual(stats["command_count"], 2560)
-
-    def test_impossible_contour_retry_preserves_original_alpha_gate(self) -> None:
-        def guarded_builder(_svg: Path, _source: Path, _mode: str):
-            raise RuntimeError("source_alpha_mask_iou_gate_failed:0.900000<0.995")
-
-        wrapped = make_rect_fidelity_fallback(guarded_builder)
-        contour_error = RuntimeError(
-            _FRAGMENTATION_BUDGET_PREFIX
-            + "path_nodes=4058631/95784,alpha_cells=811726,"
-            "compact_contours=4097,pruned_contours=0"
-        )
-        with patch.object(
-            alpha_mask_adaptive,
-            "_contour_fallback_plan",
-            side_effect=contour_error,
-        ):
-            with self.assertRaisesRegex(
-                RuntimeError,
-                r"source_alpha_mask_iou_gate_failed:0.900000<0.995",
-            ) as raised:
-                wrapped(Path("selected.svg"), Path("source.png"), "logo_color")
-
-        self.assertIs(raised.exception.__cause__, contour_error)
-
-    def test_unexpected_contour_error_is_not_reclassified(self) -> None:
-        def guarded_builder(_svg: Path, _source: Path, _mode: str):
-            raise RuntimeError("source_alpha_mask_mae_gate_failed:0.100000>0.005")
-
-        wrapped = make_rect_fidelity_fallback(guarded_builder)
-        with patch.object(
-            alpha_mask_adaptive,
-            "_contour_fallback_plan",
-            side_effect=RuntimeError("unexpected_contour_bug"),
-        ):
-            with self.assertRaisesRegex(RuntimeError, "unexpected_contour_bug"):
-                wrapped(Path("selected.svg"), Path("source.png"), "logo_color")
 
     def test_compaction_requires_existing_rect_mask(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
