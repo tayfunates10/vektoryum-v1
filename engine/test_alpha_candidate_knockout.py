@@ -11,6 +11,7 @@ from app.alpha_candidate_knockout import (
     apply_candidate_geometry_knockout,
     make_candidate_geometry_knockout_fallback,
 )
+from app.alpha_pipeline_retry import _retryable_alpha_failure
 from app.source_truth import alpha_plane_metrics, render_svg_to_rgba
 
 
@@ -97,13 +98,13 @@ class CandidateGeometryKnockoutTests(unittest.TestCase):
             )
             self.assertEqual(report["rollback_guard"], "armed_and_committed")
 
-    def test_fragmentation_budget_rejection_routes_to_knockout(self) -> None:
+    def test_fragmentation_budget_rejection_is_terminal_before_knockout(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source_path = root / "source.png"
             svg_path = root / "candidate.svg"
             self._source(source_path)
-            self._candidate(svg_path)
+            original = self._candidate(svg_path)
 
             trigger = (
                 "source_alpha_mask_contour_fragmentation_budget_rejected:"
@@ -115,12 +116,26 @@ class CandidateGeometryKnockoutTests(unittest.TestCase):
                 raise RuntimeError(trigger)
 
             wrapped = make_candidate_geometry_knockout_fallback(rejected)
-            report = wrapped(svg_path, source_path, "logo_color")
-            self.assertEqual(
-                report["mask_fallback_reason"], "source_alpha_exact_gate_failure"
+            with self.assertRaisesRegex(
+                RuntimeError,
+                r"source_alpha_mask_contour_fragmentation_budget_rejected:"
+                r"path_nodes=4058631/95784",
+            ):
+                wrapped(svg_path, source_path, "logo_color")
+            self.assertEqual(svg_path.read_bytes(), original)
+
+    def test_fragmentation_budget_rejection_is_not_pipeline_retryable(self) -> None:
+        trigger = RuntimeError(
+            "source_alpha_mask_contour_fragmentation_budget_rejected:"
+            "path_nodes=4058631/95784,alpha_cells=811726,"
+            "compact_contours=4097,pruned_contours=0"
+        )
+        self.assertFalse(_retryable_alpha_failure(trigger))
+        self.assertTrue(
+            _retryable_alpha_failure(
+                RuntimeError("source_alpha_mask_iou_gate_failed:0.95<0.995")
             )
-            self.assertEqual(report["mask_fallback_trigger"], trigger)
-            self.assertEqual(report["rollback_guard"], "armed_and_committed")
+        )
 
     def test_budget_preflight_rejects_fragmented_direct_contour_path(self) -> None:
         from app import alpha_mask_budget
