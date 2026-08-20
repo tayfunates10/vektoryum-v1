@@ -362,141 +362,220 @@ class AlphaPreprocessUnitTests(unittest.TestCase):
             def quantized_preprocess(*args, **kwargs):
                 del args, kwargs
                 bands = np.zeros((8, 8, 3), dtype=np.uint8)
-                palette = np.array(
-                    [[30, 60, 220], [90, 60, 160], [160, 60, 90], [220, 60, 30]],
-                    dtype=np.uint8,
-                )
-                for x in range(8):
-                    bands[:, x] = palette[min(3, x // 2)]
+                palette = [(40, 60, 220), (100, 60, 160),
+                           (160, 60, 100), (220, 60, 40)]
+                for index, color in enumerate(palette):
+                    bands[:, index * 2 : index * 2 + 2, :] = color
                 Image.fromarray(bands, mode="RGB").save(output_path)
-                return output_path, {"mode": "logo_color", "steps": []}
+                return output_path, {"mode": "logo_color", "steps": ["stub"]}
 
             wrapped = wrap_preprocess_for_mode(quantized_preprocess)
             processed_path, _report = wrapped(source_path, "logo_color", root)
-            with Image.open(processed_path) as processed_image:
-                processed = np.asarray(processed_image, dtype=np.uint8).copy()
 
-            expected_palette = {
-                tuple(int(value) for value in colour)
-                for colour in np.array(
-                    [[30, 60, 220], [90, 60, 160], [160, 60, 90], [220, 60, 30]],
-                    dtype=np.uint8,
-                )
+            with Image.open(processed_path) as verified_image:
+                verified = np.asarray(verified_image.convert("RGB"), dtype=np.uint8)
+            trace_palette = {
+                (40, 60, 220), (100, 60, 160), (160, 60, 100), (220, 60, 40)
             }
-            observed = {
-                tuple(int(value) for value in colour)
-                for colour in np.unique(processed.reshape(-1, 3), axis=0)
+            output_palette = {
+                tuple(int(v) for v in color)
+                for color in np.unique(verified.reshape(-1, 3), axis=0)
             }
-            self.assertTrue(observed.issubset(expected_palette))
+            # Soft sınır kaynak RGB'si palete snap edildiğinden yeni renk oluşmaz.
+            self.assertTrue(output_palette.issubset(trace_palette))
+            self.assertLessEqual(len(output_palette), len(trace_palette))
 
     def test_large_translucent_region_keeps_straight_rgb(self) -> None:
+        # Regresyon (seed-07): büyük düzgün yarı-saydam bölge (opak komşusu yok)
+        # palete snap EDİLMEMELİ. Snap edilirse tek global maske alfayı ikinci kez
+        # uygular (çift-kompozit) ve üst üste binen saydam objelerin RGB'si yıkanır.
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source_path = root / "source.png"
             output_path = root / "processed.png"
-            source = np.zeros((16, 16, 4), dtype=np.uint8)
-            source[:, :, :3] = (80, 140, 200)
-            source[:, :, 3] = 96
+
+            # Merkezi 12x12 yarı-saydam obje (a=128), çevresi şeffaf. Opak (a=255)
+            # piksel YOK → tüm partial pikseller "büyük yarı-saydam bölge".
+            source = np.zeros((24, 24, 4), dtype=np.uint8)
+            straight = (40, 160, 255)
+            source[6:18, 6:18, :3] = straight
+            source[6:18, 6:18, 3] = 128
             Image.fromarray(source, mode="RGBA").save(source_path)
 
-            def opaque_preprocess(*args, **kwargs):
-                del args, kwargs
-                Image.new("RGB", (16, 16), (80, 140, 200)).save(output_path)
-                return output_path, {"mode": "logo_color", "steps": []}
+            # İz görüntüsü kaynağı beyaza kompozitler: obje bölgesi yıkanmış renk.
+            composite = np.rint(
+                np.array(straight, dtype=np.float32) * (128.0 / 255.0)
+                + 255.0 * (1.0 - 128.0 / 255.0)
+            ).astype(np.uint8)
 
-            wrapped = wrap_preprocess_for_mode(opaque_preprocess)
-            processed_path, _report = wrapped(source_path, "logo_color", root)
-            with Image.open(processed_path) as processed_image:
-                processed = np.asarray(processed_image, dtype=np.uint8)
-            self.assertTrue(np.all(processed == np.array([80, 140, 200], dtype=np.uint8)))
+            def composited_preprocess(*args, **kwargs):
+                del args, kwargs
+                processed = np.full((24, 24, 3), 255, dtype=np.uint8)
+                processed[6:18, 6:18, :] = composite
+                Image.fromarray(processed, mode="RGB").save(output_path)
+                return output_path, {"mode": "logo_color", "steps": ["stub"]}
+
+            wrapped = wrap_preprocess_for_mode(composited_preprocess)
+            processed_path, report = wrapped(source_path, "logo_color", root)
+
+            with Image.open(processed_path) as verified_image:
+                verified = np.asarray(verified_image.convert("RGB"), dtype=np.uint8)
+            interior = verified[9:15, 9:15]
+            # İç bölge DÜZ kaynak RGB olmalı (kompozit/yıkanmış değil).
+            self.assertTrue(np.all(interior == np.array(straight, dtype=np.uint8)))
+            self.assertFalse(
+                np.array_equal(
+                    interior[0, 0], np.asarray(composite, dtype=np.uint8)
+                )
+            )
+            self.assertEqual(
+                report["source_alpha"]["soft_boundary_rgb_policy"],
+                "palette_snapped_edge_straight_translucent",
+            )
 
 
 class AlphaPreprocessProductionIntegrationTests(unittest.TestCase):
-    def test_vector_mask_repairs_live_opaque_canvas_signature(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            source_path = root / "source.png"
-            svg_path = root / "selected.svg"
-            source = np.zeros((64, 64, 4), dtype=np.uint8)
-            source[12:52, 12:52, :3] = (40, 80, 160)
-            source[12:52, 12:52, 3] = 255
-            Image.fromarray(source, mode="RGBA").save(source_path)
-            svg_path.write_text(
-                '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" '
-                'viewBox="0 0 64 64"><path fill="#fff" d="M0 0h64v64H0Z"/>'
-                '<path fill="#2850a0" d="M12 12h40v40H12Z"/></svg>',
-                encoding="utf-8",
-            )
-
-            def color_pipeline(*args, **kwargs):
-                del args, kwargs
-                return {
-                    "analysis": {},
-                    "mode_used": "logo_color",
-                    "best": {
-                        "name": "selected",
-                        "svg_path": svg_path,
-                        "rendered_ok": True,
-                        "fidelity_score": 1.0,
-                    },
-                    "scored": [],
-                    "selection_reason": "test",
-                    "refit_info": {},
-                    "transform_journal": None,
-                }
-
-            wrapped = wrap_run_pipeline_with_alpha_mask(color_pipeline)
-            with Image.open(source_path) as opened:
-                result = wrapped(opened.copy(), source_path, "logo_color", root)
-
-            final_path = Path(result["best"]["svg_path"])
-            rendered = render_svg_to_rgba(final_path, 64, 64)
-            self.assertIsNotNone(rendered)
-            metrics = alpha_plane_metrics(source[:, :, 3], rendered[:, :, 3])
-            thresholds = _thresholds("clean_logo", None)
-            self.assertGreaterEqual(metrics["alpha_iou"], thresholds["alpha_iou_min"])
-            self.assertLessEqual(metrics["alpha_mae"], thresholds["alpha_mae_max"])
-
     def test_vector_gradient_survives_final_alpha_mask(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            source_path = root / "source.png"
-            svg_path = root / "selected.svg"
-            source = np.zeros((64, 64, 4), dtype=np.uint8)
-            source[8:56, 8:56, :3] = (100, 120, 160)
-            source[8:56, 8:56, 3] = 255
+            source_path = root / "transparent-gradient.png"
+            svg_path = root / "gradient.svg"
+            width, height = 128, 64
+            source = np.zeros((height, width, 4), dtype=np.uint8)
+            source[8:56, 12:116, 3] = 255
             Image.fromarray(source, mode="RGBA").save(source_path)
+
             svg_path.write_text(
-                '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" '
-                'viewBox="0 0 64 64"><defs><linearGradient id="g"><stop offset="0" '
-                'stop-color="#000"/><stop offset="1" stop-color="#fff"/></linearGradient>'
-                '</defs><path fill="url(#g)" d="M8 8h48v48H8Z"/></svg>',
+                '<?xml version="1.0" encoding="UTF-8"?>\n'
+                '<svg xmlns="http://www.w3.org/2000/svg" width="128" height="64" '
+                'viewBox="0 0 128 64">'
+                '<defs><linearGradient id="g0" gradientUnits="userSpaceOnUse" '
+                'x1="0" y1="0" x2="128" y2="0">'
+                '<stop offset="0" stop-color="#f02828"/>'
+                '<stop offset="1" stop-color="#2828dc"/>'
+                '</linearGradient></defs>'
+                '<path fill="url(#g0)" d="M0 0h128v64H0Z"/>'
+                '</svg>',
                 encoding="utf-8",
             )
+            before = svg_path.read_text(encoding="utf-8")
+            self.assertIn("<linearGradient", before)
 
-            def color_pipeline(*args, **kwargs):
-                del args, kwargs
-                return {
-                    "analysis": {},
-                    "mode_used": "logo_color",
-                    "best": {
-                        "name": "selected",
-                        "svg_path": svg_path,
-                        "rendered_ok": True,
-                        "fidelity_score": 1.0,
-                    },
-                    "scored": [],
-                    "selection_reason": "test",
-                    "refit_info": {},
-                    "transform_journal": None,
-                }
+            report = apply_source_alpha_mask(
+                svg_path, source_path, "logo_color"
+            )
+            self.assertTrue(report["applied"])
+            after = svg_path.read_text(encoding="utf-8")
+            self.assertIn("linearGradient", after)
+            self.assertIn("url(#g0)", after)
+            self.assertNotIn("<image", after)
 
-            wrapped = wrap_run_pipeline_with_alpha_mask(color_pipeline)
-            with Image.open(source_path) as opened:
-                result = wrapped(opened.copy(), source_path, "logo_color", root)
-            text = Path(result["best"]["svg_path"]).read_text(encoding="utf-8")
-            self.assertIn("linearGradient", text)
-            self.assertIn("url(#g)", text)
+            rendered = render_svg_to_rgba(svg_path, width, height)
+            self.assertIsNotNone(rendered)
+            assert rendered is not None
+            metrics = alpha_plane_metrics(source[:, :, 3], rendered[:, :, 3])
+            thresholds = _thresholds("clean_logo", None)
+            self.assertGreaterEqual(
+                metrics["alpha_iou"], thresholds["alpha_iou_min"], metrics
+            )
+            self.assertLessEqual(
+                metrics["alpha_mae"], thresholds["alpha_mae_max"], metrics
+            )
+
+    def test_vector_mask_repairs_live_opaque_canvas_signature(self) -> None:
+        import vtracer
+        from app.preprocess import preprocess_for_mode
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_path = root / "transparent-logo.png"
+            source = np.zeros((128, 128, 4), dtype=np.uint8)
+            source[31:97, 31:97, :3] = (214, 32, 48)
+            source[31:97, 31:97, 3] = 255
+            source[30, 31:97, :3] = (214, 32, 48)
+            source[97, 31:97, :3] = (214, 32, 48)
+            source[31:97, 30, :3] = (214, 32, 48)
+            source[31:97, 97, :3] = (214, 32, 48)
+            source[30, 31:97, 3] = 128
+            source[97, 31:97, 3] = 128
+            source[31:97, 30, 3] = 128
+            source[31:97, 97, 3] = 128
+            Image.fromarray(source, mode="RGBA").save(source_path)
+
+            processed_path, report = preprocess_for_mode(
+                source_path,
+                "logo_color",
+                root,
+                analysis={"estimated_color_count": 2},
+            )
+            self.assertIn("source_alpha_staged", report["steps"])
+            with Image.open(processed_path) as processed_image:
+                self.assertEqual(processed_image.mode, "RGB")
+                width, height = processed_image.size
+
+            svg_path = root / "candidate.svg"
+            vtracer.convert_image_to_svg_py(
+                str(processed_path),
+                str(svg_path),
+                colormode="color",
+                mode="spline",
+                color_precision=5,
+                filter_speckle=4,
+                layer_difference=24,
+                corner_threshold=55,
+                length_threshold=4.0,
+                path_precision=5,
+            )
+
+            opaque_render = render_svg_to_rgba(svg_path, width, height)
+            self.assertIsNotNone(opaque_render)
+            assert opaque_render is not None
+            opaque_coverage = float(
+                opaque_render[:, :, 3].astype(np.float32).mean() / 255.0
+            )
+            self.assertGreaterEqual(opaque_coverage, 0.995)
+
+            mask_report = apply_source_alpha_mask(
+                svg_path, source_path, "logo_color"
+            )
+            self.assertTrue(mask_report["applied"])
+            self.assertEqual(mask_report["status"], "accepted")
+            self.assertEqual(mask_report["mask_path_count"], 0)
+            self.assertGreater(mask_report["mask_group_count"], 0)
+            self.assertGreater(mask_report["mask_rectangle_count"], 0)
+            self.assertLessEqual(
+                mask_report["preflight_rectangle_count"],
+                mask_report["preflight_rectangle_limit"],
+            )
+            self.assertLessEqual(
+                mask_report["preflight_projected_upper_bound"],
+                mask_report["preflight_byte_limit"],
+            )
+            svg_text = svg_path.read_text(encoding="utf-8")
+            self.assertNotIn("<image", svg_text)
+            self.assertIn("<rect", svg_text)
+
+            rendered = render_svg_to_rgba(svg_path, width, height)
+            self.assertIsNotNone(rendered)
+            assert rendered is not None
+            with Image.open(source_path) as source_image:
+                source_resized = np.asarray(
+                    source_image.convert("RGBA").resize(
+                        (width, height), Image.Resampling.LANCZOS
+                    ),
+                    dtype=np.uint8,
+                ).copy()
+            metrics = alpha_plane_metrics(
+                source_resized[:, :, 3], rendered[:, :, 3]
+            )
+            thresholds = _thresholds("clean_logo", None)
+            self.assertGreaterEqual(
+                metrics["alpha_iou"], thresholds["alpha_iou_min"], metrics
+            )
+            self.assertLessEqual(
+                metrics["alpha_mae"], thresholds["alpha_mae_max"], metrics
+            )
+            self.assertLess(metrics["render_coverage"], 0.9)
 
 
 if __name__ == "__main__":
