@@ -4,6 +4,43 @@ Bu belge, tükenmiş bir oturumdan devralacak yeni oturum için yazıldı. Amac�
 aynı yolları tekrar yürümeni önlemek: nelerin **ölçüldüğünü**, nelerin
 **çürütüldüğünü** ve sıradaki iki somut deneyi içerir.
 
+
+---
+
+## 0. ÖNCE BUNU OKU — bu oturumda neler kapandı
+
+⚠️ Aşağıdaki 1-8. maddeler **ilk** oturumun brifingidir ve bazı yerleri
+sonradan **çürütüldü**. Çakışma görürsen 9+ maddeler geçerlidir.
+
+**Kapanan sorular**
+
+| soru | cevap | madde |
+|---|---|---|
+| #164 canlı korpusta işe yarıyor mu? | Evet ama 2,29× yetersiz; sözleşmesi temiz | 9 |
+| `public-12` timeout'undan merdivenler mi sorumlu? | **Hayır** — merdivensiz de 4 197 s | 10 |
+| `public-12`'nin kök nedeni ne? | Kontur fallback düğüm patlaması, 56× | 10.1 |
+| `public-15`'in destek katmanı kaç bayt? | 701 625 B / 15 283 rect (canlı ölçüm) | 11.1 |
+
+**Tekrar denenmemesi gereken kapalı yollar** (hepsi ölçüldü)
+
+1. Destek katmanını tek birleşik `<path>` yapmak → render bozuluyor (206 660 px) — 11
+2. Rect başına ayrı `<path>` → topoloji kapısı düşüyor, eleman tipi downstream'e bağlı — 11
+3. `_rect_path`'i yeniden icat etmek → depoda **zaten var**, yalnız `<mask>`'te güvenli — 11.2
+4. Pahalı dalda erken durdurma → kazanç **1,0×**, dizge kurma maliyetin %2'si — 10.2
+5. `4*C` alt sınır kapısı → sözleşme testini kırdı, `_encode_contours` köprü kullanıyor — 10.4
+6. Toplam kontur sayısıyla kapı → **karşı örnek** ölçüldü (16 860 toplam / 3 budanmış) — 10.7
+
+**Doğrulanmış araçlar** (kullan)
+
+- `kontur = 2*C8 - E8` kimliği — 10 ms'de tam, `findContours` 103 s. Tanılama için değerli (10.6)
+- Sentetik profil kurarken deponun **kendi** `_merged_rectangles_by_level`'ını kullan:
+  tahmin %68,1 / gerçek %67,9 tuttu (11.1)
+- Bu depoda izole doğrulama yanıltır. Tek güvenilir kontrol:
+  `cd engine && python3 test_visual_regression.py --case class_reklam`
+
+**Sıradaki en umutlu iş:** `public-14` — bütçeye **en yakın** vaka (1,41×),
+bugüne dek hiç çalışılmadı. Madde 12.
+
 ---
 
 ## 1. Depo durumu (bu belge yazıldığında)
@@ -36,7 +73,7 @@ dıştaki fail-closed mesajı.
 |---|---|---|
 | `public-04` | native/evaluator arası sabit boşluk | native 0,99888 · evaluator 0,9914 · fark ~0,0075 |
 | `public-05` | hizasızlık şüphesi | native alfa IoU **0,4274**, kafesten bağımsız sabit |
-| `public-12` | **TimeoutError** (kalite kapısı değil) | iki koşuda da tekrarladı, ~135 dk |
+| `public-12` | ~~TimeoutError~~ → **kontur fallback düğüm patlaması** (madde 10) | plan 4 034 685 düğüm üretiyor, paya düşen 71 838 → **56×** |
 | `public-14` | knockout bayt bütçesi | 1 800 596 > 1 273 782 (%41 aşım) |
 | `public-15` | deficit örtüsü baytı | 1 099 083 deficit px; kafes seyreltmesi baytı yalnız %17,5 düşürüyor |
 
@@ -166,3 +203,2446 @@ yani süre vakaya özgü olabilir. Kanıt değil.
 
 RFV-3 `pending`, RFV-4 bloke, yayın kararı `no_go`. Bu koşuda hiçbiri
 değişmedi ve **canlı korpus kanıtı gelmeden değişmemeli**.
+
+---
+
+## 9. ÖLÇÜLDÜ — Deney A kapandı: #164 canlı korpusa karşı ölçüldü
+
+Brifing yazıldıktan **sonra** üç görev dalı da canlı korpusa karşı koştu.
+Deney A'nın "canlı kanıtı yok" durumu artık geçerli değil.
+
+| koşu | head | taban | sonuç |
+|---|---|---|---|
+| `31872218993` | `a513c52` (#164) | `5c4f790` | measure 0 ✅, 1-5 ❌ |
+| `31875365505` | `7dfab89` (#158, siluet düzeltmeli) | — | measure 0 ✅, 1-5 ❌ |
+
+Kafes eşlemesi (`ordered[shard::6]`, case id'leri sıralı): shard 1→public-14,
+2→**public-15**, 3→public-04, 4→public-05, 5→public-12. Yani düşen 5 shard,
+brifingin 5 vakasıyla birebir örtüşüyor; mekanizmalar da değişmedi.
+
+### 9.1 #164 çalışıyor ama **2,29× yetersiz**
+
+`public-15`'te #164'ün yeni ailesi gerçekten devreye giriyor — tabanda
+bulunmayan bir aday üretiyor:
+
+```
+encoding_label  = paint-deficit-cumulative-q8-base-delta
+encoding_family = paint_deficit_support_compact
+actual_serialized_bytes = 769804   byte_limit = 335503   -> byte_rejected
+paint_deficit_support_serialized_bytes        = 617139
+paint_deficit_support_legacy_serialized_bytes = 701866
+paint_deficit_support_saved_bytes             =  84727
+paint_deficit_support_rect_count              =  13348
+paint_deficit_palette_count = 8    paint_deficit_pixel_count = 943372
+```
+
+Yani: en iyi eski paint-deficit adayı 854 531 B iken yeni aday 769 804 B —
+**%9,9 kazanç, ölçülmüş**. Ama bütçe 335 503 B; kalan açık **434 301 B** ve
+sığmak için bir **%56,4 daha** düşüş gerekiyor. Yön doğru, ölçek yanlış.
+
+Baytı süren şey seviye sayısı değil **destek katmanının dikdörtgen sayısı**:
+13 348 rect / 617 139 B ≈ **46 B/rect**. Bütçeye girmek için rect sayısının
+kabaca yarıya inmesi gerek. (Madde 3.5'teki nicel öncül hatasının aynısı:
+kontur/döngü geometrisi domine ediyor.)
+
+### 9.2 Eski merdiven baytları iki koşuda **bayt bayt aynı**
+
+`public-15` için taban ile #164 head'i arasında eski adayların hiçbiri
+oynamadı — #164'ün "mevcut yolları yerinden etme" sözleşmesi tutuyor:
+
+| ölçüm | taban (`7dfab89`) | #164 (`a513c52`) |
+|---|---|---|
+| `paint_deficit_pixel_count` | 943372 / 943310 | 943372 / 943310 |
+| `ladder_grid_alpha_sha256_16` | `c3e91c292a493bb1` | `c3e91c292a493bb1` |
+| `paint-deficit-cumulative` | 1007207>335503 | 1007207>335503 |
+| `-q8` / `-q12` / `-q16` / `-q20` | 854531 / 892375 / 930262 / 968128 | aynı |
+
+⚠️ Brifingdeki 1 099 083 deficit pikseli **artık 943 372**. Bu düşüş #164'ten
+gelmiyor (iki koşuda da aynı); 5c4f790 öncesindeki polygon-q/#162 çalışmasından
+geliyor. Yeni bayt tahminlerini 943 372 üzerinden kur.
+
+### 9.3 Siluet düzeltmesi korpus sonucunu değiştirmedi
+
+`7dfab89` merdiveni gerçekten onarıyor — `ladder_encoded_levels` 63/**31**/15,
+`requant_distinct` 64/**32**/16, `ladder_monotonicity_violated` **hep false**
+(#164 tabanında hâlâ 63/**1**/15, distinct 2, violated **true**). Ama
+`public-15`'in bayt redleri iki koşuda da birebir aynı → siluet kusuru bu
+vakanın bayt tabanını hiç etkilemiyormuş. Düzeltme doğru, etkisi başka yerde.
+
+### 9.4 Üç görev dalı da siluet düzeltmesinden ÖNCEKİ tabanda
+
+`#164`, `#166`, `#170` üçü de `5c4f790` üzerinde; `7dfab89` hiçbirinde yok
+(`git merge-base --is-ancestor 7dfab89 <dal>` → NO). Ölçümleri bu yüzden
+merdiven kusuru **açıkken** alındı. `public-15` için bunun sonucu değiştirmediği
+yukarıda ölçüldü, ama `public-04`/`public-05` için aynı şey **gösterilmedi** —
+o iki dalı yeniden ölçmeden önce `65bc297` üzerine taşımak gerekir.
+
+## 10. Deney B kuruldu — `public-12` merdiven sorumluluğu
+
+`.github/workflows/public12-ladder-timeout-check.yml` (tek seferlik):
+aynı runner sınıfında iki kol koşar — `ladder-on` (üretimdeki hâl) ve
+`ladder-free` (`_PAINT_DEFICIT_CUMULATIVE_LEVELS` ve
+`_NODE_FREE_QUANTIZED_LEVELS` boşaltılmış). Korpus, kimliği zaten doğrulanmış
+`31875365505` koşusunun artefaktından iner; yeniden edinim yok.
+
+Merdiven boşaltma **yalnız ölçüm betiğinin kendi sürecinde** yapılır —
+`engine/app` altında tek satır değişmez. Bu bilinçli: `engine/app/**`'e
+dokunmak RFV-3B canlı iş akışını (6 shard × saatler) tetiklerdi ve varsayılan
+davranış değişmediği için o koşu `7dfab89` ile aynı sonucu verirdi.
+
+### SONUÇ (gözlemlenmiş, artefakt beklemeden)
+
+Koşu `31884729592`, iki kol da **12:30:15'te** ölçüme girdi. 13:48 itibarıyla
+**ikisi de hâlâ koşuyordu: ~78 dk = ~4 680 s**, yani üretimdeki
+`repeat_timeout_seconds = 3600` bütçesini **ikisi de aştı**.
+
+Karar tablosuna göre okuma: **timeout sorumluluğu merdiven adaylarında DEĞİL.**
+`public-12` merdivenler tamamen boşaltılmışken bile 3600 s'yi aşıyor. Yani bu
+bir kalite işi değil, **vakaya özgü bir performans işi** — brifingdeki "zayıf
+işaret" (süre vakaya özgü olabilir) ölçümle desteklendi.
+
+⚠️ Bu, duvar saatinden **doğrudan gözlem**; kesin `elapsed_seconds` değil.
+
+### KESİN SAYILAR (artefaktlar geldi — önceki tahminimi düzeltiyorum)
+
+⚠️ "Zamanlama artefaktı üretilemeyecek" demiştim. **Yanlıştı** — iki artefakt da
+indi. Alarm gerçekten hiç ateşlenmedi, ama koşular kendiliğinden bitti:
+
+| kol | `elapsed_seconds` | bütçe içi | nasıl bitti |
+|---|---|---|---|
+| `ladder-free` | **4 197,0** | **hayır** | boru hattının kendi hatası |
+| `ladder-on` | **≈5 482** (zaman damgasından) | hayır | — |
+
+`ladder-free` kolunda merdivenlerin gerçekten boş olduğu ledger'da doğrulandı:
+`effective_paint_deficit_cumulative_levels: []`,
+`effective_node_free_quantized_levels: []`.
+
+**Sonuç kesinleşti:** merdivenler süreye ~1 285 s (~%23) ekliyor, ama tamamen
+kaldırıldığında bile 4 197 s > 3 600 s. Yani merdivenler **katkıda bulunuyor,
+sorumlu değil**. `public-12` merdivensiz de bütçeyi aşar.
+
+### KÖK NEDEN ÖLÇÜLDÜ: düğüm patlaması (timeout değil)
+
+`ladder-free` kolu zaman aşımıyla değil, boru hattının kendi bütçe reddiyle
+bitti:
+
+```
+source_alpha_mask_contour_fallback_budget_rejected:
+  path_bytes = 14 277 024 / 3 138 171   (4,5x)
+  path_count =      1 157 /     4 120   (uygun)
+  path_nodes =  4 058 631 /    95 784   (42x)
+```
+
+`alpha_mask_adaptive.py:631` `_contour_fallback_plan`. Yani `public-12`'nin
+sorunu "yavaş çalışması" değil: kontur fallback'i **4,06 milyon düğüm**
+üretiyor, bütçenin **42 katı**. Süre bunun sonucu, sebebi değil.
+
+Bu, `public-12`'yi tamamen yeniden sınıflandırıyor: bir zaman aşımı vakası
+değil, bir **geometri karmaşıklığı** vakası. Doğru iş, süreyi hızlandırmak
+değil, kontur fallback'inin düğüm sayısını düşürmek (ya da bu vakada o
+fallback'e hiç düşmemek).
+
+### Harness kusuru: `signal.alarm` yerli kodu kesemiyor
+
+Bütçeyi `signal.alarm(3600)` ile zorlamıştım; 4 197 s'de bile ateşlenmedi
+(status `failed`, `budget_exceeded` değil). Python sinyal işleyicileri yalnız
+bytecode'lar arasında koşar, zaman C uzantılarında bloke geçer. Üretim ölçüm
+koşucusunun tekrarları izole **süreçlerde** koşturup dışarıdan öldürmesinin
+sebebi bu. Aynı deney tekrar kurulursa `subprocess` + hard kill gerekir.
+
+Bu kez sonucu etkilemedi çünkü boru hattı kendi hatasıyla zaten sonlandı.
+
+## 11. Geliştirme: destek katmanı geometri kodlaması (`<rect>` → `<path>`)
+
+Madde 9.1'in işaret ettiği yere yapılan ilk somut müdahale. Ölçüm şunu
+söylüyordu: baytı **seviye sayısı değil, destek katmanının rect sayısı**
+sürüyor (public-15: 13 348 rect / 617 139 B ≈ **46 B/rect**), ve palet zaten
+8'e inmiş durumda — nicemlemeden sıkacak bir şey kalmamış.
+
+### Önce ölçüldü, sonra yazıldı
+
+Sentetik rampa yerine deponun **kendi** `_merged_rectangles_by_level`
+birleştiricisiyle logo benzeri bir alfadan gerçek dikdörtgen dağılımı üretildi
+(7 seviye, 6 824 rect). Bu profil `<rect>` biçiminde **49,1 B/rect** veriyor —
+public-15'te ölçülen 46,2 B/rect'e çok yakın, yani profil temsil edici:
+
+| kodlama | bayt | B/rect | kazanç |
+|---|---|---|---|
+| `<rect>` kümesi | 335 291 | 49,1 | — |
+| `<path>` mutlak | 113 081 | 16,6 | %66,3 |
+| `<path>` bağıl (`m dx dy h w v h h-w z`) | **96 240** | **14,1** | **%71,3** |
+
+### Piksel denkliği resvg ile doğrulandı
+
+Endişe, bitişik dikdörtgenlerin tek path altında birleşince kenar
+yumuşatmasının değişmesiydi. Ölçüldü, **çürütüldü**: iki bağlamda da
+262 144 pikselin **0'ı** farklı, maksimum kanal farkı **0**:
+
+- doğrudan boyama (destek katmanı deseni): AYNI
+- `clipPath` içinde (knockout deseni): AYNI
+
+Birleştirici ayrık dikdörtgen üretiyor ve alt-yollar aynı yönde olduğundan
+nonzero doldurma kuralı birleşimi veriyor — `<rect>` kümesiyle birebir aynı.
+
+### Uygulama kesinlikle eklemeli
+
+`_emit_paint_deficit_support_geometry` iki biçimi de kurar, **serileştirilmiş
+baytı ölçer** ve küçük olanı yazar. Kazanç ölçülemezse `<rect>` biçimi aynen
+korunur; bugün bütçeye sığan hiçbir aday büyüyemez. Yeni ledger alanları:
+`paint_deficit_support_geometry_encoding`,
+`paint_deficit_support_rect_form_bytes`,
+`paint_deficit_support_path_form_bytes`,
+`paint_deficit_support_geometry_saved_bytes`.
+
+`paint_deficit_support_rect_count` anlamını korudu (geometrideki dikdörtgen
+sayısı), kodlamadan bağımsız.
+
+### SONUÇ: İKİ VARYANT DA ÇÜRÜTÜLDÜ, İKİSİ DE GERİ ALINDI
+
+Bayt kazancı gerçek, ama bu sitede **kodlama biçimi serbest değil**. İki varyant
+denendi, ikisi de aynı kapıdan düştü:
+
+```
+class_reklam  taban (65bc297)              : PASS
+class_reklam  tek birleşik <path>          : FAIL  topology_component_regression,
+class_reklam  dikdörtgen başına <path>     : FAIL  topology_hole_regression
+```
+
+Aynı vaka, aynı koşucu, tek değişken kodlama.
+
+### ⚠️ ÖNCEKİ AÇIKLAMAM YANLIŞTI — düzeltme
+
+İlk yazdığım "alt-yollar tek bileşene kaynıyor, o yüzden topoloji sayacı farklı
+okuyor" açıklaması **yanlıştı**. Topoloji SVG elemanlarından sayılmıyor:
+`transform_journal.py:196-210` render edilmiş **rasteri** `cv2` ile bağlı
+bileşenlere ayırıp kaynakla karşılaştırıyor (`component_delta`, `hole_delta`).
+
+Doğru ölçümler:
+
+| karşılaştırma (üretimdeki gibi kesirli ölçek altında) | farklı piksel | bayt |
+|---|---|---|
+| ayrı `<rect>` vs tek birleşik `<path>` | **206 660** (max kanal 80) | %68,1 kazanç |
+| ayrı `<rect>` vs rect başına `<path>` | **0 — piksel özdeş** | %35,3 kazanç |
+
+Yani *birleşik* varyantın düşmesinin sebebi gerçekten render farkıydı: birleşik
+path'te paylaşılan kenarlar iç kenar olup yumuşatılmıyor, ayrı dikdörtgenlerde
+ayrı ayrı harmanlanıyor. İlk testimi **ölçeksiz** yaptığım için bunu kaçırmıştım.
+
+### Asıl ders: rect başına path piksel-özdeş AMA yine de düştü
+
+Ve kritik nokta bu. `rect başına <path>` kesirli ölçekte bile 0 piksel farkı
+veriyor, buna rağmen üretimde aynı kapıdan düşüyor. Demek ki bu sitede sorun
+**render değil**: destek katmanının eleman tipi downstream aşamalar için
+yük taşıyor.
+
+Somut ipucu: `app/alpha_candidate_support_compact.py:753`
+`_install_runtime_compactors()` **import anında** koşuyor ve
+`apply_direct_element_alpha` ile adaptive mask fabrikasını sarmalıyor
+(`_compact_direct_artifact`, `_compact_complex_clip`, `make_compact_primitive_alpha_first`).
+Bu katman `<rect>` bekliyor olabilir; `<path>` verince devreye girmiyor ve
+nihai artefakt değişiyor.
+
+### Sıradaki oturuma kural
+
+Bu siteyi **izole doğrulamayla onaylama**. Üç kez yanıldım: ölçeksiz render,
+ölçekli render, ikisi de "güvenli" dedi, üretim ikisini de reddetti. Bu depoda
+tek güvenilir kontrol:
+
+```
+cd engine && python3 test_visual_regression.py --case class_reklam
+```
+
+Bayt kazancını almak isteyen önce şunu yanıtlamalı: **hangi downstream aşama
+`<rect>` eleman tipine bağlı?** Cevap bulunmadan kodlama değiştirilmemeli.
+
+### Saklanacak sayılar
+
+- `<rect>` biçimi: 49,1 B/rect (public-15'te ölçülen 46,2'ye yakın)
+- rect başına `<path>`: %35,3 kazanç, piksel-özdeş
+- tek birleşik `<path>`: %68-71 kazanç ama render'ı bozuyor — bu yol kapalı
+- public-15 için %35,3 bile yetmez: 617 139 → ≈399 000, aday 769 804 → ≈552 000,
+  bütçe 335 503 (hâlâ 1,65×). Yani bu site tek başına public-15'i kurtarmıyor.
+- Knockout'ta aynı oran public-14'ü **sığdırabilirdi** (1 800 596 × 0,70 ≈
+  1 260 000 < 1 273 782) — ama oraya hiç dokunulmadı ve `test_alpha_clip_encoding.py:142`
+  sözleşmesi orada da `<rect>` bekliyor. Aynı downstream sorusu orada da geçerli.
+
+### 11.1 CANLI KORPUS SAYILARI (bedava geldi — sentetik tahmini değiştirin)
+
+Geri alınan ilk varyant (birleşik `<path>`) `a3025963` head'inde canlı korpusa
+karşı koştu (run `31887421488`, shard 2). Ledger alanlarını oraya bağlamış
+olmam sayesinde **gerçek** sayılar elimizde:
+
+| ölçüm | `public-15` gerçek değeri |
+|---|---|
+| destek katmanı rect sayısı | **15 283** |
+| `<rect>` biçimi | **701 625 B** |
+| birleşik `<path>` biçimi | **225 166 B** |
+| kazanç | **%67,9** |
+
+Sentetik profilim %68,1 demişti; gerçek %67,9. **Ölçüm yöntemi sağlam** —
+`_merged_rectangles_by_level` ile üretilen profil gerçek korpusu temsil ediyor.
+(Madde 3.5'teki hatanın tekrarı değil: bu kez öncül doğrulandı.)
+
+Adayların toplam baytı (birleşik `<path>` desteğiyle):
+
+| aday | toplam bayt | bütçe 335 503'e göre |
+|---|---|---|
+| `paint-deficit-q24` | 854 316 | 2,55× |
+| `paint-deficit-cumulative` | 530 748 | 1,58× |
+| `-q20` | 491 669 | 1,47× |
+| `-q16` | 453 803 | 1,35× |
+| `-q12` | 415 916 | 1,24× |
+| **`-q8`** | **378 072** | **1,13×** |
+
+Yani `-q8` bütçeye **yalnız 42 569 B** uzakta kalmış (önceki 854 531'de 2,55×
+idi). Bu, public-15 için şimdiye kadarki en yakın nokta.
+
+### ⚠️ Ama bu sayı GÜVENLİ BİÇİMDE ALINAMAZ
+
+Yukarıdaki 378 072, **birleşik** `<path>` biçiminin sayısıdır ve o biçim
+render'ı bozuyor (206 660 piksel farkı, madde 11). Piksel-özdeş olan biçim
+rect başına ayrı `<path>` ve onun kazancı yalnız ~%35:
+
+```
+destek:  701 625 -> ~454 000   (rect basina path, ~%35)
+-q8 toplam: 378 072 + (454 000 - 225 166) ~= 606 900   -> butce 335 503'un 1,81 kati
+```
+
+Yani **public-15'i bu site tek başına kurtarmıyor**: güvenli biçim yetmiyor,
+yeten biçim güvenli değil. Üstelik rect başına path varyantı da topoloji
+kapısından düştü (eleman tipi downstream'e bağlı, madde 11).
+
+**Sonuç:** buradaki asıl kilit bayt değil, `<rect>` eleman tipine bağlı
+downstream aşamanın kim olduğu. O çözülürse 42 569 B'lik açık (#164'ün
+base_delta kazancı ~84 727 B ile birlikte) kapanabilir görünüyor — ama bu da
+ölçülmeden iddia edilmemeli.
+
+### 11.2 CEVAP BULUNDU: bu optimizasyon depoda ZATEN var — ama başka yerde
+
+"Hangi downstream aşama `<rect>`'e bağlı?" sorusunun cevabı:
+
+**`engine/app/alpha_mask_adaptive.py:36` `_rect_path()` + `:68`
+`_compact_mask_rectangles()`** — depo, dikdörtgenleri tek bir path'e birleştiren
+optimizasyonu **zaten yapıyor**:
+
+```python
+commands.append(f"M{x} {y}h{width}v{height}h-{width}Z")   # _rect_path
+```
+
+Bu, benim "icat ettiğim" birleşik biçimin **birebir aynısı**. Ama yalnız
+`<mask>` içindeki `data-vektoryum-alpha-level` gruplarına uygulanıyor:
+
+```python
+if group.get("data-vektoryum-alpha-level") is None: continue
+rectangles = [c for c in group if _local_name(c.tag) == "rect"]
+```
+
+Yani seçici olarak **`rect` çocuk bekliyor**; `<path>` verilirse liste boşalır ve
+adım sessizce atlanır. `alpha_candidate_support_compact.py:632`
+(`_compact_complex_clip`) de aynı deseni izliyor: çocukların **hepsi** `rect`
+değilse `return 0`.
+
+Her ikisi de `_install_runtime_compactors()` ile **import anında** üretim
+fonksiyonlarına takılıyor (brifing madde 5'teki monkey-patch uyarısı).
+
+### Üç başarısızlığımın tek açıklaması
+
+| katman | birleştirme | neden |
+|---|---|---|
+| `<mask>` alfa-seviye grupları | **GÜVENLİ, zaten yapılıyor** | ikili maske; paylaşılan kenarda yumuşatma sorunu yok |
+| paint-deficit **destek** katmanı (görünür boya) | **GÜVENLİ DEĞİL** | kesirli ölçekte 206 660 piksel farkı |
+
+Ben `_rect_path`'i yeniden icat edip **görünür boya** katmanına uyguladım.
+Depo bunu maske geometrisinde yapıyor çünkü orada güvenli; destek katmanında
+yapmıyor çünkü orada değil. Sınır bilinçliymiş, ben fark etmemişim.
+
+Rect başına `<path>` varyantının düşmesi de aynı kökten: eleman tipini
+değiştirince yukarıdaki `rect` filtreleri devre dışı kalıyor ve daha önce
+koşan compaction adımı artık koşmuyor — nihai artefakt bu yüzden değişiyor.
+
+### Bunun public-15 için anlamı
+
+Maske tarafı **zaten sıkıştırılmış**. `public-15`'in 701 625 B'lik destek
+katmanı, geriye kalan sıkıştırılmamış kütle — ve orada birleştirme yasak.
+Dolayısıyla 42 569 B'lik açık **eleman tipi değiştirerek kapatılamaz**.
+
+Kalan gerçek kaldıraçlar:
+1. **Dikdörtgen sayısını düşürmek** (15 283 rect). Bayt/rect değil, rect sayısı.
+   #164'ün adacık eleme + döngü sadeleştirme yönü doğru olan buydu.
+2. **#164'ün `base_delta`'sı** (~84 727 B ölçülmüş kazanç).
+3. Destek katmanının hiç üretilmemesi (deficit'i baştan azaltmak).
+
+⚠️ Sonraki oturuma: `<rect>` → `<path>` yolunu **kapalı** say. Denendi (iki
+varyant), ölçüldü, ikisi de düştü ve nedeni artık biliniyor. Bunun yerine rect
+SAYISINI düşüren işlere bak.
+
+
+### 10.1 Düğüm patlamasının ayrıştırması (aritmetik)
+
+`alpha_mask_budget.py:123` → `node_limit = max(parent*4, parent+2500)`.
+Gözlenen limit **95 784** olduğuna göre parent×4 baskın ve
+**parent_node_count = 23 946** (23 946 × 4 = 95 784).
+
+| bileşen | düğüm | not |
+|---|---|---|
+| ana çizim (parent artwork) | **23 946** | normal, sorun değil |
+| kontur fallback planı | **4 034 685** | 4 058 631 − 23 946 |
+| plana kalan pay | 71 838 | 95 784 − 23 946 |
+| aşım | **56×** | 4 034 685 / 71 838 |
+
+Yani patlama **ana çizimden gelmiyor**; tamamen
+`alpha_mask_adaptive._build_contour_plan()` içinde üretiliyor. Bu fonksiyon
+`_quantize_alpha` çıktısındaki **her alfa seviyesi için kontur** çıkarıyor;
+`public-12` gibi gürültülü/fotoğrafımsı alfada seviye başına kontur sayısı
+patlıyor. Süre de bunun sonucu: 4 milyon komut üretmek 4 197 s sürüyor.
+
+### 10.2 Erken durdurma DENENDİ ve ÖLÇÜMLE ÇÜRÜTÜLDÜ
+
+Önerdiğim adım şuydu: pahalı dal reddedilecekse dev dizgeleri kurmayalım,
+sayıları aritmetikle çıkaralım. Uygulandı ve aritmetik **birebir** doğrulandı
+(`command_count`, `path_markup_bytes`, `path_count`, `contour_count` tümü aynı;
+`d` yalnız sayaç yolunda `None`).
+
+Ama kazanç ölçülünce: **1,0×**. 1200×1200 dama tahtası, 720 000 hücre,
+3 600 000 komut: dizge kuran yol 202,26 s, sayaç yolu 197,85 s. Yani dizge
+kurma toplam maliyetin **~%2'si**. Değişiklik geri alındı — karmaşıklık ekleyip
+hiçbir şey kazandırmıyor.
+
+### Profil: zaman NEREDE geçiyor (ölçüldü)
+
+Tek seviye, 1200×1200, 717 603 kontur:
+
+| adım | süre |
+|---|---|
+| maske kurma | 0,00 s |
+| **`cv2.findContours`** | **204,52 s** |
+| `_canonical_contour` Python döngüsü | 5,14 s |
+| `np.nonzero` | 0,01 s |
+| dizge kurma (yukarıdan) | ~4 s |
+
+**Darboğaz `cv2.findContours`** — `RETR_CCOMP` ile parçalı alanda 700 binden
+fazla kontur çıkarıyor. `public-12`'nin 4 197 s'si buradan geliyor, pahalı
+yeniden ifadeden değil.
+
+Kritik ayrıntı: bu maliyet `_build_contour_plan`'ın **ilk** döngüsünde, yani
+pahalı dala düşmeden ÖNCE ödeniyor. Dolayısıyla pahalı dalı kısaltan hiçbir
+optimizasyon `public-12`'yi hızlandıramaz.
+
+### 10.3 ÖN-KONTROL TASARIMI — ölçüldü, kanıtlanabilir, uygulanmadı
+
+Ön-kontrol adaylarının maliyeti ve tahmin gücü ölçüldü (1200x1200):
+
+| ölçüt | dama tahtası (patolojik) | logo benzeri (normal) |
+|---|---|---|
+| `count_nonzero` | 0,14 ms | 0,15 ms |
+| satır geçişi (`np.diff`) | 24,76 ms | 6,20 ms |
+| `connectedComponents` 8-komşuluk | 4,95 ms → **1 bileşen** | 1,11 ms → 2 |
+| **`connectedComponents` 4-komşuluk** | **3,01 ms → 720 000 bileşen** | **1,32 ms → 2** |
+| `cv2.findContours` | **98 647 ms** | 1,24 ms |
+
+İki sonuç:
+1. `findContours` normal girdide zaten hızlı (1,24 ms); ön-kontrolün yalnız
+   **patolojik** durumu yakalaması yeterli.
+2. **8-komşuluk kullanılamaz** — dama tahtasına "1 bileşen" diyor. Doğru olan
+   **4-komşuluk**: köşeden değen dolgular ayrı kapalı alt-yollardır.
+
+### Kanıt (bu sefer ampirik benzerlik değil, alt sınır)
+
+Her SVG dolgu gösterimi, 4-komşu bileşen başına **en az bir kapalı alt-yol**,
+alt-yol başına **en az 4 komut** (M + en az iki çizgi + Z) gerektirir.
+Dolayısıyla `komut_sayısı >= 4 * C`. Eğer `4 * C > node_allowance` ise kabul
+**matematiksel olarak imkânsızdır** ve `findContours`'a hiç girilmemelidir.
+
+- `public-12` benzeri alan: 4 × 720 000 = 2 880 000 > 71 838 → kanıtlı ret,
+  ~98 s (çok seviyede ~4 000 s) hesap atlanır, maliyet 3 ms.
+- Normal logo: 4 × 2 = 8, bütçenin çok altında → hiçbir şey değişmez.
+
+Bu, bu oturumdaki diğer denemelerden farklı: gerekçe "izole testte aynı
+görünüyor" değil, **matematiksel alt sınır**. Yine de regresyonla doğrulanmalı.
+
+### ⚠️ 10.4 ÖN-KONTROL UYGULANDI ve ÇÜRÜTÜLDÜ — "kanıt" yanlıştı
+
+Yukarıdaki alt sınır tasarımı uygulandı ve deponun **kendi sözleşme testi**
+tarafından anında reddedildi:
+
+```
+engine/test_alpha_mask_adaptive.py
+  test_rect_alpha_seams_retry_as_budgeted_contours -> ERROR
+  source_alpha_mask_contour_fallback_budget_rejected:
+      path_nodes=>=2533/2505
+```
+
+Yani şu anda **başarıyla kabul edilen** bir vaka, benim kapımla kıl payı
+(2533 > 2505) reddedildi. Kapı yanlış.
+
+**Neden yanıldım — kanıtı yanlış gösterime kurdum.** "Her bileşen en az bir
+kapalı alt-yol, alt-yol başına en az 4 komut" önermesi genel SVG semantiği
+için doğru, ama bu depo o gösterimi kullanmıyor. `alpha_mask_budget.py:220`
+`_encode_contours` docstring'i açıkça söylüyor:
+
+> "Encode disconnected contours as one even-odd walk with doubled bridges."
+
+Konturlar **köprülerle tek bir even-odd yürüyüşe** bağlanıyor; bileşen başına
+ayrı `M...Z` yok. Ek kontur başına maliyet ~4 değil, köprü gidiş-dönüşü kadar
+(~2). Ben `_encode_contours`'a bakmadan genel semantikten akıl yürüttüm —
+madde 11.2'deki hatanın (deponun mevcut mekanizmasına bakmamak) aynısı.
+
+**Gözlenen veri noktası:** başarısız vakada 4×C = 2 533 iken gerçek plan
+2 505 limitine sığıyor → C ≈ 633, gerçek maliyet bileşen başına **4'ten
+küçük**. Dama tahtasında 2×C = 1 440 000 hâlâ 71 838'i aşıyor, yani daha
+küçük bir katsayı patolojik vakayı yine yakalar.
+
+⚠️ Ama katsayıyı **tahmin etmeyin**. Doğrusu `_encode_contours`'un ürettiği
+komut sayısını kontur sayısına bağlayan gerçek formülü o fonksiyondan
+türetmek. Ölçmeden konulan her katsayı bu tuzağın tekrarıdır.
+
+Darboğaz teşhisi (madde 10.2: `cv2.findContours` 98 647 ms) **geçerliliğini
+koruyor**; çürüyen yalnız kapının eşiği. Ucuz ön-kontrol fikri de geçerli:
+4-komşuluk `connectedComponents` 3,01 ms ve `public-12` benzeri alanı
+ayırt ediyor. Eksik olan tek şey doğru katsayı.
+
+### ⚠️ Uygulamadan önce çözülecek tek soru
+
+Ön-kontrol hangi hatayı fırlatmalı? Şu an bu yol
+`..._budget_rejected:path_bytes=...,path_count=...,path_nodes=...` veriyor;
+erken çıkışta gerçek sayılar hesaplanmamış olacak. `..._unavailable`
+fırlatmak **farklı bir dal** olduğundan çağıranın davranışını değiştirebilir.
+Güvenli seçenek: aynı `budget_rejected` kodunu, `path_nodes` yerine kanıtlı
+alt sınırla (`>=4C`) bildirmek. Karar verilmeden uygulanmamalı.
+
+Doğrulama planı: sözleşme testleri + `test_visual_regression.py` (kabul edilen
+vaka etkilenmemeli) + canlı korpusta `public-12` shard süresi (asıl kanıt).
+
+### Sıradaki gerçek kaldıraç (ölçülmedi, öneri)
+
+`cv2.findContours` çağrılmadan ÖNCE ucuz bir parçalanma ön-kontrolü: alan
+kabul edilebilir hiçbir bütçeye sığmayacak kadar parçalıysa kontur çıkarmaya
+hiç girmemek. Aday ucuz ölçüt: satır-içi geçiş sayısı (`np.diff` ile
+vektörel, `np.nonzero` gibi ~0,01 s) ya da `cv2.connectedComponents`
+(findContours'tan ucuz olması beklenir ama **ölçülmeli**).
+
+⚠️ Sonuç korunmalı: ön-kontrol yalnız zaten reddedilecek alanları elemeli.
+Eşik, kabul edilen hiçbir vakayı etkilemeyecek şekilde bütçeden türetilmeli.
+
+
+### 10.5 BELİRLEYİCİ: `_encode_contours` seviye başına **2 komut** üretiyor
+
+`alpha_mask_budget.py:255` son satır:
+
+```python
+return f"M{x0} {y0}l" + ",".join(deltas)
+```
+
+`_PATH_COMMAND` yalnız harfleri sayar → bu dizge **her zaman 2 komut** (`M` +
+`l`), kontur sayısından ve nokta sayısından **bağımsız**. Docstring zaten
+söylüyor: *"One M and one l command encode an entire alpha level."*
+
+Bu, madde 10.3/10.4'teki tüm akıl yürütmeyi geçersiz kılar ve resmi düzeltir:
+
+- **Kompakt dalın düğüm maliyeti önemsizdir** (2 × seviye sayısı). Bu dal
+  düğüm bütçesini pratikte hiç zorlamaz.
+- `public-12`'nin **4 058 631 düğümünün tamamı pahalı piksel-başı daldan**
+  geliyor (hücre başına 5 komut).
+- Dolayısıyla asıl soru "düğüm sayısı ne olacak" değil, **"pahalı dala
+  düşecek miyiz"**. O karar tek yerde veriliyor:
+  `contour_count > _MAX_COMPACT_CONTOURS` (**4096**) ya da tüm konturların
+  degenerate olması.
+
+### Doğru kapının koşulu (kısmen ölçüldü, tamamlanmadı)
+
+Pahalı dala düşüleceği ÖNCEDEN bilinirse, o dalın düğüm maliyeti **tam olarak
+5 × hücre_sayısı**'dır ve `np.count_nonzero` ile **0,14 ms**'de hesaplanır.
+`5 × hücre > node_allowance` ise ret kanıtlıdır.
+
+Eksik olan tek halka: `contour_count > 4096` olacağını `findContours`
+çağırmadan ucuza bilmek. Ölçülenler:
+
+| girdi | 4-komşu bileşen | 8-komşu bileşen | gerçek kontur |
+|---|---|---|---|
+| dama tahtası | 720 000 | **1** | 717 603 |
+| logo benzeri | 2 | 2 | 3 |
+
+⚠️ Dikkat: **8-komşuluk kontur sayısının alt sınırıdır ama işe yaramaz**
+(dama tahtasında 1). **4-komşuluk ise üst sınır tarafındadır**, yani
+`C4 > 4096` tek başına `kontur > 4096` demek DEĞİLDİR — sağlam bir kapı için
+yeterli değil.
+
+Dama tahtasındaki 717 603 konturun kaynağı `RETR_CCOMP`'un **delikleri** de
+sayması. Dolayısıyla doğru ucuz ölçüt muhtemelen **delik sayısı**, o da Euler
+karakteristiğinden gelir (2×2 bit-quad sayımı, numpy ile vektörel ve ucuz
+olması beklenir). **Ölçülmedi.** Sonraki oturum buradan devam etmeli:
+önce bit-quad Euler maliyetini `findContours`'a karşı ölç, sonra kapıyı kur.
+
+Yani zincir: `delik/kontur tahmini > 4096` → pahalı dal kesin →
+`5 × hücre > pay` ise kanıtlı ret → `findContours` hiç çağrılmaz.
+
+
+### 10.6 EKSİK HALKA BULUNDU: kontur sayısı `findContours` çağrılmadan TAM hesaplanıyor
+
+2×2 bit-quad Euler sayımı ölçüldü ve `RETR_CCOMP` kontur sayısını **birebir**
+veriyor:
+
+```
+kontur_sayisi = C8 + H8   ve   H8 = C8 - E8   =>   kontur = 2*C8 - E8
+```
+
+| girdi | öngörü `2*C8 - E8` | GERÇEK kontur | Euler+connComp | `findContours` |
+|---|---|---|---|---|
+| dama tahtası | **717 603** | **717 603** | 9,6 ms | **103 350 ms** |
+| logo benzeri | **3** | **3** | 8,5 ms | 0,93 ms |
+
+Bu bir sezgisel tahmin değil **kimlik**: `RETR_CCOMP` dış konturları + delikleri
+döndürür, Euler karakteristiği deliği tam verir. Maliyet ~**10 000×** daha az.
+
+Bit-quad (numpy, vektörel):
+
+```python
+b = np.pad(mask.astype(np.uint8), 1)
+idx = (b[:-1,:-1] + 2*b[:-1,1:] + 4*b[1:,:-1] + 8*b[1:,1:]).ravel()
+q = np.bincount(idx, minlength=16)
+E8 = (Q1 - Q3 - 2*QD) / 4.0     # Q1=q1+q2+q4+q8, Q3=q7+q11+q13+q14, QD=q6+q9
+```
+
+### ⚠️ Kalan tek sağlamlık boşluğu (uygulamadan önce kapatılmalı)
+
+Koddaki `contour_count`, `_canonical_contour` ile **budanmış** (3 noktadan az
+konturlar atılmış) sayıdır. `2*C8 - E8` ise **budanmamış toplamdır**, yani
+koddaki sayının ÜST sınırıdır. Üst sınırın 4096'yı aşması, budanmış sayının
+aştığını **kanıtlamaz**.
+
+Kritik orta durum: toplam kontur çok yüksek ama neredeyse hepsi degenerate ve
+birkaç gerçek kontur var → kod kompakt dalı kullanır ve rahatça sığar; kapı
+ise yanlışlıkla reddeder. (Not: hepsi degenerate ise
+`not layers and pruned_contour_count` koşulu zaten pahalı dala düşürür, o
+durum sorun değil.)
+
+Kapatma yolu: degenerate bileşenleri düşmek. `cv2.connectedComponentsWithStats`
+alanları veriyor; alanı 1-2 olan bileşenler degenerate dış kontur üretir.
+Delik tarafı için de aynısı arka plan üzerinde yapılabilir. **Ölçülmedi.**
+
+### Tamamlanmış zincir (son halka hariç)
+
+1. `2*C8 - E8` ile kontur sayısı — ~10 ms, tam. *(degenerate düzeltmesi eksik)*
+2. Budanmış kontur > 4096 → kompakt dal kullanılamaz → pahalı dal kesin.
+3. Pahalı dal düğüm maliyeti **tam olarak** `5 * hücre` — `count_nonzero`, 0,14 ms.
+4. `5 * hücre > pay` → ret kanıtlı → `findContours` hiç çağrılmaz.
+
+`public-12` için: ~10 ms maliyetle ~4 000 s hesap atlanır.
+
+
+### 10.7 KARŞI ÖRNEK: toplam kontur sayısı SAĞLAM BİR KAPI DEĞİL (kapandı)
+
+Madde 10.6'daki sağlamlık boşluğu teorik değilmiş. Ölçüldü:
+
+Girdi: iki gerçek şekil (dikdörtgen + halka) + 800x800 alanda izole tek piksel
+gürültü (taranmış/gürültülü kaynağı temsil eder).
+
+| ölçüm | değer |
+|---|---|
+| öngörü `2*C8 - E8` | 16 860 |
+| GERÇEK toplam kontur | **16 860** (kimlik yine tam) |
+| **budanmış = kodun `contour_count`'u** | **3** |
+| `_MAX_COMPACT_CONTOURS` | 4 096 |
+| üst sınır 4096'yı aşıyor mu | **evet** |
+| **kod pahalı dala düşer mi** | **HAYIR** — kompakt dal, başarılı |
+
+`2*C8 - E8 > 4096` kapısı bu girdiyi **yanlışlıkla reddederdi**. Kapı sağlam
+değil; bu bir boşluk değil **kesin karşı örnek**.
+
+Sebep: izole tek pikseller findContours'ta kontur üretir ama
+`_canonical_contour` onları budar (3 noktadan az). Kod bunu bilinçli yapıyor —
+`_build_contour_plan` docstring'i: *"Degenerate one/two point islands are
+omitted when measurable contours exist."* Toplam sayı bu budamayı göremez ve
+alan tabanlı düzeltme de kesin değildir (1x3 düz çizgi 3 piksel ama
+CHAIN_APPROX_SIMPLE ile 2 nokta üretip budanır).
+
+### Bu hattın durumu: KAPALI
+
+Toplam kontur sayısından türetilen hiçbir ucuz kapı sağlam olamaz, çünkü
+karar **budanmış** sayıya bağlı ve budama ancak konturlar çıkarıldıktan sonra
+bilinir. Sonraki oturum bu yolu tekrar denemesin.
+
+**Saklanacak sağlam sonuçlar:**
+- `kontur = 2*C8 - E8` **kimliği tamdır** (üç ayrı girdide birebir doğrulandı:
+  717 603 / 3 / 16 860). Kapı olarak değil ama **tanılama** olarak değerli:
+  bir vakanın neden yavaş olduğunu `findContours` çağırmadan 10 ms'de söyler.
+- `findContours` maliyeti kontur sayısıyla **süperdoğrusal** artıyor:
+  16 860 kontur → 16 ms, 717 603 kontur → 103 350 ms.
+- Pahalı dalın düğüm maliyeti tam olarak `5 * hücre` (0,14 ms'de hesaplanır).
+- Kompakt dal seviye başına yalnız **2 komut** üretir (madde 10.5).
+
+**Geriye kalan gerçek seçenek:** `public-12`'nin maliyeti `findContours`'un
+süperdoğrusal davranışından geliyor ve bunu sonucu değiştirmeden ucuzlatmanın
+yolu bulunamadı. Seçenekler (hiçbiri ölçülmedi): konturları seviye seviye
+tembel çıkarıp bütçe aşılınca durmak (sonuç aynı kalır mı? ölçülmeli), ya da
+`public-12`'yi kalite değil **performans** sınırı olarak kabul edip korpus
+zaman aşımını vakaya özel yönetmek.
+
+
+## 12. `public-14` ilk teşhis (bugüne kadar hiç çalışılmamıştı)
+
+Shard 1 günlüğü, tek değil **iki** knockout bütçe reddi gösteriyor — biri
+legacy denemesinde, biri retry'da (`alpha_pipeline_retry.legacy_first`
+`raise retry_error from first_error`):
+
+| aşama | bayt | bütçe | oran |
+|---|---|---|---|
+| legacy (first_error) | 1 737 177 | 1 083 525 | **1,60×** |
+| retry (bildirilen) | 1 800 596 | 1 273 782 | **1,41×** |
+
+`apply_candidate_geometry_knockout` (`alpha_candidate_knockout.py:507`) birden
+çok kodlamayı deneyip `last_budget_error`'ı saklıyor; yani bildirilen sayı en
+son denemenin sayısı.
+
+**Neden önemli:** 1,41× oranı, beş vakanın **bütçeye en yakını**
+(`public-15` 2,29× / 2,55×). Yani kapanmaya en yakın aday bu olabilir.
+
+### Ölçülmemiş ama somut ipucu: `%.12g` koordinatlar
+
+`alpha_candidate_knockout.py:254` clipPath dikdörtgenlerini şöyle yazıyor:
+
+```python
+"x": f"{view_x + x * sx:.12g}",   "y": f"{view_y + y * sy:.12g}",
+"width": f"{width * sx:.12g}",    "height": f"{height * sy:.12g}",
+```
+
+`%.12g` koordinat başına 13 karaktere kadar çıkabilir (`123.456789012`).
+Bu, `public-15`'te ölçülen tamsayı rect'lerin (~46 B/rect) çok üstünde bir
+maliyet demek.
+
+⚠️ İki uyarı, ikisi de bugünkü hatalardan öğrenildi:
+1. **Rect'lerin 1,8 MB'ı domine ettiği ÖLÇÜLMEDİ.** Önce bayt ayrıştırması
+   yapılmalı (`public-15`'te olduğu gibi ledger alanı ekleyip canlı koşudan
+   okumak işe yaradı — madde 11.1).
+2. Hassasiyet düşürmek **serileştirme değil kalite** değişikliğidir; geometri
+   alt-piksel kayar. Kalite kapılarıyla ölçülmeli, "bayt düştü" yeterli değil.
+   Ayrıca `test_alpha_clip_encoding.py:142` clipPath'ten `<rect .../>` regex'le
+   çekiyor; kodlama değil ama **biçim** değişikliği o testi etkileyebilir.
+
+### Sıradaki adım (öneri)
+
+`public-15`'te işe yarayan deseni tekrarla: knockout ledger'ına bayt
+ayrıştırması ekle (rect baytı / diğer marküp / koordinat karakter sayısı),
+canlı korpustan oku, sonra hassasiyet seçeneklerini **ölçülmüş** taban
+üzerinde değerlendir. Tahminle başlama.
+
+
+### 12.1 ÖLÇÜLDÜ — `public-14` bayt ayrıştırması (canlı korpus)
+
+Tanılama satırı `4f6360b` head'inde koştu (run `31911453085`, shard 1):
+
+```
+encoding=quantized_128  parent_bytes=424594  added_bytes=1376002
+rects=16712  clips=127  uses=127  added_bytes_per_rect=82.3
+```
+
+İki aşamada da `added_bytes` ve `rects` **aynı** (1 376 002 / 16 712); yalnız
+`parent_bytes` değişiyor (361 175 → 424 594), bütçe farkı oradan geliyor.
+
+**Hipotez doğrulandı:** 82,3 B/rect, `public-15`'te ölçülen tamsayı rect
+maliyetinin (~46 B/rect) **1,8 katı**. `%.12g` koordinat biçimi baytı
+gerçekten domine ediyor.
+
+### Hedef sayısal olarak net
+
+| ölçüm | değer |
+|---|---|
+| eklenebilir pay (`limit - parent`) | 849 188 B |
+| mevcut eklenen | 1 376 002 B (**1,62×**) |
+| gerekli düşüş | **%38,3** |
+| mevcut B/rect | **82,3** |
+| **gerekli B/rect** | **50,8** |
+| `public-15` tamsayı referansı | ~46,0 → **hedefin ALTINDA** |
+
+Yani koordinat biçimini tamsayı mertebesine indirmek `public-14`'ü bütçeye
+**sokabilir**. Beş vaka içinde kapanmaya en yakın olan bu.
+
+### ⚠️ Uygulamadan önce
+
+1. **Hassasiyet düşürmek serileştirme değil KALİTE değişikliğidir.** Geometri
+   alt-piksel kayar; alpha IoU/MAE kapılarıyla ölçülmeli. "Bayt düştü"
+   yeterli gerekçe değil.
+2. `alpha_candidate_knockout.py:254`'teki yorum `%.12g`'yi **bilinçli**
+   seçtiğini söylüyor: *"Resvg supports a stricter clipPath subset than Cairo.
+   Emit exact user-space rectangles directly instead of nesting a transformed
+   group inside clipPath so both evaluator renderers agree."* Yani kısa tamsayı
+   koordinatları **dönüşümlü grup** ile almak bu gerekçeyle reddedilmiş.
+   Kalan yol, dönüşüm eklemeden **basamak sayısını** kısaltmak (ör. `%.4g`
+   yerine sabit ondalık ya da 1/64 px yuvarlama).
+3. `test_alpha_clip_encoding.py:142` clipPath'ten `<rect .../>` regex'le
+   çekiyor; biçim değişikliği o sözleşmeyi etkileyebilir, önce bakılmalı.
+4. 46,0 referansı **başka bağlamdan** (paint-deficit destek katmanı, tamsayı
+   ızgara). Garanti değil, yalnız hedefin ulaşılabilir olduğunun göstergesi.
+
+## 13. Uçtan uca durum ölçümü (yerel, `class_reklam` fixture)
+
+`engine/regression/fixtures/class_reklam.png` (1001×538, 36 657 B), `mode=auto`.
+
+| katman | sonuç |
+|---|---|
+| **1 — çekirdek** | `refine` **applied=False**; `edge_cleanup` **applied=False, journal=rolled_back** |
+| **2 — alfa sonlandırma** | ✅ başarılı, `source_alpha_vector_mask` ile kapanıyor |
+| **3 — export** | ✅ **5/5 format**, 1,9 s |
+
+**Toplam süre: 388 s** (tek küçük logo için).
+
+### Bulgu 1 — `edge_cleanup` kalite yüzünden değil, ÖLÇÜLEMEDİĞİ için geri alınıyor
+
+```
+applied=False  journal=rolled_back  fidelity=91.69  absorbed=0
+reasons=['required_metric_unmeasured', 'alpha_stage_metrics_incomplete']
+```
+
+Aşama koşuyor, işini yapıyor, sonra **gerekli metrik ölçülemediği için** geri
+alınıyor. Bu bir kalite reddi değil, ölçüm zincirinde boşluk. Kapı hiçbir zaman
+geçemeyeceği için aşama pratikte ölü ağırlık. Deponun "ölçüm-kapılı iyileştirme"
+felsefesiyle doğrudan çelişen tek yer burası: kapı ölçemiyorsa iyileştirme
+hiç değerlendirilemiyor.
+
+### Bulgu 2 — `refine` de uygulanmıyor
+
+`refine_info.applied=False`. Reddin ölçülmüş mü yoksa aday hiç üretilmemiş mi
+olduğu ayrımı **yapılmadı**; `refine_best` (`pipeline.py:672`) incelenmeli.
+
+### Bulgu 3 — `refine_cache` %2,8 isabet
+
+`render_calls=36, hits=1, misses=35, evictions=33` (cls: 42/5/37/31).
+Önbellek sürekli tahliye edip yeniden hesaplıyor. Kapasite iş kümesinin
+altında görünüyor. 388 s'nin ölçülebilir bir parçası olabilir ve düzeltmesi
+kalite kapılarına dokunmaz.
+
+### Katman 3 sağlıklı — yanlış alarma dikkat
+
+pdf/eps ilk koşuda "render edilemedi" verdi; sebep **yerel ortamda
+`cairosvg`/`svglib` kurulu olmamasıydı** (ikisi de `engine/requirements.txt`'te
+var, brifingdeki kısa kurulum listesi onları atlıyor). Kurulunca:
+
+```
+svg 267 523 B | pdf 35 657 B | eps 209 377 B | dxf 768 766 B | png 26 453 B
+```
+
+⚠️ Brifing madde 5'teki yerel kurulum komutu eksik; `cairosvg svglib reportlab`
+eklenmeli yoksa export sahte hata verir.
+
+### Sıradaki en iyi hedef
+
+**Bulgu 1.** Ölçüm boşluğu, kalite kapısına dokunmadan kapatılabilir ve
+kapanınca `edge_cleanup` ilk kez gerçekten değerlendirilebilir hâle gelir.
+`required_metric_unmeasured` / `alpha_stage_metrics_incomplete` kodlarının
+kaynağı izlenmeli.
+
+### 13.1 KÖK NEDEN BULUNDU — aşama/gereksinim uyuşmazlığı (yerelde, CI'sız)
+
+`transform_journal.py:312-313`:
+
+```python
+capture_render = self._measurement_stage_id == "restore_source_dimensions"
+measure_alpha  = capture_render
+```
+
+Alfa **yalnızca** `restore_source_dimensions` aşamasında ölçülüyor; diğer tüm
+aşamalarda (`edge_cleanup` dahil) `measure_alpha=False`.
+
+Ama `alpha_fidelity`'yi `required_unmeasured` listesinden çıkaran satır
+(`:191-194`) **`if alpha_required:` bloğunun içinde**. Blok atlanınca:
+
+1. `alpha_fidelity` listede kalır → **`required_metric_unmeasured`** (`:394`)
+2. `_render_alpha` hiç yazılmaz → `_alpha_comparison` **None** (`:346`) →
+   **`alpha_stage_metrics_incomplete`** (`:407`)
+
+`_decide` ise `alpha_fidelity`'yi **aşamadan bağımsız** zorunlu sayıyor (`:405`).
+
+**Sonuç yapısal:** `alpha_fidelity` zorunlu metriklerdeyken
+`restore_source_dimensions` dışındaki **her** journal aşaması, kalitesi ne
+olursa olsun bu iki kodla reddedilir. Ara sıra olan bir ölçüm boşluğu değil,
+her koşuda kesin.
+
+Gözlenen çift kod tam da bu imzadır (madde 13):
+`reasons=['required_metric_unmeasured', 'alpha_stage_metrics_incomplete']`.
+
+### Renderer sağlam — yanlış alarma düşmedim
+
+Önce PDF/EPS'teki gibi bir ortam eksiği olabileceğinden şüphelendim ve
+kontrol ettim: `render_svg_to_rgba` üretilen SVG'de **çalışıyor**
+(1001x538 ve 512x275'te doğru şekil). Yani sebep renderer yokluğu değil,
+`measure_alpha` bayrağının aşamaya bağlı olması.
+
+### ⚠️ Kasıtlı mı, kusur mu — KARAR VERİLMEDİ
+
+- **Kusur lehine:** kod adları bir ölçüm başarısızlığını anlatıyor
+  (`..._unmeasured`, `..._incomplete`), bir politika kararını değil. Politika
+  olsaydı `alpha_stage_not_permitted` gibi bir kod beklenirdi.
+- **Kasıt lehine:** alfa taşıyan artefaktı `edge_cleanup`'ın değiştirmemesi
+  bilinçli bir güvenlik olabilir. `:178` yorumu fail-closed davranışı
+  savunuyor (ama renderer yokluğu bağlamında).
+
+### İki olası yön (ikisi de ölçülmeli)
+
+1. **Alfayı `edge_cleanup` aşamasında da ölç.** Doğru sonucu verir ama
+   aşama başına bir render daha ekler — boru hattı zaten 388 s ve madde 10.2'de
+   render/kontur maliyetinin baskın olduğu ölçüldü. Süreyi kötüleştirebilir.
+2. **`alpha_fidelity`'yi ölçülmediği aşamalarda zorunlu saymamak.** Ucuz, ama
+   kapıyı gevşetir; "eşik gevşetmek çözüm değildir" kuralına (madde 5) yakın
+   durduğu için sahibiyle konuşulmalı.
+
+⚠️ Hiçbiri uygulanmadı. Bu, oturumdaki ilk **tamamen yerel** kök neden;
+doğrulaması `class_reklam` ile 388 s'de tekrarlanabilir, CI gerekmez.
+
+### 13.2 SEÇENEK 1 DENENDİ ve ÇÜRÜTÜLDÜ — `measure_alpha` ölçüm tabanını değiştiriyor
+
+Uygulanan tek satır:
+
+```python
+measure_alpha = capture_render or ("alpha_fidelity" in self.required_metrics)
+```
+
+Sonuç: `class_reklam` **tamamen düştü** (önceden başarılıydı):
+
+```
+RuntimeError: source_alpha_candidate_knockout_iou_gate_failed:0.911869<0.995
+```
+
+Geri alındı; motor yine yalnız knockout tanılamasını taşıyor.
+
+### Neden — `measure_alpha` masum bir bayrak değil (`transform_journal.py:136-148`)
+
+```python
+if alpha_required:
+    render_rgba = _source_truth.render_svg_to_rgba(path, w, h)
+    if render_rgba is not None:
+        rnd = _source_truth.composite_rgba(render_rgba, 255)   # RGB buradan
+    else:
+        rnd = render_svg_to_rgb(path, w, h)
+else:
+    rnd = render_svg_to_rgb(path, w, h)                        # normalde buradan
+```
+
+`measure_alpha=True` yapıldığında **RGB görüntüsünün kaynağı değişiyor**:
+`app.fidelity.render_svg_to_rgb` yerine
+`source_truth.composite_rgba(render_svg_to_rgba(...), 255)`.
+
+Bunlar **farklı renderer yolları**; pikselleri birebir aynı değil. Ve `ssim`,
+`edge_f1_1px`, `seam_ratio`, `component_delta`, `hole_delta` kapılarının
+**hepsi** bu `rnd` üzerinden hesaplanıyor. Yani tek satırlık "fazladan alfa
+ölç" değişikliği, **her aşamadaki her görsel kapının ölçüm tabanını** sessizce
+değiştiriyor. Aşağı akıştaki 0,9119 IoU çöküşü bununla tutarlı.
+
+### Bunun anlamı
+
+Seçenek 1 küçük bir düzeltme **değil**. `alpha_fidelity`yi her aşamada ölçmek
+isteniyorsa, önce iki renderer yolunun aynı pikselleri verdiği (ya da tüm
+eşiklerin yeni tabana göre yeniden kalibre edildiği) **gösterilmelidir**.
+Aksi hâlde kapılar sessizce başka bir zeminde karar verir.
+
+⚠️ Bu, madde 11'deki dersin aynısının başka bir kılığı: bir bayrağın
+"yalnızca ölçüm ekler" göründüğü yerde, gerçekte üretim yolunu değiştiriyor.
+Bu depoda bir bayrağı açmadan önce **onun tükettiği tüm dalları** okuyun.
+
+### Geriye kalan yön
+
+Seçenek 2 (`alpha_fidelity`yi ölçülmediği aşamalarda zorunlu saymamak) artık
+tek makul aday, çünkü ölçüm tabanına dokunmuyor. Ama kapıyı gevşetme riski
+taşıdığından madde 5 gereği sahibiyle konuşulmalı. Üçüncü bir yol da var ve
+ölçülmedi: iki renderer yolunu **aynı** hâle getirmek (o zaman seçenek 1
+güvenli olurdu).
+
+### 13.3 İKİ RENDERER YOLU ÖLÇÜLDÜ — fark, kapı toleransının 3,6 katı
+
+`app.fidelity.render_svg_to_rgb` ile
+`source_truth.composite_rgba(render_svg_to_rgba(...), 255)` aynı SVG'de,
+journal'ın kendi ölçeğinde (512 max_side) karşılaştırıldı. Dört ayrı çıktıda
+tutarlı sonuç:
+
+| SVG | farklı piksel | max kanal | **SSIM (iki render arası)** | edge_f1 |
+|---|---|---|---|---|
+| `e2e.svg` (267 KB) | 15 733 / 140 800 (%11,2) | 36 | **0,998152** | 1,000000 |
+| `geo_clean.svg` | 13 651 (%9,7) | 43 | **0,998183** | 1,000000 |
+| `geo_contour.svg` | 13 847 (%9,8) | 42 | **0,998155** | 1,000000 |
+| `geo_detail.svg` | 14 218 (%10,1) | 43 | **0,998368** | 1,000000 |
+
+### Karar veren sayı
+
+```
+iki renderer yolu arasindaki SSIM farki : ~0,0018
+journal SSIM kapisi toleransi           :  0,0005   (transform_journal.py:452)
+oran                                    :  3,6x
+```
+
+**Renderer yolunu değiştirmek, kapının tüm toleransının 3,6 katı büyüklüğünde
+bir kayma üretiyor.** Bu yüzden `measure_alpha` bayrağını açmak (madde 13.2)
+her aşamada sahte `ssim_regression` üretebilir ve `class_reklam`'ı düşürmesi
+bununla tam tutarlı.
+
+`edge_f1_1px` iki yolda **birebir 1,000000** — yani kenar geometrisi aynı;
+fark tamamen kenar yumuşatma/iç tonlamada (ortalama kanal farkı ~0,53,
+piksellerin ~%10'u).
+
+### Üç seçeneğin güncel durumu
+
+1. **Her aşamada alfa ölç** — ÇÜRÜTÜLDÜ (13.2). Ölçüm tabanını 3,6× tolerans
+   kadar kaydırıyor.
+2. **Ölçülmediği aşamalarda zorunlu sayma** — tek uygulanabilir aday. Ölçüm
+   tabanına dokunmaz. Riski: kapıyı gevşetir (madde 5), sahibiyle konuşulmalı.
+3. **İki renderer yolunu aynı hâle getir** — artık **nicelendi**: piksellerin
+   ~%10'unda AA farkı, 0,0018 SSIM. Küçük bir uyum işi değil; kenarlar zaten
+   aynı olduğundan fark yalnız AA/kompozit davranışında, ama büyüklüğü kapı
+   toleransını aşıyor.
+
+### ⚠️ DÜZELTME — "yollar karışık kullanılıyor" uyarım YANLIŞTI
+
+İlk yazdığım genel uyarı ("aynı artefaktı biri parent diğeri candidate için
+kullanan her karşılaştırma sahte regresyon üretebilir") **koddan denetlenince
+çürüdü**:
+
+`_measurement_stage_id` aşama başına bir kez set ediliyor
+(`transform_journal.py:538-544`) ve parent ile candidate ölçümlerinin **ikisi
+de** o pencerede yapılıyor. Dolayısıyla her karşılaştırmada iki taraf da aynı
+`measure_alpha` bayrağını, yani **aynı renderer yolunu** kullanır. Sistematik
+parent/candidate uyuşmazlığı **yoktur**.
+
+Geriye yalnız dar bir açık kalır: `render_svg_to_rgba` taraflardan birinde
+`None` dönerse o taraf `render_svg_to_rgb`'ye düşer ve karşılaştırma iki farklı
+yoldan gelir. Bu **asimetrik renderer başarısızlığı** gerektirir; olağan durum
+değildir.
+
+**Bunun sonucu:** RFV-3B'de düşen vakaların (`public-05`, `public-15` vb.)
+`seam_regression`'larını ölçüm tabanı tutarsızlığına bağlamak **yanlış olur**;
+o redler büyük olasılıkla gerçektir. `public-04`'ün `edge_f1_regression`'ı
+zaten bağımsız olarak bunu destekliyor: ölçtüğüm gibi `edge_f1` iki renderer
+yolunda birebir 1,000000, yani bu metrik farka tamamen duyarsız.
+
+**Geçerli kalan tek sonuç:** renderer yolunu *değiştirmek* (yani
+`measure_alpha` bayrağını açmak) 0,0018 SSIM kayması üretir ve kapı toleransı
+0,0005 olduğundan tehlikelidir. Seçenek 1'in neden `class_reklam`'ı düşürdüğü
+budur — mevcut redleri açıklamaz.
+
+### 13.4 `refine_cache` kapasitesi SUÇSUZ — ölçüldü, kapasite artırılmadı
+
+`_DEFAULT_MAX_RENDERS = 2` (`refine_cache.py:38`) ve gözlenen isabet %2,8
+olduğu için "önbellek thrash ediyor" hipotezini kurdum. **Kapasiteyi
+artırmadan önce** anahtar izini çıkarıp aynı LRU politikasıyla simüle ettim.
+
+`class_reklam`, 455,9 s koşu:
+
+| ölçüm | değer |
+|---|---|
+| render çağrısı | 68 |
+| benzersiz anahtar | **62** |
+| tekrar (sonsuz kapasitede MAKS isabet) | **6** → tavan **%8,8** |
+| aynı içeriğin birden fazla boyutta istenmesi | **0** |
+
+| kapasite | 2 | 4 | 8 | 16 | 32 | 64 | sonsuz |
+|---|---|---|---|---|---|---|---|
+| isabet | 2 | 2 | 2 | 4 | **6** | 6 | 6 |
+
+**Karar: kapasite artırılmadı.** Sonsuz önbellek bile 68 çağrının yalnız
+6'sını kurtarıyor; 2→32 yalnız **4 ek isabet** getirir. Karşılığında 32 girdi
+~13-51 MB bellek ve CLAUDE.md motor tepe kullanımının 826 MB olduğunu,
+512 MB planların OOM olduğunu söylüyor. Belirsiz %6 render kazancı için
+bellek riski alınmaz.
+
+**Asıl bulgu:** yavaşlık "aynı şeyi tekrar render etmek" değil, **62 ayrı
+render yapmak**. Önbellek doğru çalışıyor; iş yükü gerçekten benzersiz.
+
+### Kaldıraç nerede
+
+1. Render **sayısını** azaltmak — ama aday/varyant sayısı kalite kapılarına
+   bağlı, dokunmak riskli.
+2. Render'ın **kendisini** ucuzlatmak — madde 10.2'deki ölçümle uyumlu
+   (`cv2.findContours` patolojik girdide 98 s).
+
+⚠️ Sonraki oturum: "önbelleği büyütelim" fikrini tekrar açma, ölçüldü ve
+tavanı %8,8. Ölçüm betiği deseni saklanmaya değer: anahtar izini çıkarıp
+kapasiteleri simüle etmek, kod değiştirmeden tavanı verdi.
+
+### 13.5 RENDER DARBOĞAZ DEĞİL — ölçüldü (%16), sürenin %84'ü başka yerde
+
+Renderer fonksiyonlarının kendisi sarmalandı (`app.fidelity.render_svg_to_rgb`,
+`app.source_truth.render_svg_to_rgba`), böylece mutator + journal + alfa
+merdiveni dahil **tüm** render'lar yakalandı. `class_reklam`, 452,0 s:
+
+| ölçüm | değer |
+|---|---|
+| boru hattı toplam | **452,0 s** |
+| **render toplam** | **72,8 s → %16,1** |
+| render çağrısı | **275** (`refine_cache` yalnız 68'ini görüyor) |
+| medyan / p90 / maks | 55,2 ms / 150,8 ms / **21 564 ms** |
+
+**Sürenin %84'ü (≈379 s) render DIŞINDA.** "Render'ı ucuzlatalım" yönü
+(madde 13.4'te önerilmişti) bu ölçümle **çürüdü**.
+
+### Render içindeki patoloji (küçük ama gerçek)
+
+| süre | boyut | svg |
+|---|---|---|
+| 21 564 ms | 1001×538 | 254 032 B |
+| 20 949 ms | 1001×538 | 253 983 B |
+| 6 665 ms | 512×275 | 254 032 B |
+| 6 638 ms | 512×275 | 253 983 B |
+| 168 ms | 1001×538 | 246 472 B |
+
+Render süresinin **%50'si 2 çağrıda** (çağrıların %1'i). Tipik render 55 ms
+iken bunlar 21 s — **380×**. Aynı SVG 512'de 6,6 s, 1001'de 21 s. Bunlar alfa
+maskeli ~254 KB çıktılar; dev maske geometrisi renderer'ı boğuyor.
+
+⚠️ Ama bu ikisini tamamen ortadan kaldırmak bile 452 s'nin yalnız **%9**'unu
+kazandırır. Tek başına hedef değil.
+
+### Sıfır RGBA çağrısı
+
+275 çağrının **tamamı** RGB yolundan geçti; `render_svg_to_rgba` hiç
+çağrılmadı. Yani bu koşuda `measure_alpha` hiçbir yerde açılmamış —
+madde 13.1'deki bulguyla (alfa yalnız `restore_source_dimensions`ta ölçülür)
+tutarlı ve alfa yolunun üretimde ne kadar dar bir yerde çalıştığını gösteriyor.
+
+### Sıradaki adım
+
+**379 saniyenin nerede geçtiği bilinmiyor.** Tahmin edilmemeli;
+`cProfile` ile tek koşuda fonksiyon bazında döküm alınmalı. Aday şüpheliler
+(ölçülmedi): VTracer aday üretimi, shape fitting, `findContours` (madde 10.2'de
+patolojik girdide 98 s ölçüldü), skorlama.
+
+### 13.6 cProfile — 526 s nerede geçiyor (ve madde 13.5'in DÜZELTMESİ)
+
+⚠️ **Madde 13.5'teki "render %16" rakamı YANLIŞTI.** Orada yalnız
+`app.fidelity.render_svg_to_rgb` ve `source_truth.render_svg_to_rgba`
+sarmalanmıştı (275 çağrı). cProfile gerçek sayıyı veriyor:
+`resvg_py.svg_to_bytes` **695 çağrı, 171,4 s = %32,6**. Yaklaşık 420 çağrı
+o iki sarmalayıcıyı atlayarak doğrudan resvg'ye gidiyor. Ders: bir maliyeti
+sarmalayıcıyla ölçerken **tüm çağrı yollarının** oradan geçtiği doğrulanmalı.
+
+`class_reklam`, profil altında 526,4 s (taban 452 s, ek yük ~%16):
+
+**Kümülatif (çağrı ağacı):**
+
+| aşama | çağrı | süre | pay |
+|---|---|---|---|
+| `apply_candidate_painter_reconstruction` | 2 | **237,2 s** | %45 |
+| `evaluate_final_svg_bytes` | **37** | **191,3 s** | %36 |
+| `_evaluate_phase` (painter) | 9 | 189,6 s | %36 |
+| `validate_alpha_reconstruction_contract` | 11 | 149,4 s | %28 |
+
+**Kendi süresi (tottime):**
+
+| işlev | çağrı | süre |
+|---|---|---|
+| `resvg_py.svg_to_bytes` | 695 | **171,4 s** |
+| `numpy.ufunc.reduce` | 56 569 | 51,3 s |
+| `ndarray.nonzero` | 24 376 | 24,9 s |
+| `_thread.lock.acquire` | 98 | 20,9 s |
+| `scipy.ndimage.correlate1d` | 6 460 | 18,0 s |
+| `palette_ops.classify_features` | 524 | 17,2 s (küm. 54,6) |
+| `numpy.linalg.norm` | 11 600 | 15,0 s (küm. 45,5) |
+| `ciede2000` | 74 | 9,5 s |
+| `_ssim` | 646 | 6,7 s (küm. 26,5) |
+| `alpha_mask_contour.add` | **3 959 860** | 5,3 s |
+
+Toplam **250 308 803 fonksiyon çağrısı**.
+
+### Yorum: yavaşlık hata değil, tasarımın bedeli
+
+Alfa painter merdiveni 526 s'nin 237'sini tüketiyor. Maliyetin kaynağı:
+her aday için resvg ile rasterleştirme (695 render) **ve tam final artifact
+değerlendirmesinin 37 kez** koşturulması (ciede2000 + SSIM + kmeans + palet
+sınıflandırma). Bu, "ölçüm-kapılı iyileştirme" felsefesinin doğrudan bedeli.
+
+Hızlandırmanın iki yolu var ve ikisi de bedava değil:
+1. **Aday sayısını azaltmak** — kalite kapılarına dokunur, riskli.
+2. **Değerlendirmeyi ucuzlatmak** — `evaluate_final_svg` 37 kez tam suite
+   koşuyor; erken eleme (ucuz metrikle önce ele, pahalıyı sonra) mümkün
+   görünüyor ama **ölçülmedi** ve sonucu değiştirmemesi kanıtlanmalı.
+
+⚠️ Profil dosyası saklandı: `scratchpad/pipeline.prof` (pstats ile açılabilir).
+Bu konteyner geçici; kalıcı analiz gerekiyorsa yeniden üretilmeli.
+
+### 13.7 ERKEN ELEME TAVANI = 0,0 s — fikir ölçümle öldü
+
+`evaluate_final_svg_bytes` sarmalanıp her çağrının süresi + `hard_fail_codes`
+kaydedildi (`class_reklam`, 450,5 s):
+
+| ölçüm | değer |
+|---|---|
+| `evaluate_final_svg` | **134,4 s** (37 çağrı, boru hattının **%29,8**'i) |
+| çağrı başına | 3 632 ms |
+| hard fail **yok** (geçen) | **0** |
+| hard fail var (düşen) | **37** |
+| **yalnız ucuz kodla düşen** | **0** → **TAVAN 0,0 s** |
+
+Her reddin içinde en az bir pahalı algısal metrik var. **Ucuz kapıları öne
+almak hiçbir şey kazandırmaz.** Madde 13.6'da önerdiğim "erken eleme" yönü
+kapandı; sonraki oturum tekrar açmasın.
+
+### Beklenmedik gözlem: 37 değerlendirmenin TAMAMI düşüyor
+
+```
+37x  alpha_white_ssim_below_min      <- istisnasiz her cagri
+37x  alpha_black_ssim_below_min      <- istisnasiz her cagri
+37x  alpha_checker_ssim_below_min    <- istisnasiz her cagri
+36x  topology_component_delta
+31x  seam_gap
+30x  ssim_below_min
+23x  alpha_{white,black,checker}_mae_above_max
+15x  topology_hole_delta
+```
+
+Hiçbir aday `evaluate_final_svg`'den temiz geçmiyor, buna rağmen boru hattı
+**başarıyla** bitiyor (`source_alpha_vector_mask` kazanıyor). Yani bu
+değerlendirmenin verdict'i aday seçiminde son söz değil.
+
+⚠️ **Yorumu sınanmadı.** Üç alfa-SSIM kapısının her adayda düşmesi iki şeyden
+biri olabilir: (a) gerçekten hiçbir aday yeterli değil, (b) bu üç kapıda
+sistematik bir sorun var (ör. yanlış arka plan kompoziti ya da ölçek). İkisi
+ayırt edilmedi. Ayırt etmenin ucuz yolu: tek bir adayın
+`alpha_white_ssim` değerini ve eşiğini okuyup, aynı adayı gözle
+render edip karşılaştırmak.
+
+Bu, RFV-3B'de `public-04/05/15`'in `ssim_regression`/`seam_regression` ile
+düşmesiyle **aynı aileden** görünüyor — ama madde 13.3'ün düzeltmesinden sonra
+artık renderer tabanı tutarsızlığına bağlanamaz. Bağımsız bir sorgu gerektirir.
+
+### Zaman haritasının özeti (madde 13.5-13.7 birlikte)
+
+| kalem | süre | pay |
+|---|---|---|
+| `resvg_py.svg_to_bytes` (695 çağrı) | 171,4 s | %33 |
+| `evaluate_final_svg` (37 çağrı) | 134,4 s | %30 |
+| alfa painter merdiveni (kümülatif) | 237,2 s | %45 |
+
+İlk ikisi büyük ölçüde üçüncünün **içinde**. Yani boru hattı süresinin
+yarısına yakını alfa aday merdiveninde, ve orada da maliyet rasterleştirme +
+tam değerlendirmenin tekrar tekrar koşturulması.
+
+### 13.8 "37/37 düşüyor" incelendi — kusur YOK, eşik gerçekten karşılanmıyor
+
+Madde 13.7'deki gözlem (üç alfa-SSIM kodu istisnasız her çağrıda) izlendi.
+
+**Hipotez (çürüdü):** `final_artifact_evaluator.py:604-609`
+
+```python
+entry = backgrounds.get(name) or {}
+if float(entry.get("ssim", 0.0)) < thr["alpha_background_ssim_min"]:
+```
+
+`backgrounds` boş olsaydı `entry.get("ssim", 0.0)` → **0,0** dönerdi ve hata
+koşulsuz tetiklenirdi. Doğrudan sınandı: **`backgrounds` DOLU.**
+
+Kazanan artefaktın gerçek değerleri (`geo_standard_alpha.svg`, geometric):
+
+| zemin | SSIM | eşik 0,995 | RGB MAE | eşik 0,008 |
+|---|---|---|---|---|
+| white | **0,991843** | düşer (−0,0032) | 0,001949 | geçer |
+| black | **0,988900** | düşer (−0,0061) | 0,001707 | geçer |
+| checker | **0,991518** | düşer (−0,0035) | 0,001870 | geçer |
+
+Diğer ölçümler: `alpha_iou` 0,999371 (eşik 0,995 → **geçer**),
+`alpha_mae` 0,000285 (eşik 0,008 → **geçer**), `ssim` **0,942563**
+(eşik 0,985 → düşer), `component_delta` 53, `min_component_iou` 0,0600.
+
+**Sonuç: kusur yok.** Alfa düzlemi mükemmele yakın (IoU 0,9994, MAE 0,0003)
+ama zemin kompozitlerinin SSIM'i eşiğin %0,3-0,6 altında, genel SSIM ise
+belirgin altında (0,9426 / 0,985). Değerlendirme tasarlandığı gibi çalışıyor;
+aday gerçekten bu sınıfın çıtasını karşılamıyor.
+
+⚠️ **Bu ölçümün sınırı:** `image_class='geometric'` tarafımdan seçildi ve
+`palette_rgb`/`fixture_baseline` verilmedi. Eşikler sınıfa bağlı olduğundan
+boru hattının kendi değerlendirmesi farklı sonuç verebilir. Mutlak verdict
+değil, büyüklük mertebesi olarak okunmalı.
+
+### Ayakta kalan yapısal gözlem
+
+37 değerlendirmenin tamamı hard fail veriyor, buna rağmen boru hattı
+**başarıyla** bitiyor. Yani bu yolda `evaluate_final_svg`'nin verdict'i çıktıyı
+**kapatmıyor** — ama çalışma süresinin **%30'unu** (134,4 s) tüketiyor.
+
+⚠️ Metriklerin skorlama/seçim için kullanılıp kullanılmadığı **doğrulanmadı**.
+Kullanılmıyorsa burada ciddi bir performans fırsatı var; kullanılıyorsa yok.
+Bu, bu hattaki tek açık ve ucuz soru: `evaluate_final_svg` çıktısının
+tüketicilerini izle.
+
+### 13.9 AÇIK SORU KAPANDI — painter tam değerlendirmenin %10'unu kullanıyor
+
+Madde 13.8'de bırakılan soru (`evaluate_final_svg` çıktısını kim tüketiyor)
+koddan yanıtlandı.
+
+`alpha_candidate_painter.py:709` çağırıyor, sonra **yalnız şunları** kullanıyor:
+
+```python
+alpha_group = report.metrics.get("G_gradient_alpha") or {}
+evaluator_alpha_iou = alpha_group.get("alpha_iou")
+evaluator_alpha_mae = alpha_group.get("alpha_mae")
+plane_failure_codes = [c for c in report.hard_fail_codes
+                       if c in _ALPHA_PLANE_FAILURE_CODES]
+```
+
+ve `_ALPHA_PLANE_FAILURE_CODES = {"alpha_iou_below_min", "alpha_mae_above_max"}`
+(`:84`) — **yalnız iki kod**.
+
+**Bu, madde 13.7'deki gizemi tamamen çözüyor:** üç `alpha_*_ssim_below_min`
+kodu bu kümede DEĞİL, painter onları eliyor. "37/37 hard fail veriyor ama
+boru hattı başarılı" çelişkisi bundan ibaret.
+
+### Boşa giden hesap (tek çağrı profili, 6,67 s — ilk çağrı, ısınma dahil)
+
+| iş | süre | painter'a gerekli |
+|---|---|---|
+| `ciede2000` | 0,496 s | hayır |
+| `correlate1d` (SSIM filtresi) | 0,364 s | hayır |
+| `kmeans` (palet) | 0,339 s | hayır |
+| `numpy.linalg.norm` | 0,287 s | hayır |
+| **`resvg_py.svg_to_bytes`** | **0,287 s** | **evet** |
+| `classify_features` | 0,604 s (küm.) | hayır |
+| `_ssim` ×12 (zeminler dahil) | 0,567 s (küm.) | hayır |
+| `composite_rgba` | 0,179 s (küm.) | hayır |
+
+Painter'ın ihtiyacı: **bir render + alfa IoU/MAE**. Gerisi hesaplanıp atılıyor.
+
+### Fırsatın büyüklüğü (TAHMİN — ölçülmedi)
+
+`evaluate_final_svg` boru hattının **%30'u** (134,4 s / 37 çağrı). Painter
+yolunda gerekli olan pay kabaca render + alfa metriği. Eğer alfa-yalnız bir
+yol eklenirse bu 134 s'nin büyük kısmı düşebilir.
+
+⚠️ Bu bir **tahmin**; gerçek kazanç ölçülmeden iddia edilmemeli. Bugün bu tür
+tahminlerin altısı çürüdü.
+
+### Uygulamadan önce zorunlu kontrol
+
+`evaluate_final_svg`'nin **diğer iki tüketicisi** de var ve onların ne
+kullandığı **incelenmedi**:
+- `alpha_candidate_knockout.py:347`
+- `alpha_candidate_validation.py:59`
+
+Alfa-yalnız yol eklenecekse, yalnız painter çağrısına uygulanmalı ve diğer
+ikisi aynen bırakılmalı — ya da onların da ne tükettiği önce okunmalı.
+`required_metrics={"alpha_fidelity"}` zaten geçiliyor ama değerlendirici bunu
+**hesaplamayı atlamak için kullanmıyor**, yalnız "unmeasured" işaretlemek için.
+Boşluk tam olarak burada.
+
+### 13.10 ZORUNLU KONTROL YAPILDI — alfa-yalnız yol GLOBAL uygulanamaz
+
+Madde 13.9'daki fırsat, diğer tüketiciler okunmadan uygulanmamalıydı. Okundu
+ve iki tüketici **taban tabana zıt** çıktı:
+
+**`alpha_candidate_knockout.py:354-362` — HİÇBİR hard fail kabul etmiyor:**
+
+```python
+if alpha_group.get("alpha_fidelity_status") != "passed":
+    raise RuntimeError("...knockout_evaluator_rejected:...")
+if report.hard_fail_codes:                      # <-- HERHANGI bir kod
+    raise RuntimeError("...knockout_evaluator_hard_fail:...")
+```
+
+`ssim_below_min`, `topology_component_delta`, `alpha_*_ssim_below_min` —
+hepsi knockout'u reddettiriyor. Ayrıca `alpha_fidelity_status`, herhangi bir
+`alpha_` kodu tetiklendiğinde "failed" oluyor (`final_artifact_evaluator.py:610`).
+
+**`alpha_candidate_painter.py:709` —** yalnız iki kodu süzüyor (madde 13.9).
+
+**`alpha_candidate_validation.py:59` —** `evaluate_final_svg`'yi içe aktarıyor
+ama birincil kontrolü **kendi** yapıyor: `render_svg_to_rgba` +
+`alpha_plane_metrics` ile doğrudan IoU/MAE ölçüp eşiklere bakıyor.
+
+### Sonuç: fırsat gerçek ama KAPSAMI DAR
+
+Alfa-yalnız değerlendirme **global** uygulanamaz. Hesaplanmayan metriklerin
+kodları hiç tetiklenmezdi ve **knockout şu an reddettiği adayları kabul
+ederdi** — kapıyı gevşetme yönünde sessiz davranış değişikliği.
+
+Uygulanabilir tek biçim: **yalnız painter çağrı noktasına** özel bir
+alfa-yalnız yol. Knockout ve validation aynen bırakılmalı.
+
+⚠️ O daraltılmış biçimde bile kazanç **ölçülmedi**. 134,4 s'nin ne kadarı
+painter çağrılarına ait, ne kadarı knockout/validation'a — bu dağılım
+bilinmiyor. Ölçmeden uygulanmamalı; painter payı küçükse iş değmez.
+
+### Bu kontrolün değeri
+
+Madde 13.9'da "fırsat" derken global uygulanabilir sanıyordum. Kontrol
+etmeden yazsaydım knockout'un kapısını sessizce gevşetmiş olacaktım. Bu
+oturumda yedinci kez, "yalnızca X etkilenir" varsayımı yanlış çıktı — ama bu
+kez koda dokunmadan önce yakalandı.
+
+### 13.11 Çağrı noktası dağılımı ölçüldü — painter payı %61
+
+`class_reklam`, 439,9 s. `evaluate_final_svg` toplam 128,0 s (%29,1):
+
+| çağrı noktası | adet | süre | pay | çağrı başına |
+|---|---|---|---|---|
+| **`alpha_candidate_painter:709`** | **35** | **78,2 s** | **%61,1** | 2,23 s |
+| `alpha_candidate_validation:108` | 2 | 49,8 s | %38,9 | **24,9 s** |
+
+Karar kuralı ölçümden **önce** yazılmıştı (>%60 → değer). Painter payı %61,1,
+yani daraltılmış alfa-yalnız yol değer: boru hattının **%17,8'i** (78,2/439,9)
+painter'ın tam değerlendirme çağrılarında ve orada gerekli olan yalnız
+render + alfa IoU/MAE.
+
+⚠️ **Düzeltme:** madde 13.10'da `validation`ı 59-90 satırları üzerinden
+"birincil kontrolü kendi yapıyor" diye tanımlamıştım. Eksik okumaydı;
+`:108`'de ayrı bir `evaluate_final_svg` çağrısı var ve incelenmedi.
+
+⚠️ **Açıklanmamış:** validation çağrı başına 24,9 s, painter 2,23 s —
+**11 kat** fark. Yalnız 2 çağrıyla 49,8 s tüketiyor. Nedeni bilinmiyor;
+büyük olasılıkla farklı çözünürlük/girdi ama **ölçülmedi**. Kendi başına
+ayrı bir inceleme konusu (%11 boru hattı payı).
+
+### Uygulama planı (henüz uygulanmadı)
+
+1. `evaluate_final_svg` yanına **alfa-yalnız** bir yol; yalnız `painter:709`
+   kullanır. Knockout ve validation aynen kalır (madde 13.10: global uygulama
+   knockout'un kapısını gevşetir).
+2. Eşiklere dokunulmaz; yalnız hesaplanan metrik kümesi daralır.
+3. **Doğrulama:** yerel e2e ile kazanan SVG'nin **bayt bayt aynı** kaldığı
+   gösterilmeli (taban: `geo_standard_alpha.svg`, 267 523 B,
+   `selection_reason=highest_total_score+source_alpha_vector_mask`), süre
+   düşüşü ölçülmeli, ardından `test_visual_regression.py`.
+4. Riskli nokta: metrikleri hesaplamamak `alpha_fidelity_status`u "failed"
+   yerine başka bir değere kaydırabilir. Painter bu alanı okumuyor (kontrol
+   edildi) ama aynı rapor nesnesi başka yere sızıyorsa etkisi olur —
+   uygulanırsa bu ayrıca doğrulanmalı.
+
+### 13.12 11 KAT FARKIN NEDENİ: bayt değil, clipPath geometrisi
+
+Madde 13.11'deki açıklanmamış fark ölçüldü. Hipotezim ("validation'ın
+çağrıları 254 KB'lık büyük SVG'ler olduğu için yavaş") **çürüdü**:
+
+| çağrı noktası | SVG bayt | süre |
+|---|---|---|
+| `validation:108` | 253 983 | **25,20 s** |
+| `validation:108` | 254 032 | **24,28 s** |
+| `painter:709` | **263 496** | **2,60 s** |
+| `painter:709` | 263 428 | 2,52 s |
+| `painter:709` | 258 464 | 2,51 s |
+
+Painter **daha büyük** SVG'yi 2,6 s'de değerlendiriyor; validation daha
+küçüğünü 25 s'de. **Bayt boyutu sürücü değil.**
+
+### Sürücü: artefaktın iç geometrisi
+
+`alpha_candidate_validation`'ın hata dizgeleri `source_alpha_candidate_knockout_*`
+— yani bu yol **knockout adaylarını** doğruluyor. Madde 12.1'de o adayların
+yapısı ölçülmüştü: **16 712 rect / 127 clipPath**. Painter'ın adayları ise
+polygon/contour tabanlı.
+
+**Sonuç: clipPath ağırlıklı geometri resvg'de patolojik olarak yavaş** —
+benzer baytta ~10× (değerlendirme düzeyinde), render düzeyinde §13.5'te
+ölçülen 21 s vs 0,2 s ile ~100×.
+
+### Planın güncellenmesi
+
+- **Alfa-yalnız yol validation'ı KURTARMAZ.** Oradaki maliyet metrik hesabı
+  değil, alfa metriği için zaten gerekli olan render. Hedef painter'ın
+  **78,7 s**'sinde kalıyor (%61).
+- ⚠️ Madde 13.10'daki "yalnız painter'a uygulanabilir" ifadesi de düzeltilmeli:
+  `validation:108` painter ile **birebir aynı deseni** kullanıyor
+  (`required_metrics={"alpha_fidelity"}` → `alpha_iou`/`alpha_mae` +
+  süzülmüş kodlar). Katı olan tek tüketici `knockout:354`. Ama validation'a
+  uygulamak kazanç getirmez (yukarıdaki sebep).
+
+### Yeni ve muhtemelen daha değerli hedef
+
+Knockout artefaktlarının render maliyeti: **2 çağrıda 49,5 s**, boru hattının
+**%11'i**. Ve bu, `public-14`'ün bayt sorunuyla **aynı kökten**: 16 712 rect /
+127 clipPath. Yani clipPath sayısını/rect yoğunluğunu düşürmek hem baytı
+(madde 12.1: 82,3 → 50,8 B/rect hedefi) hem render süresini birlikte
+iyileştirebilir.
+
+⚠️ Bu bir gözlem; ortak çözümün işe yarayacağı **ölçülmedi**.
+
+### ⚠️ 13.13 DÜZELTME — madde 13.12'deki "clipPath sürücüdür" iddiası DESTEKLENMİYOR
+
+Madde 13.12'de 11 kat farkı "clipPath ağırlıklı geometri resvg'de patolojik"
+diye açıklamıştım. O çıkarım `public-14`'ün CI'daki yapısından
+(16 712 rect / 127 clipPath, madde 12.1) yapıldı ve **yerel vakayla
+karıştırıldı**. İki farklı vaka.
+
+Yerel artefaktların yapısı ve render süresi ölçüldü (512×275):
+
+| artefakt | bayt | clipPath | rect | path | render |
+|---|---|---|---|---|---|
+| `geo_standard_alpha.svg` | 267 523 | **0** | 772 | 23 | 57-71 ms |
+| `alpha-knockout.svg` | 187 395 | **0** | **3 580** | 23 | **68 ms** |
+| `geo_contour.svg` | 2 991 | 0 | 0 | 2 | 20 ms |
+| `geo_standard.svg` | 19 918 | 0 | 0 | 24 | 17 ms |
+
+**Yerel artefaktların hiçbirinde clipPath yok** — knockout artefaktında bile.
+3 580 rect'li knockout artefaktı **68 ms**'de render ediliyor. Yani
+`class_reklam`'ın 25 saniyelik `validation:108` çağrıları bu ölçümle
+**açıklanamıyor** ve clipPath yoğunluğu sorumlu tutulamaz.
+
+**Ne biliyoruz:** `validation:108`'in 2 çağrısı 49,5 s sürüyor (ölçüldü,
+tekrarlandı) ve bunlar 253 983 / 254 032 B artefaktlar üzerinde.
+**Ne bilmiyoruz:** o artefaktların iç yapısı — geçici oldukları için
+silinmişlerdi.
+
+Sıradaki adım: çağrıdan önce kopyalayıp yavaş olanları saklamak
+(`scratchpad/capture.py`), sonra yapılarını ölçmek. Spekülasyon yerine
+dosyayla çalışmak.
+
+⚠️ `public-14`'ün **bayt** hedefi (82,3 → 50,8 B/rect, madde 12.1) bu
+düzeltmeden **etkilenmiyor** — o ayrı ve ölçülmüş bir sonuç. Etkilenen tek
+şey, bayt ile render süresinin aynı kökten geldiği varsayımıydı.
+
+### 13.14 YAVAŞ ARTEFAKTLAR YAKALANDI — `<use>`+`clipPath` kodlaması ~90× yavaş
+
+Madde 13.13'teki düzeltme **fazla genişti**: yerelde bulduğum knockout
+artefaktı yavaş olan değildi. Yavaş çağrıların adayları çağrıdan önce
+kopyalanarak yakalandı (`scratchpad/capture.py`) ve yapıları ölçüldü:
+
+| artefakt | bayt | clipPath | `<use>` | rect | render 512×275 | render 1001×538 |
+|---|---|---|---|---|---|---|
+| `cand001` (22,4 s'lik çağrı) | 254 032 | **255** | **5 371** | 173 | **5 728 ms** | **19 065 ms** |
+| `cand026` (20,8 s'lik çağrı) | 253 983 | **255** | **5 371** | 173 | 5 635 ms | 18 423 ms |
+| `alpha-knockout` (hızlı) | 187 395 | **0** | 1 | **3 580** | **63 ms** | 138 ms |
+
+**Aynı çözünürlükte ~90× fark.** Yavaş artefaktlar `<defs>` + `<use>` +
+seviye başına `clipPath` + `opacity` yapısında — yani
+`alpha_candidate_support_compact`'in **native-grid-use** kodlaması
+(`build_compact_native_use_reconstruction_tree`, sembol yeniden kullanımı).
+
+### Epistemik iz (üç adım)
+
+1. **13.12:** "clipPath sürücüdür" — `public-14`'ün CI yapısından çıkarım.
+2. **13.13:** geri çekildi — ama yanlış artefakta bakılarak (yerel knockout
+   dosyasında clipPath yoktu; o zaten yavaş çağrının adayı değildi).
+3. **13.14:** gerçek adaylar yakalandı — **255 clipPath + 5 371 `<use>`**.
+   Yön doğruymuş, kanıt yanlış dosyadan alınmıştı.
+
+⚠️ Ders: "artefaktı bulamadım" ile "artefakt öyle değil" aynı şey değil.
+13.13'te ikincisini yazdım, oysa elimde yalnız birincisi vardı.
+
+### Ölçülmüş sonuç
+
+Kompakt `<use>`/`clipPath` kodlaması **baytı düşürürken render süresini
+~90× artırıyor**. 3 580 düz rect'li artefakt 63 ms; 5 371 `<use>` + 255
+clipPath'li artefakt 5 728 ms — üstelik ikincisi **daha az** eleman taşıyor.
+
+Ölçekleme kabaca piksel sayısıyla doğrusal (512→1001'de 3,7× alan, 3,3× süre)
+ama sabiti devasa.
+
+### Bunun anlamı (C hattı için)
+
+`validation:108`'in 49,5 s'si (boru hattının %11'i) bu iki artefaktın
+render'ından geliyor. Kaldıraç: bu kodlamanın **render maliyetini** hesaba
+katmak. Şu an seçim yalnız **bayta** göre yapılıyor (madde 11.2: compaction
+katmanı bayt için sembol/`use` kullanıyor) ve render maliyeti ölçülmüyor.
+
+⚠️ Henüz ölçülmedi: bu kodlamanın kullanıldığı yerlerde düz rect'e dönmenin
+bayt maliyeti ne olur, ve kalite kapıları bundan etkilenir mi. C hattının
+sıradaki somut adımı bu.
+
+### 13.15 MALİYET YASASI ÖLÇÜLDÜ — alfa seviyesi başına 22,5 ms
+
+`<use>` suçlu değil: `<use>`'ları düz `<rect>`'e açtım, **piksel birebir aynı**
+(0 fark), süre değişmedi (5 879 → 5 551 ms) ve **bayt %18 arttı**
+(254 032 → 299 868). İndirection maliyet değil.
+
+Gerçek yapı (`native-grid-use-v1`):
+
+```xml
+<g data-vektoryum-source-alpha-reconstruction="native-grid-use-v1">
+  <g opacity="0.00392157"><use href="#zp" clip-path="url(#zc1)" /></g>
+  <g opacity="0.00784314"><use href="#zp" clip-path="url(#zc2)" /></g>
+  ...  255 kez
+</g>
+```
+
+**Tüm çizim (`#zp`, 23 path) 255 kez render ediliyor**, her seferinde farklı
+clip maskesi + farklı opaklıkla. Katman sayısı = alfa seviye sayısı.
+
+| katman | bayt | render 512×275 | katman başı |
+|---|---|---|---|
+| 1 | 236 577 | 74 ms | — |
+| 16 | 237 597 | 394 ms | 24,6 ms |
+| 32 | 238 699 | 746 ms | 23,3 ms |
+| 64 | 240 899 | 1 479 ms | 23,1 ms |
+| 128 | 245 302 | 2 879 ms | 22,5 ms |
+| **255** | **254 032** | **5 728 ms** | **22,5 ms** |
+
+**`render ≈ sabit + 22,5 ms × katman`** — 16'dan 255'e kusursuz doğrusal.
+
+### Asimetri: katman başına ~70 bayt, ~22,5 ms
+
+255→64 inmek baytı yalnız **%5** düşürür (254 032 → 240 899) ama render'ı
+**%74** (5 728 → 1 479 ms). Kodlama bayt açısından verimli, render açısından
+felaket — **ve seçim yalnızca bayta bakıyor** (madde 11.2: compaction katmanı
+sembol/`use` ile baytı hedefliyor, render maliyeti ölçülmüyor).
+
+### Projeksiyon (TAHMİN, ölçülmedi)
+
+1001×538'de katman başı maliyet ~3,3× (alanla doğrusal, madde 13.14) → ~75 ms.
+255→64 inmek çağrı başına ~14 s, `validation`'ın iki çağrısında ~28 s
+kazandırabilir — boru hattının **~%6**'sı. ⚠️ Bu bir projeksiyon; gerçek
+kazanç uygulanıp ölçülmeden iddia edilmemeli.
+
+### Kalite tarafı (açık soru)
+
+Katman sayısı = alfa seviye sayısı, yani azaltmak **alfa nicemlemesi** demek —
+kalite etkisi var ve kapılarla ölçülmeli. Depoda bu makine zaten mevcut
+(painter merdiveni q64/q32/q16, `_MAX_ALPHA_LEVELS = 128`). Bu artefakt 255
+seviye taşıyor, yani o merdivenden geçmemiş bir yol.
+
+**Sıradaki somut soru:** `native-grid-use-v1` üretimi neden 255 seviye
+kullanıyor ve mevcut nicemleme merdiveni buraya neden uygulanmıyor?
+
+### 13.16 SORU YANITLANDI — merdiven iki basamaklı, render maliyeti hiç bakılmıyor
+
+`alpha_candidate_knockout.py:153`:
+
+```python
+def _alpha_encodings(alpha):
+    """Yield exact alpha first, then the established 128-level fallback."""
+    exact = ...                                   # 255 seviyeye kadar
+    yield "exact", exact, exact_levels
+    quantized, opacity_by_level = _quantize_alpha(exact)    # 128 (_MAX_ALPHA_LEVELS)
+    if not np.array_equal(quantized, exact):
+        yield "quantized_128", quantized, opacity_by_level
+```
+
+**Merdiven yalnız iki basamaklı**: `exact` (≤255) → `quantized_128`. Painter'ın
+q64/q32/q16 merdiveni buraya **uygulanmıyor**; daha kaba adım yok.
+
+`exact` **önce** denendiği için kapılardan geçtiğinde kazanan o oluyor →
+255 katman → 5,7 s (512×275) / 19 s (1001×538) render.
+
+Ölçülen maliyet karşılıkları (madde 13.15):
+
+| kodlama | katman | render 512×275 | bayt |
+|---|---|---|---|
+| `exact` | 255 | **5 728 ms** | 254 032 |
+| `quantized_128` | 128 | 2 879 ms | 245 302 |
+| (yok — 64) | 64 | 1 479 ms | 240 899 |
+| (yok — 32) | 32 | 746 ms | 238 699 |
+
+`public-14`'ün `encoding=quantized_128` ile düşmesi (madde 12.1) bununla
+tutarlı: orada `exact` başarısız olmuş, 128'e düşülmüş.
+
+### Sonuç: kusur değil, gözden kaçmış bir ödünleşim
+
+`exact` alfayı tercih etmenin bedeli **render süresi** ve bu bedel seçim
+sırasında **hiç ölçülmüyor**. Kapılar kaliteyi ve baytı görüyor, süreyi
+görmüyor.
+
+Maliyeti düşürmenin iki yolu var, **ikisi de politika kararı**:
+
+1. **Daha kaba basamaklar ekle** (64/32) — ama yalnız 128 de başarısız olursa
+   devreye girerler, yani `exact`'in geçtiği vakalarda (`class_reklam`)
+   hiçbir şey değişmez.
+2. **Kaba kodlamayı tercih et** kalite kapıları izin verdiğinde — asıl kazanç
+   burada ama bu, "exact alfa öncelikli" politikasını değiştirmek demek.
+
+⚠️ İkisi de kalite/politika kararı; teknik bir kusur düzeltmesi değil.
+Sahibinin kararı olmalı. C hattı buraya kadar **ölçümle** geldi:
+maliyet yasası (22,5 ms/katman), kaynağı (`exact` = 255 katman) ve
+seçim mekanizması (`_alpha_encodings`, exact-first, süre görmüyor) belirlendi.
+
+## 14. KARAR: Seçenek A — painter için alfa-yalnız değerlendirme (UYGULANDI, madde 15)
+
+Üç seçenek arasından **A** seçildi. Gerekçe: kalite kapılarına dokunmuyor
+(C2 politika değişikliği gerektiriyor, D korpus/CI turu gerektiriyor), hedefi
+ölçülmüş, doğrulaması yerelde koşuyor.
+
+**Hedef:** `alpha_candidate_painter:709`, 35 çağrı, **78,7 s** = boru hattının
+**%17,8'i** (madde 13.11). Painter bu çağrıdan yalnız `alpha_iou`/`alpha_mae`
+ve `_ALPHA_PLANE_FAILURE_CODES`'u (**iki kod**) kullanıyor (madde 13.9).
+
+### Uygulama tarifi (yeniden yazma DEĞİL, parametre ekleme)
+
+Alfa metrikleri `final_artifact_evaluator.py`'de şu kesin reçeteyle üretiliyor:
+
+```python
+# :478-482  w,h türetmesi + source_alpha_cmp (INTER_AREA ile kapaklı yeniden boyut)
+# :485      render_rgba = render_svg_to_rgba(svg_path, w, h)
+# :556-562  render_rgba yeniden boyutlanır, sonra
+#           alpha_metrics = alpha_plane_metrics(source_alpha_cmp, render_rgba[:, :, 3])
+# :600-603  alpha_iou_below_min / alpha_mae_above_max eşik karşılaştırmaları
+```
+
+**Doğru yaklaşım:** `evaluate_final_svg_bytes`'a `alpha_plane_only: bool = False`
+parametresi ekle. `True` iken:
+- **KORU:** `w,h` türetmesi, `render_svg_to_rgba`, `source_alpha_cmp`,
+  `alpha_plane_metrics`, ve `:600-603`'teki iki eşik kontrolü
+- **ATLA:** `_appearance_metrics` (backgrounds), `boundary_halo_metrics`,
+  `roundtrip_metrics`, B_visual (SSIM/ms_ssim), C/D renk grupları
+  (`ciede2000`, `kmeans`, `classify_features`), E_topology, F_small_detail
+
+Böylece değerler **inşa gereği** birebir aynı olur — yeniden yazımda kaçınılmaz
+olan sapma riski ortadan kalkar.
+
+Sonra yalnız `alpha_candidate_painter.py:709` bu parametreyi geçsin.
+`knockout:354` ve `validation:108` **aynen kalsın** (knockout hiçbir hard fail
+kabul etmiyor, madde 13.10; validation'da kazanç yok, madde 13.12).
+
+### Zorunlu doğrulama (sırayla)
+
+1. `python3 scratchpad/e2e.py class_reklam` → kazanan SVG **bayt bayt aynı**
+   olmalı: `geo_standard_alpha.svg`, **267 523 B**,
+   `selection_reason=highest_total_score+source_alpha_vector_mask`,
+   `mode/best=geometric_logo/geo_standard`. Değişirse **geri al**.
+2. Süre düşüşü ölçül (taban 440-456 s; beklenen kazanç 78,7 s'nin büyük kısmı).
+3. `cd engine && python3 test_visual_regression.py` → `class_reklam` PASS,
+   `gradient_logo` PASS, `arcaates` FAIL (önceden var olan).
+4. Sözleşme testleri: `engine.test_alpha_painter_ledger`,
+   `engine.test_alpha_painter_paint_deficit`, `engine.test_alpha_mask_adaptive`.
+
+⚠️ Doğrulanmamış risk: `verdict` alanı daha az hard fail ile değişir.
+Painter `verdict`'i okumuyor (kontrol edildi) ama aynı rapor nesnesinin başka
+yere sızmadığı uygulama sırasında teyit edilmeli.
+
+⚠️ **Uygulanmadı** — bu oturumda doğrulamayı (2 koşu ≈ 15 dk + regresyon)
+tamamlayacak bağlam kalmadı. Yarım doğrulanmış motor değişikliği bırakmamak
+için tarif yazıldı, kod yazılmadı.
+
+---
+
+## 15. Seçenek A uygulandı ve ölçüldü — painter çağrı noktası %88,9 ucuzladı
+
+Madde 14'teki tarif birebir uygulandı: `final_artifact_evaluator.py`'ye
+`alpha_plane_only: bool = False` parametresi eklendi (yeniden yazma yok,
+mevcut kod bloğu koşula alındı), `alpha_candidate_painter` tek çağrısında
+`True` geçiliyor. `knockout:354` ve `validation:108` **dokunulmadı**.
+
+### Ne korundu / ne atlandı
+
+| Korunan (alfa yolu, birebir aynı) | Atlanan (bu tüketicinin okumadığı) |
+|---|---|
+| `w,h` türetmesi + `source_alpha_cmp` | `B_visual` (ssim, ms_ssim, cross_renderer) |
+| `render_svg_to_rgba` (tek render) | `C_color` (ciede2000, palet uyumu) |
+| `alpha_plane_metrics` | `D_edge_geometry` (edge-F1, boundary offset) |
+| `seam_ratio` + seam eşiği | `E_topology`, `F_small_detail` |
+| `alpha_iou_min` / `alpha_mae_max` eşikleri | halo / roundtrip / `_appearance_metrics` |
+
+Değerler yeniden hesaplanmadığı, yalnız **hesaplanmayanlar atlandığı** için
+alfa metrikleri inşa gereği aynı; eşik gevşetmesi yok.
+
+### Ölçüm (aynı enstrümantasyon, `class_reklam`, aynı 35 çağrı)
+
+| | taban (13.11) | Seçenek A | fark |
+|---|---|---|---|
+| `alpha_candidate_painter` | 78,7 s / 35 çağrı | **8,7 s / 35 çağrı** | **−70,0 s (−%88,9)** |
+| `evaluate_final_svg` toplamı | 134,4 s | 58,0 s | −76,4 s |
+| boru hattı payı | %30,4 | **%15,0** | — |
+| boru hattı (enstrümanlı) | 440–456 s | 386,9 s | gürültü bandına yakın¹ |
+
+¹ Boru hattı toplamı için **hızlanma iddia edilmiyor**: e2e tabanları 387,5–455,9 s
+arasında salınıyordu. Savunulabilir sayı çağrı-noktası ölçümüdür (aynı koşu,
+aynı sayıda çağrı, aynı sarmalayıcı).
+
+Yeni darboğaz açıkça görünür oldu: **`alpha_candidate_validation:108` — 2 çağrı,
+49,3 s, evaluate_final_svg'nin %85'i.** Buradaki tüketici tüm algısal grupları
+gerçekten okuyor (madde 13.12), yani aynı hile uygulanamaz; sonraki adım
+kazanç aramak yerine bu iki çağrının neden 25 s sürdüğünü ölçmektir.
+
+### Doğrulama (tamamı yeşil)
+
+- `e2e.py class_reklam` → kazanan `geo_standard_alpha.svg` **267 523 B**,
+  tabanla **bayt bayt aynı**; `selection_reason`, `mode/best` değişmedi;
+  5 format (svg/pdf/eps/dxf/png) üretildi. (PDF/DXF 1–2 bayt oynuyor —
+  exporter metadata belirsizliği, bu değişiklikle ilgisiz.)
+- `test_visual_regression.py` → `class_reklam` PASS, `gradient_logo` PASS,
+  `arcaates` FAIL (`source_alpha_mask_rectangle_budget_exceeded:50488>8251` —
+  main'de zaten var olan).
+- `test_artifact_quality.py` → **36/36 kontrol geçti**.
+- Sözleşme testleri: `test_alpha_painter_ledger`, `_paint_deficit`,
+  `_stroke_continuation`, `_encoding`, `_retry`, `test_alpha_mask_adaptive` → hepsi OK.
+
+Madde 14'teki ⚠️ `verdict` sızıntısı riski **kapandı**: `report` painter içinde
+yerel; yalnız `metrics["G_gradient_alpha"]` ve `_ALPHA_PLANE_FAILURE_CODES` ile
+süzülmüş `hard_fail_codes` okunuyor. `result["report"]` ayrı bir sözlük
+(native/direct metriklerden kuruluyor), evaluator raporundan türemiyor.
+
+### Ortam notu
+
+Bu konteynerde `engine/.venv` **yok**. Koşucular şöyle çalışır:
+
+```
+cd engine && python3 test_visual_regression.py && python3 test_artifact_quality.py
+PYTHONPATH=<repo>:<repo>/engine python3 -m engine.test_alpha_painter_stroke_continuation
+```
+
+(`test_alpha_painter_stroke_continuation` hem `engine.` paketini hem `app.`
+modülünü içe aktarıyor; tek başına hiçbir çalışma dizininden koşmuyor —
+iki yolu birden `PYTHONPATH`'e koymak gerekiyor.)
+
+---
+
+## 16. Aşama 0 / #159 — determinizmsizliğin kök nedeni ÖLÇÜLDÜ
+
+Tanılama işi (`rfv2-acquisition-determinism-check.yml`, koşu 32012776663,
+5,5 dk) aynı runner üzerinde iki ardışık tam edinim koşturdu.
+
+### Ölçüm
+
+| gözlem | sonuç |
+|---|---|
+| edinilen vaka | a=24, b=24 (ikisi de tam) |
+| **depo nesneleri (kanonik varlık baytları)** | **24/24 BAYT BAYT AYNI** |
+| sürüklenen kayıt alanı | `consent_sha256`, `inspection_sha256` — **yalnız 1/24 vaka** |
+| sürüklenen lisans kanıtı alanı | `license_proof_sha256` — yalnız 1/24 |
+| sürüklenen vaka | `qualification-public-19` |
+| `cases_sha256` a | `f0a119e31937f4f5…` |
+| `cases_sha256` b | `ba88981e121cb9a5…` |
+| nitelenmiş (sabit) | `5f151a6cb1a433b0…` |
+
+**Varlıklar tamamen kararlı.** Sürüklenen tek şey lisans kanıtı sayfasının
+baytları. Zincir: `license_proof_sha256` → `license-proof.json` →
+`consent_sha256` → (`inspection_payload` bunu gömdüğü için) `inspection_sha256`
+→ `cases_sha256`.
+
+### Kök neden: paylaşılan, canlı, varlığa özgü OLMAYAN lisans sayfası
+
+```
+19x  https://openclipart.org/share          <-- 24 vakanın 19'u AYNI sayfa
+ 1x  https://www.loc.gov/item/2016812028/
+ 1x  https://www.loc.gov/item/2016812750/
+ 1x  https://www.loc.gov/item/2016812878/
+ 1x  https://www.loc.gov/item/2016812821/
+ 1x  https://www.loc.gov/item/2016812728/
+```
+
+`openclipart.org/share` genel bir site sayfası — 19 farklı varlık için aynı
+bayt kümesi hash'leniyor. Varlığa özgü hiçbir şey kanıtlamıyor ve canlı olduğu
+için her düzenlemede 19 vakanın kimliğini birden yeniden atıyor. Bu koşuda
+şans eseri yalnız 1 vaka yakalandı; sayfa iki koşu arasında bütünüyle
+değişseydi **19 vaka birden** sürüklenirdi. #159'un bir saatte üç farklı
+kimlik görmesi bununla tutarlı.
+
+### Bunun ağır sonucu: `5f151a6c…` yeniden türetilemez
+
+Nitelenmiş kimlik, artık var olmayan bir sayfanın anlık baytlarını içeriyor.
+**Hangi onarım yapılırsa yapılsın canlı edinim bu kimliği bir daha
+üretemez** — çünkü kimliğin girdisi geri getirilemez. Determinizmi onarmak
+kimliği zorunlu olarak DEĞİŞTİRİR.
+
+### Kan alanı
+
+`5f151a6c…` sabiti ~24 yerde: 3 workflow, `rfv3_measurement_runner.py`,
+`rfv3_measurement_policy.json`, `rfv3_quality_decision_policy.json`,
+`rfv2_qualification_manifest.json`, `test_rfv2_qualified_evidence.py`, 5 doküman
+ve **9 kanıt JSON'u** (`rfv3_pipeline_results.json`, yayın zarfları, denetimler).
+Kanıt JSON'ları geçmiş koşuların kaydı — kimlik tanımı değişirse bunlar
+"eski kimlik" olarak yeniden etiketlenmeli.
+
+### Son tarih doğrulandı
+
+Artefakt `8354853386`: `expired: false`, `expires_at` **2026-10-13T19:25:36Z**,
+10 910 811 B, digest sabitlenen `a8be8c07…` ile aynı. Ölçüm günü itibarıyla
+**57 gün**.
+
+---
+
+## 17. Kalıcı depo: taslak release ÇALIŞMIYOR — ölçüldü
+
+Korpus taslak release ekine taşındı ve **yazma tarafı tamamen doğrulandı**
+(koşu 32022012771): 4 dosyanın digest'i + arşiv boyutu + manifest/audit +
+kimlik yüklemeden önce; geri indirilip 5 dosyanın da bayt bayt aynı geldiği
+yüklemeden sonra.
+
+Ama tüketici tarafı düştü (koşu 32022307181):
+
+```
+contents:read ile taslak release GORUNMUYOR (rfv2-corpus-5f151a6c).
+```
+
+`store` işi `contents: write` ile çalışıyor; RFV-3B `acquire` işi ise yalnız
+`contents: read` taşıyor. **Taslak release'ler push yetkisi gerektiriyor.**
+Depo tüketicinin yetkisiyle okunamıyorsa fiilen yoktur:
+**13 Ekim son tarihi KALKMADI.**
+
+Bu, "yazma başarılı oldu" ile "tüketici okuyabiliyor" arasındaki farkı
+ölçmeden kabul etmemenin karşılığıdır — `verify_read` işi tam bunun için
+eklenmişti ve işe yaradı.
+
+### Seçenekler (ölçülmüş kısıtlarla)
+
+| seçenek | çalışır mı | bedeli |
+|---|---|---|
+| Release'i **yayımla** (taslaktan çıkar) | Evet — `contents: read` yayımlanmış release'i görür | Varlıklar genel depoda **görünür** olur. Lisans sorunu yok (24 varlığın tamamı CC0/kamu malı) ama görünürlük kullanıcı kararı |
+| RFV-3B'ye `contents: write` ver | Evet | Ölçüm iş akışının yetkisini yükseltmek — motor kodunu koşturan bir işte yanlış |
+| Actions artefaktını periyodik tazele | Evet, `actions: read` zaten var | Değirmen: zamanlama 90 gün durursa ölür. GitHub, hareketsiz depolarda zamanlanmış işleri 60 günde devre dışı bırakıyor |
+| HF Dataset | Bilinmiyor | Dataset deposu + yazma yetkili token gerekiyor; ikisi de doğrulanamıyor |
+
+Taslak release ve içindeki ekler **duruyor** — silinmedi. Yayımlama kararı
+verilirse tek adım (`draft: false`) yeterli, yeniden yüklemeye gerek yok.
+
+---
+
+## 18. `public-14` — clipPath koordinat hassasiyeti raster ızgarasına bağlandı
+
+Madde 12.1'in ölçtüğü hedef: **82,3 → 50,8 B/rect (−%38,3)**.
+
+### Teşhis tamamlandı
+
+Gerçek serileştirmede rect iskeleti **37 B** (1 karakterlik değerlerle 41 B).
+Buradan:
+
+| | B/rect | koordinatlara düşen | alan başına |
+|---|---|---|---|
+| mevcut (`%.12g`) | 82,3 | 45,3 kr | **11,3 kr** |
+| hedef | 50,8 | 13,8 kr | **3,45 kr** |
+
+Yani hedef ancak tamsayı mertebesinde koordinatla tutar.
+
+### Çözüm: hassasiyet keyfî sabit değil, ızgaranın kendisi
+
+`_raster_grid_precision(scale)` — dikdörtgenler tamsayı raster
+koordinatlarından üretiliyor; kullanıcı uzayındaki komşu sınırlar tam olarak
+`scale` kadar ayrık. Dolayısıyla `10^-d <= scale` olan en küçük `d` geometriyi
+**kayıpsız** temsil eder. Fazlası bilgi taşımaz, yalnız bayt yer.
+
+İki tuzak kapatıldı:
+
+1. **Çökme.** `sx < 1` iken körlemesine tamsayıya yuvarlamak dar dikdörtgenleri
+   sıfır genişliğe indirir, `width <= 0` guard'ı onları düşürür → alfa deliği.
+   Ondalık sayısı ölçekten türediği için bu olamaz.
+2. **Boşluk.** Genişliği ayrı yuvarlamak komşu kenarlar arasında ızgara boyu
+   boşluk açabilirdi. Onun yerine **iki kenar** yuvarlanıp farkı alınıyor;
+   komşu dikdörtgenler aynı raster sınırını paylaştığı için bitişiklik tam
+   korunur.
+
+11 ölçekte 4 000 dikdörtgen üzerinde iki değişmez de doğrulandı:
+**0 çökme, 0 boşluk.**
+
+### Kazanç — sınırıyla birlikte
+
+Fixture geometrisiyle (`arcaates` 50 488 rect, `class_reklam` 3 579 rect):
+
+| ölçek | eski | yeni | fark |
+|---|---|---|---|
+| sx=1 (viewBox=raster) | 45,4 | 45,4 | **%0 — çıktı birebir aynı** |
+| sx=0,5 | 50,6 | 50,6 | **%0** |
+| sx=1,95 (2000/1024) | 72,1 | **46,5** | **−%35,5** |
+
+Değişiklik **yalnız `%.12g`'nin uzun çıktı ürettiği kesirli ölçeklerde** iş
+yapıyor. Temiz ölçeklerde çıktı değişmiyor — kalite riskini de bu daraltıyor.
+
+`public-14`'ün 82,3 B/rect'i tam o rejimde, dolayısıyla ~46–49 B/rect
+bekleniyor (hedef 50,8'in altı). ⚠️ **Bu bir tahmin.** Gerçek sayı canlı
+korpustan, madde 16 öncesi eklenen `added_bytes_per_rect` tanılama satırından
+okunmalı. Madde 3.5'teki ders geçerli: bayt tahmini gerçek korpus verisiyle
+doğrulanmadan kapanmış sayılmaz.
+
+### Doğrulama (tamamı yeşil)
+
+- `test_visual_regression.py` → `class_reklam` PASS, `gradient_logo` PASS,
+  `arcaates` FAIL (`50488>8251` — main'de zaten var olan, sayılar değişmedi)
+- `test_artifact_quality.py` → **36/36**
+- Sözleşme testleri: `test_alpha_clip_encoding`, `test_alpha_mask_adaptive`,
+  `test_alpha_painter_ledger`, `_encoding`, `_retry`, `_paint_deficit`,
+  `_stroke_continuation` → hepsi geçti
+
+`test_alpha_clip_encoding.py:142` clipPath'ten `<rect[^>]*/>` regex'iyle
+çekiyor; biçim değişikliğinden etkilenmedi (madde 12'deki uyarı 3 kapandı).
+
+---
+
+## 19. `public-14` — canlı korpus doğrulaması: hedef tuttu, vaka KAPANMADI
+
+Koşu `32073238990`, shard 1, head `875daa6`. Tanılama satırı:
+
+```
+knockout_byte_budget_rejected:1181820>1083525,encoding=quantized_128,
+parent_bytes=361175,added_bytes=820645,rects=16712,clips=127,uses=127,
+added_bytes_per_rect=49.1
+```
+
+| | önce | sonra | fark |
+|---|---|---|---|
+| B/rect | 82,3 | **49,1** | **−%40,3** |
+| eklenen bayt | 1 376 002 | **820 645** | **−%40,4** |
+| toplam / limit | 1 737 177 > 1 083 525 = **1,603×** | 1 181 820 > 1 083 525 = **1,091×** | |
+| **rect sayısı** | 16 712 | **16 712** | **değişmedi** |
+| clips / uses | 127 / 127 | 127 / 127 | değişmedi |
+
+### İki şey doğrulandı
+
+1. **Hedef aşıldı.** Madde 12.1'in koyduğu −%38,3 hedefine karşı **−%40,4**
+   ölçüldü. Tahmin (46–49 B/rect) tuttu: gerçek **49,1**.
+2. **Çökme yok — gerçek veride.** `rects` tam olarak 16 712'de kaldı. Madde
+   18'deki "hiçbir dikdörtgen sıfır genişliğe çökemez" değişmezi sentetik
+   testte değil, canlı korpusta da doğrulandı.
+
+### Ama vaka kapanmadı — ve hedefin kendisi eksikti
+
+`public-14` hâlâ bütçeyi aşıyor: **1,091×**. Madde 12.1'deki 50,8 B/rect
+hedefi **retry** aşamasının sayılarından (limit 1 273 782, parent 424 594)
+türetilmişti; bu koşuda düşen aşama **legacy** (limit 1 083 525, parent
+361 175). Doğru hedef oradan:
+
+| | değer |
+|---|---|
+| pay (`limit − parent`) | 722 350 B |
+| şu anki eklenen | 820 645 B |
+| **kalan aşım** | **98 295 B** |
+| **gereken B/rect** | **43,2** (şu an 49,1 → bir **−%12** daha) |
+
+### Kalan %12 nereden gelebilir — aritmetik sınır
+
+Rect iskeleti **37,0 B**; 16 712 rect için 618 344 B, yani **pay içinde
+kalıyor**. Demek ki koordinatlar tamamen bedava olsaydı vaka geçerdi.
+Koordinat payı şu an 49,1 − 37,0 = **12,1 B/rect (202 300 B)**; bunun
+**%48,6'sını** daha kesmek gerekiyor (alan başına ~1,55 karaktere inmek).
+Koordinat kısaltmasıyla bu gerçekçi değil.
+
+Yani sıradaki kaldıraç koordinat değil **iskelet**: her seviye için tek bir
+`<path>` (`M x y h w v h h-w z`, rect başına ~20 B) rect başına ~49 B'yi
+üçte birine indirir ve payın çok altına düşer.
+
+⚠️ Ama madde 0'daki kapalı yol #2 tam da bu: *"Rect başına ayrı `<path>` →
+topoloji kapısı düşüyor, eleman tipi downstream'e bağlı."* O ölçüm **`<mask>`
+destek katmanında** yapılmıştı (`_compact_mask_rectangles` ve
+`_compact_complex_clip` `rect` çocuklarını süzüyor), burada bağlam **clipPath**.
+Aynı olmayabilir — ama denemeden önce hangi downstream süzgecin `rect` tipine
+bağlı olduğu **okunmalı**, tahminle başlanmamalı.
+
+`test_alpha_clip_encoding.py:142` clipPath'ten `<rect[^>]*/>` çekiyor; `<path>`
+kodlamasına geçilirse **o sözleşme kırılır** ve testin kendisi değil, testin
+kurduğu mask eşdeğerliği yeniden düşünülmeli.
+
+---
+
+## 20. `<path>` iskeleti yolu AÇIK — "kapalı yol #2" knockout'a uygulanmıyor
+
+Madde 19 sıradaki kaldıracın koordinat değil **iskelet** olduğunu gösterdi
+(rect iskeleti 37 B, koordinat payı yalnız 12,1 B). Madde 0'daki kapalı yol #2
+bunu yasaklıyor görünüyordu. **Yasaklamıyor** — o ölçüm başka bağlamdaydı.
+
+### `rect` tipine bağlı dört süzgeç okundu
+
+| süzgeç | anahtarı | knockout'u etkiler mi |
+|---|---|---|
+| `alpha_candidate_support_compact.py:632` | `clipPath` **id == `vektoryum-source-alpha`** | **hayır** |
+| `alpha_mask_adaptive.py:76` | `<mask>` içindeki seviye `<g>`'leri | **hayır** |
+| `alpha_svg_mask.py:563` | `<mask>` → clipPath, `_MASK_ID` | **hayır** |
+| `pipeline.py:1047` | belgede **herhangi** `rect/circle/…` → normalizasyonu kapat | **hayır (ölçüldü)** |
+
+Knockout clipPath id'leri `vektoryum-alpha-level-{n}`; ilk üç süzgecin aradığı
+`vektoryum-source-alpha` **değil**. Kapalı yol #2 `<mask>` destek katmanında
+ölçülmüştü (`_compact_mask_rectangles` / `_compact_complex_clip` `rect`
+çocuklarını süzüyor); knockout clipPath'i o yolların hiçbirine girmiyor.
+
+### Dördüncü risk ölçüldü: sıra ters
+
+`pipeline.py:1047` belgede `rect` görürse koordinat normalizasyonunu kapatıyor.
+`<path>`'e geçmek bu kapıyı açardı — **ama yalnızca restore knockout'tan SONRA
+koşuyorsa.** Ölçüldü (`class_reklam`, iki aşama):
+
+```
+olay                              t(s)   belgede knockout clip var mi
+restore_source_dimensions          0.0   -
+knockout_clip_uretildi            19.2   -
+knockout_clip_uretildi            19.3   -
+restore_source_dimensions        207.6   -
+knockout_clip_uretildi           227.5   -
+knockout_clip_uretildi           227.6   -
+
+knockout sonrasi restore cagrisi: 0
+```
+
+Her iki aşamada da **restore önce, knockout sonra**; knockout'tan sonra hiç
+restore çağrısı yok ve restore anında belgede knockout clipPath'i hiç
+bulunmuyor. Yani `pipeline.py:1047` knockout rect'lerini **hiçbir zaman
+görmüyor** — eleman tipini değiştirmek o davranışı değiştiremez.
+
+⚠️ Bu tek fixture (`class_reklam`, 2 aşama) üzerinde ölçüldü. Sıra mimari
+olarak da tutarlı (restore "establish_coordinate_contract" ve opsiyonel
+refit'lerden önce; alfa finalizasyonu daha sonra), ama başka bir vakada
+doğrulanmadı.
+
+### Kalan tek engel: test sözleşmesi
+
+`test_alpha_clip_encoding.py:142` clipPath'ten `<rect[^>]*/>` regex'iyle çekip
+onlardan bir `<mask>` eşdeğeri kuruyor ve iki render'ı karşılaştırıyor.
+`<path>` kodlamasına geçilirse bu **mekanizma** kırılır. Testin *niyeti*
+(clip ile mask render-eş olmalı) korunabilir ama kurulumu yeniden yazılmalı —
+testi "geçsin diye" değil, aynı eşdeğerliği yeni kodlamayla kuracak biçimde.
+
+### Beklenen kazanç
+
+Seviye başına tek `<path>`, rect başına `M x y h w v h h-w z` ≈ **20 B**
+(şu an 49,1). 16 712 rect → ~334 000 B; pay 722 350 B. `public-14` bütçeye
+rahatça girer. ⚠️ Yine **tahmin**: gerçek sayı `added_bytes_per_rect`'ten
+okunmalı.
+
+---
+
+## 21. Aşama 0 / #159 madde 4 KAPANDI — son tarih kalktı
+
+Madde 17'de kalıcı depo yazılmıştı ama tüketici okuyamıyordu. Release
+yayımlandı (kullanıcı kararı) ve `verify_read` işi geçti (koşu `32099518648`):
+
+```
+release contents:read ile gorunuyor (draft=False)
+  rfv2-public-corpus.tar.gz          indirildi ve dogrulandi
+  qualification-manifest.json        indirildi ve dogrulandi
+  qualification-audit.json           indirildi ve dogrulandi
+  bundle-checksums.json              indirildi ve dogrulandi
+
+TUKETICI YOLU DOGRULANDI — RFV-3B kalici depodan geri yukleyebilir
+```
+
+### Kanıt zinciri
+
+| aşama | doğrulanan |
+|---|---|
+| yazma öncesi | arşiv boyutu 10 910 811 B + sha256, dört dosyanın ayrı sha256'sı, manifest `qualified`/24 vaka, audit `complete`, `cases_sha256` üç kaynakta da `5f151a6c…` |
+| yazma sonrası | beş dosya geri indirilip **bayt bayt** karşılaştırıldı |
+| okuma (tüketici yetkisi) | `contents: read` ile release bulundu, dört ek indirildi, digest'ler tuttu, `draft=False` teyit edildi |
+| bağlantı | RFV-3B geri yükleme yolu önce kalıcı kopyayı deniyor; artefakt yalnız yedek |
+
+**Son tarih (2026-10-13) kalktı.** Korpus artık süresi dolan tek bir Actions
+artefaktına bağlı değil. `storage_mode: github_release_asset_no_expiry`.
+
+Depo etiketi: `rfv2-corpus-5f151a6c`. Varlıklar git ağacına girmiyor, yani
+`public_repo_contains_raw_assets: false` korunuyor; 24 varlığın tamamı
+CC0 / kamu malı.
+
+### #159'un kalan maddeleri
+
+| madde | durum |
+|---|---|
+| 1. determinizmsizliğin kaynağını bul | **kapandı** (madde 16) |
+| 2. `cases_sha256` tanımını daralt | açık — kimlik değişikliği gerektirir |
+| 3. determinizmi teste bağla | açık — 2'ye bağlı |
+| 4. kalıcı depolama | **kapandı** (bu madde) |
+| 5. canlı edinim kimliği yeniden üretiyor mu | **cevaplandı**: üretemez (madde 16) |
+
+Madde 2–3, `5f151a6c…` kimliğinin değişmesi ve ~24 yerdeki sabitin (9 kanıt
+JSON'u dahil) yeniden etiketlenmesi demek. Kullanıcı onayı gerektirir.
+
+### 21.1 Üretimde doğrulandı (koşu `32099756733`)
+
+`verify_read` sentetik bir kontroldü; asıl kanıt RFV-3B'nin kendi `acquire`
+işinden geldi:
+
+```
+RFV-3B provenance drift: live corpus identity 5f683b30... does not equal
+  qualified identity 5f151a6c...
+RFV-3B live acquisition unusable; trying the permanent corpus store
+RFV-3B source mode: permanent corpus store (rfv2-corpus-5f151a6c)
+```
+
+Ölçüm hattı artık kalıcı depodan geri yüklüyor; süresi dolacak artefakta
+**hiç dokunmuyor**. Adım süresi de düştü: ~5 dk → **58 s**.
+
+**Yan bulgu — madde 16 bağımsız olarak doğrulandı.** Bu koşunun canlı kimliği
+`5f683b30782cb0c1…`, bundle 10 888 312 B. Bilinen kimlikler:
+
+| kaynak | `cases_sha256` | bundle |
+|---|---|---|
+| nitelenmiş (sabit) | `5f151a6cb1a433b0…` | — |
+| #159, 12:01 | `16f7ccae6b8f3cc4…` | 10 888 371 |
+| #159, 12:25 | `bc3230ed5e5d5dd3…` | 10 888 310 |
+| madde 16, kol a | `f0a119e31937f4f5…` | — |
+| madde 16, kol b | `ba88981e121cb9a5…` | — |
+| bu koşu | `5f683b30782cb0c1…` | 10 888 312 |
+
+Altı ayrı kimlik. Determinizmsizlik sürüyor ve artık **ölçüm hattını
+etkilemiyor** — kimlik kapısı sürüklenmeyi yakalayıp kalıcı kopyaya düşüyor.
+
+---
+
+## 22. ⚠️ DÜZELTME — madde 20 yanlıştı: `<path>` iskeleti yolu KAPALI
+
+Madde 20 "`<path>` iskeleti yolu açık" sonucuna vardı. **Bu yanlış.** Orada
+`rect` tipine bağlı *süzgeçler* ve çağrı sırası kontrol edildi, ama `path`
+tipine bağlı *sayaçlar* kontrol edilmedi.
+
+`final_artifact_evaluator._structure_check` ağaçtaki **her** `path` etiketini
+sayıyor — `<defs>` / `<clipPath>` içindekiler dahil (`:198` `if tag == "path"`).
+Knockout'ta ise sert bir kimlik kapısı var (`alpha_candidate_knockout.py:415`):
+
+```python
+if after_counts != parent_counts:
+    raise RuntimeError(
+        "source_alpha_candidate_knockout_candidate_geometry_changed:..."
+    )
+```
+
+Seviye başına tek `<path>` yayınlamak `path_count`'u +127, `node_count`'u
+binlerce artırır → **her knockout adayı reddedilir**, yalnız `public-14` değil.
+Bu kimlik kapısı; gevşetilmesi söz konusu değil.
+
+Üstelik `test_alpha_clip_encoding.py`'nin docstring'i bunu zaten söylüyormuş:
+*"clipPath: hiçbir `<path>` EKLEMEZ (path_count sabit)"*. Testin 142. satırına
+bakılmış, başlığına bakılmamıştı.
+
+**Ders:** bir kodlama değişikliğinin downstream bağımlılığını ararken eleman
+tipine bağlı **süzgeçler** kadar eleman tipine bağlı **sayaçlar** da
+taranmalı. "Şu tipi kim süzüyor" sorusu yetmiyor; "şu tipi kim sayıyor"
+sorusu da sorulmalı.
+
+## 23. `public-14` — dikdörtgen SAYISINI azaltma denemeleri
+
+`<path>` kapalı olduğuna göre kalan kaldıraç rect sayısı (bayt sayıyla
+doğrusal). Gereken: **−%12** (16 712 → ≤ 14 711).
+
+### Çürütüldü 1: yön seçimi (satır yerine sütun koşuları)
+
+`_merged_rectangles_by_level` satır bazlı run-length + birebir aynı koşuların
+dikey birleştirmesi yapıyor. Transpoze edip azını seçmek kayıpsız olurdu:
+
+| fixture | satır | sütun | seviye-bazlı min | kazanç |
+|---|---|---|---|---|
+| `arcaates` | 50 488 | 50 596 | 50 484 | **%0,0** |
+| `class_reklam` | 3 579 | 3 666 | 3 579 | **%0,0** |
+| `test1` | 6 450 | 6 805 | 6 450 | **%0,0** |
+
+Satır yönü zaten en az o kadar iyi. **Kapalı yol.**
+
+### Çürütüldü 2: açgözlü maksimal dikdörtgen ayrıştırması
+
+`class_reklam`, en pahalı 6 seviye:
+
+```
+seviye 127: mevcut   678 -> acgozlu   910   (%34 DAHA FAZLA)
+seviye 126:          73  ->            73   (degisim yok)
+...
+toplam:              984 ->          1216   (%23,6 DAHA FAZLA)
+sure: 177,7 s (yalniz 6 seviye; uretimde 127 seviye var -> ~1 saat)
+```
+
+Hem **daha kötü** hem koşulamaz derecede yavaş. Nedeni yapısal: 127 nicemleme
+seviyesinde her seviye ince bir iso-alfa **bandı**; ince bantlarda satır
+koşuları optimale yakın ve "önce en büyük dikdörtgen" stratejisi bandı
+parçalıyor. **Kapalı yol.**
+
+### ÖLÇÜLDÜ: seviye sayısı — tek gerçek kaldıraç
+
+Knockout merdiveni **iki adımlı**: `exact` → `quantized_128`
+(`_alpha_encodings`, `_MAX_ALPHA_LEVELS = 128`). Painter'ınki q64/q32'ye
+iniyor. Seviye sayısı düşünce bantlar birleşiyor:
+
+| seviye | `class_reklam` rect | `arcaates` rect |
+|---|---|---|
+| 128 | 3 699 | 119 271 |
+| 64 | 3 527 (−%4,6) | 48 429 (**−%59,4**) |
+| 32 | 3 337 (−%9,8) | 8 535 (**−%92,8**) |
+| 24 | 3 195 (−%13,6) | 5 692 (−%95,2) |
+| 16 | 3 079 (−%16,8) | 4 377 (−%96,3) |
+
+Kazanç **içeriğe çok bağlı**: düz alfalı `class_reklam`'da mütevazı,
+gradyanlı `arcaates`'te ezici. `public-14`'ün hangi profilde olduğu
+bilinmiyor — ölçülmeli.
+
+### Sıradaki adım (öneri)
+
+Knockout merdivenini painter'ınki gibi q64/q32 ile uzat. Desen zaten depoda
+mevcut ve **ölçüm kapılı**: her adım yeniden skorlanır, alfa IoU/MAE kapıları
+düşerse o adım kullanılmaz. Yani kalite gevşetmesi değil, aday çeşitlendirmesi.
+
+⚠️ Kazanç tahmini yapma — `public-14` için gerçek sayı `added_bytes_per_rect`
+ve `rects` alanlarından okunmalı.
+
+---
+
+## 24. Knockout merdiveni q64/q32 ile uzatıldı
+
+Madde 23 tek gerçek kaldıracın seviye sayısı olduğunu ölçtü. Knockout
+merdiveni iki adımlıydı (`exact` → `quantized_128`); painter'ınkiyle aynı
+desende q64 ve q32 eklendi.
+
+### Neden bu kalite gevşetmesi DEĞİL
+
+Tüketici döngüsü (`:484`) zaten tam bir ölçüm kapısı: her kodlama için
+bayt bütçesi → `_validate_reconstruction` (alfa IoU/MAE + `path_count`/
+`node_count` kimlik eşitliği). Düşerse sıradaki kodlamaya geçiyor. Eşiklerin
+hiçbiri değişmedi; eklenen şey yalnız **aday**. Merdiven en ince adımdan
+başladığı için kaba bir adım ancak tüm ince adımlar düştüğünde kullanılır —
+yani geçen bir aday kaybedilemez, saf ek.
+
+`alpha_mask_budget._quantize_alpha` 128'e sabitli ve maske yolu da onu
+kullanıyor; ona dokunulmadı. Knockout'a birebir aynı aritmetiği kullanan
+parametreli bir eş (`_quantize_alpha_to_levels`) eklendi.
+
+### Merdiven çıktısı (ölçüldü)
+
+| adım | `class_reklam` rect | `arcaates` rect |
+|---|---|---|
+| `exact` (255 seviye) | 3 703 | 130 175 |
+| `quantized_128` (127) | 3 579 (−%3,3) | 50 488 (−%61,2) |
+| `quantized_64` (63) | 3 456 (−%6,7) | 17 684 (−%86,4) |
+| `quantized_32` (31) | 3 270 (−%11,7) | 6 692 (−%94,9) |
+
+### Doğrulama
+
+- `test_visual_regression.py` → taban tablosuyla **birebir aynı**:
+  `class_reklam` PASS, `gradient_logo` PASS, `arcaates` FAIL
+  (`50488>8251` — aynı kod, aynı sayılar)
+- `test_artifact_quality.py` → **36/36**
+- Yedi sözleşme testi → hepsi geçti
+
+⚠️ `arcaates`'in FAIL→PASS dönebileceği bir risk olarak izlendi;
+**gerçekleşmedi** ve nedeni denetlenebilir: o vaka maske *preflight*'ında
+(`alpha_mask_budget._preflight`) düşüyor, knockout yedek zinciri ise yalnız
+`_ALPHA_FAILURE_PREFIXES`'teki IoU/MAE kapı hatalarında tetikleniyor —
+dikdörtgen bütçesi aşımında değil. Merdiven o vakada hiç çalışmıyor.
+
+⚠️ `public-14` üzerindeki etki **ÖLÇÜLMEDİ**. Kazanç içeriğe çok bağlı
+(`class_reklam` −%11,7 / `arcaates` −%94,9) ve `public-14`'ün profili
+bilinmiyor. Gerçek sayı canlı korpustan `rects` ve `added_bytes_per_rect`
+alanlarından okunmalı. Tahmin yürütme.
+
+---
+
+## 25. `public-14` — bayt sorunu ÇÖZÜLDÜ, bağlayıcı kısıt zamana kaydı
+
+Merdiven uzatması (madde 24) canlı korpusta ölçüldü (koşu `32152467506`,
+shard 1, head `8e388dd`). Sonuç iki yönlü ve mekanizma **değişti**:
+
+| | önce (`875daa6`) | sonra (`8e388dd`) |
+|---|---|---|
+| hata | `knockout_byte_budget_rejected:1181820>1083525` | `source_alpha_mask_transform_gate_rejected:` `evaluation_budget_exhausted` |
+| bayt bütçesi reddi | 2 adet | **0 adet** |
+
+**Bayt bütçesi reddi tamamen kayboldu.** Madde 19'da "kalan 98 295 B" olarak
+tanımlanan sorun kaba basamaklarla çözüldü. Ama şimdi başka bir kapı düşüyor:
+journal'ın **45 s'lik birikmiş değerlendirme bütçesi**
+(`transform_journal.py:290`, `VEKTORYUM_TRANSFORM_EVAL_BUDGET_S`, 5–180 aralığı;
+`_elapsed()` duvar saati değil `evaluation_seconds` döndürüyor).
+
+### Maliyet nerede — ölçüldü
+
+Merge maliyeti **ihmal edilebilir**:
+
+| adım | `arcaates` rect | merge |
+|---|---|---|
+| `exact` | 130 175 | 0,56 s |
+| `quantized_128` | 50 488 | 0,29 s |
+| `quantized_64` | 17 684 | 0,19 s |
+| `quantized_32` | 6 692 | 0,17 s |
+
+İki ek adımın merge yükü toplam **0,36 s**. Pahalı olan başka: önceden q128
+bayt kapısında elenip **hiçbir aday doğrulanmıyordu**; artık bir adım bayt
+kapısını geçip **tam doğrulamaya** (render + `evaluate_final_svg`) giriyor.
+Yani merdiven, daha önce atladığı gerçek işi yapıyor — beklenen ve istenen,
+ama 45 s'ye sığması gerekiyor.
+
+### Karar: bütçe yükseltilmedi
+
+`VEKTORYUM_TRANSFORM_EVAL_BUDGET_S`'i yükseltmek bir vakayı geçirmek için
+kaynak kapısını gevşetmek olurdu. Onun yerine eklenen **doğrulama sayısı
+ikiden bire** indirildi: `_COARSE_ALPHA_LEVELS = (32,)`.
+
+q32 seçildi çünkü ölçülen dikdörtgen düşüşü her iki fixture'da da q64'ün
+belirgin üstünde (`class_reklam` %11,7 / %6,7; `arcaates` %94,9 / %86,4).
+Ölçülen durumda tek adım iki adımı **kesin olarak domine ediyor**: iki adımla
+bütçe tükeniyor ve hiçbir şey kazanılmıyor.
+
+⚠️ Tek adımın 45 s'ye sığıp sığmadığı **ölçülmedi**. Eklenen doğrulama
+maliyeti kabaca yarıya iner ama bu bir tahmin; gerçek sonuç yine canlı
+korpustan okunmalı. Sığmazsa bir sonraki soru "bütçeyi yükseltelim mi"
+değil, "knockout doğrulaması neden bu kadar pahalı" olmalı — painter'ın
+çağrı noktası madde 15'te %88,9 ucuzlatıldı, knockout'unki ise ANY hard fail
+kodunu reddettiği için aynı yöntemle ucuzlatılamıyor.
+
+---
+
+## 25. Merdiven uzatması ÖLÇÜLDÜ ve GERİ ALINDI
+
+Madde 24'teki q64/q32 uzatması canlı korpusta iki ayrı yapılandırmayla
+ölçüldü. Sonuç her ikisinde de aynı:
+
+| yapılandırma | koşu | bayt reddi | sonuç |
+|---|---|---|---|
+| q64 + q32 | `32152467506` | **0** (önce 2 idi) | `evaluation_budget_exhausted` |
+| yalnız q32 | `32168367121` | **0** | `evaluation_budget_exhausted` |
+
+### Ne başardı
+
+Bayt bütçesi reddi **tamamen kayboldu**. Madde 12'de "knockout bayt bütçesi
+%41 aşım", madde 19'da "kalan 98 295 B" diye tanımlanan sorun gerçekten
+çözülebilir ve çözüldü. Bu bilgi kalıcı.
+
+### Neden yine de geri alındı
+
+Hiçbir vakayı PASS'a döndürmedi ve **hızlı düşen bir hatayı, 45 s'lik
+birikmiş değerlendirme bütçesini tüketen bir hataya çevirdi**
+(`transform_journal.py:290`, `VEKTORYUM_TRANSFORM_EVAL_BUDGET_S` varsayılan
+45, `_elapsed()` duvar saati değil `evaluation_seconds`). Ölçülmüş fayda yok,
+ölçülmüş maliyet var.
+
+CLAUDE.md: *"İyileştirme adımları ölçüm kapılıdır: skor düşürürse geri
+alınır."* Kural uygulandı.
+
+**Korunan:** koordinat hassasiyeti (madde 18–19). O ölçülmüş net kazanç —
+82,3 → 49,1 B/rect, iki bağımsız koşuda birebir aynı, `rects` değişmedi.
+
+### Maliyetin nerede olduğu ölçüldü
+
+- merge yükü **ihmal edilebilir**: iki ek adım için toplam 0,36 s (`arcaates`)
+- pahalı olan, bayt kapısını geçen adayın **tam doğrulaması**. Daha önce
+  q128 bayt kapısında eleniyor ve hiçbir aday doğrulanmıyordu.
+
+`_validate_reconstruction` sırası zaten doğru: ≤512 px render + alfa IoU/MAE
+(ucuz) → `evaluate_final_svg` (pahalı) → yapı/kimlik (ucuz). Kötü adaylar
+ucuza eleniyor; pahalı yol yalnız ucuz kapıyı geçen aday için ödeniyor.
+
+### Madde 15'teki hile buraya UYGULANAMAZ — kesinleşti
+
+Painter'ın çağrı noktası `alpha_plane_only` ile %88,9 ucuzlamıştı. Knockout'a
+uygulanamaz ve bu artık varsayım değil:
+
+- `final_artifact_evaluator.py:620` — `alpha_fidelity_status` yalnız
+  `code.startswith("alpha_")` kodlarına bakarak `passed`/`failed` atıyor
+- `alpha_candidate_knockout.py` — ayrıca `if report.hard_fail_codes: raise`,
+  yani **her türlü** hard fail'i reddediyor
+
+`alpha_plane_only` açılsaydı `hard_codes` yalnız alfa kodlarını içerirdi ve
+topoloji/SSIM/edge hataları sessizce yakalanmaz olurdu. Bu hızlandırma değil
+**kapı gevşetmesi** olurdu.
+
+### `public-14` durumu
+
+Kapatılamadı. Teşhis ilerledi (bayt sorunu çözülebilir olduğu kanıtlandı) ama
+bağlayıcı kısıt bayttan **değerlendirme bütçesine** kaydı. Buradan sonrası
+kapı/politika tasarımına dokunuyor:
+
+1. `VEKTORYUM_TRANSFORM_EVAL_BUDGET_S`'i yükseltmek → bir vakayı geçirmek için
+   kaynak kapısını gevşetmek
+2. Knockout'un tam-rapor şartını yeniden düşünmek → kalite kapısını gevşetmek
+
+İkisi de kullanıcı kararı. Ölçümsüz üçüncü bir yol bulunamadı.
+
+### İki yanlış tahmin (kayıt için)
+
+1. Madde 20: "`<path>` yolu açık" — yanlış, `path_count` kimlik kapısı
+   kapatıyor (madde 22)
+2. Madde 25: "adım sayısını yarıya indirmek bütçeye sığdırır" — yanlış,
+   tek adımla da bütçe tükendi
+
+Her ikisi de **ölçümle** yakalandı, tahminle değil. Ders: bu alt problemde
+tahmin isabet oranı düşük; her adım canlı korpusla doğrulanmalı.
+
+### 25.1 ⚠️ DÜZELTME — bütçe tükenmesi merdivenden GELMİYOR, önceden vardı
+
+Madde 25 "merdiven, hızlı düşen bir hatayı 45 s bütçesini tüketen bir hataya
+çevirdi" dedi. **Yanlış.** Geri alma sonrası koşu (`32183716477`) ile
+merdiven öncesi koşu (`875daa6`) yan yana konduğunda hata profilleri
+**birebir aynı**:
+
+```
+875daa6 (yalniz koordinat)          7a4a7b9 (geri alinmis)
+  2x soft_ellipse_not_applicable      2x soft_ellipse_not_applicable
+  2x direct_child_render_empty        2x direct_child_render_empty
+  2x knockout_byte_budget_rejected    2x knockout_byte_budget_rejected
+  2x evaluation_budget_exhausted      2x evaluation_budget_exhausted
+```
+
+`evaluation_budget_exhausted` merdivenden **önce de** vardı ve bayt reddiyle
+**birlikte** bulunuyordu. Merdivenin yaptığı şey bütçe tükenmesini yaratmak
+değil, bayt reddini kaldırmaktı; bütçe tükenmesi ise devam etti
+(kod sayımı 3 → 5, geri almayla 3'e döndü).
+
+**Geri alma kararı yine de geçerli** ama gerekçesi düzeltilmeli: merdiven
+hiçbir vakayı PASS'a döndürmedi çünkü `public-14`'ün terminal hatası zaten
+bütçe tükenmesiydi ve bayt reddini kaldırmak onu değiştirmedi. Yani "fayda
+yok" doğru; "zararı vardı" abartıydı (yalnız bütçe baskısını bir miktar
+artırdı).
+
+**Bunun asıl sonucu:** `public-14`'ün gerçek terminal engeli baştan beri
+bayt bütçesi DEĞİL, değerlendirme bütçesiydi. Madde 12/19'da bayt üzerine
+kurulan hedefleme (50,8 → 43,2 B/rect) doğru bir alt problemi çözüyordu ama
+vakayı kapatacak olan o değildi. Bayt işi yine de kalıcı kazanç (82,3 → 49,1)
+— sadece kapanışın anahtarı değil.
+
+**Geri alma doğrulandı:** ağaç `875daa6` ile aynı hata profilini üretiyor.

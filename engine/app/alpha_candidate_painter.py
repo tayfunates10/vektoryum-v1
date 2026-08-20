@@ -706,12 +706,16 @@ def _assess_painter_candidate(
         )
         return result
 
+    # Bu tuketici raporun yalnizca alfa duzlemini kullanir (asagida
+    # _ALPHA_PLANE_FAILURE_CODES ile suzuluyor); pahali algisal gruplar
+    # hesaplanip atiliyordu. Esikler ve alfa metrigi degismez.
     report = evaluate_final_svg(
         candidate_path,
         _source_rgb_on_white(source_rgba_full),
         source_alpha=source_rgba_full[:, :, 3],
         image_class=image_class,
         required_metrics={"alpha_fidelity"},
+        alpha_plane_only=True,
     )
     alpha_group = report.metrics.get("G_gradient_alpha") or {}
     evaluator_alpha_iou = alpha_group.get("alpha_iou")

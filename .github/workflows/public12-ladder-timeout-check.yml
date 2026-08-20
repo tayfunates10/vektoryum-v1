@@ -1,0 +1,218 @@
+name: Public-12 ladder timeout accountability check
+
+# Tek seferlik tanılama: public-12 RFV-3B'de iki koşuda da TimeoutError verdi
+# ama HİÇBİR ZAMAN merdivensiz bir head'e karşı ölçülmedi. Bu iş, aynı runner
+# sınıfında iki kolu yan yana koşturup zamanı ölçer:
+#
+#   ladder-on   : üretimdeki hâl (kümülatif q20/q16/q12/q8 + polygon-q64/32/16)
+#   ladder-free : bu iki merdiven boşaltılmış hâl
+#
+# Merdivensiz kol 3600 s bütçesinin altında biterken merdivenli kol aşıyorsa,
+# timeout sorumluluğu eklediğimiz adaylara aittir. İkisi de aşıyorsa timeout
+# vakaya özgüdür ve merdivenlerle ilgisi yoktur.
+#
+# Merdiven boşaltma YALNIZCA bu tanılama işinde, ölçüm betiğinin içinde yapılır;
+# engine/app altında hiçbir üretim davranışı değişmez (bu yüzden bu dosya
+# RFV-3B canlı iş akışını da tetiklemez).
+
+on:
+  push:
+    branches:
+      - claude/new-session-2vpshw
+    paths:
+      - .github/workflows/public12-ladder-timeout-check.yml
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: public12-ladder-timeout-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  public12:
+    strategy:
+      fail-fast: false
+      matrix:
+        arm: [ladder-on, ladder-free]
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    env:
+      PYTHONHASHSEED: "0"
+      PYTHONPATH: engine
+      VEKTORYUM_WORKERS: "1"
+      # Ölçülen head, merdiven çalışmasının bulunduğu #158 ucu.
+      TASK_HEAD_SHA: "65bc297046baf41cc3e35897ff7e854699040a22"
+      # Sabitlenmiş korpusu yeniden edinmek yerine, kimliği zaten doğrulanmış
+      # RFV-3B koşusunun artefaktından indir (cases_sha256 orada doğrulandı).
+      CORPUS_RUN_ID: "31875365505"
+      CORPUS_ARTIFACT: "rfv3b-corpus-7dfab896dfaab72eb79242e4511ee64860151f9e"
+      # rfv3_measurement_policy.json -> repeat_timeout_seconds
+      REPEAT_TIMEOUT_SECONDS: "3600"
+      ARM: ${{ matrix.arm }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: engine/requirements.txt
+
+      - name: Install system validators
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ghostscript libcairo2
+
+      - name: Install production pipeline dependencies
+        run: python -m pip install -r engine/requirements.txt pytest httpx
+
+      - name: Download immutable RFV-3B corpus
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.CORPUS_ARTIFACT }}
+          path: ${{ runner.temp }}/rfv3b-input
+          github-token: ${{ github.token }}
+          repository: tayfunates10/vektoryum-v1
+          run-id: ${{ env.CORPUS_RUN_ID }}
+
+      - name: Verify and prepare immutable corpus
+        run: |
+          python -m engine.regression.rfv3_live_prepare \
+            --bundle "${RUNNER_TEMP}/rfv3b-input/rfv2-public-corpus.tar.gz" \
+            --checksums "${RUNNER_TEMP}/rfv3b-input/bundle-checksums.json" \
+            --destination "${RUNNER_TEMP}/rfv3b-corpus" \
+            --evidence-out "${RUNNER_TEMP}/public12-prepare-${{ matrix.arm }}.json"
+
+      - name: Run qualification-public-12 and measure wall clock
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p "${RUNNER_TEMP}/public12-out"
+          RFV_CORPUS="${RUNNER_TEMP}/rfv3b-corpus" \
+          RFV_OUT="${RUNNER_TEMP}/public12-out" \
+          python - <<'PY' 2>&1 | tee "${RUNNER_TEMP}/public12-${{ matrix.arm }}.log"
+          import json
+          import os
+          import signal
+          import time
+          import traceback
+          from pathlib import Path
+
+          arm = os.environ["ARM"]
+          budget = int(os.environ["REPEAT_TIMEOUT_SECONDS"])
+
+          from app import alpha_candidate_painter as painter
+
+          # Merdiven kollarını yalnız bu tanılama sürecinde boşalt. Üretim
+          # modülü diskte değişmez; yalnız bu süreçteki sabitler sıfırlanır.
+          ladder_state = {
+              "paint_deficit_cumulative_levels": list(
+                  painter._PAINT_DEFICIT_CUMULATIVE_LEVELS
+              ),
+              "node_free_quantized_levels": list(
+                  painter._NODE_FREE_QUANTIZED_LEVELS
+              ),
+          }
+          if arm == "ladder-free":
+              painter._PAINT_DEFICIT_CUMULATIVE_LEVELS = ()
+              painter._NODE_FREE_QUANTIZED_LEVELS = ()
+          ladder_state["effective_paint_deficit_cumulative_levels"] = list(
+              painter._PAINT_DEFICIT_CUMULATIVE_LEVELS
+          )
+          ladder_state["effective_node_free_quantized_levels"] = list(
+              painter._NODE_FREE_QUANTIZED_LEVELS
+          )
+          print("PUBLIC12_LADDER_STATE=" + json.dumps(ladder_state, sort_keys=True))
+
+          from benchmark.pipeline_results import run_case
+          from app.pipeline_entry import run_pipeline
+          from engine.regression.rfv3_measurement_runner import (
+              load_qualification_cases,
+          )
+
+          corpus = Path(os.environ["RFV_CORPUS"])
+          output = Path(os.environ["RFV_OUT"])
+          case = next(
+              item
+              for item in load_qualification_cases(corpus)
+              if item.case_id == "qualification-public-12"
+          )
+
+          # İş zaman aşımına düşerse hiçbir kanıt kalmıyor. Bütçeyi kendimiz
+          # zorlayalım ki "aştı" sonucu da ölçülmüş bir sonuç olsun.
+          class RepeatBudgetExceeded(Exception):
+              pass
+
+          def _raise_budget(signum, frame):
+              raise RepeatBudgetExceeded
+
+          signal.signal(signal.SIGALRM, _raise_budget)
+          signal.alarm(budget)
+
+          started = time.monotonic()
+          outcome = {
+              "arm": arm,
+              "case_id": "qualification-public-12",
+              "repeat_timeout_seconds": budget,
+              "ladder_state": ladder_state,
+          }
+          try:
+              result = run_case(
+                  case,
+                  corpus_root=corpus,
+                  work_root=output,
+                  pipeline=run_pipeline,
+                  engine_version=os.environ["TASK_HEAD_SHA"],
+                  trace_mode="auto",
+                  peak_rss_mb=None,
+              )
+          except RepeatBudgetExceeded:
+              signal.alarm(0)
+              outcome["elapsed_seconds"] = round(time.monotonic() - started, 3)
+              outcome["status"] = "budget_exceeded"
+              outcome["within_repeat_budget"] = False
+          except Exception as exc:  # noqa: BLE001 - tanılama kanıtı
+              signal.alarm(0)
+              outcome["elapsed_seconds"] = round(time.monotonic() - started, 3)
+              outcome["status"] = "failed"
+              outcome["within_repeat_budget"] = (
+                  outcome["elapsed_seconds"] < budget
+              )
+              outcome["error_type"] = type(exc).__name__
+              outcome["error"] = str(exc)[:400]
+              outcome["traceback"] = traceback.format_exc()[-1200:]
+          else:
+              signal.alarm(0)
+              outcome["elapsed_seconds"] = round(time.monotonic() - started, 3)
+              outcome["status"] = "completed"
+              outcome["within_repeat_budget"] = (
+                  outcome["elapsed_seconds"] < budget
+              )
+              payload = result.to_dict()
+              (output / f"benchmark-result-{arm}.json").write_text(
+                  json.dumps(payload, indent=2, sort_keys=True) + "\n",
+                  encoding="utf-8",
+              )
+              metrics = payload.get("metrics")
+              if isinstance(metrics, dict):
+                  outcome["metrics"] = metrics
+
+          (output / f"public12-timing-{arm}.json").write_text(
+              json.dumps(outcome, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          print("PUBLIC12_TIMING=" + json.dumps(outcome, sort_keys=True))
+          PY
+
+      - name: Upload public-12 timing evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: public12-ladder-timeout-${{ matrix.arm }}-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/public12-${{ matrix.arm }}.log
+            ${{ runner.temp }}/public12-prepare-${{ matrix.arm }}.json
+            ${{ runner.temp }}/public12-out/public12-timing-${{ matrix.arm }}.json
+            ${{ runner.temp }}/public12-out/benchmark-result-${{ matrix.arm }}.json
+          if-no-files-found: warn
+          retention-days: 30

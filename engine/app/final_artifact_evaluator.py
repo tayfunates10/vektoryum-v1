@@ -372,6 +372,7 @@ def evaluate_final_svg(
     image_class: str = "clean_logo",
     fixture_baseline: dict[str, Any] | None = None,
     required_metrics: set[str] | None = None,
+    alpha_plane_only: bool = False,
 ) -> FinalArtifactReport:
     path = Path(svg_path)
     before = path.stat()
@@ -392,6 +393,7 @@ def evaluate_final_svg(
         required_metrics=required_metrics,
         svg_path=path,
         byte_read_stable=stable,
+        alpha_plane_only=alpha_plane_only,
     )
 
 
@@ -405,6 +407,7 @@ def evaluate_final_svg_bytes(
     required_metrics: set[str] | None = None,
     svg_path: Path | None = None,
     byte_read_stable: bool = True,
+    alpha_plane_only: bool = False,
 ) -> FinalArtifactReport:
     data = bytes(svg_bytes)
     sha = hashlib.sha256(data).hexdigest()
@@ -496,56 +499,59 @@ def evaluate_final_svg_bytes(
     if rnd.shape[:2] != (h, w):
         rnd = cv2.resize(rnd, (w, h), interpolation=cv2.INTER_AREA)
 
-    palette = palette_rgb if palette_rgb is not None else _derive_palette(source_cmp)
-    ncolors = len(palette)
-    co, cr = _classify(source_cmp, palette), _classify(rnd, palette)
-    ga, gb = cv2.cvtColor(source_cmp, cv2.COLOR_RGB2GRAY), cv2.cvtColor(rnd, cv2.COLOR_RGB2GRAY)
-    metrics["B_visual"] = {
-        "ssim": _ssim(ga, gb),
-        "ms_ssim": _ms_ssim(ga, gb),
-        "cross_renderer": _cross_renderer_parity(svg_path, min(w, 1024), min(h, 1024)),
-    }
-    cm = _color_metrics(source_cmp, rnd)
-    cm["worst_face_de00"] = _worst_face_de(source_cmp, rnd, co, ncolors, min_area)
-    cm["palette_agree"] = float((co == cr).mean())
-    metrics["C_color"] = cm
-    d_group: dict[str, Any] = {
-        "edge_f1_1px": _edge_f1(gb, ga, tolerance=1),
-        "edge_f1_2px": _edge_f1(gb, ga, tolerance=2),
-    }
-    supports = sorted(((int((co == c).sum()), c) for c in range(ncolors)), reverse=True)
-    off = None
-    for _support, cid in supports[:3]:
-        off = _boundary_offsets(co == cid, cr == cid)
-        if off is not None:
-            break
-    if off:
-        d_group.update(off)
-    else:
-        add_unmeasured("boundary_offset")
-    metrics["D_edge_geometry"] = d_group
+    # Alfa-yalniz cagri (painter): tuketici yalniz alpha_iou/alpha_mae ve iki
+    # alfa duzlemi kodunu kullanir. Pahali algisal gruplar hesaplanip atiliyordu.
+    if not alpha_plane_only:
+        palette = palette_rgb if palette_rgb is not None else _derive_palette(source_cmp)
+        ncolors = len(palette)
+        co, cr = _classify(source_cmp, palette), _classify(rnd, palette)
+        ga, gb = cv2.cvtColor(source_cmp, cv2.COLOR_RGB2GRAY), cv2.cvtColor(rnd, cv2.COLOR_RGB2GRAY)
+        metrics["B_visual"] = {
+            "ssim": _ssim(ga, gb),
+            "ms_ssim": _ms_ssim(ga, gb),
+            "cross_renderer": _cross_renderer_parity(svg_path, min(w, 1024), min(h, 1024)),
+        }
+        cm = _color_metrics(source_cmp, rnd)
+        cm["worst_face_de00"] = _worst_face_de(source_cmp, rnd, co, ncolors, min_area)
+        cm["palette_agree"] = float((co == cr).mean())
+        metrics["C_color"] = cm
+        d_group: dict[str, Any] = {
+            "edge_f1_1px": _edge_f1(gb, ga, tolerance=1),
+            "edge_f1_2px": _edge_f1(gb, ga, tolerance=2),
+        }
+        supports = sorted(((int((co == c).sum()), c) for c in range(ncolors)), reverse=True)
+        off = None
+        for _support, cid in supports[:3]:
+            off = _boundary_offsets(co == cid, cr == cid)
+            if off is not None:
+                break
+        if off:
+            d_group.update(off)
+        else:
+            add_unmeasured("boundary_offset")
+        metrics["D_edge_geometry"] = d_group
 
-    ts_src, ts_rnd = _topology_signature(co, ncolors, min_area), _topology_signature(cr, ncolors, min_area)
-    comp_delta = abs(ts_src["components"] - ts_rnd["components"])
-    hole_delta = abs(ts_src["holes"] - ts_rnd["holes"])
-    metrics["E_topology"] = {
-        "source": ts_src,
-        "render": ts_rnd,
-        "component_delta": comp_delta,
-        "hole_delta": hole_delta,
-    }
-    ious: list[float] = []
-    for cid in range(ncolors):
-        a, b = co == cid, cr == cid
-        union = int((a | b).sum())
-        if union >= 20:
-            ious.append(float((a & b).sum() / union))
-    metrics["F_small_detail"] = {
-        "min_component_iou": float(min(ious)) if ious else None,
-        "mean_component_iou": float(np.mean(ious)) if ious else None,
-    }
-    if not ious:
-        add_unmeasured("component_iou")
+        ts_src, ts_rnd = _topology_signature(co, ncolors, min_area), _topology_signature(cr, ncolors, min_area)
+        comp_delta = abs(ts_src["components"] - ts_rnd["components"])
+        hole_delta = abs(ts_src["holes"] - ts_rnd["holes"])
+        metrics["E_topology"] = {
+            "source": ts_src,
+            "render": ts_rnd,
+            "component_delta": comp_delta,
+            "hole_delta": hole_delta,
+        }
+        ious: list[float] = []
+        for cid in range(ncolors):
+            a, b = co == cid, cr == cid
+            union = int((a | b).sum())
+            if union >= 20:
+                ious.append(float((a & b).sum() / union))
+        metrics["F_small_detail"] = {
+            "min_component_iou": float(min(ious)) if ious else None,
+            "mean_component_iou": float(np.mean(ious)) if ious else None,
+        }
+        if not ious:
+            add_unmeasured("component_iou")
 
     g_group: dict[str, Any] = {
         "source_has_alpha": source_has_alpha,
@@ -560,9 +566,10 @@ def evaluate_final_svg_bytes(
                 render_rgba = resize_rgba(render_rgba, w, h)
             source_rgba = source_rgba_from_white_composite(source_cmp, source_alpha_cmp)
             alpha_metrics = alpha_plane_metrics(source_alpha_cmp, render_rgba[:, :, 3])
-            alpha_metrics.update(boundary_halo_metrics(source_rgba, render_rgba))
-            alpha_metrics.update(roundtrip_metrics(source_rgba))
-            alpha_metrics["backgrounds"] = _appearance_metrics(source_rgba, render_rgba)
+            if not alpha_plane_only:
+                alpha_metrics.update(boundary_halo_metrics(source_rgba, render_rgba))
+                alpha_metrics.update(roundtrip_metrics(source_rgba))
+                alpha_metrics["backgrounds"] = _appearance_metrics(source_rgba, render_rgba)
             g_group.update(alpha_metrics)
             g_group["alpha_fidelity_status"] = "measured"
             mark_measured("alpha_fidelity")
@@ -577,24 +584,26 @@ def evaluate_final_svg_bytes(
     }
 
     thr = _thresholds(image_class, fixture_baseline)
-    if image_class in ("clean_logo", "lineart", "geometric"):
-        if comp_delta > thr["comp_delta"]:
-            add_hard("topology_component_delta", f"topoloji: bileşen farkı {comp_delta} > {thr['comp_delta']}")
-        if hole_delta > thr["hole_delta"]:
-            add_hard("topology_hole_delta", f"topoloji: delik farkı {hole_delta} > {thr['hole_delta']}")
+    if not alpha_plane_only:
+        if image_class in ("clean_logo", "lineart", "geometric"):
+            if comp_delta > thr["comp_delta"]:
+                add_hard("topology_component_delta", f"topoloji: bileşen farkı {comp_delta} > {thr['comp_delta']}")
+            if hole_delta > thr["hole_delta"]:
+                add_hard("topology_hole_delta", f"topoloji: delik farkı {hole_delta} > {thr['hole_delta']}")
     if g_group["seam_ratio"] > thr["seam_ratio"]:
         add_hard("seam_gap", f"ağır seam/gap {g_group['seam_ratio']:.4f} > {thr['seam_ratio']}")
-    if cm["de00_p95"] > thr["de00_p95"]:
-        add_soft("color_de00_p95", f"ΔE00 p95 {cm['de00_p95']:.2f} > {thr['de00_p95']}")
-    if cm["worst_face_de00"] > thr["worst_face_de00"]:
-        add_soft("worst_face_de00", f"en kötü yüz ΔE00 {cm['worst_face_de00']:.2f} > {thr['worst_face_de00']}")
-    if metrics["B_visual"]["ssim"] < thr["ssim_min"]:
-        add_hard("ssim_below_min", f"SSIM {metrics['B_visual']['ssim']:.4f} < {thr['ssim_min']}")
-    if d_group["edge_f1_1px"] < thr["edge_f1_min"]:
-        add_soft("edge_f1_below_min", f"edge-F1(1px) {d_group['edge_f1_1px']:.4f} < {thr['edge_f1_min']}")
-    md = metrics["F_small_detail"]["min_component_iou"]
-    if md is not None and md < thr["min_component_iou"]:
-        add_soft("component_iou_below_min", f"min bileşen IoU {md:.3f} < {thr['min_component_iou']}")
+    if not alpha_plane_only:
+        if cm["de00_p95"] > thr["de00_p95"]:
+            add_soft("color_de00_p95", f"ΔE00 p95 {cm['de00_p95']:.2f} > {thr['de00_p95']}")
+        if cm["worst_face_de00"] > thr["worst_face_de00"]:
+            add_soft("worst_face_de00", f"en kötü yüz ΔE00 {cm['worst_face_de00']:.2f} > {thr['worst_face_de00']}")
+        if metrics["B_visual"]["ssim"] < thr["ssim_min"]:
+            add_hard("ssim_below_min", f"SSIM {metrics['B_visual']['ssim']:.4f} < {thr['ssim_min']}")
+        if d_group["edge_f1_1px"] < thr["edge_f1_min"]:
+            add_soft("edge_f1_below_min", f"edge-F1(1px) {d_group['edge_f1_1px']:.4f} < {thr['edge_f1_min']}")
+        md = metrics["F_small_detail"]["min_component_iou"]
+        if md is not None and md < thr["min_component_iou"]:
+            add_soft("component_iou_below_min", f"min bileşen IoU {md:.3f} < {thr['min_component_iou']}")
 
     if source_has_alpha and g_group.get("alpha_fidelity_status") == "measured":
         if float(g_group["alpha_iou"]) < thr["alpha_iou_min"]:
