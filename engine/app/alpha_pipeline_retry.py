@@ -28,6 +28,9 @@ _ALPHA_REMEDIATION_ENABLED: ContextVar[bool] = ContextVar(
     "vektoryum_alpha_remediation_enabled",
     default=True,
 )
+_FRAGMENTATION_BUDGET_PREFIX = (
+    "source_alpha_mask_contour_fragmentation_budget_rejected:"
+)
 
 
 def alpha_remediation_enabled() -> bool:
@@ -125,7 +128,17 @@ def _has_exact_dense_partial_alpha(source_path: Path, trace_mode: str) -> bool:
 
 
 def _retryable_alpha_failure(error: BaseException) -> bool:
-    return isinstance(error, RuntimeError) and str(error).startswith("source_alpha_")
+    if not isinstance(error, RuntimeError):
+        return False
+    trigger = str(error)
+    # A contour-fragmentation budget rejection is a deterministic structural
+    # impossibility under the unchanged parent node capacity. Re-running the
+    # entire vectorization pipeline cannot make that exact source geometry fit;
+    # it only repeats expensive tracing/remediation work. Keep this class
+    # terminal and fail closed at the first proven rejection.
+    if trigger.startswith(_FRAGMENTATION_BUDGET_PREFIX):
+        return False
+    return trigger.startswith("source_alpha_")
 
 
 def wrap_run_pipeline_with_alpha_retry(
