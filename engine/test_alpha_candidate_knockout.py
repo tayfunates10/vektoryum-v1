@@ -11,6 +11,7 @@ from app.alpha_candidate_knockout import (
     apply_candidate_geometry_knockout,
     make_candidate_geometry_knockout_fallback,
 )
+from app.alpha_pipeline_retry import _retryable_alpha_failure
 from app.source_truth import alpha_plane_metrics, render_svg_to_rgba
 
 
@@ -96,6 +97,73 @@ class CandidateGeometryKnockoutTests(unittest.TestCase):
                 report["mask_fallback_reason"], "source_alpha_exact_gate_failure"
             )
             self.assertEqual(report["rollback_guard"], "armed_and_committed")
+
+    def test_fragmentation_budget_rejection_is_terminal_before_knockout(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_path = root / "source.png"
+            svg_path = root / "candidate.svg"
+            self._source(source_path)
+            original = self._candidate(svg_path)
+
+            trigger = (
+                "source_alpha_mask_contour_fragmentation_budget_rejected:"
+                "path_nodes=4058631/95784,alpha_cells=811726,"
+                "compact_contours=4097,pruned_contours=0"
+            )
+
+            def rejected(*_args):
+                raise RuntimeError(trigger)
+
+            wrapped = make_candidate_geometry_knockout_fallback(rejected)
+            with self.assertRaisesRegex(
+                RuntimeError,
+                r"source_alpha_mask_contour_fragmentation_budget_rejected:"
+                r"path_nodes=4058631/95784",
+            ):
+                wrapped(svg_path, source_path, "logo_color")
+            self.assertEqual(svg_path.read_bytes(), original)
+
+    def test_fragmentation_budget_rejection_is_not_pipeline_retryable(self) -> None:
+        trigger = RuntimeError(
+            "source_alpha_mask_contour_fragmentation_budget_rejected:"
+            "path_nodes=4058631/95784,alpha_cells=811726,"
+            "compact_contours=4097,pruned_contours=0"
+        )
+        self.assertFalse(_retryable_alpha_failure(trigger))
+        self.assertTrue(
+            _retryable_alpha_failure(
+                RuntimeError("source_alpha_mask_iou_gate_failed:0.95<0.995")
+            )
+        )
+
+    def test_budget_preflight_rejects_fragmented_direct_contour_path(self) -> None:
+        from app import alpha_mask_budget
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_path = root / "checkerboard.png"
+            svg_path = root / "selected.svg"
+            source = np.zeros((128, 128, 4), dtype=np.uint8)
+            source[:, :, :3] = (20, 30, 40)
+            yy, xx = np.indices((128, 128))
+            source[:, :, 3] = np.where((xx + yy) % 2 == 0, 255, 0).astype(
+                np.uint8
+            )
+            Image.fromarray(source, mode="RGBA").save(source_path)
+            svg_path.write_text(
+                '<svg xmlns="http://www.w3.org/2000/svg" width="128" '
+                'height="128" viewBox="0 0 128 128">'
+                '<path fill="#141e28" d="M0 0h128v128H0Z"/>'
+                '</svg>',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                RuntimeError,
+                r"source_alpha_mask_contour_fragmentation_budget_rejected:"
+                r"path_nodes=40960/",
+            ):
+                alpha_mask_budget._preflight(svg_path, source_path)
 
     def test_failed_knockout_restores_exact_original_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

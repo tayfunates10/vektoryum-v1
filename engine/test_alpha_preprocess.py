@@ -287,7 +287,10 @@ class AlphaPreprocessUnitTests(unittest.TestCase):
 
             with self.assertRaisesRegex(
                 RuntimeError,
-                "source_alpha_mask_(rectangle|byte)_budget_exceeded",
+                (
+                    "source_alpha_mask_(rectangle|byte)_budget_exceeded|"
+                    "source_alpha_mask_contour_fragmentation_budget_rejected"
+                ),
             ):
                 apply_source_alpha_mask(svg_path, source_path, "logo_color")
 
