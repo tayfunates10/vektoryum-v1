@@ -278,12 +278,25 @@ def _install_simple_silhouette_quantizer() -> None:
         return
 
     @wraps(original_quantizer)
-    def requantize_with_simple_silhouette(alpha, max_levels):
-        if int(max_levels) == 32:
+    def requantize_with_simple_silhouette(
+        alpha, max_levels, *, allow_silhouette_shortcut=True
+    ):
+        # Siluet kısayolu contour merdiveni için kasıtlıdır, ama seçimi
+        # max_levels DEĞERİNE bağlamak sihirli sayı çakışması üretiyordu: aynı
+        # kafes değerini kullanan her yeni tüketici kısayola sessizce
+        # yakalanıyordu. Ölçüldü (public-04, run 31872027946): polygon
+        # merdiveninin orta basamağı 31 seviye yerine 1 seviye üretti, bayt
+        # monotonluğu kırıldı ve #162'nin etkisi ölçülemez hâle geldi.
+        # Artık seçim çağıranın niyetiyle yapılıyor.
+        if allow_silhouette_shortcut and int(max_levels) == 32:
             compact = _simple_opaque_silhouette_quantization(alpha)
             if compact is not None:
                 return compact
-        return original_quantizer(alpha, max_levels)
+        return original_quantizer(
+            alpha,
+            max_levels,
+            allow_silhouette_shortcut=allow_silhouette_shortcut,
+        )
 
     requantize_with_simple_silhouette.__vektoryum_simple_silhouette_quantizer__ = True
     painter._requantize_alpha = requantize_with_simple_silhouette

@@ -185,3 +185,27 @@ def validate_alpha_reconstruction_contract(
     del report, root, source_rgb, source_alpha
     _release_transient_memory()
     return result
+
+
+# Install before app.__init__ imports and freezes the alpha wrapper factories.
+# The guard changes no evaluator threshold or TransformJournal budget.
+from app.alpha_contour_budget_guard import (  # noqa: E402
+    _FRAGMENTATION_BUDGET_PREFIX,
+    install_contour_budget_guard,
+)
+
+install_contour_budget_guard()
+
+# The fragmentation rejection is already a proof that the legacy one-cell
+# contour representation cannot fit the unchanged parent-derived node capacity.
+# Treat it as terminal here rather than entering candidate-knockout, whose
+# clip/rect reconstruction can itself become a second runaway on the same highly
+# fragmented plane. The request remains fail-closed with the original structural
+# provenance; ordinary alpha-gate failures retain the established knockout path.
+from app import alpha_candidate_knockout as _alpha_candidate_knockout  # noqa: E402
+
+_alpha_candidate_knockout._ALPHA_FAILURE_PREFIXES = tuple(
+    prefix
+    for prefix in _alpha_candidate_knockout._ALPHA_FAILURE_PREFIXES
+    if prefix != _FRAGMENTATION_BUDGET_PREFIX
+)

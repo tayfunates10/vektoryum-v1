@@ -67,6 +67,19 @@ _PAINTER_STROKE_PIXELS = (1.0, 1.5, 2.0, 3.0)
 # unchanged source-topology sentinel; this is an encoding preflight, not a
 # quality-threshold change.
 _PAINTER_UNDERPAINT_MIN_STROKE_PIXELS = 1.5
+# Kümülatif paint-deficit kafesinin seyreltme merdiveni. Kümülatif kodlama
+# seviye başına bir <path> yazdığı için bayt maliyeti kafes çözünürlüğüyle
+# ölçeklenir; sabit q24 kafesi yoğun alfa rampalı kaynaklarda bayt bütçesini
+# aşıp journal kapısına hiç ulaşamıyordu. Bu merdiven contour ailesinin
+# q128/q64/q32 taramasının kümülatif karşılığıdır. Değerler yalnızca kodlama
+# ön-elemesidir; kalite eşiği DEĞİLDİR — kabul, değişmemiş alfa IoU/MAE ve
+# TransformJournal kapılarındadır.
+_PAINT_DEFICIT_CUMULATIVE_LEVELS = (20, 16, 12, 8)
+# Son-çare polygon nicemleme taraması contour'un "quantized" ledger
+# sözleşmesinden ayrı tutulur. Bu bir kalite eşiği değildir; her aday
+# değişmemiş evaluator + TransformJournal kapılarından geçer.
+_NODE_FREE_QUANTIZED_FAMILY = "count_preserving_quantized"
+_NODE_FREE_QUANTIZED_LEVELS = (64, 32, 16)
 _PAINTER_EVAL_SIDE = 512.0
 _ALPHA_PLANE_FAILURE_CODES = {"alpha_iou_below_min", "alpha_mae_above_max"}
 
@@ -350,7 +363,10 @@ def _cumulative_threshold_children(
 
 
 def _requantize_alpha(
-    alpha: np.ndarray, max_levels: int
+    alpha: np.ndarray,
+    max_levels: int,
+    *,
+    allow_silhouette_shortcut: bool = True,
 ) -> tuple[np.ndarray, dict[int, float]]:
     """Kaynak alfayı ≤ ``max_levels`` düzeye deterministik yeniden nicele.
 
@@ -359,6 +375,16 @@ def _requantize_alpha(
     alfaların ORTALAMASIdır (round-trip gri = round(mean_alpha)). Daha kaba
     nicemleme daha küçük kodlama verir; kabul YALNIZ değişmemiş alfa IoU/MAE
     kapıları geçerse — kalite düşürerek testi geçme yoktur.
+
+    ``allow_silhouette_shortcut``: bu fonksiyon üretimde
+    ``alpha_candidate_identity`` tarafından sarmalanır ve sarmalayıcı, belirli
+    bir kafes için tam nicemleme yerine ikili siluet döndürebilir. Kısayol
+    contour merdiveni için KASITLIDIR; ancak sarmalayıcı bunu ``max_levels``
+    DEĞERİNE bakarak seçtiğinden, aynı değeri kullanan her yeni tüketici
+    kısayola sessizce yakalanıyordu (ölçüldü: polygon merdiveninin orta
+    basamağı 31 seviye yerine 1 seviye üretiyordu). Bu bayrak seçimi değerden
+    NİYETE taşır: siluet istemeyen çağıran ``False`` geçer ve kafes değerinden
+    bağımsız olarak tam nicemleme alır.
     """
     alpha = np.asarray(alpha, dtype=np.uint8)
     quantized = np.zeros(alpha.shape, dtype=np.int32)
@@ -929,6 +955,66 @@ def _painter_primary_error(
     )
 
 
+def _has_nonretryable_journal_rejection(
+    attempts: list[dict[str, Any]],
+) -> bool:
+    """Whether any fresh journal rejection is terminal for painter retry."""
+    from app.alpha_svg_mask import _painter_retry_eligible  # noqa: PLC0415
+
+    for entry in attempts:
+        if not entry.get("journal_gate_started"):
+            continue
+        if entry.get("journal_passed") is not False:
+            continue
+        if not _painter_retry_eligible(entry.get("journal_reason_codes")):
+            return True
+    return False
+
+
+def _node_free_polygon_retry_eligible(
+    attempts: list[dict[str, Any]],
+) -> bool:
+    """Gate polygon-q on the exact polygon path being retried.
+
+    Byte-only exact-polygon failure is eligible because requantization
+    directly shrinks that node-free encoding. If exact polygon reached
+    TransformJournal, every fresh rejection must remain inside the
+    existing retry-eligible topology/seam/edge/SSIM reason set.
+    Rejections from contour/cumulative do not veto this retry because
+    their counted-path/node cost is exactly the constraint polygon-q avoids.
+    """
+    from app.alpha_svg_mask import _painter_retry_eligible  # noqa: PLC0415
+
+    polygon_exact = [
+        entry
+        for entry in attempts
+        if entry.get("encoding_label") == "polygon"
+        and entry.get("encoding_family") == "polygon"
+        and entry.get("exact_or_quantized") == "exact"
+    ]
+    if not polygon_exact:
+        return False
+    if _has_nonretryable_journal_rejection(polygon_exact):
+        return False
+
+    journal_rejections = [
+        entry
+        for entry in polygon_exact
+        if entry.get("journal_gate_started")
+        and entry.get("journal_passed") is False
+    ]
+    if journal_rejections:
+        return all(
+            _painter_retry_eligible(entry.get("journal_reason_codes"))
+            for entry in journal_rejections
+        )
+
+    # public-05 sınıfı: exact polygon yalnız serialization bütçesinde
+    # düşer; aynı geometriyi daha az alfa seviyesiyle tekrar kodlamak
+    # doğrudan bu preflight kusurunu hedefler.
+    return all(entry.get("status") == "byte_rejected" for entry in polygon_exact)
+
+
 def apply_candidate_painter_reconstruction(
     svg_path: Path,
     source_path: Path,
@@ -1233,10 +1319,15 @@ def apply_candidate_painter_reconstruction(
 
     def _evaluate_paint_deficit() -> list[Any] | None:
         from app.alpha_candidate_paint_deficit import (  # noqa: PLC0415
+            _ALPHA_LEVELS,
             build_paint_deficit_reconstruction_tree,
         )
 
-        def _try(mask_encoding: str, label: str) -> list[Any] | None:
+        def _try(
+            mask_encoding: str,
+            label: str,
+            levels: int = _ALPHA_LEVELS,
+        ) -> list[Any] | None:
             txn = alpha_transaction_id(
                 parent_sha256, source_alpha_sha256, mode, label
             )
@@ -1246,7 +1337,7 @@ def apply_candidate_painter_reconstruction(
                 "encoding_family": "paint_deficit",
                 "exact_or_quantized": "paint_deficit",
                 "source_alpha_level_count": int(source_level_count),
-                "encoded_alpha_level_count": 24,
+                "encoded_alpha_level_count": int(levels),
                 "actual_serialized_bytes": None,
                 "byte_limit": int(byte_limit),
                 "projected_path_count": int(parent_counts[0]),
@@ -1279,6 +1370,7 @@ def apply_candidate_painter_reconstruction(
                         grid_rgba,
                         txn,
                         mask_encoding=mask_encoding,
+                        levels=levels,
                     )
                 )
             except RuntimeError as exc:
@@ -1293,8 +1385,21 @@ def apply_candidate_painter_reconstruction(
             probe_size = int(probe_temp.stat().st_size)
             entry["actual_serialized_bytes"] = probe_size
             entry["encoded_alpha_level_count"] = int(
-                probe_geometry.get("encoded_alpha_level_count", 24)
+                probe_geometry.get("encoded_alpha_level_count", levels)
             )
+            # Deficit kapsama sayaçları üretici tarafından zaten hesaplanıyor ama
+            # ledger'a taşınmadığı için CI çıktısından okunamıyordu. Alfa IoU
+            # kapısı düştüğünde "kaynak alfanın ne kadarı boyanabildi" sorusunun
+            # cevabı yalnızca bu sayaçlarda; teşhis için taşınmaları şart.
+            # Davranış değişikliği yok: yalnız tanılama alanları.
+            for stat_key in (
+                "paint_deficit_pixel_count",
+                "source_component_count",
+                "anchored_source_component_count",
+                "detached_source_component_count",
+            ):
+                if stat_key in probe_geometry:
+                    entry[stat_key] = int(probe_geometry[stat_key])
             if probe_size > byte_limit:
                 entry["preflight_status"] = "over_budget"
                 entry["status"] = "byte_rejected"
@@ -1381,7 +1486,106 @@ def apply_candidate_painter_reconstruction(
         winner = _try("polygon", "paint-deficit-q24")
         if winner is None:
             winner = _try("cumulative", "paint-deficit-cumulative")
+        if winner is None:
+            # Dikişi kapatan TEK kodlama kümülatif eşiktir; ayrık seviye
+            # poligonları komşu seviye sınırında tasarımı gereği seam bırakır
+            # (bkz. _cumulative_threshold_children). Kümülatif kodlamada seviye
+            # başına bir <path> yazıldığından bayt maliyeti kafes çözünürlüğüyle
+            # ölçeklenir: yoğun alfa rampalı kaynaklarda sabit q24 kafesi bayt
+            # bütçesini aşıp journal kapısına HİÇ ulaşamıyordu, dolayısıyla seam
+            # reddi onarılamaz kalıyordu. contour ailesinin q128/q64/q32
+            # taramasının kümülatif karşılığı: kafesi kademeli seyreltip bütçeye
+            # sığan ilk dikiş-kapatan adayı üret.
+            #
+            # Bu adım kesinlikle EKlemedir: yukarıdaki iki deneme aynen korunur,
+            # yalnız ikisi de başarısızken devreye girer. Seyreltme kaliteyi
+            # düşürürse aday, DEĞİŞMEMİŞ alfa IoU/MAE ve TransformJournal
+            # kapılarında reddedilir — kalite düşürerek geçme yolu yoktur.
+            for coarse_levels in _PAINT_DEFICIT_CUMULATIVE_LEVELS:
+                winner = _try(
+                    "cumulative",
+                    f"paint-deficit-cumulative-q{coarse_levels}",
+                    levels=coarse_levels,
+                )
+                if winner is not None:
+                    break
         return winner
+
+
+    def _evaluate_node_free_quantized() -> list[Any] | None:
+        """Try the finest node-free polygon lattice that passes unchanged gates."""
+        # Merdiven boyunca kafes kimliğini kayda geçir. Bir bölüntüyü inceltmek
+        # kovaları BÖLER, birleştiremez: bu yüzden kaba kafesin ürettiği pozitif
+        # seviye sayısı, daha ince kafesinkinden BÜYÜK OLAMAZ. Üretimde bunun
+        # ihlal edildiği ölçüldü (q32 -> 1 seviye iken q16 -> 15). Aynı girdiyle
+        # imkânsız olduğundan girdinin basamaklar arasında değiştiğinden
+        # şüpheleniyoruz; kaynağı ancak ölçerek bulabiliriz.
+        ladder_probe: list[dict[str, Any]] = []
+        for target_levels in _NODE_FREE_QUANTIZED_LEVELS:
+            grid_digest = hashlib.sha256(
+                np.ascontiguousarray(grid_alpha).tobytes()
+            ).hexdigest()[:16]
+            # Düğüm eklemeyen polygon merdiveni tam nicemleme İSTER: amacı
+            # bayt bütçesine sığan EN İNCE kafesi bulmaktır, ikili siluet değil.
+            requant, requant_opacity = _requantize_alpha(
+                grid_alpha, target_levels, allow_silhouette_shortcut=False
+            )
+            encoded_levels = len([lvl for lvl in requant_opacity if int(lvl) > 0])
+            ladder_probe.append(
+                {
+                    "target_levels": int(target_levels),
+                    "encoded_levels": int(encoded_levels),
+                    "grid_alpha_sha256_16": grid_digest,
+                    "grid_alpha_positive": int(np.count_nonzero(grid_alpha)),
+                    "grid_alpha_distinct_positive": int(
+                        len(np.unique(grid_alpha[grid_alpha > 0]))
+                    ),
+                    "requant_distinct": int(len(np.unique(requant))),
+                }
+            )
+            attempt_start = len(attempts)
+            candidate = _evaluate_phase(
+                [
+                    (
+                        f"polygon-q{target_levels}",
+                        "polygon",
+                        _NODE_FREE_QUANTIZED_FAMILY,
+                        requant,
+                        requant_opacity,
+                    )
+                ]
+            )
+            # Bu basamağın kafes kimliğini kendi ledger girdilerine mühürle;
+            # aksi hâlde CI çıktısından hangi kafesin ölçüldüğü okunamıyor.
+            probe = ladder_probe[-1]
+            for entry in attempts[attempt_start:]:
+                entry.update(
+                    {
+                        "ladder_target_levels": probe["target_levels"],
+                        "ladder_encoded_levels": probe["encoded_levels"],
+                        "ladder_grid_alpha_sha256_16": probe["grid_alpha_sha256_16"],
+                        "ladder_grid_alpha_positive": probe["grid_alpha_positive"],
+                        "ladder_grid_alpha_distinct_positive": probe[
+                            "grid_alpha_distinct_positive"
+                        ],
+                        "ladder_requant_distinct": probe["requant_distinct"],
+                        # İnceltme kovaları bölebilir ama birleştiremez: kaba
+                        # kafes, kendinden ince olanın seviye sayısını AŞAMAZ.
+                        # Bu bayrak True ise ölçüm tutarsızdır ve o basamağın
+                        # sonucu geçerli bir aday ölçümü sayılmamalıdır.
+                        "ladder_monotonicity_violated": any(
+                            probe["encoded_levels"] > earlier["encoded_levels"]
+                            for earlier in ladder_probe[:-1]
+                        ),
+                    }
+                )
+            if candidate is not None:
+                # q64 -> q32 -> q16: ilk geçen en ince kafestir.
+                return candidate
+            if _has_nonretryable_journal_rejection(attempts[attempt_start:]):
+                # Yeni fazın kendi içinde de "dur ve geri al" sözleşmesi.
+                return None
+        return None
 
     try:
         # Kademe 1 → Kademe 2 → Kademe 3: render-güvenli sayı-koruyan kodlamalar
@@ -1394,6 +1598,10 @@ def apply_candidate_painter_reconstruction(
             winner = _evaluate_phase(quantized_specs)
         if winner is None:
             winner = _evaluate_paint_deficit()
+        if winner is None and _node_free_polygon_retry_eligible(attempts):
+            # Kesin eklemeli son çare: mevcut tüm aday yolları önce aynen
+            # tüketilir; bugün winner üreten hiçbir vaka bu fazı görmez.
+            winner = _evaluate_node_free_quantized()
     finally:
         parent_journal_path.unlink(missing_ok=True)
 
