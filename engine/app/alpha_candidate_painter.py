@@ -904,6 +904,34 @@ def _emit_painter_attempts(attempts: list[dict[str, Any]]) -> str:
     return digest
 
 
+
+def _paint_deficit_support_retry_eligible(
+    attempts: list[dict[str, Any]],
+) -> bool:
+    """Retry support palette only after the complete legacy ladder is byte-bound.
+
+    A quality, geometry, journal, or mixed rejection is terminal for this new
+    family.  Requiring the exact existing ladder also guarantees that no
+    currently accepted paint-deficit route is displaced.
+    """
+    expected_labels = [
+        "paint-deficit-q24",
+        "paint-deficit-cumulative",
+        *[
+            f"paint-deficit-cumulative-q{levels}"
+            for levels in _PAINT_DEFICIT_CUMULATIVE_LEVELS
+        ],
+    ]
+    return (
+        [str(entry.get("encoding_label", "")) for entry in attempts]
+        == expected_labels
+        and all(
+            entry.get("exact_or_quantized") == "paint_deficit"
+            and entry.get("status") == "byte_rejected"
+            for entry in attempts
+        )
+    )
+
 def _painter_primary_error(
     attempts: list[dict[str, Any]], attempts_sha: str
 ) -> str:
@@ -938,9 +966,11 @@ def _painter_primary_error(
         _validated("exact")
         or _validated("quantized")
         or _validated("paint_deficit")
+        or _validated("paint_deficit_support_compact")
         or _smallest_byte_rejected("exact")
         or _smallest_byte_rejected("quantized")
         or _smallest_byte_rejected("paint_deficit")
+        or _smallest_byte_rejected("paint_deficit_support_compact")
     )
     if primary is not None:
         label = primary["encoding_label"]
@@ -1327,6 +1357,8 @@ def apply_candidate_painter_reconstruction(
             mask_encoding: str,
             label: str,
             levels: int = _ALPHA_LEVELS,
+            *,
+            support_encoding: str | None = None,
         ) -> list[Any] | None:
             txn = alpha_transaction_id(
                 parent_sha256, source_alpha_sha256, mode, label
@@ -1334,8 +1366,16 @@ def apply_candidate_painter_reconstruction(
             entry: dict[str, Any] = {
                 "stroke_width": 0.0,
                 "encoding_label": label,
-                "encoding_family": "paint_deficit",
-                "exact_or_quantized": "paint_deficit",
+                "encoding_family": (
+                    "paint_deficit"
+                    if support_encoding is None
+                    else "paint_deficit_support_compact"
+                ),
+                "exact_or_quantized": (
+                    "paint_deficit"
+                    if support_encoding is None
+                    else "paint_deficit_support_compact"
+                ),
                 "source_alpha_level_count": int(source_level_count),
                 "encoded_alpha_level_count": int(levels),
                 "actual_serialized_bytes": None,
@@ -1362,17 +1402,32 @@ def apply_candidate_painter_reconstruction(
                 "journal_passed": None,
                 "journal_reason_codes": [],
             }
+            if support_encoding is not None:
+                entry["paint_deficit_support_encoding"] = str(support_encoding)
             try:
-                probe_root, probe_geometry = (
-                    build_paint_deficit_reconstruction_tree(
-                        original_root,
-                        canvas,
-                        grid_rgba,
-                        txn,
-                        mask_encoding=mask_encoding,
-                        levels=levels,
+                if support_encoding is None:
+                    probe_root, probe_geometry = (
+                        build_paint_deficit_reconstruction_tree(
+                            original_root,
+                            canvas,
+                            grid_rgba,
+                            txn,
+                            mask_encoding=mask_encoding,
+                            levels=levels,
+                        )
                     )
-                )
+                else:
+                    probe_root, probe_geometry = (
+                        build_paint_deficit_reconstruction_tree(
+                            original_root,
+                            canvas,
+                            grid_rgba,
+                            txn,
+                            mask_encoding=mask_encoding,
+                            levels=levels,
+                            support_encoding=str(support_encoding),
+                        )
+                    )
             except RuntimeError as exc:
                 entry["preflight_status"] = "not_constructed"
                 entry["validation_stage"] = "paint_deficit_geometry"
@@ -1400,6 +1455,17 @@ def apply_candidate_painter_reconstruction(
             ):
                 if stat_key in probe_geometry:
                     entry[stat_key] = int(probe_geometry[stat_key])
+            if support_encoding is not None:
+                for stat_key in (
+                    "paint_deficit_palette_count",
+                    "paint_deficit_support_rect_count",
+                    "paint_deficit_support_serialized_bytes",
+                    "paint_deficit_support_base_label",
+                    "paint_deficit_support_legacy_serialized_bytes",
+                    "paint_deficit_support_saved_bytes",
+                ):
+                    if stat_key in probe_geometry:
+                        entry[stat_key] = int(probe_geometry[stat_key])
             if probe_size > byte_limit:
                 entry["preflight_status"] = "over_budget"
                 entry["status"] = "byte_rejected"
@@ -1483,6 +1549,7 @@ def apply_candidate_painter_reconstruction(
         # class_reklam — korur). Yalnız o TAZE journal geometri kapısında (seam/
         # topology) reddedilirse kümülatif eşik varyantı ek aday olarak denenir.
         # Kabul yetkisi her iki varyantta da değişmemiş evaluator + journal'dadır.
+        paint_deficit_attempt_start = len(attempts)
         winner = _try("polygon", "paint-deficit-q24")
         if winner is None:
             winner = _try("cumulative", "paint-deficit-cumulative")
@@ -1509,6 +1576,22 @@ def apply_candidate_painter_reconstruction(
                 )
                 if winner is not None:
                     break
+
+        legacy_paint_attempts = attempts[paint_deficit_attempt_start:]
+        if winner is None and _paint_deficit_support_retry_eligible(
+            legacy_paint_attempts
+        ):
+            # Task C: public-15's q-ladder proves an alpha-independent byte floor.
+            # Keep the smallest existing q8 cumulative mask and every original
+            # source-palette colour unchanged. Factor only support geometry as
+            # one binary base fill plus exact-colour correction rectangles.
+            fallback_levels = min(_PAINT_DEFICIT_CUMULATIVE_LEVELS)
+            winner = _try(
+                "cumulative",
+                f"paint-deficit-cumulative-q{fallback_levels}-base-delta",
+                levels=fallback_levels,
+                support_encoding="base_delta",
+            )
         return winner
 
 
