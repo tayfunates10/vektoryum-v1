@@ -17,6 +17,7 @@ import numpy as np
 
 from app.alpha_artwork_identity import (
     ROLE_ARTWORK_CONTAINER,
+    ROLE_CANVAS_UNDERPAINT,
     ROLE_MASK_APPLICATION,
     ROLE_MASK_DEFINITION,
     ROLE_MASK_GEOMETRY,
@@ -187,6 +188,7 @@ def build_paint_deficit_reconstruction_tree(
     transaction_id: str,
     mask_encoding: str = "polygon",
     levels: int = _ALPHA_LEVELS,
+    retain_canvas_under_mask: bool = False,
 ) -> tuple[ET.Element, dict[str, Any]]:
     """Build one q24 source-alpha mask plus a compact deficit overlay.
 
@@ -287,6 +289,15 @@ def build_paint_deficit_reconstruction_tree(
     for child in movable:
         root.remove(child)
         if child is target_canvas:
+            if not retain_canvas_under_mask:
+                continue
+            tag_transform_node(child, ROLE_CANVAS_UNDERPAINT, transaction_id)
+            child.set(
+                "data-vektoryum-candidate-geometry-underpaint",
+                "comparison-canvas-v1",
+            )
+            _strip_content_alpha(child)
+            paint.append(child)
             continue
         _strip_content_alpha(child)
         paint.append(child)
@@ -471,8 +482,8 @@ def build_paint_deficit_reconstruction_tree(
         ),
         "paint_deficit_palette_count": int(used_palette_count),
         "paint_deficit_support_rect_count": int(support_rect_count),
-        "comparison_canvas_knocked_out": bool(target_canvas is not None),
-        "comparison_canvas_retained_under_mask": False,
+        "comparison_canvas_knocked_out": bool(target_canvas is not None and not retain_canvas_under_mask),
+        "comparison_canvas_retained_under_mask": bool(target_canvas is not None and retain_canvas_under_mask),
         "candidate_support_expanded_geometry_count": 0,
         **deficit_stats,
     }

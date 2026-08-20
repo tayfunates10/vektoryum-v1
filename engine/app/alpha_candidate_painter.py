@@ -1015,6 +1015,28 @@ def _node_free_polygon_retry_eligible(
     return all(entry.get("status") == "byte_rejected" for entry in polygon_exact)
 
 
+
+def _paint_deficit_underpaint_retry_eligible(
+    paint_deficit_attempts: list[dict[str, Any]],
+    canvas_present: bool,
+) -> bool:
+    """Route only legacy native-alpha support loss to terminal underpaint retry."""
+    if not canvas_present:
+        return False
+    relevant = [
+        entry for entry in paint_deficit_attempts
+        if entry.get("encoding_family") == "paint_deficit"
+        and entry.get("exact_or_quantized") == "paint_deficit"
+    ]
+    if not relevant or any(entry.get("status") == "accepted" for entry in relevant):
+        return False
+    return any(
+        entry.get("status") == "native_alpha_rejected"
+        and entry.get("validation_stage") == "native_alpha"
+        for entry in relevant
+    )
+
+
 def apply_candidate_painter_reconstruction(
     svg_path: Path,
     source_path: Path,
@@ -1327,6 +1349,7 @@ def apply_candidate_painter_reconstruction(
             mask_encoding: str,
             label: str,
             levels: int = _ALPHA_LEVELS,
+            retain_canvas_under_mask: bool = False,
         ) -> list[Any] | None:
             txn = alpha_transaction_id(
                 parent_sha256, source_alpha_sha256, mode, label
@@ -1336,6 +1359,7 @@ def apply_candidate_painter_reconstruction(
                 "encoding_label": label,
                 "encoding_family": "paint_deficit",
                 "exact_or_quantized": "paint_deficit",
+                "paint_support_mode": ("canvas_underpaint" if retain_canvas_under_mask else "deficit_only"),
                 "source_alpha_level_count": int(source_level_count),
                 "encoded_alpha_level_count": int(levels),
                 "actual_serialized_bytes": None,
@@ -1371,6 +1395,7 @@ def apply_candidate_painter_reconstruction(
                         txn,
                         mask_encoding=mask_encoding,
                         levels=levels,
+                        retain_canvas_under_mask=retain_canvas_under_mask,
                     )
                 )
             except RuntimeError as exc:
@@ -1400,6 +1425,12 @@ def apply_candidate_painter_reconstruction(
             ):
                 if stat_key in probe_geometry:
                     entry[stat_key] = int(probe_geometry[stat_key])
+            for flag_key in (
+                "comparison_canvas_knocked_out",
+                "comparison_canvas_retained_under_mask",
+            ):
+                if flag_key in probe_geometry:
+                    entry[flag_key] = bool(probe_geometry[flag_key])
             if probe_size > byte_limit:
                 entry["preflight_status"] = "over_budget"
                 entry["status"] = "byte_rejected"
@@ -1483,6 +1514,7 @@ def apply_candidate_painter_reconstruction(
         # class_reklam — korur). Yalnız o TAZE journal geometri kapısında (seam/
         # topology) reddedilirse kümülatif eşik varyantı ek aday olarak denenir.
         # Kabul yetkisi her iki varyantta da değişmemiş evaluator + journal'dadır.
+        paint_deficit_attempt_start = len(attempts)
         winner = _try("polygon", "paint-deficit-q24")
         if winner is None:
             winner = _try("cumulative", "paint-deficit-cumulative")
@@ -1509,6 +1541,24 @@ def apply_candidate_painter_reconstruction(
                 )
                 if winner is not None:
                     break
+
+        legacy_paint_attempts = attempts[paint_deficit_attempt_start:]
+        if winner is None and _paint_deficit_underpaint_retry_eligible(
+            legacy_paint_attempts, canvas is not None
+        ):
+            winner = _try("polygon", "paint-deficit-q24-underpaint", retain_canvas_under_mask=True)
+            if winner is None:
+                winner = _try("cumulative", "paint-deficit-cumulative-underpaint", retain_canvas_under_mask=True)
+            if winner is None:
+                for coarse_levels in _PAINT_DEFICIT_CUMULATIVE_LEVELS:
+                    winner = _try(
+                        "cumulative",
+                        f"paint-deficit-cumulative-q{coarse_levels}-underpaint",
+                        levels=coarse_levels,
+                        retain_canvas_under_mask=True,
+                    )
+                    if winner is not None:
+                        break
         return winner
 
 
