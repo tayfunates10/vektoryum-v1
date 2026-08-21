@@ -7,6 +7,12 @@ on:
     paths:
       - .github/workflows/public15-support-topology-proof-v2.yml
       - engine/regression/public15_support_topology_probe.py
+  pull_request:
+    branches:
+      - claude/yoneticilik-sorunlari-gorevler-b1pfya
+    paths:
+      - .github/workflows/public15-support-topology-proof-v2.yml
+      - engine/regression/public15_support_topology_probe.py
   workflow_dispatch:
 
 permissions:
