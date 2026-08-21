@@ -1,0 +1,94 @@
+name: Public-15 support topology proof v3
+
+on:
+  push:
+    branches:
+      - codex/p0-public15-support-topology-proof
+    paths:
+      - .github/workflows/public15-support-topology-proof-v3.yml
+      - engine/regression/public15_support_topology_probe_v3.py
+      - engine/regression/test_public15_support_topology_probe_v3.py
+  pull_request:
+    branches:
+      - claude/yoneticilik-sorunlari-gorevler-b1pfya
+    paths:
+      - .github/workflows/public15-support-topology-proof-v3.yml
+      - engine/regression/public15_support_topology_probe_v3.py
+      - engine/regression/test_public15_support_topology_probe_v3.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: public15-support-topology-v3-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  prove:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      PYTHONHASHSEED: "0"
+      PYTHONPATH: engine
+      VEKTORYUM_WORKERS: "1"
+      CORPUS_RUN_ID: "31875365505"
+      CORPUS_ARTIFACT: "rfv3b-corpus-7dfab896dfaab72eb79242e4511ee64860151f9e"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: engine/requirements.txt
+
+      - name: Install production dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ghostscript libcairo2
+          python -m pip install -r engine/requirements.txt pytest httpx
+
+      - name: Verify binding regression tests
+        run: python -m pytest -q engine/regression/test_public15_support_topology_probe_v3.py
+
+      - name: Download immutable qualified corpus
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.CORPUS_ARTIFACT }}
+          path: ${{ runner.temp }}/rfv3b-input
+          github-token: ${{ github.token }}
+          repository: tayfunates10/vektoryum-v1
+          run-id: ${{ env.CORPUS_RUN_ID }}
+
+      - name: Verify and prepare immutable corpus
+        run: |
+          python -m engine.regression.rfv3_live_prepare \
+            --bundle "${RUNNER_TEMP}/rfv3b-input/rfv2-public-corpus.tar.gz" \
+            --checksums "${RUNNER_TEMP}/rfv3b-input/bundle-checksums.json" \
+            --destination "${RUNNER_TEMP}/rfv3b-corpus" \
+            --evidence-out "${RUNNER_TEMP}/public15-prepare.json"
+
+      - name: Run bound public-15 support/topology probe
+        env:
+          RFV_CORPUS: ${{ runner.temp }}/rfv3b-corpus
+          PROOF_OUT: ${{ runner.temp }}/public15-proof-v3
+          ENGINE_VERSION: ${{ github.sha }}
+        run: python -m engine.regression.public15_support_topology_probe_v3 | tee "${RUNNER_TEMP}/public15-proof-v3.log"
+
+      - name: Upload immutable bound diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: public15-support-topology-proof-v3-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/public15-prepare.json
+            ${{ runner.temp }}/public15-proof-v3.log
+            ${{ runner.temp }}/public15-proof-v3/public15-support-topology-proof-v3.json
+            ${{ runner.temp }}/public15-proof-v3/parent.svg
+            ${{ runner.temp }}/public15-proof-v3/support-only.svg
+            ${{ runner.temp }}/public15-proof-v3/candidate-*.svg
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 0
