@@ -36,7 +36,7 @@ def test_cumulative_mask_encoding_reports_budgeted_path_stats() -> None:
     )
 
     assert stats["reconstruction_mask_encoding"] == "cumulative"
-    assert stats["cumulative_threshold_count"] > 0
+    assert stats["cumulative_threshold_count"] == 3
     assert stats["cumulative_command_count"] > 0
     assert stats["contour_path_count"] == stats["cumulative_threshold_count"]
     assert stats["contour_command_count"] == stats["cumulative_command_count"]
