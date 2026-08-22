@@ -1165,7 +1165,7 @@ def apply_candidate_painter_reconstruction(
     cumulative_quantized_specs: list[
         tuple[str, str, str, np.ndarray, dict[int, float]]
     ] = []
-    for target_levels in (32, 16, 8):
+    for target_levels in (32, 16, 8, 4, 3):
         requant, requant_opacity = _requantize_alpha(
             grid_alpha, target_levels, allow_silhouette_shortcut=False
         )
