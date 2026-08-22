@@ -84,10 +84,21 @@ class PainterStrokeContinuationTests(unittest.TestCase):
             by_label: dict[str, list[dict]] = {}
             for entry in validated:
                 by_label.setdefault(entry["encoding_label"], []).append(entry)
+
+            # A non-retryable journal code must stop stroke-width continuation
+            # inside each painter encoding. Later fallback families may still be
+            # evaluated fail-closed, and paint-deficit uses its fixed 0px stroke.
+            for label, entries in by_label.items():
+                widths = [item["stroke_width"] for item in entries]
+                if label.startswith("paint-deficit"):
+                    self.assertEqual(widths, [0.0])
+                else:
+                    self.assertEqual(widths, [1.5])
             self.assertTrue(
                 all(
-                    [item["stroke_width"] for item in entries] == [1.5]
-                    for entries in by_label.values()
+                    entry["journal_reason_codes"] == ["node_complexity_explosion"]
+                    for entry in validated
+                    if entry["journal_gate_started"]
                 )
             )
 
@@ -118,13 +129,20 @@ class PainterStrokeContinuationTests(unittest.TestCase):
             by_label: dict[str, list[dict]] = {}
             for entry in validated:
                 by_label.setdefault(entry["encoding_label"], []).append(entry)
+
+            for label, entries in by_label.items():
+                widths = [item["stroke_width"] for item in entries]
+                if label.startswith("paint-deficit"):
+                    self.assertEqual(widths, [0.0])
+                else:
+                    self.assertEqual(widths, [1.5])
             self.assertTrue(
                 all(
-                    [item["stroke_width"] for item in entries] == [1.5]
-                    for entries in by_label.values()
+                    entry["journal_reason_codes"] == mixed
+                    for entry in validated
+                    if entry["journal_gate_started"]
                 )
             )
-            self.assertTrue(all(entry["journal_reason_codes"] == mixed for entry in validated))
 
     def test_retry_path_is_deterministic(self) -> None:
         def run_once(root: Path):
