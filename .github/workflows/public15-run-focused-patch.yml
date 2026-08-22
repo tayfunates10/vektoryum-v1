@@ -1,0 +1,52 @@
+name: Run focused public15 patch
+
+on:
+  pull_request:
+    branches:
+      - claude/yoneticilik-sorunlari-gorevler-b1pfya
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.head_ref == 'codex/p0-public15-cumulative-mask-fix'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/p0-public15-cumulative-mask-fix
+          fetch-depth: 0
+      - name: Execute focused patch recipe
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          src = Path('.github/workflows/public15-apply-cumulative-fix.yml').read_text(encoding='utf-8')
+          marker = '        run: |\n'
+          block = src.split(marker, 1)[1]
+          lines = []
+          for line in block.splitlines():
+              if line.startswith('          '):
+                  lines.append(line[10:])
+              elif line.strip():
+                  break
+              else:
+                  lines.append('')
+          Path('/tmp/public15-focused-patch.sh').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+          PY
+          bash /tmp/public15-focused-patch.sh
+      - name: Remove one-shot PR runner
+        if: success()
+        shell: bash
+        run: |
+          git fetch origin codex/p0-public15-cumulative-mask-fix
+          git checkout -B codex/p0-public15-cumulative-mask-fix origin/codex/p0-public15-cumulative-mask-fix
+          rm -f .github/workflows/public15-run-focused-patch.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -m "ci: remove one-shot public15 patch runner"
+            git push origin HEAD:codex/p0-public15-cumulative-mask-fix
+          fi
