@@ -463,6 +463,8 @@ class PainterLedgerIntegrationTests(unittest.TestCase):
                     "cumulative-q32",
                     "cumulative-q16",
                     "cumulative-q8",
+                    "cumulative-q4",
+                    "cumulative-q3",
                 },
             )
 
