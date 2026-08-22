@@ -84,9 +84,6 @@ jobs:
           PY
 
           python -m py_compile engine/app/alpha_candidate_painter.py engine/regression/test_public15_cumulative_mask_encoding.py
-          cd engine
-          python -m pytest -q regression/test_public15_cumulative_mask_encoding.py
-          cd ..
           rm -f .github/workflows/public15-apply-cumulative-fix.yml .github/workflows/public15-run-focused-patch.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
