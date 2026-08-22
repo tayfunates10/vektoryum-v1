@@ -47,6 +47,7 @@ def test_cumulative_mask_encoding_reports_budgeted_path_stats() -> None:
 
 
 def test_cumulative_requantization_keeps_multiple_alpha_levels() -> None:
+    """The cumulative ladder must never collapse a soft ramp to a silhouette."""
     alpha = np.arange(256, dtype=np.uint8).reshape(16, 16)
     for levels in (32, 16, 8):
         quantized, opacity = _requantize_alpha(
