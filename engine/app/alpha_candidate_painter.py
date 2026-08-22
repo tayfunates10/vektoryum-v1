@@ -553,6 +553,21 @@ def build_painter_reconstruction_tree(
             chosen_encoding = "contour"
         else:  # kontur üretilemezse asla boş maske bırakma; polygon'a düş
             mask_children = _painter_polygon_children(loops, qname)
+    elif mask_encoding == "cumulative":
+        cumulative_result = _cumulative_threshold_children(
+            quantized, opacity_by_level, qname
+        )
+        if cumulative_result is not None:
+            mask_children, cumulative_stats = cumulative_result
+            chosen_encoding = "cumulative"
+            contour_stats = {
+                "contour_path_count": int(cumulative_stats["cumulative_threshold_count"]),
+                "contour_command_count": int(cumulative_stats["cumulative_command_count"]),
+                "contour_loop_count": int(cumulative_stats["cumulative_loop_count"]),
+                **cumulative_stats,
+            }
+        else:
+            mask_children = _painter_polygon_children(loops, qname)
     elif mask_encoding == "rect":
         mask_children, rect_count = _painter_rect_children(
             quantized, opacity_by_level, qname
@@ -1147,6 +1162,15 @@ def apply_candidate_painter_reconstruction(
             (f"contour-q{target_levels}", "contour", "quantized", requant, requant_opacity)
         )
 
+    cumulative_quantized_specs: list[
+        tuple[str, str, str, np.ndarray, dict[int, float]]
+    ] = []
+    for target_levels in (32, 16, 8):
+        requant, requant_opacity = _requantize_alpha(grid_alpha, target_levels)
+        cumulative_quantized_specs.append(
+            (f"cumulative-q{target_levels}", "cumulative", "quantized", requant, requant_opacity)
+        )
+
     attempts: list[dict[str, Any]] = []
 
     def _evaluate_phase(
@@ -1596,6 +1620,8 @@ def apply_candidate_painter_reconstruction(
             winner = _evaluate_phase(compact_specs)
         if winner is None:
             winner = _evaluate_phase(quantized_specs)
+        if winner is None:
+            winner = _evaluate_phase(cumulative_quantized_specs)
         if winner is None:
             winner = _evaluate_paint_deficit()
         if winner is None and _node_free_polygon_retry_eligible(attempts):
