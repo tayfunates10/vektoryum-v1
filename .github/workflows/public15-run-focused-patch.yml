@@ -37,6 +37,8 @@ jobs:
           else:
               mask_children = _painter_polygon_children(loops, qname)
           '''
+          old = old.replace('              ', '        ', 1)
+          old = old.replace('\n              ', '\n        ')
           new = '''    elif mask_encoding == "cumulative":
               cumulative_result = _cumulative_threshold_children(
                   quantized, opacity_by_level, qname
@@ -63,6 +65,8 @@ jobs:
           else:
               mask_children = _painter_polygon_children(loops, qname)
           '''
+          new = new.replace('              ', '        ', 1)
+          new = new.replace('\n              ', '\n        ')
           if old not in text:
               raise SystemExit('mask encoding anchor not found')
           text = text.replace(old, new, 1)
@@ -76,6 +80,7 @@ jobs:
 
               attempts: list[dict[str, Any]] = []
           '''
+          old = old.replace('\n              ', '\n    ')
           new = '''    quantized_specs: list[tuple[str, str, str, np.ndarray, dict[int, float]]] = []
               for target_levels in (128, 64, 32):
                   requant, requant_opacity = _requantize_alpha(grid_alpha, target_levels)
@@ -94,22 +99,25 @@ jobs:
 
               attempts: list[dict[str, Any]] = []
           '''
+          new = new.replace('\n              ', '\n    ')
           if old not in text:
               raise SystemExit('quantized specs anchor not found')
           text = text.replace(old, new, 1)
 
           old = '''        if winner is None:
-                  winner = _evaluate_phase(quantized_specs)
-              if winner is None:
-                  winner = _evaluate_paint_deficit()
+              winner = _evaluate_phase(quantized_specs)
+          if winner is None:
+              winner = _evaluate_paint_deficit()
           '''
+          old = old.replace('\n              ', '\n        ')
           new = '''        if winner is None:
-                  winner = _evaluate_phase(quantized_specs)
-              if winner is None:
-                  winner = _evaluate_phase(cumulative_quantized_specs)
-              if winner is None:
-                  winner = _evaluate_paint_deficit()
+              winner = _evaluate_phase(quantized_specs)
+          if winner is None:
+              winner = _evaluate_phase(cumulative_quantized_specs)
+          if winner is None:
+              winner = _evaluate_paint_deficit()
           '''
+          new = new.replace('\n              ', '\n        ')
           if old not in text:
               raise SystemExit('winner ladder anchor not found')
           text = text.replace(old, new, 1)
