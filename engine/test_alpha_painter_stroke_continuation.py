@@ -81,7 +81,15 @@ class PainterStrokeContinuationTests(unittest.TestCase):
             self.assertEqual(svg.read_bytes(), original)
             validated = [entry for entry in ledgers[0] if entry["validation_started"]]
             self.assertTrue(validated)
-            self.assertTrue(all(entry["stroke_width"] == 1.5 for entry in validated))
+            by_label: dict[str, list[dict]] = {}
+            for entry in validated:
+                by_label.setdefault(entry["encoding_label"], []).append(entry)
+            self.assertTrue(
+                all(
+                    [item["stroke_width"] for item in entries] == [1.5]
+                    for entries in by_label.values()
+                )
+            )
 
     def test_mixed_reason_set_is_not_retry_eligible(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -107,7 +115,15 @@ class PainterStrokeContinuationTests(unittest.TestCase):
             self.assertEqual(svg.read_bytes(), original)
             validated = [entry for entry in ledgers[0] if entry["validation_started"]]
             self.assertTrue(validated)
-            self.assertTrue(all(entry["stroke_width"] == 1.5 for entry in validated))
+            by_label: dict[str, list[dict]] = {}
+            for entry in validated:
+                by_label.setdefault(entry["encoding_label"], []).append(entry)
+            self.assertTrue(
+                all(
+                    [item["stroke_width"] for item in entries] == [1.5]
+                    for entries in by_label.values()
+                )
+            )
             self.assertTrue(all(entry["journal_reason_codes"] == mixed for entry in validated))
 
     def test_retry_path_is_deterministic(self) -> None:
