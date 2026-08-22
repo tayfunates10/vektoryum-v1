@@ -66,12 +66,12 @@ jobs:
               text = text[:pos] + block + text[pos:]
 
           if 'winner = _evaluate_phase(cumulative_quantized_specs)' not in text:
-              anchor = '''        if winner is None:
+              anchor = '''    if winner is None:
                   winner = _evaluate_paint_deficit()
           '''
               if anchor not in text:
                   raise SystemExit('winner ladder anchor not found')
-              replacement = '''        if winner is None:
+              replacement = '''    if winner is None:
                   winner = _evaluate_phase(cumulative_quantized_specs)
               if winner is None:
                   winner = _evaluate_paint_deficit()
