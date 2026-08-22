@@ -4,7 +4,10 @@ import xml.etree.ElementTree as ET
 
 import numpy as np
 
-from app.alpha_candidate_painter import build_painter_reconstruction_tree
+from app.alpha_candidate_painter import (
+    _requantize_alpha,
+    build_painter_reconstruction_tree,
+)
 
 
 def test_cumulative_mask_encoding_reports_budgeted_path_stats() -> None:
@@ -41,3 +44,14 @@ def test_cumulative_mask_encoding_reports_budgeted_path_stats() -> None:
     assert stats["contour_path_count"] == stats["cumulative_threshold_count"]
     assert stats["contour_command_count"] == stats["cumulative_command_count"]
     assert len([node for node in candidate.iter() if str(node.tag).endswith("}mask")]) == 1
+
+
+def test_cumulative_requantization_keeps_multiple_alpha_levels() -> None:
+    alpha = np.arange(256, dtype=np.uint8).reshape(16, 16)
+    for levels in (32, 16, 8):
+        quantized, opacity = _requantize_alpha(
+            alpha, levels, allow_silhouette_shortcut=False
+        )
+        positive_levels = [level for level in opacity if int(level) > 0]
+        assert len(positive_levels) > 1
+        assert len(np.unique(quantized[alpha > 0])) > 1
