@@ -1,0 +1,49 @@
+name: Apply public05 coarse cumulative fix
+
+on:
+  pull_request:
+    branches:
+      - claude/yoneticilik-sorunlari-gorevler-b1pfya
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.head_ref == 'codex/p0-public15-cumulative-mask-fix'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/p0-public15-cumulative-mask-fix
+          fetch-depth: 0
+      - name: Apply minimal cumulative ladder extension
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          painter = Path('engine/app/alpha_candidate_painter.py')
+          text = painter.read_text(encoding='utf-8')
+          old = '    for target_levels in (32, 16, 8):\n        requant, requant_opacity = _requantize_alpha(\n            grid_alpha, target_levels, allow_silhouette_shortcut=False\n        )\n        cumulative_quantized_specs.append(\n'
+          new = '    for target_levels in (32, 16, 8, 4, 3):\n        requant, requant_opacity = _requantize_alpha(\n            grid_alpha, target_levels, allow_silhouette_shortcut=False\n        )\n        cumulative_quantized_specs.append(\n'
+          if old not in text:
+              raise SystemExit('cumulative ladder anchor not found or already changed unexpectedly')
+          painter.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          test = Path('engine/regression/test_public15_cumulative_mask_encoding.py')
+          t = test.read_text(encoding='utf-8')
+          old_test = '    for levels in (32, 16, 8):\n'
+          new_test = '    for levels in (32, 16, 8, 4, 3):\n'
+          if old_test not in t:
+              raise SystemExit('focused regression ladder anchor not found')
+          test.write_text(t.replace(old_test, new_test, 1), encoding='utf-8')
+          PY
+
+          python -m py_compile engine/app/alpha_candidate_painter.py engine/regression/test_public15_cumulative_mask_encoding.py
+          rm -f .github/workflows/public05-coarse-cumulative-fix.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix(alpha): add coarse multi-level cumulative fallbacks"
+          git push origin HEAD:codex/p0-public15-cumulative-mask-fix
