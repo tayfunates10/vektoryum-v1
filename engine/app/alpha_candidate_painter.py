@@ -253,6 +253,23 @@ def _rectilinear_subpaths(
     return "".join(parts), nodes
 
 
+def _cumulative_compact_subpaths(
+    loops: list[list[tuple[int, int]]],
+) -> tuple[str, int]:
+    """Encode identical closed loops with one implicit multi-point ``L`` command."""
+    parts: list[str] = []
+    commands = 0
+    for raw_corners in loops:
+        corners = _simplify_rectilinear_loop(raw_corners)
+        if len(corners) < 3:
+            continue
+        x0, y0 = corners[0]
+        points = " ".join(f"{x} {y}" for x, y in corners[1:])
+        parts.append(f"M{x0} {y0}L{points}Z")
+        commands += 3
+    return "".join(parts), commands
+
+
 def _painter_contour_children(
     quantized: np.ndarray,
     opacity_by_level: dict[int, float],
@@ -338,7 +355,7 @@ def _cumulative_threshold_children(
         loops = trace_cell_contours(region)
         if not loops:
             continue
-        path_data, nodes = _rectilinear_subpaths(loops)
+        path_data, nodes = _cumulative_compact_subpaths(loops)
         if not path_data:
             continue
         children.append(
