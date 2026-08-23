@@ -1647,7 +1647,10 @@ def apply_candidate_painter_reconstruction(
         if winner is None:
             winner = _evaluate_phase(quantized_specs)
         if winner is None:
-            winner = _evaluate_phase(cumulative_quantized_specs)
+            for cumulative_spec in cumulative_quantized_specs:
+                winner = _evaluate_phase([cumulative_spec])
+                if winner is not None:
+                    break
         if winner is None:
             winner = _evaluate_paint_deficit()
         if winner is None and _node_free_polygon_retry_eligible(attempts):
