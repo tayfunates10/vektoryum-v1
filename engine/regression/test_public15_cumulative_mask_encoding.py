@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import xml.etree.ElementTree as ET
 
 import numpy as np
@@ -8,6 +9,7 @@ from app.alpha_candidate_painter import (
     _cumulative_compact_subpaths,
     _rectilinear_subpaths,
     _requantize_alpha,
+    apply_candidate_painter_reconstruction,
     build_painter_reconstruction_tree,
 )
 
@@ -87,3 +89,13 @@ def test_cumulative_requantization_keeps_multiple_alpha_levels() -> None:
         positive_levels = [level for level in opacity if int(level) > 0]
         assert len(positive_levels) > 1
         assert len(np.unique(quantized[alpha > 0])) > 1
+
+
+def test_cumulative_ladder_stops_at_first_fully_accepted_spec() -> None:
+    """Cumulative q32→q3 must not keep evaluating after the first accepted level."""
+    source = inspect.getsource(apply_candidate_painter_reconstruction)
+
+    assert "_evaluate_phase(cumulative_quantized_specs)" not in source
+    assert "for cumulative_spec in cumulative_quantized_specs:" in source
+    assert "winner = _evaluate_phase([cumulative_spec])" in source
+    assert "if winner is not None:\n                    break" in source
