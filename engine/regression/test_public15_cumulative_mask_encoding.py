@@ -5,6 +5,8 @@ import xml.etree.ElementTree as ET
 import numpy as np
 
 from app.alpha_candidate_painter import (
+    _cumulative_compact_subpaths,
+    _rectilinear_subpaths,
     _requantize_alpha,
     build_painter_reconstruction_tree,
 )
@@ -40,10 +42,25 @@ def test_cumulative_mask_encoding_reports_budgeted_path_stats() -> None:
 
     assert stats["reconstruction_mask_encoding"] == "cumulative"
     assert stats["cumulative_threshold_count"] == 3
-    assert stats["cumulative_command_count"] > 0
+    assert stats["cumulative_command_count"] == 3 * stats["cumulative_loop_count"]
     assert stats["contour_path_count"] == stats["cumulative_threshold_count"]
     assert stats["contour_command_count"] == stats["cumulative_command_count"]
     assert len([node for node in candidate.iter() if str(node.tag).endswith("}mask")]) == 1
+
+
+def test_cumulative_compact_path_preserves_exact_loop_vertices() -> None:
+    """Implicit lineto syntax must reduce commands without changing loop geometry."""
+    loops = [
+        [(0, 0), (1, 0), (2, 0), (2, 2), (0, 2), (0, 0)],
+        [(4, 4), (5, 4), (5, 5), (4, 5), (4, 4)],
+    ]
+
+    compact, compact_commands = _cumulative_compact_subpaths(loops)
+    _legacy, legacy_commands = _rectilinear_subpaths(loops)
+
+    assert compact == "M0 0L2 0 2 2 0 2ZM4 4L5 4 5 5 4 5Z"
+    assert compact_commands == 6
+    assert compact_commands < legacy_commands
 
 
 def test_cumulative_requantization_keeps_multiple_alpha_levels() -> None:
