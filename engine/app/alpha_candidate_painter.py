@@ -256,7 +256,7 @@ def _rectilinear_subpaths(
 def _cumulative_compact_subpaths(
     loops: list[list[tuple[int, int]]],
 ) -> tuple[str, int]:
-    """Encode identical closed loops with one implicit multi-point ``L`` command."""
+    """Encode identical closed loops with the shortest implicit lineto form."""
     parts: list[str] = []
     commands = 0
     for raw_corners in loops:
@@ -264,8 +264,15 @@ def _cumulative_compact_subpaths(
         if len(corners) < 3:
             continue
         x0, y0 = corners[0]
-        points = " ".join(f"{x} {y}" for x, y in corners[1:])
-        parts.append(f"M{x0} {y0}L{points}Z")
+        absolute_points = " ".join(f"{x} {y}" for x, y in corners[1:])
+        absolute = f"M{x0} {y0}L{absolute_points}Z"
+        relative_pairs: list[str] = []
+        previous_x, previous_y = x0, y0
+        for x, y in corners[1:]:
+            relative_pairs.append(f"{x - previous_x} {y - previous_y}")
+            previous_x, previous_y = x, y
+        relative = f"M{x0} {y0}l{' '.join(relative_pairs)}Z"
+        parts.append(relative if len(relative) < len(absolute) else absolute)
         commands += 3
     return "".join(parts), commands
 
