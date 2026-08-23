@@ -63,6 +63,20 @@ def test_cumulative_compact_path_preserves_exact_loop_vertices() -> None:
     assert compact_commands < legacy_commands
 
 
+def test_cumulative_compact_path_prefers_shorter_relative_deltas() -> None:
+    """Large coordinates may use relative deltas without changing node accounting."""
+    loops = [
+        [(1000, 1000), (1100, 1000), (1100, 1100), (1000, 1100), (1000, 1000)]
+    ]
+
+    compact, commands = _cumulative_compact_subpaths(loops)
+    absolute = "M1000 1000L1100 1000 1100 1100 1000 1100Z"
+
+    assert compact == "M1000 1000l100 0 0 100 -100 0Z"
+    assert len(compact) < len(absolute)
+    assert commands == 3
+
+
 def test_cumulative_requantization_keeps_multiple_alpha_levels() -> None:
     """Every fallback, including coarse q4/q3, must stay multi-level, never silhouette."""
     alpha = np.arange(256, dtype=np.uint8).reshape(16, 16)
