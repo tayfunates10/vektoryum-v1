@@ -75,6 +75,7 @@ def test_isolated_timeout_emits_bounded_relative_work_root_evidence(
     )
     payload = json.loads(line.split("=", 1)[1])
     assert payload["file_count"] == 2
+    assert "scan_error" not in payload
     assert {entry["path"] for entry in payload["latest"]} == {
         "qualification-public-17/candidate.svg",
         "qualification-public-17/candidate_refit.svg",
