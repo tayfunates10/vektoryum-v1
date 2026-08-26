@@ -51,6 +51,8 @@ def test_primary_resvg_render_returns_rgba_and_same_white_base(monkeypatch) -> N
     assert calls == [("candidate.svg", 2, 2)]
     assert rendered is not None
     assert parity_base is not None
+    assert rendered.dtype == np.uint8
+    assert parity_base.dtype == np.uint8
     assert np.array_equal(rendered, rgba)
     assert np.array_equal(parity_base, composite_rgba(rgba, 255))
 
