@@ -442,6 +442,8 @@ def score_candidate(
     original_path: Path,
     analysis: dict[str, Any],
     mode: str,
+    *,
+    render_fn=None,
 ) -> dict[str, Any] | None:
     """Başarılı bir aday sonucunu skorlar; başarısızsa None döner."""
     if not res.get("success"):
@@ -452,6 +454,7 @@ def score_candidate(
         analysis_report=analysis,
         mode=mode,
         geometry_report=res.get("cleanup_report", {}),
+        render_fn=render_fn,
     )
     return {**res, **score}
 
@@ -1303,19 +1306,38 @@ def run_pipeline(
                 # temizleme AŞAMASININ yapısal ölçüsüdür; kenar temizleme yalnız
                 # konturu yumuşatır. Yeniden skorlama fidelity'yi (taze render) ve
                 # istatistikleri (path/düğüm sayısı) temiz dosyadan günceller.
-                cleaned = {**best, "svg_path": ec_dst}
-                rescored = score_candidate(cleaned, original_path, analysis, mode_used)
-                edge_candidate = rescored if rescored is not None else cleaned
-                accepted_path, ec_stage = journal.consider_candidate(
-                    "edge_cleanup", src_svg, ec_dst, transform_report=ec_rep,
-                )
-                if accepted_path == ec_dst:
-                    best = edge_candidate
-                    selection_reason = f"{selection_reason}+edge_cleanup"
-                else:
-                    ec_rep = {**ec_rep, "applied": False,
-                              "journal_status": ec_stage["status"],
-                              "journal_reasons": ec_stage["reason_codes"]}
+                from app.refine_cache import RefinementCache  # noqa: PLC0415
+
+                edge_cache = None
+                if os.environ.get(
+                    "VEKTORYUM_REFINE_CACHE", "on"
+                ).strip().lower() not in {"off", "0", "false"}:
+                    try:
+                        edge_cache = RefinementCache(journal_source_rgb, max_renders=2)
+                    except Exception as e:  # noqa: BLE001
+                        logger.debug("edge_cleanup render cache kurulamadı: %s", e)
+                edge_render_fn = edge_cache.render if edge_cache is not None else None
+                try:
+                    cleaned = {**best, "svg_path": ec_dst}
+                    rescored = score_candidate(
+                        cleaned, original_path, analysis, mode_used,
+                        render_fn=edge_render_fn,
+                    )
+                    edge_candidate = rescored if rescored is not None else cleaned
+                    accepted_path, ec_stage = journal.consider_candidate(
+                        "edge_cleanup", src_svg, ec_dst, transform_report=ec_rep,
+                        render_fn=edge_render_fn,
+                    )
+                    if accepted_path == ec_dst:
+                        best = edge_candidate
+                        selection_reason = f"{selection_reason}+edge_cleanup"
+                    else:
+                        ec_rep = {**ec_rep, "applied": False,
+                                  "journal_status": ec_stage["status"],
+                                  "journal_reasons": ec_stage["reason_codes"]}
+                finally:
+                    if edge_cache is not None:
+                        edge_cache.close()
             else:
                 journal.record_noop(
                     "edge_cleanup", src_svg,
