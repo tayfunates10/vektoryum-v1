@@ -16,7 +16,7 @@ import logging
 import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from app.fidelity import score_svg_fidelity
 from app.geometry_cleanup import compute_geometry_report_for_svg, extract_points_from_path_data
@@ -175,6 +175,8 @@ def score_vector_candidate(
     analysis_report: dict[str, Any],
     mode: str,
     geometry_report: dict[str, Any] | None = None,
+    *,
+    render_fn: Callable[[Path, int, int], Any] | None = None,
 ) -> dict[str, Any]:
     """Bir vektör adayını puanlar ve detaylı skor sözlüğü döndürür."""
     stats = _parse_svg_stats(Path(svg_path))
@@ -196,7 +198,9 @@ def score_vector_candidate(
     # edge_score: render edilebilirse ALGISAL sadakat (SSIM + LAB ΔE + kenar-F1);
     # render mümkün değilse yapısal tahmine düşülür (CairoSVG yoksa çökme yok).
     rendered_ok = False
-    fidelity = score_svg_fidelity(Path(svg_path), Path(original_path))
+    fidelity = score_svg_fidelity(
+        Path(svg_path), Path(original_path), render_fn=render_fn,
+    )
     if fidelity is not None:
         rendered_ok = True
         edge_score = float(fidelity["fidelity_score"])

@@ -64,6 +64,7 @@ def _measure_svg_bytes(
     required_metrics: set[str] | None = None,
     measure_alpha: bool = False,
     capture_render: bool = False,
+    render_fn: Callable[[Path, int, int], np.ndarray | None] | None = None,
     _allow_topology_refinement: bool = True,
 ) -> dict[str, Any]:
     """Stage gate için bounded structural + source-fidelity ölçümü."""
@@ -76,6 +77,7 @@ def _measure_svg_bytes(
     )
     from app.fidelity import _edge_f1, _ssim, render_svg_to_rgb
 
+    renderer = render_fn or render_svg_to_rgb
     struct, messages, codes, root = _structure_check(data)
     metric: dict[str, Any] = {
         "sha256": _sha(data),
@@ -143,9 +145,9 @@ def _measure_svg_bytes(
                 rnd = _source_truth.composite_rgba(render_rgba, 255)
             else:
                 # Preserve visual diagnostics while alpha stays fail-closed.
-                rnd = render_svg_to_rgb(path, w, h)
+                rnd = renderer(path, w, h)
         else:
-            rnd = render_svg_to_rgb(path, w, h)
+            rnd = renderer(path, w, h)
     if rnd is None:
         metric["required_unmeasured"] = sorted(
             set(metric["required_unmeasured"]) | {"stage_render"}
@@ -236,7 +238,9 @@ def _measure_svg_bytes(
             max_side=refined_side,
             required_metrics=required_metrics,
             # Fine pass only replaces topology fields; alpha/render proof was
-            # already completed at the bounded coarse resolution.
+            # already completed at the bounded coarse resolution. Keep it on
+            # the canonical renderer so the shared coarse cache cannot affect
+            # or evict this independent hard-gate confirmation.
             measure_alpha=False,
             capture_render=False,
             _allow_topology_refinement=False,
@@ -307,7 +311,12 @@ class TransformJournal:
     def _wall_elapsed(self) -> float:
         return time.perf_counter() - self.started
 
-    def _measure(self, data: bytes) -> dict[str, Any]:
+    def _measure(
+        self,
+        data: bytes,
+        *,
+        render_fn: Callable[[Path, int, int], np.ndarray | None] | None = None,
+    ) -> dict[str, Any]:
         sha = _sha(data)
         capture_render = self._measurement_stage_id == "restore_source_dimensions"
         measure_alpha = capture_render
@@ -320,6 +329,7 @@ class TransformJournal:
                     required_metrics=self.required_metrics,
                     measure_alpha=measure_alpha,
                     capture_render=capture_render,
+                    render_fn=render_fn,
                 )
             finally:
                 self.evaluation_seconds += time.perf_counter() - started
@@ -502,6 +512,7 @@ class TransformJournal:
         forced_reasons: list[str] | None = None,
         exception_type: str | None = None,
         duration_ms: float = 0.0,
+        render_fn: Callable[[Path, int, int], np.ndarray | None] | None = None,
     ) -> tuple[bool, dict[str, Any]]:
         parent_sha = _sha(parent_data)
         candidate_sha = _sha(candidate_data)
@@ -538,8 +549,8 @@ class TransformJournal:
             previous_stage = self._measurement_stage_id
             self._measurement_stage_id = stage_id
             try:
-                before = self._measure(parent_data)
-                after = self._measure(candidate_data)
+                before = self._measure(parent_data, render_fn=render_fn)
+                after = self._measure(candidate_data, render_fn=render_fn)
             finally:
                 self._measurement_stage_id = previous_stage
             reasons = self._decide(before, after, stage_id=stage_id)
@@ -598,6 +609,7 @@ class TransformJournal:
         candidate_path: Path,
         *,
         transform_report: Any = None,
+        render_fn: Callable[[Path, int, int], np.ndarray | None] | None = None,
     ) -> tuple[Path, dict[str, Any]]:
         """Out-of-place candidate'ı ölçer; kabul edilmezse parent path döner."""
         parent_path, candidate_path = Path(parent_path), Path(candidate_path)
@@ -619,7 +631,8 @@ class TransformJournal:
             return parent_path, stage
         start = time.perf_counter()
         accepted, stage = self._record(
-            stage_id, parent_data, candidate_data, transform_report=transform_report,
+            stage_id, parent_data, candidate_data,
+            transform_report=transform_report, render_fn=render_fn,
         )
         stage["duration_ms"] = round((time.perf_counter() - start) * 1000.0, 3)
         if self._elapsed() > self.budget_seconds:
