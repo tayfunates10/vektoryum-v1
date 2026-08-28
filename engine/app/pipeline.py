@@ -1318,17 +1318,17 @@ def run_pipeline(
                         logger.debug("edge_cleanup render cache kurulamadı: %s", e)
                 edge_render_fn = edge_cache.render if edge_cache is not None else None
                 try:
-                    cleaned = {**best, "svg_path": ec_dst}
-                    rescored = score_candidate(
-                        cleaned, original_path, analysis, mode_used,
-                        render_fn=edge_render_fn,
-                    )
-                    edge_candidate = rescored if rescored is not None else cleaned
                     accepted_path, ec_stage = journal.consider_candidate(
                         "edge_cleanup", src_svg, ec_dst, transform_report=ec_rep,
                         render_fn=edge_render_fn,
                     )
                     if accepted_path == ec_dst:
+                        cleaned = {**best, "svg_path": ec_dst}
+                        rescored = score_candidate(
+                            cleaned, original_path, analysis, mode_used,
+                            render_fn=edge_render_fn,
+                        )
+                        edge_candidate = rescored if rescored is not None else cleaned
                         best = edge_candidate
                         selection_reason = f"{selection_reason}+edge_cleanup"
                     else:
