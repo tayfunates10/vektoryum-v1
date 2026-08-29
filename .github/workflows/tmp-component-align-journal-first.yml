@@ -1,0 +1,91 @@
+name: tmp component align journal first
+on:
+  push:
+    branches:
+      - tmp/component-align-journal-first-v2
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: tmp/component-align-journal-first-v2
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Patch exact component-align control flow
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('engine/app/pipeline.py')
+          s = p.read_text(encoding='utf-8')
+          old = '''            if ca_rep.get("applied"):\n                aligned = {**best, "svg_path": ca_dst}\n                rescored = score_candidate(aligned, original_path, analysis, mode_used)\n                align_candidate = rescored if rescored is not None else aligned\n                accepted_path, ca_stage = journal.consider_candidate(\n                    "component_align", ca_src, ca_dst, transform_report=ca_rep,\n                )\n                if accepted_path == ca_dst:\n                    best = align_candidate\n                    selection_reason = f"{selection_reason}+component_align"\n                else:\n                    ca_rep = {**ca_rep, "applied": False,\n                              "journal_status": ca_stage["status"],\n                              "journal_reasons": ca_stage["reason_codes"]}\n'''
+          new = '''            if ca_rep.get("applied"):\n                aligned = {**best, "svg_path": ca_dst}\n                accepted_path, ca_stage = journal.consider_candidate(\n                    "component_align", ca_src, ca_dst, transform_report=ca_rep,\n                )\n                if accepted_path == ca_dst:\n                    rescored = score_candidate(aligned, original_path, analysis, mode_used)\n                    align_candidate = rescored if rescored is not None else aligned\n                    best = align_candidate\n                    selection_reason = f"{selection_reason}+component_align"\n                else:\n                    ca_rep = {**ca_rep, "applied": False,\n                              "journal_status": ca_stage["status"],\n                              "journal_reasons": ca_stage["reason_codes"]}\n'''
+          if s.count(old) != 1:
+              raise SystemExit(f'exact replacement count={s.count(old)}')
+          p.write_text(s.replace(old, new), encoding='utf-8')
+          PY
+          cat > engine/test_component_align_journal_first.py <<'PY'
+          from __future__ import annotations
+          import ast
+          from pathlib import Path
+
+          def _run_pipeline_node() -> ast.FunctionDef:
+              source = Path("app/pipeline.py").read_text(encoding="utf-8")
+              module = ast.parse(source)
+              for node in module.body:
+                  if isinstance(node, ast.FunctionDef) and node.name == "run_pipeline":
+                      return node
+              raise AssertionError("run_pipeline not found")
+
+          def _call_name(node: ast.Call) -> str:
+              func = node.func
+              if isinstance(func, ast.Name):
+                  return func.id
+              if isinstance(func, ast.Attribute):
+                  return func.attr
+              return ""
+
+          def _component_align_accept_if(run_pipeline: ast.FunctionDef) -> ast.If:
+              for node in ast.walk(run_pipeline):
+                  if not isinstance(node, ast.If):
+                      continue
+                  test = node.test
+                  if isinstance(test, ast.Compare) and isinstance(test.left, ast.Name) and test.left.id == "accepted_path" and len(test.ops) == 1 and isinstance(test.ops[0], ast.Eq) and len(test.comparators) == 1 and isinstance(test.comparators[0], ast.Name) and test.comparators[0].id == "ca_dst":
+                      return node
+              raise AssertionError("component_align accepted-path gate not found")
+
+          def test_component_align_journal_precedes_rescore_and_gates_it() -> None:
+              run_pipeline = _run_pipeline_node()
+              calls = [node for node in ast.walk(run_pipeline) if isinstance(node, ast.Call)]
+              journal_calls = [node for node in calls if _call_name(node) == "consider_candidate" and any(isinstance(arg, ast.Constant) and arg.value == "component_align" for arg in node.args)]
+              assert len(journal_calls) == 1
+              align_score_calls = [node for node in calls if _call_name(node) == "score_candidate" and any(isinstance(arg, ast.Name) and arg.id == "aligned" for arg in node.args)]
+              assert len(align_score_calls) == 1
+              assert journal_calls[0].lineno < align_score_calls[0].lineno
+              accepted_if = _component_align_accept_if(run_pipeline)
+              assert any(node is align_score_calls[0] for node in ast.walk(accepted_if))
+
+          def test_component_align_rejection_branch_contains_no_rescore() -> None:
+              run_pipeline = _run_pipeline_node()
+              accepted_if = _component_align_accept_if(run_pipeline)
+              rejection_calls = [node for stmt in accepted_if.orelse for node in ast.walk(stmt) if isinstance(node, ast.Call) and _call_name(node) == "score_candidate"]
+              assert rejection_calls == []
+          PY
+      - name: Focused test
+        working-directory: engine
+        run: |
+          python -m pip install -q pytest
+          pytest -q test_component_align_journal_first.py
+      - name: Commit clean patch
+        run: |
+          rm .github/workflows/tmp-component-align-journal-first.yml
+          rm -f .tmp-component-align-trigger
+          git config user.name 'Tayfun'
+          git config user.email 'tayfuna766@gmail.com'
+          git add -A
+          git commit -m 'fix: journal-gate component align before rescore'
+          git push origin HEAD:tmp/component-align-journal-first-v2
