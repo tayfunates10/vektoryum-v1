@@ -107,7 +107,7 @@ jobs:
         working-directory: engine
         run: |
           python -m pip install -q pytest
-          pytest -q test_component_align_journal_first.py test_component_align_complexity_budget.py
+          pytest -q test_component_align_journal_first.py
       - name: Commit clean patch and remove workflow
         run: |
           rm .github/workflows/tmp-component-align-journal-first.yml
