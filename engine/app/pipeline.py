@@ -1362,12 +1362,12 @@ def run_pipeline(
                 ca_rep = {"applied": False, "error": str(e)}
             if ca_rep.get("applied"):
                 aligned = {**best, "svg_path": ca_dst}
-                rescored = score_candidate(aligned, original_path, analysis, mode_used)
-                align_candidate = rescored if rescored is not None else aligned
                 accepted_path, ca_stage = journal.consider_candidate(
                     "component_align", ca_src, ca_dst, transform_report=ca_rep,
                 )
                 if accepted_path == ca_dst:
+                    rescored = score_candidate(aligned, original_path, analysis, mode_used)
+                    align_candidate = rescored if rescored is not None else aligned
                     best = align_candidate
                     selection_reason = f"{selection_reason}+component_align"
                 else:
