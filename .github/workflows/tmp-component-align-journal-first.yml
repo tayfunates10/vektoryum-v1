@@ -1,5 +1,8 @@
 name: tmp component align journal first
 on:
+  push:
+    branches:
+      - tmp/component-align-journal-first-v2
   workflow_dispatch:
 permissions:
   contents: write
