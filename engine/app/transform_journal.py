@@ -278,6 +278,7 @@ class TransformJournal:
         budget_seconds: float | None = None,
         stage_timeout_seconds: float | None = None,
         max_side: int = 512,
+        measurement_cache: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self.baseline_path = Path(baseline_path)
         baseline = self.baseline_path.read_bytes()
@@ -302,7 +303,9 @@ class TransformJournal:
         self.started = time.perf_counter()
         self.evaluation_seconds = 0.0
         self.stages: list[dict[str, Any]] = []
-        self._cache: dict[str, dict[str, Any]] = {}
+        self._cache: dict[str, dict[str, Any]] = (
+            measurement_cache if measurement_cache is not None else {}
+        )
         self.budget_exhausted = False
 
     def _elapsed(self) -> float:
