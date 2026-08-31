@@ -126,7 +126,14 @@ def _make_fake_journal(outcomes: list[tuple[str, list[str]]], calls: list) -> ty
     dön + reason_codes). Her çağrı ``calls``a kaydedilir."""
 
     class _FakeJournal:
-        def __init__(self, parent, source_rgb, image_class=None, required_metrics=None):
+        def __init__(
+            self,
+            parent,
+            source_rgb,
+            image_class=None,
+            required_metrics=None,
+            measurement_cache=None,
+        ):
             self._parent = Path(parent)
 
         def consider_candidate(self, stage_id, parent, candidate, transform_report=None):
