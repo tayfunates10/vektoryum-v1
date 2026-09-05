@@ -1,0 +1,73 @@
+name: tmp public14 cache propagation
+on:
+  push:
+    branches: [codex/tmp-public14-cache-prop]
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Apply exact production patch
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          painter = Path('engine/app/alpha_candidate_painter.py')
+          text = painter.read_text(encoding='utf-8')
+          replacements = [
+              (
+                  "def _run_painter_geometry_journal(\n    parent_path: Path,\n    candidate_path: Path,\n    journal_source_rgb: np.ndarray,\n    image_class: str,\n    transform_report: Any,\n) -> tuple[bool, list[str]]:",
+                  "def _run_painter_geometry_journal(\n    parent_path: Path,\n    candidate_path: Path,\n    journal_source_rgb: np.ndarray,\n    image_class: str,\n    transform_report: Any,\n    measurement_cache: dict[str, dict[str, Any]] | None = None,\n) -> tuple[bool, list[str]]:",
+              ),
+              (
+                  "        required_metrics=set(),\n    )\n    accepted_path, stage = journal.consider_candidate(",
+                  "        required_metrics=set(),\n        measurement_cache=measurement_cache,\n    )\n    accepted_path, stage = journal.consider_candidate(",
+              ),
+              (
+                  "def apply_candidate_painter_reconstruction(\n    svg_path: Path,\n    source_path: Path,\n    mode: str,\n) -> dict[str, Any]:",
+                  "def apply_candidate_painter_reconstruction(\n    svg_path: Path,\n    source_path: Path,\n    mode: str,\n    measurement_cache: dict[str, dict[str, Any]] | None = None,\n) -> dict[str, Any]:",
+              ),
+              (
+                  "                        journal_image_class,\n                        assessment[\"report\"],\n                    )",
+                  "                        journal_image_class,\n                        assessment[\"report\"],\n                        measurement_cache=measurement_cache,\n                    )",
+              ),
+          ]
+          for old, new in replacements:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'painter replacement count {count} for {old[:60]!r}')
+              text = text.replace(old, new, 1)
+          painter.write_text(text, encoding='utf-8')
+
+          mask = Path('engine/app/alpha_svg_mask.py')
+          text = mask.read_text(encoding='utf-8')
+          old = "                report = apply_candidate_painter_reconstruction(\n                    finalized_path, source_path, mode\n                )"
+          new = "                report = apply_candidate_painter_reconstruction(\n                    finalized_path,\n                    source_path,\n                    mode,\n                    measurement_cache=alpha_measurement_cache,\n                )"
+          count = text.count(old)
+          if count != 1:
+              raise SystemExit(f'alpha_svg_mask replacement count {count}')
+          mask.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          test = Path('engine/test_alpha_painter_cache_propagation.py')
+          test.write_text('''from __future__ import annotations\n\nimport ast\nfrom pathlib import Path\n\n\ndef _function(path: str, name: str) -> ast.FunctionDef:\n    module = ast.parse(Path(path).read_text(encoding="utf-8"))\n    for node in ast.walk(module):\n        if isinstance(node, ast.FunctionDef) and node.name == name:\n            return node\n    raise AssertionError(f"{name} not found")\n\n\ndef _kw(call: ast.Call, name: str) -> ast.keyword:\n    matches = [item for item in call.keywords if item.arg == name]\n    assert len(matches) == 1\n    return matches[0]\n\n\ndef test_painter_journal_reuses_outer_request_cache() -> None:\n    apply_fn = _function("app/alpha_candidate_painter.py", "apply_candidate_painter_reconstruction")\n    assert "measurement_cache" in [arg.arg for arg in apply_fn.args.args]\n    journal_calls = [\n        node for node in ast.walk(apply_fn)\n        if isinstance(node, ast.Call)\n        and isinstance(node.func, ast.Name)\n        and node.func.id == "_run_painter_geometry_journal"\n    ]\n    assert journal_calls\n    for call in journal_calls:\n        value = _kw(call, "measurement_cache").value\n        assert isinstance(value, ast.Name) and value.id == "measurement_cache"\n\n    journal_fn = _function("app/alpha_candidate_painter.py", "_run_painter_geometry_journal")\n    assert "measurement_cache" in [arg.arg for arg in journal_fn.args.args]\n    constructors = [\n        node for node in ast.walk(journal_fn)\n        if isinstance(node, ast.Call)\n        and isinstance(node.func, ast.Name)\n        and node.func.id == "TransformJournal"\n    ]\n    assert len(constructors) == 1\n    value = _kw(constructors[0], "measurement_cache").value\n    assert isinstance(value, ast.Name) and value.id == "measurement_cache"\n\n\ndef test_alpha_wrapper_passes_request_local_cache_to_painter() -> None:\n    wrapper = _function("app/alpha_svg_mask.py", "alpha_mask_finalized_pipeline")\n    calls = [\n        node for node in ast.walk(wrapper)\n        if isinstance(node, ast.Call)\n        and isinstance(node.func, ast.Name)\n        and node.func.id == "apply_candidate_painter_reconstruction"\n    ]\n    assert len(calls) == 1\n    value = _kw(calls[0], "measurement_cache").value\n    assert isinstance(value, ast.Name) and value.id == "alpha_measurement_cache"\n''', encoding='utf-8')
+          PY
+      - name: Validate focused regression
+        working-directory: engine
+        run: |
+          python -m py_compile app/alpha_candidate_painter.py app/alpha_svg_mask.py test_alpha_painter_cache_propagation.py
+          python -m pytest -q test_alpha_journal_request_cache.py test_alpha_painter_cache_propagation.py
+      - name: Commit patch and remove temporary workflow
+        run: |
+          rm .github/workflows/tmp-public14-cache-prop.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add engine/app/alpha_candidate_painter.py engine/app/alpha_svg_mask.py engine/test_alpha_painter_cache_propagation.py .github/workflows/tmp-public14-cache-prop.yml
+          git commit -m "fix(alpha): share request cache with painter journal"
+          git push origin HEAD:codex/tmp-public14-cache-prop
