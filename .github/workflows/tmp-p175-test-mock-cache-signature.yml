@@ -1,0 +1,61 @@
+name: tmp p175 painter mock cache signature
+
+on:
+  push:
+    branches:
+      - codex/tmp-p175-test-mock-cache-signature
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/tmp-p175-test-mock-cache-signature
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: engine/requirements.txt
+      - name: Apply exact two-line test mock signature patch
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('engine/test_alpha_painter_retry.py')
+          text = path.read_text(encoding='utf-8')
+          replacements = {
+              'def _painter_writes_then_report(target, source, mode):':
+                  'def _painter_writes_then_report(target, source, mode, measurement_cache=None):',
+              'def painter_raises(target, source, mode):':
+                  'def painter_raises(target, source, mode, measurement_cache=None):',
+          }
+          for old, new in replacements.items():
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'exact replacement count for {old!r}: {count}, expected 1')
+              text = text.replace(old, new, 1)
+          path.write_text(text, encoding='utf-8')
+          PY
+          git diff --check
+          git diff -- engine/test_alpha_painter_retry.py
+      - name: Install test dependencies
+        run: python -m pip install -q -r engine/requirements.txt
+      - name: Run focused painter retry regression
+        env:
+          PYTHONPATH: engine:.
+          PYTHONHASHSEED: '0'
+          VEKTORYUM_WORKERS: '1'
+        run: python -m unittest engine.test_alpha_painter_retry -v
+      - name: Commit verified patch and remove temporary workflow
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/tmp-p175-test-mock-cache-signature.yml
+          git add engine/test_alpha_painter_retry.py
+          git diff --cached --check
+          git commit -m 'test(alpha): accept request cache in painter mocks'
+          git push origin HEAD:codex/tmp-p175-test-mock-cache-signature
