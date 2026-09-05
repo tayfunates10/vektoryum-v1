@@ -27,6 +27,7 @@ jobs:
           python test_alpha_painter_wrapper_cache.py
       - name: Verify diff
         run: |
+          git add -N engine/test_alpha_painter_wrapper_cache.py
           git diff --check
           test "$(git diff --name-only | paste -sd, -)" = "engine/app/alpha_candidate_identity.py,engine/test_alpha_painter_wrapper_cache.py"
       - name: Commit clean patch
