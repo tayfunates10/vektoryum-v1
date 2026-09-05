@@ -894,6 +894,7 @@ def _run_painter_geometry_journal(
     journal_source_rgb: np.ndarray,
     image_class: str,
     transform_report: Any,
+    measurement_cache: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[bool, list[str]]:
     """Adayı, aşağı-akış ile AYNI değişmemiş TransformJournal geometri kapılarından
     (SSIM/edge/seam/topology/node/byte) geçir. Kabul edilirse (True, []); aksi halde
@@ -908,6 +909,7 @@ def _run_painter_geometry_journal(
         journal_source_rgb,
         image_class=image_class,
         required_metrics=set(),
+        measurement_cache=measurement_cache,
     )
     accepted_path, stage = journal.consider_candidate(
         "source_alpha_painter_candidate",
@@ -1058,6 +1060,7 @@ def apply_candidate_painter_reconstruction(
     svg_path: Path,
     source_path: Path,
     mode: str,
+    measurement_cache: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build, validate and atomically publish the painter reconstruction."""
     from app.alpha_candidate_background import (  # noqa: PLC0415
@@ -1320,6 +1323,7 @@ def apply_candidate_painter_reconstruction(
                         journal_source_rgb,
                         journal_image_class,
                         assessment["report"],
+                        measurement_cache=measurement_cache,
                     )
                     entry["journal_passed"] = bool(journal_passed)
                     entry["journal_reason_codes"] = list(journal_codes)
@@ -1502,6 +1506,7 @@ def apply_candidate_painter_reconstruction(
                 journal_source_rgb,
                 journal_image_class,
                 assessment["report"],
+                measurement_cache=measurement_cache,
             )
             entry["journal_passed"] = bool(journal_passed)
             entry["journal_reason_codes"] = list(journal_codes)

@@ -927,7 +927,10 @@ def wrap_run_pipeline_with_alpha_mask(
             shutil.copy2(parent_path, finalized_path)
             try:
                 report = apply_candidate_painter_reconstruction(
-                    finalized_path, source_path, mode
+                    finalized_path,
+                    source_path,
+                    mode,
+                    measurement_cache=alpha_measurement_cache,
                 )
             except Exception as painter_error:
                 # Painter bu adayı yeniden inşa edemedi (ör. knock-out için
