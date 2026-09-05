@@ -304,12 +304,16 @@ def _install_simple_silhouette_quantizer() -> None:
     original_apply = painter.apply_candidate_painter_reconstruction
 
     @wraps(original_apply)
-    def apply_with_supportless_simple_silhouette(svg_path, source_path, mode):
+    def apply_with_supportless_simple_silhouette(
+        svg_path, source_path, mode, measurement_cache=None
+    ):
         evidence = _simple_silhouette_has_proven_canvas(
             Path(svg_path), Path(source_path)
         )
         if evidence is None:
-            return original_apply(svg_path, source_path, mode)
+            return original_apply(
+                svg_path, source_path, mode, measurement_cache=measurement_cache
+            )
 
         compact = evidence["compact"]
         edge_rgb = evidence.get("edge_rgb")
@@ -429,7 +433,9 @@ def _install_simple_silhouette_quantizer() -> None:
         support._expand_candidate_paint = preserve_artwork
         painter.build_painter_reconstruction_tree = build_with_source_edge
         try:
-            report = original_apply(svg_path, source_path, mode)
+            report = original_apply(
+                svg_path, source_path, mode, measurement_cache=measurement_cache
+            )
         finally:
             painter.build_painter_reconstruction_tree = original_builder
             support._expand_candidate_paint = original_expand
