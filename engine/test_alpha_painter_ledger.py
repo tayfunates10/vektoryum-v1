@@ -44,8 +44,6 @@ from app.alpha_candidate_painter import (
 )
 from app.source_truth import render_svg_to_rgba
 
-# Ledger'a yazılması İZİNLİ tek anahtar kümesi. Herhangi bir ham SVG/path/kaynak
-# sızıntısı bu kümeyi ihlal eder (test 5 bunu doğrular).
 _ALLOWED_LEDGER_KEYS = {
     "stroke_width",
     "encoding_label",
@@ -81,9 +79,6 @@ _ALLOWED_LEDGER_KEYS = {
 _ATTEMPTS_PREFIX = "source_alpha_candidate_painter_attempts="
 
 
-# --------------------------------------------------------------------------- #
-# Kaynak/parent üreticileri (self-contained).                                 #
-# --------------------------------------------------------------------------- #
 def _simple_soft_disc_source(path: Path, side: int = 96) -> None:
     """Tek yumuşak disk: az bileşen → polygon/rect bütçeye sığar (bir exact geçer)."""
     yy, xx = np.mgrid[0:side, 0:side].astype(np.float32)
@@ -139,17 +134,13 @@ def _covering_parent(path: Path, side: int) -> bytes:
 
 
 def _capture_attempts(func) -> tuple[Any, list[list[dict[str, Any]]], BaseException | None]:
-    """``func``'u çağır, stderr'e yazılan attempt ledger JSON satırlarını ayrıştır.
-
-    (dönüş_değeri, [ledger, ...], yakalanan_exception) döner — exception ledger
-    yazımını engellemez (hata yolunda da emit edilir)."""
     stderr = io.StringIO()
     value: Any = None
     error: BaseException | None = None
     with contextlib.redirect_stderr(stderr):
         try:
             value = func()
-        except BaseException as exc:  # noqa: BLE001 - test tüm hata yolunu inceler
+        except BaseException as exc:  # noqa: BLE001
             error = exc
     ledgers: list[list[dict[str, Any]]] = []
     for line in stderr.getvalue().splitlines():
@@ -158,11 +149,7 @@ def _capture_attempts(func) -> tuple[Any, list[list[dict[str, Any]]], BaseExcept
     return value, ledgers, error
 
 
-# --------------------------------------------------------------------------- #
-# Saf hata-önceliği / emit birim üreticileri.                                 #
-# --------------------------------------------------------------------------- #
 def _ledger_entry(**override: Any) -> dict[str, Any]:
-    """Tüm izinli alanları taşıyan nötr bir ledger kaydı (testler alanı ezer)."""
     entry: dict[str, Any] = {
         "stroke_width": 1.0,
         "encoding_label": "polygon",
@@ -198,9 +185,6 @@ def _ledger_entry(**override: Any) -> dict[str, Any]:
     return entry
 
 
-# --------------------------------------------------------------------------- #
-# Encoding-eşliği yardımcıları (polygon vs contour maske alfa düzlemi).       #
-# --------------------------------------------------------------------------- #
 def _equivalence_parent(side: int) -> ET.Element:
     return ET.fromstring(
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{side}" height="{side}" '
@@ -231,10 +215,7 @@ def _render_encoding_alpha(
 
 
 class PainterLedgerErrorPriorityTests(unittest.TestCase):
-    """Saf hata-önceliği: rect byte, contour'un gerçek doğrulama hatasını EZMEZ."""
-
     def test_01_rect_byte_does_not_overwrite_contour_validation_error(self) -> None:
-        # polygon+rect byte-rejected; contour validation başlatıp journal reddi aldı.
         attempts = [
             _ledger_entry(
                 encoding_label="polygon", encoding_family="polygon",
@@ -264,8 +245,6 @@ class PainterLedgerErrorPriorityTests(unittest.TestCase):
         self.assertIn("attempts_sha256=deadbeef", message)
 
     def test_09_contour_native_iou_reject_is_primary(self) -> None:
-        # polygon byte-rejected; contour bütçeye girip native IoU kapısında düştü →
-        # ana hata contour'un GERÇEK IoU kodu olmalı (rect byte değil).
         attempts = [
             _ledger_entry(
                 encoding_label="polygon", encoding_family="polygon",
@@ -274,10 +253,10 @@ class PainterLedgerErrorPriorityTests(unittest.TestCase):
                 exact_error_code="source_alpha_candidate_painter_byte_budget_rejected:polygon:400000>250000",
             ),
             _ledger_entry(
-                encoding_label="contour", encoding_family="contour",
-                actual_serialized_bytes=60000, validation_started=True,
-                validation_stage="native_alpha", status="native_alpha_rejected",
-                native_alpha_iou=0.981234,
+                encoding_label="contour-q32", encoding_family="contour",
+                exact_or_quantized="quantized", actual_serialized_bytes=40000,
+                validation_started=True, validation_stage="native_alpha",
+                status="native_alpha_rejected", native_alpha_iou=0.981234,
                 exact_error_code="source_alpha_candidate_painter_native_iou_gate_failed:0.981234<0.995",
             ),
             _ledger_entry(
@@ -288,13 +267,11 @@ class PainterLedgerErrorPriorityTests(unittest.TestCase):
             ),
         ]
         message = _painter_primary_error(attempts, "cafef00d")
-        self.assertIn("primary=contour", message)
+        self.assertIn("primary=contour-q32", message)
         self.assertIn("native_iou_gate_failed:0.981234", message)
         self.assertNotIn("primary=rect", message)
 
     def test_10_all_exact_over_byte_selects_smallest_byte_primary(self) -> None:
-        # Hiçbir aday validation başlatmadı (hepsi byte-rejected) → öncelik en küçük
-        # byte'lı exact byte-rejected adaydır (contour = 300000).
         attempts = [
             _ledger_entry(
                 encoding_label="polygon", encoding_family="polygon",
@@ -320,8 +297,6 @@ class PainterLedgerErrorPriorityTests(unittest.TestCase):
         self.assertIn("300000>250000", message)
 
     def test_priority_quantized_used_only_when_no_exact_validated(self) -> None:
-        # Exact hepsi byte-rejected; quantized validation başlatıp düştü → validation
-        # başlatan quantized, byte-rejected exact'tan ÖNCELİKLİDİR (öncelik 2 > 3).
         attempts = [
             _ledger_entry(
                 encoding_label="polygon", encoding_family="polygon",
@@ -359,17 +334,13 @@ class PainterLedgerErrorPriorityTests(unittest.TestCase):
 
 
 class PainterLedgerEmitTests(unittest.TestCase):
-    """Emit: güvenli telemetri, deterministik JSON, ham veri sızıntısı yok."""
-
     def test_04_emit_is_deterministic_across_key_order(self) -> None:
-        # Aynı içerik, farklı dict-anahtar ekleme sırası → aynı payload + aynı SHA.
         entry_a = _ledger_entry(encoding_label="contour", actual_serialized_bytes=42)
         entry_b = {k: entry_a[k] for k in reversed(list(entry_a.keys()))}
         first, ledgers_a, _ = _capture_attempts(lambda: _emit_painter_attempts([entry_a]))
         second, ledgers_b, _ = _capture_attempts(lambda: _emit_painter_attempts([entry_b]))
         self.assertEqual(first, second)
         self.assertEqual(ledgers_a, ledgers_b)
-        # Dönen SHA, yayınlanan payload'un gerçek sha256'sıdır.
         payload = json.dumps([entry_a], sort_keys=True, separators=(",", ":"))
         self.assertEqual(first, hashlib.sha256(payload.encode("utf-8")).hexdigest())
 
@@ -382,7 +353,6 @@ class PainterLedgerEmitTests(unittest.TestCase):
         self.assertEqual(len(ledgers), 1)
         emitted = ledgers[0]
         self.assertEqual(len(emitted), 1)
-        # Yalnız izinli sayısal/enum/hata-kodu anahtarları; ham geometri anahtarı yok.
         self.assertEqual(set(emitted[0]), _ALLOWED_LEDGER_KEYS)
         payload = json.dumps(emitted, separators=(",", ":"))
         for forbidden in ("<svg", "<path", '"d":', "points", "viewBox", "M0", "H", "rgb("):
@@ -390,13 +360,7 @@ class PainterLedgerEmitTests(unittest.TestCase):
 
 
 class PainterLedgerIntegrationTests(unittest.TestCase):
-    """Gerçek turnuva çalıştırıp ledger içeriğini ve seçimi doğrular."""
-
     def test_02_ledger_records_every_exact_encoding(self) -> None:
-        # Option B üç kademe: basit vaka Kademe 1'de biter (contour hiç denenmez).
-        # Bu yüzden "her kodlamayı kaydeder" için tüm kademelere ulaşan node-yoğun
-        # vaka kullanılır: polygon+rect byte-red (Kademe 1), contour geometri-red
-        # (Kademe 2), quantized (Kademe 3). Exact aileler = {polygon, rect, contour}.
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "s.png"
@@ -432,7 +396,6 @@ class PainterLedgerIntegrationTests(unittest.TestCase):
                 for entry in ledgers[0]
                 if entry["encoding_family"] == "polygon"
             }
-            # Byte-rejected encoding tüm stroke'ları dener (break yok) → 4 genişlik.
             self.assertEqual(polygon_strokes, {1.0, 1.5, 2.0, 3.0})
 
     def test_06_passing_exact_prevents_quantized_evaluation(self) -> None:
@@ -486,13 +449,24 @@ class PainterLedgerIntegrationTests(unittest.TestCase):
             families = {
                 entry["exact_or_quantized"] for entry in ledgers[0]
             }
-            # Exact hepsi başarısız → quantized aşaması denenmiş olmalı.
             self.assertIn("quantized", families)
             quantized_labels = {
                 entry["encoding_label"] for entry in ledgers[0]
                 if entry["exact_or_quantized"] == "quantized"
             }
-            self.assertEqual(quantized_labels, {"contour-q128", "contour-q64", "contour-q32"})
+            self.assertEqual(
+                quantized_labels,
+                {
+                    "contour-q128",
+                    "contour-q64",
+                    "contour-q32",
+                    "cumulative-q32",
+                    "cumulative-q16",
+                    "cumulative-q8",
+                    "cumulative-q4",
+                    "cumulative-q3",
+                },
+            )
 
     def test_16_no_admissible_reconstruction_rolls_back_byte_identical(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -509,27 +483,10 @@ class PainterLedgerIntegrationTests(unittest.TestCase):
             self.assertIn("no_admissible_reconstruction", message)
             self.assertIn("primary=contour", message)
             self.assertNotIn("primary=rect", message)
-            # Fail-closed: kaynak SVG byte-birebir korunur.
             self.assertEqual(svg.read_bytes(), original)
 
 
 class PainterEncodingEquivalenceTests(unittest.TestCase):
-    """polygon (varsayılan) vs contour (grouped-evenodd) maske alfa düzlemi eşliği.
-
-    Kanıtlanan (ve ölçülen) semantik gerçek: her iki kodlama da AYNI hücre-kenarı
-    geometrisini üretir, bu yüzden ÖLÇÜM (native) ızgarasında piksel-BİREBİRdir
-    (max_diff == 0) — seviye-0 kapalı göller, iç içe delikler, köşe-değen bileşenler
-    ve çok-seviyeli paint sırası dahil. Bu, contour'un alfa kapılarını polygon ile
-    aynı geçmesinin nedenidir.
-
-    ANCAK native OLMAYAN (kesirli) ölçeklerde iki kodlama seviye-0/delik SINIRLARINDA
-    ıraksar: polygon deliği gri-doldurup-siyah-üzerine-boyar, contour even-odd ile
-    boş bırakır; ölçekli AA bu iki yolu farklı yuvarlar (ölçülen: ortalama < 1 gri
-    seviye, < %2 piksel; tam-kat ölçeklerde 0). Bu ıraksama TAM OLARAK contour
-    kabulünün byte/alfa ile DEĞİL, yukarı-ölçekte değerlendiren journal seam/geometri
-    kapısıyla yönetilmesi gerektiğini gösterir (public-05: node/seam reddi).
-    """
-
     def _render_pair(
         self, quantized: np.ndarray, opacity: dict[int, float], side: int, render_side: int
     ) -> tuple[np.ndarray, np.ndarray]:
@@ -543,21 +500,16 @@ class PainterEncodingEquivalenceTests(unittest.TestCase):
     ) -> None:
         poly, cont = self._render_pair(quantized, opacity, side, side)
         max_diff = int(np.abs(poly - cont).max())
-        self.assertEqual(
-            max_diff, 0,
-            f"native ({side}px) polygon vs contour alfa farkı = {max_diff} (0 bekleniyor)",
-        )
+        self.assertEqual(max_diff, 0)
 
     def test_11_level_zero_enclosed_island_native_identical(self) -> None:
-        # Dış seviye-1 kare içinde kapalı seviye-0 (şeffaf) göl.
         side = 40
         quantized = np.zeros((side, side), dtype=np.int32)
         quantized[6:34, 6:34] = 1
-        quantized[16:24, 16:24] = 0  # kapalı şeffaf ada
+        quantized[16:24, 16:24] = 0
         self._assert_native_identical(quantized, {0: 0.0, 1: 1.0}, side)
 
     def test_12_nested_hole_with_island_native_identical(self) -> None:
-        # seviye-1 gövde → seviye-0 delik → deliğin içinde seviye-1 ada (3 iç içe).
         side = 48
         quantized = np.zeros((side, side), dtype=np.int32)
         quantized[6:42, 6:42] = 1
@@ -566,7 +518,6 @@ class PainterEncodingEquivalenceTests(unittest.TestCase):
         self._assert_native_identical(quantized, {0: 0.0, 1: 1.0}, side)
 
     def test_13_corner_touching_components_native_identical(self) -> None:
-        # Köşeden değen iki seviye-1 kare (even-odd vs overpaint ayrımı sınanır).
         side = 40
         quantized = np.zeros((side, side), dtype=np.int32)
         quantized[6:20, 6:20] = 1
@@ -574,7 +525,6 @@ class PainterEncodingEquivalenceTests(unittest.TestCase):
         self._assert_native_identical(quantized, {0: 0.0, 1: 1.0}, side)
 
     def test_14_multi_alpha_level_native_identical(self) -> None:
-        # İç içe üç gri seviye (kısmi alfa gradyanı vekili) — paint sırası doğruluğu.
         side = 48
         quantized = np.zeros((side, side), dtype=np.int32)
         quantized[4:44, 4:44] = 1
@@ -585,37 +535,20 @@ class PainterEncodingEquivalenceTests(unittest.TestCase):
         )
 
     def test_15_multi_scale_divergence_is_boundary_localized(self) -> None:
-        # 192/256/512/native Resvg karşılaştırması: native TAM eşit; yukarı ölçekte
-        # ıraksama YALNIZ ince sınır bandında (bütünde ortalama<2 gri, <%4 piksel).
-        # Bu, contour'un seam/geometri kapısıyla yönetilmesini doğrular.
         side = 48
         quantized = np.zeros((side, side), dtype=np.int32)
         quantized[6:42, 6:42] = 1
-        quantized[16:32, 16:32] = 0  # kesirli-ölçekte ıraksayan seviye-0 delik
+        quantized[16:32, 16:32] = 0
         opacity = {0: 0.0, 1: 1.0}
-        total = side * side
         for render_side in (side, 192, 256, 512):
             poly, cont = self._render_pair(quantized, opacity, side, render_side)
             diff = np.abs(poly - cont)
             differing_fraction = float((diff > 0).sum()) / float(diff.size)
             if render_side == side:
-                self.assertEqual(
-                    int(diff.max()), 0,
-                    "native ölçekte kodlamalar TAM eşit olmalı",
-                )
+                self.assertEqual(int(diff.max()), 0)
             else:
-                # Bulk uyum: ıraksama sistemik dolgu farkı değil, sınır AA bandıdır.
-                self.assertLess(
-                    float(diff.mean()), 2.0,
-                    f"@{render_side}px ortalama fark {diff.mean():.3f} — sınır-yerel değil",
-                )
-                self.assertLess(
-                    differing_fraction, 0.04,
-                    f"@{render_side}px farklı piksel oranı {differing_fraction:.4f} — çok geniş",
-                )
-        # Kaydedilen not: tam-kat olmayan ölçekte max fark > 0 olabilir; bu, journal
-        # seam kapısının contour kabulünü neden nihai yetki olduğu gerçeğidir.
-        _ = total
+                self.assertLess(float(diff.mean()), 2.0)
+                self.assertLess(differing_fraction, 0.04)
 
 
 if __name__ == "__main__":

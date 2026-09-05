@@ -5,6 +5,7 @@ import argparse
 import json
 import multiprocessing
 import resource
+import sys
 from pathlib import Path
 from statistics import median
 from typing import Any
@@ -24,11 +25,45 @@ _LOWER_IS_BETTER = {"delta_e00", "path_count", "svg_bytes"}
 _PERFORMANCE_METRICS = {"render_ms", "peak_rss_mb"}
 _PROVENANCE_AGGREGATE_KEYS = {"repeat_count", "repeat_provenance_schema", "repeat_provenance"}
 _PROVENANCE_VOLATILE_KEYS = {"exact_evaluator_failure_message_sanitized"} | _PROVENANCE_AGGREGATE_KEYS
+_TIMEOUT_EVIDENCE_LIMIT = 12
 
 
 def _peak_rss_mb() -> float:
     # Each repeat runs in a fresh spawned process, so ru_maxrss belongs only to that repeat.
     return float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) / 1024.0
+
+
+def _emit_timeout_work_root_evidence(work_root: Path) -> None:
+    """Emit bounded, work-root-relative file evidence without changing timeout behavior."""
+    entries: list[tuple[int, str, int]] = []
+    scan_error: str | None = None
+    try:
+        for path in work_root.rglob("*"):
+            try:
+                if not path.is_file():
+                    continue
+                stat = path.stat()
+                relative = path.relative_to(work_root).as_posix()
+                entries.append((int(stat.st_mtime_ns), relative, int(stat.st_size)))
+            except OSError:
+                continue
+    except OSError as exc:
+        scan_error = type(exc).__name__
+    entries.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    payload: dict[str, Any] = {
+        "file_count": len(entries),
+        "latest": [
+            {"path": relative, "bytes": size}
+            for _mtime_ns, relative, size in entries[:_TIMEOUT_EVIDENCE_LIMIT]
+        ],
+    }
+    if scan_error is not None:
+        payload["scan_error"] = scan_error
+    print(
+        "isolated_benchmark_timeout_evidence="
+        + json.dumps(payload, sort_keys=True, separators=(",", ":")),
+        file=sys.stderr,
+    )
 
 
 def _isolated_worker(
@@ -75,6 +110,7 @@ def _run_case_isolated(
     if process.is_alive():
         process.terminate()
         process.join()
+        _emit_timeout_work_root_evidence(work_root)
         raise TimeoutError(f"isolated benchmark repeat timed out: {case.case_id}")
     if queue.empty():
         raise RuntimeError(f"isolated benchmark repeat exited without a result: {case.case_id} ({process.exitcode})")

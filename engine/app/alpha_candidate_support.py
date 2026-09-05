@@ -47,6 +47,7 @@ _SUPPORT_STROKE_PIXELS = (0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0)
 _SUPPORT_FAILURE_PREFIXES = (
     "source_alpha_candidate_knockout_iou_gate_failed:",
     "source_alpha_candidate_knockout_mae_gate_failed:",
+    "source_alpha_candidate_knockout_byte_budget_rejected:",
 )
 _GEOMETRY_TAGS = {"path", "rect", "circle", "ellipse", "polygon", "polyline"}
 _ALPHA_STYLE_NAMES = {"opacity", "fill-opacity", "stroke-opacity"}
@@ -514,7 +515,11 @@ def make_candidate_support_reconstruction_fallback(
         else:
             backup.unlink(missing_ok=True)
 
-        report["mask_fallback_reason"] = "candidate_knockout_exact_alpha_failure"
+        report["mask_fallback_reason"] = (
+            "candidate_knockout_byte_budget_rejected"
+            if trigger.startswith("source_alpha_candidate_knockout_byte_budget_rejected:")
+            else "candidate_knockout_exact_alpha_failure"
+        )
         report["mask_fallback_trigger"] = trigger
         report["rollback_guard"] = "armed_and_committed"
         return report

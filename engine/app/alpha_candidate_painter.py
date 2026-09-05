@@ -253,6 +253,30 @@ def _rectilinear_subpaths(
     return "".join(parts), nodes
 
 
+def _cumulative_compact_subpaths(
+    loops: list[list[tuple[int, int]]],
+) -> tuple[str, int]:
+    """Encode identical closed loops with the shortest implicit lineto form."""
+    parts: list[str] = []
+    commands = 0
+    for raw_corners in loops:
+        corners = _simplify_rectilinear_loop(raw_corners)
+        if len(corners) < 3:
+            continue
+        x0, y0 = corners[0]
+        absolute_points = " ".join(f"{x} {y}" for x, y in corners[1:])
+        absolute = f"M{x0} {y0}L{absolute_points}Z"
+        relative_pairs: list[str] = []
+        previous_x, previous_y = x0, y0
+        for x, y in corners[1:]:
+            relative_pairs.append(f"{x - previous_x} {y - previous_y}")
+            previous_x, previous_y = x, y
+        relative = f"M{x0} {y0}l{' '.join(relative_pairs)}Z"
+        parts.append(relative if len(relative) < len(absolute) else absolute)
+        commands += 3
+    return "".join(parts), commands
+
+
 def _painter_contour_children(
     quantized: np.ndarray,
     opacity_by_level: dict[int, float],
@@ -338,7 +362,7 @@ def _cumulative_threshold_children(
         loops = trace_cell_contours(region)
         if not loops:
             continue
-        path_data, nodes = _rectilinear_subpaths(loops)
+        path_data, nodes = _cumulative_compact_subpaths(loops)
         if not path_data:
             continue
         children.append(
@@ -552,6 +576,21 @@ def build_painter_reconstruction_tree(
             mask_children, contour_stats = contour_result
             chosen_encoding = "contour"
         else:  # kontur üretilemezse asla boş maske bırakma; polygon'a düş
+            mask_children = _painter_polygon_children(loops, qname)
+    elif mask_encoding == "cumulative":
+        cumulative_result = _cumulative_threshold_children(
+            quantized, opacity_by_level, qname
+        )
+        if cumulative_result is not None:
+            mask_children, cumulative_stats = cumulative_result
+            chosen_encoding = "cumulative"
+            contour_stats = {
+                "contour_path_count": int(cumulative_stats["cumulative_threshold_count"]),
+                "contour_command_count": int(cumulative_stats["cumulative_command_count"]),
+                "contour_loop_count": int(cumulative_stats["cumulative_loop_count"]),
+                **cumulative_stats,
+            }
+        else:
             mask_children = _painter_polygon_children(loops, qname)
     elif mask_encoding == "rect":
         mask_children, rect_count = _painter_rect_children(
@@ -855,6 +894,7 @@ def _run_painter_geometry_journal(
     journal_source_rgb: np.ndarray,
     image_class: str,
     transform_report: Any,
+    measurement_cache: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[bool, list[str]]:
     """Adayı, aşağı-akış ile AYNI değişmemiş TransformJournal geometri kapılarından
     (SSIM/edge/seam/topology/node/byte) geçir. Kabul edilirse (True, []); aksi halde
@@ -869,6 +909,7 @@ def _run_painter_geometry_journal(
         journal_source_rgb,
         image_class=image_class,
         required_metrics=set(),
+        measurement_cache=measurement_cache,
     )
     accepted_path, stage = journal.consider_candidate(
         "source_alpha_painter_candidate",
@@ -1019,6 +1060,7 @@ def apply_candidate_painter_reconstruction(
     svg_path: Path,
     source_path: Path,
     mode: str,
+    measurement_cache: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build, validate and atomically publish the painter reconstruction."""
     from app.alpha_candidate_background import (  # noqa: PLC0415
@@ -1147,6 +1189,17 @@ def apply_candidate_painter_reconstruction(
             (f"contour-q{target_levels}", "contour", "quantized", requant, requant_opacity)
         )
 
+    cumulative_quantized_specs: list[
+        tuple[str, str, str, np.ndarray, dict[int, float]]
+    ] = []
+    for target_levels in (32, 16, 8, 4, 3):
+        requant, requant_opacity = _requantize_alpha(
+            grid_alpha, target_levels, allow_silhouette_shortcut=False
+        )
+        cumulative_quantized_specs.append(
+            (f"cumulative-q{target_levels}", "cumulative", "quantized", requant, requant_opacity)
+        )
+
     attempts: list[dict[str, Any]] = []
 
     def _evaluate_phase(
@@ -1270,6 +1323,7 @@ def apply_candidate_painter_reconstruction(
                         journal_source_rgb,
                         journal_image_class,
                         assessment["report"],
+                        measurement_cache=measurement_cache,
                     )
                     entry["journal_passed"] = bool(journal_passed)
                     entry["journal_reason_codes"] = list(journal_codes)
@@ -1452,6 +1506,7 @@ def apply_candidate_painter_reconstruction(
                 journal_source_rgb,
                 journal_image_class,
                 assessment["report"],
+                measurement_cache=measurement_cache,
             )
             entry["journal_passed"] = bool(journal_passed)
             entry["journal_reason_codes"] = list(journal_codes)
@@ -1596,6 +1651,11 @@ def apply_candidate_painter_reconstruction(
             winner = _evaluate_phase(compact_specs)
         if winner is None:
             winner = _evaluate_phase(quantized_specs)
+        if winner is None:
+            for cumulative_spec in cumulative_quantized_specs:
+                winner = _evaluate_phase([cumulative_spec])
+                if winner is not None:
+                    break
         if winner is None:
             winner = _evaluate_paint_deficit()
         if winner is None and _node_free_polygon_retry_eligible(attempts):

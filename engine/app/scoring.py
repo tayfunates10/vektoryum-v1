@@ -16,14 +16,16 @@ import logging
 import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from app.fidelity import score_svg_fidelity
-from app.geometry_cleanup import compute_geometry_report_for_svg, extract_points_from_path_data
+from app.geometry_cleanup import compute_geometry_report_for_svg
 
 logger = logging.getLogger(__name__)
 
 _FILL_RE = re.compile(r'fill\s*[:=]\s*["\']?(#[0-9a-fA-F]{3,6})')
+_PATH_NUM_RE = re.compile(r"[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?")
+_PATH_CMD_RE = re.compile(r"([MmLlHhVvCcSsQqTtAaZz])([^MmLlHhVvCcSsQqTtAaZz]*)")
 
 _GEOMETRIC_MODES = {"geometric_logo", "minimal_ai", "flat_logo", "single_color", "lineart", "centerline"}
 
@@ -31,6 +33,18 @@ _GEOMETRIC_MODES = {"geometric_logo", "minimal_ai", "flat_logo", "single_color",
 # ---------------------------------------------------------------------------
 # SVG yapısal analiz
 # ---------------------------------------------------------------------------
+def _count_path_points(d: str) -> int:
+    """Legacy geometry parser ile aynı point sayısını koordinat üretmeden sayar."""
+    total = 0
+    for match in _PATH_CMD_RE.finditer(d or ""):
+        command = match.group(1).upper()
+        if command not in {"M", "L", "H", "V"}:
+            continue
+        count = len(_PATH_NUM_RE.findall(match.group(2)))
+        total += count // 2 if command in {"M", "L"} else count
+    return total
+
+
 def _parse_svg_stats(svg_path: Path) -> dict[str, Any]:
     stats = {"path_count": 0, "node_count": 0, "unique_colors": 0, "has_bitmap": False, "colors": []}
     try:
@@ -51,11 +65,7 @@ def _parse_svg_stats(svg_path: Path) -> dict[str, Any]:
             fill = el.get("fill")
             if fill and fill.startswith("#"):
                 colors.add(fill.lower())
-            try:
-                for sp in extract_points_from_path_data(d):
-                    stats["node_count"] += len(sp.get("points", []))
-            except Exception:  # noqa: BLE001
-                pass
+            stats["node_count"] += _count_path_points(d)
 
     # style içindeki fill'ler
     try:
@@ -175,6 +185,8 @@ def score_vector_candidate(
     analysis_report: dict[str, Any],
     mode: str,
     geometry_report: dict[str, Any] | None = None,
+    *,
+    render_fn: Callable[[Path, int, int], Any] | None = None,
 ) -> dict[str, Any]:
     """Bir vektör adayını puanlar ve detaylı skor sözlüğü döndürür."""
     stats = _parse_svg_stats(Path(svg_path))
@@ -196,7 +208,9 @@ def score_vector_candidate(
     # edge_score: render edilebilirse ALGISAL sadakat (SSIM + LAB ΔE + kenar-F1);
     # render mümkün değilse yapısal tahmine düşülür (CairoSVG yoksa çökme yok).
     rendered_ok = False
-    fidelity = score_svg_fidelity(Path(svg_path), Path(original_path))
+    fidelity = score_svg_fidelity(
+        Path(svg_path), Path(original_path), render_fn=render_fn,
+    )
     if fidelity is not None:
         rendered_ok = True
         edge_score = float(fidelity["fidelity_score"])

@@ -22,7 +22,7 @@ from __future__ import annotations
 import io
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import cv2
 import numpy as np
@@ -500,6 +500,8 @@ def score_svg_fidelity(
     svg_path: Path,
     original_path: Path,
     max_side: int = _COMPARE_MAX_SIDE,
+    *,
+    render_fn: Callable[[Path, int, int], np.ndarray | None] | None = None,
 ) -> dict[str, Any] | None:
     """SVG'yi render edip orijinalle algısal sadakatini ölçer.
 
@@ -511,7 +513,7 @@ def score_svg_fidelity(
         logger.debug("Referans görsel yüklenemedi: %s", e)
         return None
 
-    rendered = render_svg_to_rgb(Path(svg_path), w, h)
+    rendered = (render_fn or render_svg_to_rgb)(Path(svg_path), w, h)
     if rendered is None:
         return None
 
@@ -531,6 +533,9 @@ def score_svg_fidelity(
         comp = _component_class_report(reference, rendered)
         if comp is not None and comp["component_min_iou"] < 0.92:
             ref_hi, (w2, h2) = load_reference_rgb(Path(original_path), max_side=1024)
+            # Keep the optional edge-clean cache scoped to the shared coarse
+            # 512px raster. The independent 1024px confirmation remains on the
+            # canonical renderer and cannot evict that coarse cache entry.
             rnd_hi = render_svg_to_rgb(Path(svg_path), w2, h2)
             if rnd_hi is not None:
                 comp_hi = _component_class_report(ref_hi, rnd_hi)
