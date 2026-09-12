@@ -126,7 +126,14 @@ def _make_fake_journal(outcomes: list[tuple[str, list[str]]], calls: list) -> ty
     dön + reason_codes). Her çağrı ``calls``a kaydedilir."""
 
     class _FakeJournal:
-        def __init__(self, parent, source_rgb, image_class=None, required_metrics=None):
+        def __init__(
+            self,
+            parent,
+            source_rgb,
+            image_class=None,
+            required_metrics=None,
+            measurement_cache=None,
+        ):
             self._parent = Path(parent)
 
         def consider_candidate(self, stage_id, parent, candidate, transform_report=None):
@@ -224,7 +231,7 @@ class PainterRetryInvocationGateTests(unittest.TestCase):
             )
 
     @staticmethod
-    def _painter_writes_then_report(target, source, mode):
+    def _painter_writes_then_report(target, source, mode, measurement_cache=None):
         Path(target).write_text("<svg><!--painter--></svg>", encoding="utf-8")
         return {"applied": True, "status": "accepted", "schema": "painter"}
 
@@ -302,7 +309,7 @@ class PainterRetryInvocationGateTests(unittest.TestCase):
     def test_painter_failure_preserves_original_journal_error(self) -> None:
         # Painter (eligible seam reddinde) iç hatayla düşerse: ilk ORİJİNAL journal
         # reddi korunur (painter iç hatası değil), parent byte-birebir.
-        def painter_raises(target, source, mode):
+        def painter_raises(target, source, mode, measurement_cache=None):
             raise RuntimeError(
                 "source_alpha_candidate_painter_no_admissible_reconstruction:"
                 "primary=contour:native_iou_gate_failed:0.42"

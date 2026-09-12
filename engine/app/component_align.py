@@ -44,6 +44,11 @@ logger = logging.getLogger(__name__)
 _MAX_SHIFT_PX = 14.0      # karşılaştırma çözünürlüğünde (aşağıda ölçeklenir)
 _SCALE_MIN, _SCALE_MAX = 0.94, 1.06
 _ALIGN_COMPARE_SIDE = 1024  # hizalama kestirimi için karşılaştırma çözünürlüğü
+# component-align opsiyonel bir refittir; çok büyük path kümelerinde her path'i
+# svgpathtools ile parse+bbox yapmak production request'ini saatlerce kilitleyebilir.
+# Bu sınır kalite/evaluator kapısı değildir: aşılırsa mevcut artifact aynen korunur
+# ve değişmeyen FinalArtifactEvaluator + TransformJournal karar vermeye devam eder.
+_ALIGN_PARSE_PATH_BUDGET = 4096
 
 
 def _parse_viewbox(root: ET.Element) -> tuple[float, float, float, float] | None:
@@ -113,6 +118,13 @@ def apply_component_align(
         return float(m.group(1)), float(m.group(2) or 0.0)
 
     path_els = [el for el in root.iter() if el.tag.endswith("path") and el.get("d")]
+    if len(path_els) > _ALIGN_PARSE_PATH_BUDGET:
+        return {
+            "applied": False,
+            "reason": "component_align_complexity_budget",
+            "path_count": len(path_els),
+            "path_budget": _ALIGN_PARSE_PATH_BUDGET,
+        }
     parsed: list[tuple[ET.Element, Any, tuple[float, float, float, float], tuple[float, float]]] = []
     for el in path_els:
         t = _translate_of(el)

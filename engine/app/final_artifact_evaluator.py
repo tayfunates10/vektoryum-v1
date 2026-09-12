@@ -29,6 +29,7 @@ from app.fidelity import (
     render_svg_to_rgb,
 )
 from app.source_truth import (
+    _png_bytes_to_rgba,
     alpha_plane_metrics,
     boundary_halo_metrics,
     composite_rgba,
@@ -296,10 +297,36 @@ def _seam_ratio(src: np.ndarray, rnd: np.ndarray) -> float:
     return 0.0 if denom == 0 else float((src_fg & rnd_white).sum()) / denom
 
 
-def _cross_renderer_parity(svg_path: Path, w: int, h: int) -> dict[str, Any]:
-    base = _render_resvg_py(svg_path, w, h)
+def _render_rgba_with_resvg_base(
+    svg_path: Path,
+    w: int,
+    h: int,
+) -> tuple[np.ndarray | None, np.ndarray | None]:
+    """Render once with resvg_py and preserve its white-RGB parity base."""
+    try:
+        import resvg_py  # type: ignore  # noqa: PLC0415
+
+        data = bytes(resvg_py.svg_to_bytes(
+            svg_path=str(svg_path), width=int(w), height=int(h),
+        ))
+        rgba = _png_bytes_to_rgba(data, int(w), int(h))
+        return rgba, composite_rgba(rgba, 255)
+    except Exception:
+        return render_svg_to_rgba(svg_path, w, h), None
+
+
+def _cross_renderer_parity(
+    svg_path: Path,
+    w: int,
+    h: int,
+    *,
+    resvg_base: np.ndarray | None = None,
+) -> dict[str, Any]:
+    base = resvg_base
     if base is None:
-        base = _render_resvg(svg_path, w, h)
+        base = _render_resvg_py(svg_path, w, h)
+        if base is None:
+            base = _render_resvg(svg_path, w, h)
     out: dict[str, Any] = {"resvg": base is not None}
     if base is None:
         return out
@@ -482,7 +509,7 @@ def evaluate_final_svg_bytes(
         source_alpha_cmp = np.asarray(source_alpha, dtype=np.uint8).copy() if source_alpha is not None else None
     min_area = max(6, round(0.00004 * w * h))
 
-    render_rgba = render_svg_to_rgba(svg_path, w, h)
+    render_rgba, resvg_parity_base = _render_rgba_with_resvg_base(svg_path, w, h)
     if render_rgba is not None:
         rnd = composite_rgba(render_rgba, 255)
     else:
@@ -503,7 +530,9 @@ def evaluate_final_svg_bytes(
     metrics["B_visual"] = {
         "ssim": _ssim(ga, gb),
         "ms_ssim": _ms_ssim(ga, gb),
-        "cross_renderer": _cross_renderer_parity(svg_path, min(w, 1024), min(h, 1024)),
+        "cross_renderer": _cross_renderer_parity(
+            svg_path, min(w, 1024), min(h, 1024), resvg_base=resvg_parity_base,
+        ),
     }
     cm = _color_metrics(source_cmp, rnd)
     cm["worst_face_de00"] = _worst_face_de(source_cmp, rnd, co, ncolors, min_area)

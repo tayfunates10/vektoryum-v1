@@ -25,6 +25,8 @@ def _attach_score_contract(
         analysis_report: dict[str, Any],
         mode: str,
         geometry_report: dict[str, Any] | None = None,
+        *,
+        render_fn: Callable[[Path, int, int], Any] | None = None,
     ) -> dict[str, Any]:
         score = original(
             original_path=original_path,
@@ -32,6 +34,7 @@ def _attach_score_contract(
             analysis_report=analysis_report,
             mode=mode,
             geometry_report=geometry_report,
+            render_fn=render_fn,
         )
         if mode != "centerline":
             return score

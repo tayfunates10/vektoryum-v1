@@ -81,7 +81,32 @@ class PainterStrokeContinuationTests(unittest.TestCase):
             self.assertEqual(svg.read_bytes(), original)
             validated = [entry for entry in ledgers[0] if entry["validation_started"]]
             self.assertTrue(validated)
-            self.assertTrue(all(entry["stroke_width"] == 1.5 for entry in validated))
+            by_label: dict[str, list[dict]] = {}
+            for entry in validated:
+                by_label.setdefault(entry["encoding_label"], []).append(entry)
+
+            # A non-retryable journal code must stop stroke-width continuation
+            # once that encoding reaches the journal. Later fallback families may
+            # still be evaluated fail-closed; pre-journal validation failures at
+            # wider strokes do not violate this contract.
+            for label, entries in by_label.items():
+                journal_entries = [item for item in entries if item["journal_gate_started"]]
+                if label.startswith("paint-deficit"):
+                    if journal_entries:
+                        self.assertEqual(
+                            [item["stroke_width"] for item in journal_entries], [0.0]
+                        )
+                elif journal_entries:
+                    self.assertEqual(
+                        [item["stroke_width"] for item in journal_entries], [1.5]
+                    )
+            self.assertTrue(
+                all(
+                    entry["journal_reason_codes"] == ["node_complexity_explosion"]
+                    for entry in validated
+                    if entry["journal_gate_started"]
+                )
+            )
 
     def test_mixed_reason_set_is_not_retry_eligible(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -107,8 +132,28 @@ class PainterStrokeContinuationTests(unittest.TestCase):
             self.assertEqual(svg.read_bytes(), original)
             validated = [entry for entry in ledgers[0] if entry["validation_started"]]
             self.assertTrue(validated)
-            self.assertTrue(all(entry["stroke_width"] == 1.5 for entry in validated))
-            self.assertTrue(all(entry["journal_reason_codes"] == mixed for entry in validated))
+            by_label: dict[str, list[dict]] = {}
+            for entry in validated:
+                by_label.setdefault(entry["encoding_label"], []).append(entry)
+
+            for label, entries in by_label.items():
+                journal_entries = [item for item in entries if item["journal_gate_started"]]
+                if label.startswith("paint-deficit"):
+                    if journal_entries:
+                        self.assertEqual(
+                            [item["stroke_width"] for item in journal_entries], [0.0]
+                        )
+                elif journal_entries:
+                    self.assertEqual(
+                        [item["stroke_width"] for item in journal_entries], [1.5]
+                    )
+            self.assertTrue(
+                all(
+                    entry["journal_reason_codes"] == mixed
+                    for entry in validated
+                    if entry["journal_gate_started"]
+                )
+            )
 
     def test_retry_path_is_deterministic(self) -> None:
         def run_once(root: Path):

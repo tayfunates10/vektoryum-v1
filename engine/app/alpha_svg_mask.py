@@ -887,11 +887,13 @@ def wrap_run_pipeline_with_alpha_mask(
             merge_journal_reports,
         )
 
+        alpha_measurement_cache: dict[str, dict[str, Any]] = {}
         alpha_journal = TransformJournal(
             parent_path,
             _journal_source_rgb(image),
             image_class=_MODE_IMAGE_CLASS[mode],
             required_metrics=set(),
+            measurement_cache=alpha_measurement_cache,
         )
         accepted_path, alpha_stage = alpha_journal.consider_candidate(
             "source_alpha_vector_mask",
@@ -925,7 +927,10 @@ def wrap_run_pipeline_with_alpha_mask(
             shutil.copy2(parent_path, finalized_path)
             try:
                 report = apply_candidate_painter_reconstruction(
-                    finalized_path, source_path, mode
+                    finalized_path,
+                    source_path,
+                    mode,
+                    measurement_cache=alpha_measurement_cache,
                 )
             except Exception as painter_error:
                 # Painter bu adayı yeniden inşa edemedi (ör. knock-out için
@@ -946,6 +951,7 @@ def wrap_run_pipeline_with_alpha_mask(
                 _journal_source_rgb(image),
                 image_class=_MODE_IMAGE_CLASS[mode],
                 required_metrics=set(),
+                measurement_cache=alpha_measurement_cache,
             )
             accepted_path, alpha_stage = alpha_journal.consider_candidate(
                 "source_alpha_vector_mask",

@@ -95,6 +95,39 @@ class CandidateSupportReconstructionTests(unittest.TestCase):
             self.assertGreaterEqual(metrics["alpha_iou"], 0.995)
             self.assertLessEqual(metrics["alpha_mae"], 0.005)
 
+    def test_knockout_byte_budget_rejection_uses_compact_support_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_path = root / "source.png"
+            svg_path = root / "candidate.svg"
+            self._source(source_path)
+            original = self._undercovered_candidate(svg_path)
+
+            trigger = "source_alpha_candidate_knockout_byte_budget_rejected:463175>259130"
+
+            def rejected(*_args):
+                raise RuntimeError(trigger)
+
+            wrapped = make_candidate_support_reconstruction_fallback(rejected)
+            report = wrapped(svg_path, source_path, "logo_color")
+
+            self.assertTrue(report["applied"])
+            self.assertEqual(
+                report["mask_encoding"], "candidate_support_native_grid_use"
+            )
+            self.assertEqual(
+                report["mask_fallback_reason"],
+                "candidate_knockout_byte_budget_rejected",
+            )
+            self.assertEqual(report["mask_fallback_trigger"], trigger)
+            self.assertEqual(report["rollback_guard"], "armed_and_committed")
+            self.assertGreater(report["reconstruction_rect_symbol_count"], 0)
+            self.assertGreater(report["reconstruction_use_count"], 0)
+            self.assertLessEqual(
+                report["after_byte_size"], report["preflight_byte_limit"]
+            )
+            self.assertNotEqual(svg_path.read_bytes(), original)
+
     def test_non_alpha_failure_is_not_intercepted(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
