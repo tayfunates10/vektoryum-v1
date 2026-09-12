@@ -31,6 +31,9 @@ _ALPHA_REMEDIATION_ENABLED: ContextVar[bool] = ContextVar(
 _FRAGMENTATION_BUDGET_PREFIX = (
     "source_alpha_mask_contour_fragmentation_budget_rejected:"
 )
+_EVALUATION_BUDGET_ERROR = (
+    "source_alpha_mask_transform_gate_rejected:evaluation_budget_exhausted"
+)
 
 
 def alpha_remediation_enabled() -> bool:
@@ -131,12 +134,12 @@ def _retryable_alpha_failure(error: BaseException) -> bool:
     if not isinstance(error, RuntimeError):
         return False
     trigger = str(error)
-    # A contour-fragmentation budget rejection is a deterministic structural
-    # impossibility under the unchanged parent node capacity. Re-running the
-    # entire vectorization pipeline cannot make that exact source geometry fit;
-    # it only repeats expensive tracing/remediation work. Keep this class
-    # terminal and fail closed at the first proven rejection.
+    # These budget rejections are deterministic for the current artifact/request.
+    # Re-running the full vectorization pipeline cannot make the same bounded
+    # geometry/evaluation budget fit; it only repeats expensive fail-closed work.
     if trigger.startswith(_FRAGMENTATION_BUDGET_PREFIX):
+        return False
+    if trigger == _EVALUATION_BUDGET_ERROR:
         return False
     return trigger.startswith("source_alpha_")
 
